@@ -1,0 +1,9 @@
+apiVersion: mirror.mirror.openshift.io/v1alpha1
+kind: ImageSet
+metadata:
+  labels:
+    app.kubernetes.io/name: ocp-mirror
+    app.kubernetes.io/managed-by: kustomize
+  name: imageset-sample
+spec:
+  # TODO(user): Add fields here

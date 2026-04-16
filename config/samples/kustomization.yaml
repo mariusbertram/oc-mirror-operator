@@ -1,0 +1,5 @@
+## Append samples of your project ##
+resources:
+- mirror_v1alpha1_mirrortarget.yaml
+- mirror_v1alpha1_imageset.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

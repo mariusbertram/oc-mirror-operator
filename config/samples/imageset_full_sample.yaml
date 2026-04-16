@@ -1,0 +1,31 @@
+apiVersion: mirror.openshift.io/v1alpha1
+kind: ImageSet
+metadata:
+  name: ocp-4-15-sync
+spec:
+  # Reference to the MirrorTarget defined above
+  targetRef: internal-registry
+  
+  mirror:
+    # OpenShift Platform Release
+    platform:
+      channels:
+        - name: stable-4.15
+          type: ocp
+          full: false # Only mirror heads
+    
+    # OLM Operators
+    operators:
+      - catalog: registry.redhat.io/redhat/redhat-operator-index:v4.15
+        packages:
+          - name: openshift-gitops-operator
+            channels:
+              - name: stable
+          - name: compliance-operator
+    
+    # Individual Additional Images
+    additionalImages:
+      - name: registry.redhat.io/ubi9/ubi:latest
+      - name: quay.io/prometheus/prometheus@sha256:568853b0a996f6006c9a3099991234567890abcdef1234567890abcdef1234 # Digest-only example
+        targetRepo: mirror/prometheus
+        targetTag: v2.45.0

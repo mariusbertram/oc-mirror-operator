@@ -1,0 +1,13 @@
+apiVersion: mirror.openshift.io/v1alpha1
+kind: MirrorTarget
+metadata:
+  name: internal-registry
+spec:
+  # The URL of your internal registry mirror
+  registry: internal-registry.example.com/mirror
+  
+  # Optional: reference to a secret with credentials
+  # authSecret: internal-registry-credentials
+  
+  # Set to true for self-signed certificates
+  insecure: true

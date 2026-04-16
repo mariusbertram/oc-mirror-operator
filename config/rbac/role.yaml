@@ -1,0 +1,32 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: manager-role
+rules:
+- apiGroups:
+  - mirror.mirror.openshift.io
+  resources:
+  - mirrortargets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - mirror.mirror.openshift.io
+  resources:
+  - mirrortargets/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - mirror.mirror.openshift.io
+  resources:
+  - mirrortargets/status
+  verbs:
+  - get
+  - patch
+  - update
