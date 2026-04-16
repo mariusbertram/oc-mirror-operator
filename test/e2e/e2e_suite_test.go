@@ -25,7 +25,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/mariusbertram/ocp-mirror/test/utils"
+	"github.com/mariusbertram/oc-mirror-operator/test/utils"
 )
 
 var (

@@ -1,4 +1,0 @@
----
-collections:
-  - name: jharmison_redhat.oc_mirror_e2e
-    version: 0.7.3

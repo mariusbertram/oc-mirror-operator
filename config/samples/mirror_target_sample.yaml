@@ -4,7 +4,7 @@ metadata:
   name: internal-registry
 spec:
   # The URL of your internal registry mirror
-  registry: internal-registry.example.com/mirror
+  registry: registry.default.svc.cluster.local:5000/mirror
   
   # Optional: reference to a secret with credentials
   # authSecret: internal-registry-credentials

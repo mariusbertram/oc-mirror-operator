@@ -5,8 +5,41 @@ metadata:
   name: manager-role
 rules:
 - apiGroups:
-  - mirror.mirror.openshift.io
+  - ""
   resources:
+  - pods
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - mirror.openshift.io
+  resources:
+  - imagesets
   - mirrortargets
   verbs:
   - create
@@ -17,14 +50,16 @@ rules:
   - update
   - watch
 - apiGroups:
-  - mirror.mirror.openshift.io
+  - mirror.openshift.io
   resources:
+  - imagesets/finalizers
   - mirrortargets/finalizers
   verbs:
   - update
 - apiGroups:
-  - mirror.mirror.openshift.io
+  - mirror.openshift.io
   resources:
+  - imagesets/status
   - mirrortargets/status
   verbs:
   - get

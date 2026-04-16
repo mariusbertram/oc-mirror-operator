@@ -32,6 +32,10 @@ type ImageSetStatus struct {
 	// MirroredImages is the number of images successfully mirrored.
 	// +optional
 	MirroredImages int `json:"mirroredImages,omitempty"`
+
+	// StateDigest is the digest of the OCI metadata blob in the target registry.
+	// +optional
+	StateDigest string `json:"stateDigest,omitempty"`
 }
 
 // TargetImageStatus defines the observed state of a single image mirroring.

@@ -3,92 +3,84 @@ package mirror
 import (
 	"context"
 	"sync"
+
+	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
 )
 
-// Task represents a single image mirroring job
+// Task defines an image to be mirrored
 type Task struct {
 	Source      string
 	Destination string
-	ImageSetKey string // For status updates
-	ImageIndex  int    // Index in the ImageSet status TargetImages
+	ImageSetKey string
+	ImageIndex  int
 }
 
-// WorkerPool manages parallel mirroring tasks
-type WorkerPool struct {
-	client     *MirrorClient
-	tasks      chan Task
-	results    chan TaskResult
-	numWorkers int
-	ctx        context.Context
-	cancel     context.CancelFunc
-	wg         sync.WaitGroup
-}
-
-// TaskResult contains the result of a mirroring job
+// TaskResult contains the result of a mirroring task
 type TaskResult struct {
 	Task      Task
 	Error     error
 	IsSkipped bool
 }
 
-// NewWorkerPool creates and starts a worker pool
-func NewWorkerPool(ctx context.Context, client *MirrorClient, numWorkers int) *WorkerPool {
+// WorkerPool manages a pool of worker goroutines
+type WorkerPool struct {
+	client  *mirrorclient.MirrorClient
+	tasks   chan Task
+	results chan TaskResult
+	num     int
+	wg      sync.WaitGroup
+}
+
+// NewWorkerPool creates a new WorkerPool
+func NewWorkerPool(ctx context.Context, client *mirrorclient.MirrorClient, num int) *WorkerPool {
 	p := &WorkerPool{
-		client:     client,
-		tasks:      make(chan Task, 100),
-		results:    make(chan TaskResult, 100),
-		numWorkers: numWorkers,
+		client:  client,
+		tasks:   make(chan Task, 100),
+		results: make(chan TaskResult, 100),
+		num:     num,
 	}
-	p.ctx, p.cancel = context.WithCancel(ctx)
-	p.start()
+
+	for i := 0; i < num; i++ {
+		p.wg.Add(1)
+		go p.worker(ctx)
+	}
+
 	return p
 }
 
-func (p *WorkerPool) start() {
-	for i := 0; i < p.numWorkers; i++ {
-		p.wg.Add(1)
-		go p.worker()
-	}
+func (p *WorkerPool) Submit(t Task) {
+	p.tasks <- t
 }
 
-func (p *WorkerPool) worker() {
+func (p *WorkerPool) Results() <-chan TaskResult {
+	return p.results
+}
+
+func (p *WorkerPool) worker(ctx context.Context) {
 	defer p.wg.Done()
 	for {
 		select {
-		case <-p.ctx.Done():
+		case <-ctx.Done():
 			return
 		case t, ok := <-p.tasks:
 			if !ok {
 				return
 			}
 
-			// 1. Check if exists
-			exists, err := p.client.CheckExist(p.ctx, t.Destination)
+			// Check if image exists at destination
+			exists, err := p.client.CheckExist(ctx, t.Destination)
 			if err == nil && exists {
 				p.results <- TaskResult{Task: t, IsSkipped: true}
 				continue
 			}
 
-			// 2. Perform copy
-			err = p.client.CopyImage(p.ctx, t.Source, t.Destination)
+			err = p.client.CopyImage(ctx, t.Source, t.Destination)
 			p.results <- TaskResult{Task: t, Error: err}
 		}
 	}
 }
 
-// Submit adds a task to the pool
-func (p *WorkerPool) Submit(t Task) {
-	p.tasks <- t
-}
-
-// Results returns the results channel
-func (p *WorkerPool) Results() <-chan TaskResult {
-	return p.results
-}
-
-// Shutdown stops all workers
-func (p *WorkerPool) Shutdown() {
-	p.cancel()
+func (p *WorkerPool) Stop() {
 	close(p.tasks)
 	p.wg.Wait()
 	close(p.results)

@@ -9,7 +9,7 @@ plugins:
   manifests.sdk.operatorframework.io/v2: {}
   scorecard.sdk.operatorframework.io/v2: {}
 projectName: ocp-mirror
-repo: github.com/mariusbertram/ocp-mirror
+repo: github.com/mariusbertram/oc-mirror-operator
 resources:
 - api:
     crdVersion: v1
@@ -18,7 +18,7 @@ resources:
   domain: mirror.openshift.io
   group: mirror
   kind: MirrorTarget
-  path: github.com/mariusbertram/ocp-mirror/api/v1alpha1
+  path: github.com/mariusbertram/oc-mirror-operator/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
@@ -27,6 +27,6 @@ resources:
   domain: mirror.openshift.io
   group: mirror
   kind: ImageSet
-  path: github.com/mariusbertram/ocp-mirror/api/v1alpha1
+  path: github.com/mariusbertram/oc-mirror-operator/api/v1alpha1
   version: v1alpha1
 version: "3"

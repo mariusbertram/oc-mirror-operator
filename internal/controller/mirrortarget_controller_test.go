@@ -27,7 +27,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	mirrorv1alpha1 "github.com/mariusbertram/ocp-mirror/api/v1alpha1"
+	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
 )
 
 var _ = Describe("MirrorTarget Controller", func() {

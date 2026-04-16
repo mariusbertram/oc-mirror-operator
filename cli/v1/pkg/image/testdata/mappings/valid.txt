@@ -1,1 +1,0 @@
-some-registry.com/namespace/image:latest=disconn-registry.com/namespace/image:latest

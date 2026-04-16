@@ -3,30 +3,30 @@ package controller
 import (
 	"context"
 	"fmt"
-	"sync"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	mirrorv1alpha1 "github.com/mariusbertram/ocp-mirror/api/v1alpha1"
-	"github.com/mariusbertram/ocp-mirror/pkg/mirror"
+	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
+	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror"
+	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
+	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/state"
 )
 
 // ImageSetReconciler reconciles a ImageSet object
 type ImageSetReconciler struct {
 	client.Client
 	Scheme       *runtime.Scheme
-	MirrorClient *mirror.MirrorClient
+	MirrorClient *mirrorclient.MirrorClient
 	Collector    *mirror.Collector
-	Pool         *mirror.WorkerPool
-	mu           sync.Mutex
-	ActiveTasks  map[string]bool // map[ImageSetKey:Index]bool
+	StateManager *state.StateManager
 }
 
 // +kubebuilder:rbac:groups=mirror.openshift.io,resources=imagesets,verbs=get;list;watch;create;update;patch;delete
@@ -55,10 +55,19 @@ func (r *ImageSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, err
 	}
 
-	// 2. Generate Soll-Liste if empty
+	// 2. Load Metadata from registry
+	metaRepo := fmt.Sprintf("%s/oc-mirror-metadata", mt.Spec.Registry)
+	meta, _, err := r.StateManager.ReadMetadata(ctx, metaRepo, "latest")
+	if err != nil {
+		l.Error(err, "Failed to read metadata from registry")
+		// Continue with empty meta for now
+		meta = &state.Metadata{MirroredImages: make(map[string]string)}
+	}
+
+	// 3. Generate Soll-Liste if empty
 	if len(is.Status.TargetImages) == 0 {
 		l.Info("Generating image list for ImageSet")
-		images, err := r.Collector.CollectTargetImages(ctx, &is.Spec, mt)
+		images, err := r.Collector.CollectTargetImages(ctx, &is.Spec, mt, meta)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
@@ -68,133 +77,58 @@ func (r *ImageSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			targetStatus[i] = mirrorv1alpha1.TargetImageStatus{
 				Source:      img.Source,
 				Destination: img.Destination,
-				State:       "Pending",
+				State:       img.State,
 			}
 		}
 
 		is.Status.TargetImages = targetStatus
 		is.Status.TotalImages = len(targetStatus)
-		is.Status.MirroredImages = 0
+		// Calculate mirrored count from generated list
+		mirrored := 0
+		for _, img := range targetStatus {
+			if img.State == "Mirrored" {
+				mirrored++
+			}
+		}
+		is.Status.MirroredImages = mirrored
 		if err := r.Status().Update(ctx, is); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	// 3. Submit Pending images to the worker pool
-	isKey := req.NamespacedName.String()
-	numSubmitted := 0
-	for i := range is.Status.TargetImages {
-		img := &is.Status.TargetImages[i]
-		if img.State == "Pending" {
-			taskKey := fmt.Sprintf("%s:%d", isKey, i)
-			r.mu.Lock()
-			if !r.ActiveTasks[taskKey] {
-				r.ActiveTasks[taskKey] = true
-				r.Pool.Submit(mirror.Task{
-					Source:      img.Source,
-					Destination: img.Destination,
-					ImageSetKey: isKey,
-					ImageIndex:  i,
-				})
-				numSubmitted++
-			}
-			r.mu.Unlock()
-		}
-		// Limit submission rate per reconciliation to avoid overwhelming the pool
-		if numSubmitted >= 10 {
-			break
-		}
-	}
-
-	if numSubmitted > 0 {
-		l.Info("Submitted images to worker pool", "count", numSubmitted)
-	}
-
-	// 4. Update overall status conditions
-	// (Simplified for now)
-	if is.Status.MirroredImages == is.Status.TotalImages && is.Status.TotalImages > 0 {
-		l.Info("Mirroring complete", "total", is.Status.TotalImages)
-		return ctrl.Result{}, nil
-	}
-
-	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
-}
-
-// StartResultProcessor starts a background loop to process worker pool results
-func (r *ImageSetReconciler) StartResultProcessor(ctx context.Context) {
-	l := log.FromContext(ctx).WithName("result-processor")
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case res, ok := <-r.Pool.Results():
-				if !ok {
-					return
-				}
-				r.processTaskResult(ctx, res, l)
-			}
-		}
-	}()
-}
-
-func (r *ImageSetReconciler) processTaskResult(ctx context.Context, res mirror.TaskResult, l log.Logr) {
-	// 1. Mark task as not active
-	taskKey := fmt.Sprintf("%s:%d", res.Task.ImageSetKey, res.Task.ImageIndex)
-	r.mu.Lock()
-	delete(r.ActiveTasks, taskKey)
-	r.mu.Unlock()
-
-	// 2. Update ImageSet status
-	namespacedName := types.NamespacedName{}
-	fmt.Sscanf(res.Task.ImageSetKey, "%s/%s", &namespacedName.Namespace, &namespacedName.Name)
-	// Actually, req.NamespacedName.String() is "namespace/name"
-	parts := fmt.Split(res.Task.ImageSetKey, "/")
-	if len(parts) == 2 {
-		namespacedName.Namespace = parts[0]
-		namespacedName.Name = parts[1]
-	}
-
-	is := &mirrorv1alpha1.ImageSet{}
-	if err := r.Get(ctx, namespacedName, is); err != nil {
-		l.Error(err, "Failed to get ImageSet to update status", "key", res.Task.ImageSetKey)
-		return
-	}
-
-	if res.Task.ImageIndex >= len(is.Status.TargetImages) {
-		l.Error(fmt.Errorf("index out of bounds"), "ImageIndex out of bounds", "index", res.Task.ImageIndex)
-		return
-	}
-
-	img := &is.Status.TargetImages[res.Task.ImageIndex]
-	if res.Error != nil {
-		img.State = "Failed"
-		img.LastError = res.Error.Error()
-	} else if res.IsSkipped {
-		img.State = "Mirrored"
-		is.Status.MirroredImages++
-	} else {
-		img.State = "Mirrored"
-		is.Status.MirroredImages++
-	}
-
-	if err := r.Status().Update(ctx, is); err != nil {
-		l.Error(err, "Failed to update ImageSet status", "key", res.Task.ImageSetKey)
-	}
+	return ctrl.Result{}, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *ImageSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	r.MirrorClient = mirror.NewMirrorClient()
+	r.MirrorClient = mirrorclient.NewMirrorClient()
 	r.Collector = mirror.NewCollector(r.MirrorClient)
-	r.ActiveTasks = make(map[string]bool)
-	r.Pool = mirror.NewWorkerPool(context.Background(), r.MirrorClient, 10)
-
-	// Start result processor
-	r.StartResultProcessor(context.Background())
+	r.StateManager = state.New(r.MirrorClient)
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mirrorv1alpha1.ImageSet{}).
+		Watches(
+			&mirrorv1alpha1.MirrorTarget{},
+			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
+				// Requeue all ImageSets that reference this MirrorTarget
+				imageSets := &mirrorv1alpha1.ImageSetList{}
+				if err := mgr.GetClient().List(ctx, imageSets, client.InNamespace(obj.GetNamespace())); err != nil {
+					return nil
+				}
+				var requests []reconcile.Request
+				for _, is := range imageSets.Items {
+					if is.Spec.TargetRef == obj.GetName() {
+						requests = append(requests, reconcile.Request{
+							NamespacedName: types.NamespacedName{
+								Name:      is.Name,
+								Namespace: is.Namespace,
+							},
+						})
+					}
+				}
+				return requests
+			}),
+		).
 		Complete(r)
 }

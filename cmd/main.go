@@ -37,8 +37,10 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	mirrorv1alpha1 "github.com/mariusbertram/ocp-mirror/api/v1alpha1"
-	"github.com/mariusbertram/ocp-mirror/internal/controller"
+	"github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
+	"github.com/mariusbertram/oc-mirror-operator/internal/controller"
+	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror"
+	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/manager"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -54,8 +56,70 @@ func init() {
 	// +kubebuilder:scaffold:scheme
 }
 
-// nolint:gocyclo
 func main() {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "manager":
+			runManager()
+			return
+		case "worker":
+			runWorker()
+			return
+		}
+	}
+	runController()
+}
+
+func runManager() {
+	var targetName, namespace string
+	fs := flag.NewFlagSet("manager", flag.ExitOnError)
+	fs.StringVar(&targetName, "mirrortarget", "", "Name of the MirrorTarget")
+	fs.StringVar(&namespace, "namespace", "", "Namespace of the MirrorTarget")
+	fs.Parse(os.Args[2:])
+
+	if namespace == "" {
+		namespace = os.Getenv("POD_NAMESPACE")
+	}
+
+	m, err := manager.New(targetName, namespace, scheme)
+	if err != nil {
+		setupLog.Error(err, "unable to create manager")
+		os.Exit(1)
+	}
+
+	if err := m.Run(ctrl.SetupSignalHandler()); err != nil {
+		setupLog.Error(err, "problem running manager")
+		os.Exit(1)
+	}
+}
+
+func runWorker() {
+	var src, dest string
+	var insecure bool
+	fs := flag.NewFlagSet("worker", flag.ExitOnError)
+	fs.StringVar(&src, "src", "", "Source image")
+	fs.StringVar(&dest, "dest", "", "Destination image")
+	fs.BoolVar(&insecure, "insecure", false, "Allow insecure registry")
+	fs.Parse(os.Args[2:])
+
+	c := mirror.NewMirrorClient() // Todo: handle insecure and auth
+	if err := c.CopyImage(context.Background(), src, dest); err != nil {
+		setupLog.Error(err, "failed to mirror image")
+		os.Exit(1)
+	}
+
+	// Discover digest of the mirrored image
+	digest, err := c.GetDigest(context.Background(), dest)
+	if err != nil {
+		setupLog.Error(err, "failed to verify mirrored image digest")
+		os.Exit(1)
+	}
+
+	setupLog.Info("successfully mirrored image", "src", src, "dest", dest, "digest", digest)
+	fmt.Printf("RESULT_DIGEST=%s\n", digest)
+}
+
+func runController() {
 	var metricsAddr string
 	var metricsCertPath, metricsCertName, metricsCertKey string
 	var webhookCertPath, webhookCertName, webhookCertKey string

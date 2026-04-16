@@ -1,44 +1,29 @@
-# Aufgabenliste: ocp-mirror Operator
+# Task Status: oc-mirror-operator
 
-## 1. Projekt-Setup
-- [x] Erstelle ein neues GitHub Repository oder forke `openshift/oc-mirror` mit dem `gh` CLI.
-- [x] Initialisiere das Go-Projekt mit `operator-sdk init --domain mirror.openshift.io --repo github.com/mariusbertram/ocp-mirror`.
-- [x] Integriere `github.com/regclient/regclient` als Go-Dependency.
-- [x] Nutze `replace` Direktive für lokale Einbindung der `oc-mirror` CLI-Libraries.
+## Phase 1: Architektur & Kern-Logik (Abgeschlossen)
+- [x] Initialisierung des Kubebuilder-Projekts mit API-Gruppe `mirror.openshift.io`.
+- [x] Implementierung des Manager-Worker-Modells (Operator spawnt Manager, Manager spawnt Worker).
+- [x] OCI-basiertes State Management (Metadaten in der Ziel-Registry speichern).
+- [x] Multi-Architektur Build-Unterstützung via Podman (Cross-Compilation).
+- [x] Ressourcen-Konfiguration für Manager/Worker in der `MirrorTarget` CR.
 
-## 2. API / CRD Definitionen
-- [x] Erstelle die `MirrorTarget` API.
-- [x] Definiere die `spec`-Struktur für `MirrorTarget` (Ziel-Registry-URL, AuthSecret).
-- [x] Erstelle die `ImageSet` API.
-- [x] Definiere die `spec`-Struktur für `ImageSet`, inkl. Referenz auf ein `MirrorTarget` (`targetRef`) und Mirror-Konfiguration.
-- [x] Definiere die `status`-Struktur für `ImageSet` zur Speicherung der Soll-Liste (TargetImages).
-- [x] Generiere die CRDs (`make manifests`).
+## Phase 2: Cincinnati Integration (Abgeschlossen)
+- [x] Schlanke Cincinnati-Anbindung zur Auflösung von OpenShift Releases.
+- [x] Parsing von Release-Graphen zur Ermittlung von Payload-Images.
+- [x] Integration in den `Collector`.
 
-## 3. Core Logic & regclient Integration
-- [x] Implementiere den Basis-Wrapper für `regclient` (`pkg/mirror/mirror.go`).
-- [x] Entwickle die Funktion zum Spiegeln von Images inkl. Signaturen (`CopyImage`).
-- [x] Implementiere die Hintergrund-Existenzprüfung (`CheckExist`).
-- [x] Logik für Digest-zu-Tag Mapping integriert.
-- [x] Basis Unit-Tests für Mirror-Funktionen erstellt.
+## Phase 3: Operator Filtering (In Arbeit/Grundlagen vorhanden)
+- [x] Grundgerüst für FBC (File-Based Catalog) Filtering im `Collector`.
+- [x] Spiegelung des Katalog-Images selbst.
+- [ ] Vollständige Implementierung des In-Memory FBC Parsings (ohne externe Pakete).
 
-## 4. OLM Catalog Filter Engine
-- [x] Implementiere Logik zum Herunterladen und Entpacken des Catalogs (via `regclient`).
-- [x] Filter-Algorithmus für OLM Packages entwickeln (`pkg/catalog/filter.go`).
-- [ ] Re-Build und Push des gefilterten Catalogs (in Arbeit).
+## Phase 4: Feedback & Stabilität (Abgeschlossen)
+- [x] Feedback-Loop von Worker zu Manager via Log-Parsing (`RESULT_DIGEST`).
+- [x] Automatische Status-Updates in `ImageSet` Ressourcen.
+- [x] Umfassendes Refactoring zur Vermeidung von zirkulären Importen (`pkg/mirror/client`).
 
-## 5. Reconciler & Worker Pool
-- [x] Implementiere `MirrorTargetReconciler`.
-- [x] Implementiere `ImageSetReconciler` mit Replikations-Loop.
-- [x] Basis-Soll-Listen Generierung für `AdditionalImages`.
-- [x] Ausbau des Worker-Pools zur parallelen Abarbeitung über mehrere CRs hinweg (`pkg/mirror/worker.go`).
-
-## 6. OpenShift Releases & IDMS/ITMS
-- [x] Implementiere Replikation der OpenShift Release-Signaturen (`pkg/release/signature.go`).
-- [x] Erstelle Generatoren für `ImageDigestMirrorSet` (IDMS) und `ImageTagMirrorSet` (ITMS) (`pkg/mirror/idms_itms.go`).
-- [x] Automatisches Lifecycle-Management für IDMS/ITMS im Cluster (integriert in Reconciler).
-
-## 7. Abschluss & CI/CD
-- [x] Vervollständige Unit-Tests für Kernfunktionen.
-- [ ] Richte GitHub Actions für Tests und Linter ein.
-- [ ] Teste den Operator lokal in einem Kind Cluster.
-- [ ] Generiere das OLM Bundle (`make bundle`).
+## Phase 5: Dokumentation & Tests (In Arbeit)
+- [x] Umfassende `README.md` mit Architekturdiagramm-Beschreibung.
+- [x] Unit-Tests für `state`, `worker` und `release` Pakete.
+- [x] Testabdeckung > 75% für kritische Logikpfade.
+- [ ] Integration-Tests mit Fake-Cluster.

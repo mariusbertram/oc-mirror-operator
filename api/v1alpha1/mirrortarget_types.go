@@ -1,8 +1,24 @@
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+// PodConfig defines configuration for the manager or worker pods
+type PodConfig struct {
+	// Resources defines the compute resources required by this pod.
+	// +optional
+	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
+
+	// NodeSelector is a selector which must be true for the pod to fit on a node.
+	// +optional
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+
+	// Tolerations allows the pod to be scheduled onto nodes with matching taints.
+	// +optional
+	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
+}
 
 // MirrorTargetSpec defines the desired state of MirrorTarget
 type MirrorTargetSpec struct {
@@ -17,6 +33,14 @@ type MirrorTargetSpec struct {
 	// The Secret should contain "username" and "password" or a ".dockerconfigjson".
 	// +optional
 	AuthSecret string `json:"authSecret,omitempty"`
+
+	// Manager configuration for the mirroring manager pod.
+	// +optional
+	Manager PodConfig `json:"manager,omitempty"`
+
+	// Worker configuration for the worker pods started by the manager.
+	// +optional
+	Worker PodConfig `json:"worker,omitempty"`
 }
 
 // MirrorTargetStatus defines the observed state of MirrorTarget
