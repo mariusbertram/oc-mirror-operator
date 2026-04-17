@@ -66,9 +66,9 @@ func New(targetName, namespace string, scheme *runtime.Scheme) (*MirrorManager, 
 		return nil, err
 	}
 
-	image := os.Getenv("CONTROLLER_IMAGE")
+	image := os.Getenv("OPERATOR_IMAGE")
 	if image == "" {
-		return nil, fmt.Errorf("CONTROLLER_IMAGE environment variable is required but not set")
+		return nil, fmt.Errorf("OPERATOR_IMAGE environment variable is required but not set")
 	}
 
 	return NewWithClients(c, cs, targetName, namespace, image, scheme), nil
@@ -182,9 +182,20 @@ func (m *MirrorManager) reconcile(ctx context.Context) error {
 		return err
 	}
 
+	// Build a mirror client that honours the target's insecure setting.
+	stateManager := m.StateManager
+	if mt.Spec.Insecure {
+		host := mt.Spec.Registry
+		if i := strings.Index(host, "/"); i >= 0 {
+			host = host[:i]
+		}
+		mc := mirrorclient.NewMirrorClient([]string{host}, "")
+		stateManager = state.New(mc)
+	}
+
 	// 1. Load Metadata from target registry
 	metaRepo := fmt.Sprintf("%s/oc-mirror-metadata", mt.Spec.Registry)
-	meta, _, err := m.StateManager.ReadMetadata(ctx, metaRepo, "latest")
+	meta, _, err := stateManager.ReadMetadata(ctx, metaRepo, "latest")
 	if err != nil {
 		fmt.Printf("Warning: Failed to read metadata from %s: %v. Initializing new state.\n", metaRepo, err)
 		meta = &state.Metadata{MirroredImages: make(map[string]string)}
@@ -252,7 +263,7 @@ func (m *MirrorManager) reconcile(ctx context.Context) error {
 
 	// 3. Save metadata if anything changed
 	if hasChanged {
-		_, err = m.StateManager.WriteMetadata(ctx, metaRepo, "latest", m.meta)
+		_, err = stateManager.WriteMetadata(ctx, metaRepo, "latest", m.meta)
 		if err != nil {
 			fmt.Printf("Error writing metadata: %v\n", err)
 		}
@@ -290,6 +301,61 @@ func (m *MirrorManager) updateImageStatus(ctx context.Context, dest, state, last
 func (m *MirrorManager) startWorker(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget, src, dest string) (string, error) {
 	managerHost := fmt.Sprintf("%s-manager.%s.svc.cluster.local", m.TargetName, m.Namespace)
 
+	envVars := []corev1.EnvVar{
+		{
+			Name:  "MANAGER_URL",
+			Value: fmt.Sprintf("http://%s:8080", managerHost),
+		},
+		{
+			Name:  "WORKER_TOKEN",
+			Value: m.workerToken,
+		},
+		{
+			Name: "POD_NAME",
+			ValueFrom: &corev1.EnvVarSource{
+				FieldRef: &corev1.ObjectFieldSelector{
+					FieldPath: "metadata.name",
+				},
+			},
+		},
+	}
+
+	containerArgs := []string{
+		"worker",
+		"--src", src,
+		"--dest", dest,
+	}
+	if mt.Spec.Insecure {
+		containerArgs = append(containerArgs, "--insecure")
+	}
+
+	var volumeMounts []corev1.VolumeMount
+	var volumes []corev1.Volume
+
+	// Only mount auth secret if one is configured
+	if mt.Spec.AuthSecret != "" {
+		envVars = append(envVars, corev1.EnvVar{
+			Name:  "DOCKER_CONFIG",
+			Value: "/run/secrets/dockerconfig",
+		})
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      "dockerconfig",
+			MountPath: "/run/secrets/dockerconfig",
+			ReadOnly:  true,
+		})
+		volumes = append(volumes, corev1.Volume{
+			Name: "dockerconfig",
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: mt.Spec.AuthSecret,
+					Items: []corev1.KeyToPath{
+						{Key: ".dockerconfigjson", Path: "config.json"},
+					},
+				},
+			},
+		})
+	}
+
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: fmt.Sprintf("%s-worker-", mt.Name),
@@ -318,66 +384,16 @@ func (m *MirrorManager) startWorker(ctx context.Context, mt *mirrorv1alpha1.Mirr
 							Drop: []corev1.Capability{"ALL"},
 						},
 					},
-					Args: []string{
-						"worker",
-						"--src", src,
-						"--dest", dest,
-					},
-					Env: []corev1.EnvVar{
-						{
-							Name:  "DOCKER_CONFIG",
-							Value: "/run/secrets/dockerconfig",
-						},
-						{
-							Name:  "MANAGER_URL",
-							Value: fmt.Sprintf("http://%s:8080", managerHost),
-						},
-						{
-							Name:  "WORKER_TOKEN",
-							Value: m.workerToken,
-						},
-						{
-							Name: "POD_NAME",
-							ValueFrom: &corev1.EnvVarSource{
-								FieldRef: &corev1.ObjectFieldSelector{
-									FieldPath: "metadata.name",
-								},
-							},
-						},
-					},
-					VolumeMounts: []corev1.VolumeMount{
-						{
-							Name:      "dockerconfig",
-							MountPath: "/run/secrets/dockerconfig",
-							ReadOnly:  true,
-						},
-					},
-					Resources: mt.Spec.Worker.Resources,
+					Args:         containerArgs,
+					Env:          envVars,
+					VolumeMounts: volumeMounts,
+					Resources:    mt.Spec.Worker.Resources,
 				},
 			},
-			Volumes: []corev1.Volume{
-				{
-					Name: "dockerconfig",
-					VolumeSource: corev1.VolumeSource{
-						Secret: &corev1.SecretVolumeSource{
-							SecretName: mt.Spec.AuthSecret,
-							Items: []corev1.KeyToPath{
-								{
-									Key:  ".dockerconfigjson",
-									Path: "config.json",
-								},
-							},
-						},
-					},
-				},
-			},
+			Volumes:      volumes,
 			NodeSelector: mt.Spec.Worker.NodeSelector,
 			Tolerations:  mt.Spec.Worker.Tolerations,
 		},
-	}
-
-	if mt.Spec.Insecure {
-		pod.Spec.Containers[0].Args = append(pod.Spec.Containers[0].Args, "--insecure")
 	}
 
 	if err := controllerutil.SetControllerReference(mt, pod, m.Scheme); err != nil {

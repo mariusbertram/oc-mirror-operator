@@ -42,6 +42,8 @@ const (
 	EnvTargetRef = "TARGET_REF"
 	// EnvCatalogPackages is the env var consumed by catalog-builder: comma-separated package names.
 	EnvCatalogPackages = "CATALOG_PACKAGES"
+	// EnvInsecureHosts is the env var consumed by catalog-builder: comma-separated insecure registry hosts.
+	EnvInsecureHosts = "REGISTRY_INSECURE_HOSTS"
 	// EnvDockerConfig is the env var that points to the directory containing .dockerconfigjson.
 	EnvDockerConfig = "DOCKER_CONFIG"
 
@@ -167,6 +169,18 @@ func (m *CatalogBuildManager) buildJobSpec(
 		{Name: EnvSourceCatalog, Value: sourceCatalog},
 		{Name: EnvTargetRef, Value: targetRef},
 		{Name: EnvCatalogPackages, Value: strings.Join(packages, ",")},
+	}
+
+	if mt.Spec.Insecure {
+		// Extract only the host:port from the registry path (strip any path prefix).
+		registryHost := mt.Spec.Registry
+		if idx := strings.Index(registryHost, "/"); idx >= 0 {
+			registryHost = registryHost[:idx]
+		}
+		env = append(env, corev1.EnvVar{
+			Name:  EnvInsecureHosts,
+			Value: registryHost,
+		})
 	}
 
 	var volumes []corev1.Volume

@@ -35,7 +35,7 @@ type ImageSetReconciler struct {
 }
 
 // +kubebuilder:rbac:groups=mirror.openshift.io,resources=imagesets,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=mirror.openshift.io,resources=imagesets/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=mirror.openshift.io,resources=imagesets/status,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=mirror.openshift.io,resources=imagesets/finalizers,verbs=update
 // +kubebuilder:rbac:groups=mirror.openshift.io,resources=mirrortargets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
@@ -63,19 +63,46 @@ func (r *ImageSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, err
 	}
 
-	// 2. Load Metadata from registry
+	// 2. Ensure a CatalogBuildJob exists for each configured operator catalog.
+	// This is done before the expensive image-list collection so that catalog
+	// builds start immediately without waiting for release image traversal.
+	if err := r.reconcileCatalogBuildJobs(ctx, is, mt); err != nil {
+		l.Error(err, "Failed to reconcile catalog build jobs")
+		setCondition(&is.Status.Conditions, "CatalogReady", metav1.ConditionFalse, "CatalogBuildFailed", err.Error())
+		_ = r.Status().Update(ctx, is)
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
+
+	// Build per-reconcile mirror client that honours the target's insecure setting.
+	// The struct-level r.StateManager / r.Collector are injected in tests and used
+	// as fallback when the target is not configured as insecure.
+	stateManager := r.StateManager
+	collector := r.Collector
+	if mt.Spec.Insecure {
+		host := mt.Spec.Registry
+		if i := strings.Index(host, "/"); i >= 0 {
+			host = host[:i]
+		}
+		mc := mirrorclient.NewMirrorClient([]string{host}, "")
+		stateManager = state.New(mc)
+		collector = mirror.NewCollector(mc)
+	}
+
+	// 3. Load Metadata from registry (non-fatal: continue with empty metadata on error)
 	metaRepo := fmt.Sprintf("%s/oc-mirror-metadata", mt.Spec.Registry)
-	meta, _, err := r.StateManager.ReadMetadata(ctx, metaRepo, "latest")
+	meta, _, err := stateManager.ReadMetadata(ctx, metaRepo, "latest")
 	if err != nil {
 		l.Error(err, "Failed to read metadata from registry")
-		// Continue with empty meta for now
 		meta = &state.Metadata{MirroredImages: make(map[string]string)}
 	}
 
-	// 3. Generate Soll-Liste if empty or if spec has changed since last collection
+	// 4. Generate target image list for releases and additional images.
+	// Operator catalog images are handled by CatalogBuildJobs (step 2) and are
+	// NOT resolved in-memory here to avoid downloading multi-GB catalog layers
+	// inside the controller pod.
 	if len(is.Status.TargetImages) == 0 || is.Status.ObservedGeneration != is.Generation {
 		l.Info("Generating image list for ImageSet")
-		images, err := r.Collector.CollectTargetImages(ctx, &is.Spec, mt, meta)
+		images, err := collector.CollectTargetImages(ctx, &is.Spec, mt, meta)
 		if err != nil {
 			setCondition(&is.Status.Conditions, "Ready", metav1.ConditionFalse, "CollectionFailed", err.Error())
 			_ = r.Status().Update(ctx, is)
@@ -106,15 +133,6 @@ func (r *ImageSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		if err := r.Status().Update(ctx, is); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{Requeue: true}, nil
-	}
-
-	// 4. Ensure a CatalogBuildJob exists for each configured operator catalog.
-	if err := r.reconcileCatalogBuildJobs(ctx, is, mt); err != nil {
-		l.Error(err, "Failed to reconcile catalog build jobs")
-		setCondition(&is.Status.Conditions, "CatalogReady", metav1.ConditionFalse, "CatalogBuildFailed", err.Error())
-		_ = r.Status().Update(ctx, is)
-		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
 	return ctrl.Result{}, nil

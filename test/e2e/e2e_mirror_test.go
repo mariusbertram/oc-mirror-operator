@@ -30,9 +30,10 @@ import (
 
 var _ = Describe("ocp-mirror Operator E2E", Ordered, Label("cluster"), func() {
 	const (
-		mirrorNamespace = "default"
-		targetName      = "internal-registry"
-		imageSetName    = "test-sync-e2e"
+		mirrorNamespace    = "default"
+		operatorNamespace  = "ocp-mirror-system"
+		targetName         = "internal-registry"
+		imageSetName       = "test-sync-e2e"
 	)
 
 	BeforeAll(func() {
@@ -59,12 +60,12 @@ var _ = Describe("ocp-mirror Operator E2E", Ordered, Label("cluster"), func() {
 
 		By("waiting for controller-manager to be ready")
 		verifyControllerUp := func(g Gomega) {
-			cmd := exec.Command("kubectl", "get", "pods", "-l", "control-plane=controller-manager", "-n", mirrorNamespace)
+			cmd := exec.Command("kubectl", "get", "pods", "-l", "control-plane=controller-manager", "-n", operatorNamespace)
 			output, err := utils.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(output).To(ContainSubstring("Running"))
 		}
-		Eventually(verifyControllerUp).Should(Succeed())
+		Eventually(verifyControllerUp, 2*time.Minute, 5*time.Second).Should(Succeed())
 	})
 
 	AfterAll(func() {

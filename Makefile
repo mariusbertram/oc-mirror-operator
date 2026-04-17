@@ -118,23 +118,46 @@ test: manifests generate fmt vet setup-envtest ## Run tests.
 # - CERT_MANAGER_INSTALL_SKIP=true
 KIND_CLUSTER ?= ocp-mirror-test-e2e
 
+# KIND_PROVIDER allows using podman instead of docker as the kind node provider.
+# It is auto-detected from CONTAINER_TOOL; override explicitly if needed.
+ifeq ($(CONTAINER_TOOL),podman)
+KIND_PROVIDER_ENV ?= KIND_EXPERIMENTAL_PROVIDER=podman
+else
+KIND_PROVIDER_ENV ?=
+endif
+
 .PHONY: setup-test-e2e
 setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
 	@command -v $(KIND) >/dev/null 2>&1 || { \
 		echo "Kind is not installed. Please install Kind manually."; \
 		exit 1; \
 	}
-	@case "$$($(KIND) get clusters)" in \
+	@case "$$($(KIND_PROVIDER_ENV) $(KIND) get clusters)" in \
 		*"$(KIND_CLUSTER)"*) \
 			echo "Kind cluster '$(KIND_CLUSTER)' already exists. Skipping creation." ;; \
 		*) \
 			echo "Creating Kind cluster '$(KIND_CLUSTER)'..."; \
-			$(KIND) create cluster --name $(KIND_CLUSTER) ;; \
+			$(KIND_PROVIDER_ENV) $(KIND) create cluster --name $(KIND_CLUSTER) ;; \
 	esac
 
 .PHONY: test-e2e
 test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
 	KIND_CLUSTER=$(KIND_CLUSTER) go test ./test/e2e/ -v -ginkgo.v
+	$(MAKE) cleanup-test-e2e
+
+.PHONY: test-e2e-cluster
+test-e2e-cluster: setup-test-e2e docker-build ## Build operator image, load into Kind, and run full cluster e2e tests.
+ifeq ($(CONTAINER_TOOL),podman)
+	$(CONTAINER_TOOL) save $(IMG) -o /tmp/ocp-mirror-e2e.tar
+	$(KIND_PROVIDER_ENV) $(KIND) load image-archive /tmp/ocp-mirror-e2e.tar --name $(KIND_CLUSTER)
+	@rm -f /tmp/ocp-mirror-e2e.tar
+else
+	$(KIND) load docker-image $(IMG) --name $(KIND_CLUSTER)
+endif
+	KIND_CLUSTER=$(KIND_CLUSTER) CERT_MANAGER_INSTALL_SKIP=true SKIP_CLUSTER_SETUP=true \
+		go test ./test/e2e/ -v -ginkgo.v \
+		--ginkgo.label-filter="cluster" \
+		--ginkgo.timeout=20m
 	$(MAKE) cleanup-test-e2e
 
 .PHONY: test-integration
@@ -143,7 +166,7 @@ test-integration: fmt vet ## Run integration tests (Cincinnati API + Catalog FBC
 
 .PHONY: cleanup-test-e2e
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
-	@$(KIND) delete cluster --name $(KIND_CLUSTER)
+	@$(KIND_PROVIDER_ENV) $(KIND) delete cluster --name $(KIND_CLUSTER)
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter

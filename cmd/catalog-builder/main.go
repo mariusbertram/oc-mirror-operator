@@ -21,10 +21,11 @@ limitations under the License.
 //
 // Environment variables:
 //
-//	SOURCE_CATALOG    – fully-qualified source catalog image reference (required)
-//	TARGET_REF        – fully-qualified target image reference (required)
-//	CATALOG_PACKAGES  – comma-separated list of package names to include (empty = all)
-//	DOCKER_CONFIG     – directory that contains a .dockerconfigjson for registry auth
+//	SOURCE_CATALOG           – fully-qualified source catalog image reference (required)
+//	TARGET_REF               – fully-qualified target image reference (required)
+//	CATALOG_PACKAGES         – comma-separated list of package names to include (empty = all)
+//	REGISTRY_INSECURE_HOSTS  – comma-separated list of insecure registry hosts
+//	DOCKER_CONFIG            – directory that contains a .dockerconfigjson for registry auth
 package main
 
 import (
@@ -41,6 +42,7 @@ func main() {
 	source := os.Getenv("SOURCE_CATALOG")
 	target := os.Getenv("TARGET_REF")
 	pkgsRaw := os.Getenv("CATALOG_PACKAGES")
+	insecureRaw := os.Getenv("REGISTRY_INSECURE_HOSTS")
 
 	if source == "" || target == "" {
 		slog.Error("SOURCE_CATALOG and TARGET_REF environment variables are required")
@@ -54,13 +56,21 @@ func main() {
 		}
 	}
 
+	var insecureHosts []string
+	for _, h := range strings.Split(insecureRaw, ",") {
+		if h = strings.TrimSpace(h); h != "" {
+			insecureHosts = append(insecureHosts, h)
+		}
+	}
+
 	slog.Info("starting catalog-builder",
 		"source", source,
 		"target", target,
 		"packages", packages,
+		"insecureHosts", insecureHosts,
 	)
 
-	mc := mirrorclient.NewMirrorClient(nil, "")
+	mc := mirrorclient.NewMirrorClient(insecureHosts, "")
 	resolver := catalog.New(mc)
 
 	ctx := context.Background()

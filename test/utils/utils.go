@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2" // nolint:revive,staticcheck
 )
@@ -165,12 +166,31 @@ func IsCertManagerCRDsInstalled() bool {
 	return false
 }
 
-// LoadImageToKindClusterWithName loads a local docker image to the kind cluster
+// LoadImageToKindClusterWithName loads a local docker/podman image to the kind cluster.
+// It supports podman as a kind provider via KIND_EXPERIMENTAL_PROVIDER=podman.
 func LoadImageToKindClusterWithName(name string) error {
 	cluster := "kind"
 	if v, ok := os.LookupEnv("KIND_CLUSTER"); ok {
 		cluster = v
 	}
+
+	// When using podman as the KIND provider, `kind load docker-image` does not have
+	// access to the podman image store.  Save the image to a temp archive first and
+	// load it via `kind load image-archive`.
+	if provider := os.Getenv("KIND_EXPERIMENTAL_PROVIDER"); provider == "podman" {
+		archive := fmt.Sprintf("/tmp/kind-load-%d.tar", time.Now().UnixNano())
+		defer os.Remove(archive) //nolint:errcheck
+
+		saveCmd := exec.Command("podman", "save", name, "-o", archive)
+		if _, err := Run(saveCmd); err != nil {
+			return fmt.Errorf("podman save %s: %w", name, err)
+		}
+		loadCmd := exec.Command("kind", "load", "image-archive", archive, "--name", cluster)
+		loadCmd.Env = append(os.Environ(), "KIND_EXPERIMENTAL_PROVIDER="+provider)
+		_, err := Run(loadCmd)
+		return err
+	}
+
 	kindOptions := []string{"load", "docker-image", name, "--name", cluster}
 	cmd := exec.Command("kind", kindOptions...)
 	_, err := Run(cmd)

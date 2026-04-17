@@ -388,6 +388,15 @@ spec:
               mirroredImages:
                 description: MirroredImages is the number of images successfully mirrored.
                 type: integer
+              observedGeneration:
+                description: ObservedGeneration is the generation of the ImageSet
+                  that was last reconciled.
+                format: int64
+                type: integer
+              stateDigest:
+                description: StateDigest is the digest of the OCI metadata blob in
+                  the target registry.
+                type: string
               targetImages:
                 description: |-
                   TargetImages is the list of images that need to be mirrored.

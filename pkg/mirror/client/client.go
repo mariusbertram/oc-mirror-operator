@@ -28,7 +28,7 @@ func NewMirrorClient(insecureHosts []string, authConfigPath string) *MirrorClien
 		for _, h := range insecureHosts {
 			hostConfigs = append(hostConfigs, config.Host{
 				Name: h,
-				TLS:  config.TLSInsecure,
+				TLS:  config.TLSDisabled,
 			})
 		}
 	}

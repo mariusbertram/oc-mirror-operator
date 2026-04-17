@@ -65,6 +65,9 @@ spec:
           - --health-probe-bind-address=:8081
         image: controller:latest
         name: manager
+        env:
+        - name: OPERATOR_IMAGE
+          value: controller:latest
         ports: []
         securityContext:
           allowPrivilegeEscalation: false

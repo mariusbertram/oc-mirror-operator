@@ -7,6 +7,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -32,6 +33,9 @@ type MirrorTargetReconciler struct {
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch;delete
 
 func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	l := log.FromContext(ctx)
@@ -72,6 +76,15 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{Requeue: true}, nil
+	}
+
+	// Ensure the coordinator ServiceAccount, Role, and RoleBinding exist in the target namespace.
+	// The manager deployment runs as coordinator and needs permissions to manage ImageSet status and worker pods.
+	if err := r.ensureCoordinatorRBAC(ctx, mt); err != nil {
+		l.Error(err, "Failed to ensure coordinator RBAC")
+		setCondition(&mt.Status.Conditions, "Ready", metav1.ConditionFalse, "ReconcileError", err.Error())
+		_ = r.Status().Update(ctx, mt)
+		return ctrl.Result{}, err
 	}
 
 	// Define the manager deployment
@@ -116,7 +129,7 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 					Containers: []corev1.Container{
 						{
 							Name:  "manager",
-							Image: os.Getenv("CONTROLLER_IMAGE"), // Ensure this is set or use a default
+							Image: os.Getenv("OPERATOR_IMAGE"), // Ensure this is set or use a default
 							SecurityContext: &corev1.SecurityContext{
 								AllowPrivilegeEscalation: pointerTo(false),
 								Capabilities: &corev1.Capabilities{
@@ -138,8 +151,8 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 									},
 								},
 								{
-									Name:  "CONTROLLER_IMAGE",
-									Value: os.Getenv("CONTROLLER_IMAGE"),
+									Name:  "OPERATOR_IMAGE",
+									Value: os.Getenv("OPERATOR_IMAGE"),
 								},
 							},
 							Resources: mt.Spec.Manager.Resources,
@@ -199,6 +212,98 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// ensureCoordinatorRBAC creates the ServiceAccount, Role, and RoleBinding needed by the manager pod.
+func (r *MirrorTargetReconciler) ensureCoordinatorRBAC(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget) error {
+	// ServiceAccount
+	sa := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "oc-mirror-coordinator",
+			Namespace: mt.Namespace,
+		},
+	}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, sa, func() error {
+		return controllerutil.SetControllerReference(mt, sa, r.Scheme)
+	}); err != nil {
+		return fmt.Errorf("failed to create coordinator ServiceAccount: %w", err)
+	}
+
+	// Worker ServiceAccount (used by mirror worker pods)
+	workerSA := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "oc-mirror-worker",
+			Namespace: mt.Namespace,
+		},
+	}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, workerSA, func() error {
+		return controllerutil.SetControllerReference(mt, workerSA, r.Scheme)
+	}); err != nil {
+		return fmt.Errorf("failed to create worker ServiceAccount: %w", err)
+	}
+
+	// Role granting coordinator access to manage ImageSets, pods, and MirrorTargets in the namespace
+	role := &rbacv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "oc-mirror-coordinator",
+			Namespace: mt.Namespace,
+		},
+	}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, role, func() error {
+		if err := controllerutil.SetControllerReference(mt, role, r.Scheme); err != nil {
+			return err
+		}
+		role.Rules = []rbacv1.PolicyRule{
+			{
+				APIGroups: []string{"mirror.openshift.io"},
+				Resources: []string{"imagesets", "mirrortargets"},
+				Verbs:     []string{"get", "list", "watch", "update", "patch"},
+			},
+			{
+				APIGroups: []string{"mirror.openshift.io"},
+				Resources: []string{"imagesets/status"},
+				Verbs:     []string{"get", "update", "patch"},
+			},
+			{
+				APIGroups: []string{""},
+				Resources: []string{"pods"},
+				Verbs:     []string{"get", "list", "watch", "create", "delete"},
+			},
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("failed to create coordinator Role: %w", err)
+	}
+
+	// RoleBinding
+	rb := &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "oc-mirror-coordinator",
+			Namespace: mt.Namespace,
+		},
+	}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, rb, func() error {
+		if err := controllerutil.SetControllerReference(mt, rb, r.Scheme); err != nil {
+			return err
+		}
+		rb.RoleRef = rbacv1.RoleRef{
+			APIGroup: "rbac.authorization.k8s.io",
+			Kind:     "Role",
+			Name:     "oc-mirror-coordinator",
+		}
+		rb.Subjects = []rbacv1.Subject{
+			{
+				Kind:      "ServiceAccount",
+				Name:      "oc-mirror-coordinator",
+				Namespace: mt.Namespace,
+			},
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("failed to create coordinator RoleBinding: %w", err)
+	}
+
+	return nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
