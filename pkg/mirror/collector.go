@@ -3,6 +3,7 @@ package mirror
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/catalog"
@@ -44,13 +45,19 @@ func (c *Collector) CollectTargetImages(ctx context.Context, spec *mirrorv1alpha
 			arch = []string{"amd64"}
 		}
 
-		images, err := c.releaseResolver.ResolveRelease(ctx, rel.Name, rel.MaxVersion, arch)
+		images, err := c.releaseResolver.ResolveRelease(ctx, rel.Name, rel.MinVersion, rel.MaxVersion, arch, rel.Full, rel.ShortestPath)
 		if err != nil {
 			fmt.Printf("Warning: failed to resolve release %s/%s: %v\n", rel.Name, rel.MaxVersion, err)
 			continue
 		}
 		for _, img := range images {
-			dest := fmt.Sprintf("%s/openshift/release:%s", target.Spec.Registry, rel.MaxVersion)
+			tag := "latest"
+			if strings.Contains(img, ":") {
+				tag = strings.Split(img, ":")[1]
+			} else if strings.Contains(img, "@") {
+				tag = strings.Replace(strings.Split(img, "@")[1], ":", "-", 1)
+			}
+			dest := fmt.Sprintf("%s/openshift/release:%s-%s", target.Spec.Registry, rel.MaxVersion, tag)
 			results = append(results, c.toTargetImage(img, dest, meta))
 		}
 	}
@@ -68,7 +75,11 @@ func (c *Collector) CollectTargetImages(ctx context.Context, spec *mirrorv1alpha
 			continue
 		}
 		for _, img := range images {
-			dest := fmt.Sprintf("%s/operator-catalog:%s", target.Spec.Registry, "latest")
+			tag := "latest"
+			if strings.Contains(op.Catalog, ":") {
+				tag = strings.Split(op.Catalog, ":")[len(strings.Split(op.Catalog, ":"))-1]
+			}
+			dest := catalogDestination(target.Spec.Registry, img, tag)
 			results = append(results, c.toTargetImage(img, dest, meta))
 		}
 	}
@@ -95,4 +106,20 @@ func (c *Collector) toTargetImage(src, dest string, meta *state.Metadata) Target
 		Destination: dest,
 		State:       s,
 	}
+}
+
+// catalogDestination builds a unique destination path for each catalog image by
+// preserving the image's repository path (minus the source registry) so that
+// different catalogs never overwrite each other in the target registry.
+func catalogDestination(registry, catalogImage, tag string) string {
+	imageNoTag := strings.Split(catalogImage, ":")[0]
+	imageNoDigest := strings.Split(imageNoTag, "@")[0]
+
+	parts := strings.SplitN(imageNoDigest, "/", 2)
+	nameWithPath := imageNoDigest
+	if len(parts) > 1 && (strings.Contains(parts[0], ".") || strings.Contains(parts[0], ":")) {
+		nameWithPath = parts[1]
+	}
+
+	return fmt.Sprintf("%s/%s:%s", registry, nameWithPath, tag)
 }
