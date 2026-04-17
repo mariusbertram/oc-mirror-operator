@@ -14,7 +14,7 @@ var _ = Describe("WorkerPool", func() {
 	)
 
 	BeforeEach(func() {
-		mc = mirrorclient.NewMirrorClient()
+		mc = mirrorclient.NewMirrorClient(nil, "")
 		pool = NewWorkerPool(context.TODO(), mc, 1)
 	})
 

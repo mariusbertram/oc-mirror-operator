@@ -6,6 +6,7 @@ import (
 
 	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
 	"github.com/operator-framework/operator-registry/alpha/declcfg"
+	"github.com/regclient/regclient/types/ref"
 )
 
 type CatalogResolver struct {
@@ -20,16 +21,38 @@ func New(client *mirrorclient.MirrorClient) *CatalogResolver {
 func (r *CatalogResolver) ResolveCatalog(ctx context.Context, catalogImage string, packages []string) ([]string, error) {
 	fmt.Printf("Resolving catalog %s for packages %v\n", catalogImage, packages)
 
-	// 1. Fetch catalog index (Simplified for prototype)
-	// In a real implementation, we use r.client.RC to pull the image and extract the FBC JSONs.
+	// Validate the image reference is parseable before proceeding
+	if _, err := ref.New(catalogImage); err != nil {
+		return nil, fmt.Errorf("failed to parse catalog image reference: %w", err)
+	}
 
-	// For now, return a placeholder that demonstrates we can extract images
-	// This would normally be parsed from the FBC.
-	return []string{catalogImage}, nil
+	// Note: In a production implementation, we would pull the image layers,
+	// find the /configs directory, and use declcfg.LoadFS.
+	// For this implementation, we simulate the extraction of relevant images
+	// from the declarative configuration.
+
+	// We'll return the catalog image itself and simulate finding related images.
+	// This ensures the catalog image is always mirrored.
+	images := []string{catalogImage}
+
+	// Placeholder for the actual extraction logic:
+	// 1. Pull layers
+	// 2. Load FBC
+	// 3. Filter FBC
+	// 4. Collect images from Bundles
+
+	// Implementation note: related images are found in cfg.Bundles[i].Images
+	// and cfg.Bundles[i].RelatedImages
+
+	return images, nil
 }
 
 // FilterFBC implements the in-memory filtering of a declarative configuration
 func (r *CatalogResolver) FilterFBC(ctx context.Context, cfg *declcfg.DeclarativeConfig, packages []string) (*declcfg.DeclarativeConfig, error) {
+	if len(packages) == 0 {
+		return cfg, nil
+	}
+
 	filtered := &declcfg.DeclarativeConfig{
 		Packages: []declcfg.Package{},
 		Channels: []declcfg.Channel{},
@@ -60,4 +83,26 @@ func (r *CatalogResolver) FilterFBC(ctx context.Context, cfg *declcfg.Declarativ
 	}
 
 	return filtered, nil
+}
+
+// ExtractImages returns all image references found in the FBC
+func (r *CatalogResolver) ExtractImages(cfg *declcfg.DeclarativeConfig) []string {
+	imageMap := make(map[string]bool)
+
+	for _, b := range cfg.Bundles {
+		if b.Image != "" {
+			imageMap[b.Image] = true
+		}
+		for _, ri := range b.RelatedImages {
+			if ri.Image != "" {
+				imageMap[ri.Image] = true
+			}
+		}
+	}
+
+	var images []string
+	for img := range imageMap {
+		images = append(images, img)
+	}
+	return images
 }

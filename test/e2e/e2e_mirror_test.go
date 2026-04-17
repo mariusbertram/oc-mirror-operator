@@ -19,6 +19,7 @@ package e2e
 import (
 	"fmt"
 	"os/exec"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -58,7 +59,7 @@ var _ = Describe("ocp-mirror Operator E2E", Ordered, func() {
 
 		By("waiting for controller-manager to be ready")
 		verifyControllerUp := func(g Gomega) {
-			cmd := exec.Command("kubectl", "get", "pods", "-l", "control-plane=controller-manager", "-n", namespace)
+			cmd := exec.Command("kubectl", "get", "pods", "-l", "control-plane=controller-manager", "-n", mirrorNamespace)
 			output, err := utils.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(output).To(ContainSubstring("Running"))
@@ -87,7 +88,7 @@ spec:
   insecure: true
 `, targetName)
 			cmd := exec.Command("kubectl", "apply", "-f", "-")
-			cmd.Stdin = fmt.NewReader(mirrorTargetYaml)
+			cmd.Stdin = strings.NewReader(mirrorTargetYaml)
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -104,7 +105,7 @@ spec:
       - name: docker.io/library/alpine:latest
 `, imageSetName, targetName)
 			cmd = exec.Command("kubectl", "apply", "-f", "-")
-			cmd.Stdin = fmt.NewReader(imageSetYaml)
+			cmd.Stdin = strings.NewReader(imageSetYaml)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 

@@ -1,10 +1,24 @@
 package state
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 
 	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
+	godigest "github.com/opencontainers/go-digest"
+	"github.com/regclient/regclient/types/descriptor"
+	"github.com/regclient/regclient/types/manifest"
+	"github.com/regclient/regclient/types/mediatype"
+	v1 "github.com/regclient/regclient/types/oci/v1"
+	"github.com/regclient/regclient/types/ref"
+)
+
+const (
+	MetadataConfigType = "application/vnd.mirror.openshift.io.config.v1+json"
+	MetadataLayerType  = "application/vnd.mirror.openshift.io.metadata.v1+json"
 )
 
 // Metadata represents the state of mirrored images
@@ -23,12 +37,57 @@ func New(client *mirrorclient.MirrorClient) *StateManager {
 
 // ReadMetadata reads the metadata from the target registry at the given reference
 func (s *StateManager) ReadMetadata(ctx context.Context, repository string, tag string) (*Metadata, string, error) {
-	// In a real implementation, we would use manifest and blob get to retrieve the json.
-	// For now, this is a placeholder that shows the intent.
-	_ = repository
-	_ = tag
+	tagRef, err := ref.New(fmt.Sprintf("%s:%s", repository, tag))
+	if err != nil {
+		return nil, "", err
+	}
 
-	return &Metadata{MirroredImages: make(map[string]string)}, "", nil
+	m, err := s.client.ManifestGet(ctx, tagRef)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to get manifest: %w", err)
+	}
+
+	mi, ok := m.(manifest.Imager)
+	if !ok {
+		return nil, "", fmt.Errorf("manifest is not an image")
+	}
+
+	layers, err := mi.GetLayers()
+	if err != nil || len(layers) == 0 {
+		return nil, "", fmt.Errorf("no layers found in manifest")
+	}
+
+	// Find our metadata layer; fall back to the first layer
+	layerDesc := layers[0]
+	for _, l := range layers {
+		if l.MediaType == MetadataLayerType {
+			layerDesc = l
+			break
+		}
+	}
+
+	repoRef, err := ref.New(repository)
+	if err != nil {
+		return nil, "", err
+	}
+
+	blobReader, err := s.client.BlobGet(ctx, repoRef, layerDesc)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to get blob: %w", err)
+	}
+	defer blobReader.Close()
+
+	data, err := io.ReadAll(blobReader)
+	if err != nil {
+		return nil, "", err
+	}
+
+	var meta Metadata
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return nil, "", fmt.Errorf("failed to unmarshal metadata: %w", err)
+	}
+
+	return &meta, m.GetDescriptor().Digest.String(), nil
 }
 
 // WriteMetadata writes the metadata to the target registry
@@ -38,11 +97,54 @@ func (s *StateManager) WriteMetadata(ctx context.Context, repository string, tag
 		return "", err
 	}
 
-	// Use regclient to push the data as a blob and create a manifest pointing to it.
-	// For this prototype, we'll keep it simple.
-	_ = data
-	_ = repository
-	_ = tag
+	repoRef, err := ref.New(repository)
+	if err != nil {
+		return "", err
+	}
 
-	return "sha256:dummy", nil
+	// 1. Push metadata as a blob; digest must be pre-computed for BlobPut.
+	dataDigest := godigest.FromBytes(data)
+	layerDesc := descriptor.Descriptor{
+		MediaType: MetadataLayerType,
+		Digest:    dataDigest,
+		Size:      int64(len(data)),
+	}
+	if _, err = s.client.BlobPut(ctx, repoRef, layerDesc, bytes.NewReader(data)); err != nil {
+		return "", fmt.Errorf("failed to push metadata blob: %w", err)
+	}
+
+	// 2. Push an empty config blob.
+	configData := []byte("{}")
+	configDigest := godigest.FromBytes(configData)
+	configDesc := descriptor.Descriptor{
+		MediaType: MetadataConfigType,
+		Digest:    configDigest,
+		Size:      int64(len(configData)),
+	}
+	if _, err = s.client.BlobPut(ctx, repoRef, configDesc, bytes.NewReader(configData)); err != nil {
+		return "", fmt.Errorf("failed to push config blob: %w", err)
+	}
+
+	// 3. Build and push the OCI manifest.
+	ociM := v1.Manifest{
+		Versioned: v1.ManifestSchemaVersion,
+		MediaType: mediatype.OCI1Manifest,
+		Config:    configDesc,
+		Layers:    []descriptor.Descriptor{layerDesc},
+	}
+	m, err := manifest.New(manifest.WithOrig(ociM))
+	if err != nil {
+		return "", fmt.Errorf("failed to create manifest: %w", err)
+	}
+
+	tagRef, err := ref.New(fmt.Sprintf("%s:%s", repository, tag))
+	if err != nil {
+		return "", err
+	}
+
+	if err = s.client.ManifestPut(ctx, tagRef, m); err != nil {
+		return "", fmt.Errorf("failed to push metadata manifest: %w", err)
+	}
+
+	return m.GetDescriptor().Digest.String(), nil
 }

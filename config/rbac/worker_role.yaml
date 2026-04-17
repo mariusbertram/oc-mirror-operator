@@ -1,0 +1,6 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: oc-mirror-worker
+  namespace: system
+rules: [] # No K8s API permissions needed anymore due to direct manager communication

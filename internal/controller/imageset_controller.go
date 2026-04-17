@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -50,6 +51,8 @@ func (r *ImageSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	if err := r.Get(ctx, types.NamespacedName{Name: is.Spec.TargetRef, Namespace: is.Namespace}, mt); err != nil {
 		if errors.IsNotFound(err) {
 			l.Error(err, "MirrorTarget not found", "targetRef", is.Spec.TargetRef)
+			setCondition(&is.Status.Conditions, "Ready", metav1.ConditionFalse, "MirrorTargetNotFound", "MirrorTarget "+is.Spec.TargetRef+" not found")
+			_ = r.Status().Update(ctx, is)
 			return ctrl.Result{RequeueAfter: 1 * time.Minute}, nil
 		}
 		return ctrl.Result{}, err
@@ -64,11 +67,13 @@ func (r *ImageSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		meta = &state.Metadata{MirroredImages: make(map[string]string)}
 	}
 
-	// 3. Generate Soll-Liste if empty
-	if len(is.Status.TargetImages) == 0 {
+	// 3. Generate Soll-Liste if empty or if spec has changed since last collection
+	if len(is.Status.TargetImages) == 0 || is.Status.ObservedGeneration != is.Generation {
 		l.Info("Generating image list for ImageSet")
 		images, err := r.Collector.CollectTargetImages(ctx, &is.Spec, mt, meta)
 		if err != nil {
+			setCondition(&is.Status.Conditions, "Ready", metav1.ConditionFalse, "CollectionFailed", err.Error())
+			_ = r.Status().Update(ctx, is)
 			return ctrl.Result{}, err
 		}
 
@@ -91,6 +96,8 @@ func (r *ImageSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			}
 		}
 		is.Status.MirroredImages = mirrored
+		is.Status.ObservedGeneration = is.Generation
+		setCondition(&is.Status.Conditions, "Ready", metav1.ConditionTrue, "Collected", fmt.Sprintf("Collected %d images", len(targetStatus)))
 		if err := r.Status().Update(ctx, is); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -102,7 +109,7 @@ func (r *ImageSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *ImageSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	r.MirrorClient = mirrorclient.NewMirrorClient()
+	r.MirrorClient = mirrorclient.NewMirrorClient(nil, "")
 	r.Collector = mirror.NewCollector(r.MirrorClient)
 	r.StateManager = state.New(r.MirrorClient)
 

@@ -7,7 +7,7 @@ import (
 )
 
 func TestStateCoverage(t *testing.T) {
-	mc := client.NewMirrorClient()
+	mc := client.NewMirrorClient(nil, "")
 	sm := New(mc)
 
 	meta := &Metadata{

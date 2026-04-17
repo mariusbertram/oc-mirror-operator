@@ -14,7 +14,7 @@ var _ = Describe("State", func() {
 	)
 
 	BeforeEach(func() {
-		mc = mirrorclient.NewMirrorClient()
+		mc = mirrorclient.NewMirrorClient(nil, "")
 		sm = New(mc)
 	})
 

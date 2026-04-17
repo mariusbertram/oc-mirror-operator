@@ -36,6 +36,10 @@ type ImageSetStatus struct {
 	// StateDigest is the digest of the OCI metadata blob in the target registry.
 	// +optional
 	StateDigest string `json:"stateDigest,omitempty"`
+
+	// ObservedGeneration is the generation of the ImageSet that was last reconciled.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 }
 
 // TargetImageStatus defines the observed state of a single image mirroring.

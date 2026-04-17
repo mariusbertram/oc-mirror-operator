@@ -18,6 +18,8 @@ import (
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
 )
 
+const mirrorTargetFinalizer = "mirror.openshift.io/cleanup"
+
 // MirrorTargetReconciler reconciles a MirrorTarget object
 type MirrorTargetReconciler struct {
 	client.Client
@@ -40,6 +42,36 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
+	}
+
+	// Handle deletion
+	if !mt.DeletionTimestamp.IsZero() {
+		if controllerutil.ContainsFinalizer(mt, mirrorTargetFinalizer) {
+			podList := &corev1.PodList{}
+			if err := r.List(ctx, podList, client.InNamespace(mt.Namespace),
+				client.MatchingLabels{"mirrortarget": mt.Name}); err != nil {
+				return ctrl.Result{}, err
+			}
+			for _, pod := range podList.Items {
+				if err := r.Delete(ctx, &pod); err != nil && !errors.IsNotFound(err) {
+					l.Error(err, "Failed to delete worker pod", "pod", pod.Name)
+				}
+			}
+			controllerutil.RemoveFinalizer(mt, mirrorTargetFinalizer)
+			if err := r.Update(ctx, mt); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+		return ctrl.Result{}, nil
+	}
+
+	// Add finalizer if not present
+	if !controllerutil.ContainsFinalizer(mt, mirrorTargetFinalizer) {
+		controllerutil.AddFinalizer(mt, mirrorTargetFinalizer)
+		if err := r.Update(ctx, mt); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{Requeue: true}, nil
 	}
 
 	// Define the manager deployment
@@ -74,11 +106,23 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 					Labels: labels,
 				},
 				Spec: corev1.PodSpec{
-					ServiceAccountName: "oc-mirror-operator-controller-manager",
+					ServiceAccountName: "oc-mirror-coordinator",
+					SecurityContext: &corev1.PodSecurityContext{
+						RunAsNonRoot: pointerTo(true),
+						SeccompProfile: &corev1.SeccompProfile{
+							Type: corev1.SeccompProfileTypeRuntimeDefault,
+						},
+					},
 					Containers: []corev1.Container{
 						{
 							Name:  "manager",
 							Image: os.Getenv("CONTROLLER_IMAGE"), // Ensure this is set or use a default
+							SecurityContext: &corev1.SecurityContext{
+								AllowPrivilegeEscalation: pointerTo(false),
+								Capabilities: &corev1.Capabilities{
+									Drop: []corev1.Capability{"ALL"},
+								},
+							},
 							Args: []string{
 								"manager",
 								"--mirrortarget", mt.Name,
@@ -108,21 +152,48 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		}
 		return nil
 	})
-
 	if err != nil {
 		l.Error(err, "Failed to create or update manager deployment")
+		setCondition(&mt.Status.Conditions, "Ready", metav1.ConditionFalse, "ReconcileError", err.Error())
+		_ = r.Status().Update(ctx, mt)
 		return ctrl.Result{}, err
 	}
 
-	// Update status condition
-	condition := metav1.Condition{
-		Type:               "Ready",
-		Status:             metav1.ConditionTrue,
-		Reason:             "DeploymentCreated",
-		Message:            "Manager deployment is active",
-		LastTransitionTime: metav1.Now(),
+	// Define the manager service
+	service := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fmt.Sprintf("%s-manager", mt.Name),
+			Namespace: mt.Namespace,
+		},
 	}
-	mt.Status.Conditions = []metav1.Condition{condition}
+
+	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, service, func() error {
+		if err := controllerutil.SetControllerReference(mt, service, r.Scheme); err != nil {
+			return err
+		}
+		service.Labels = map[string]string{
+			"app":          "oc-mirror-manager",
+			"mirrortarget": mt.Name,
+		}
+		service.Spec = corev1.ServiceSpec{
+			Selector: service.Labels,
+			Ports: []corev1.ServicePort{
+				{
+					Name: "http",
+					Port: 8080,
+				},
+			},
+		}
+		return nil
+	})
+	if err != nil {
+		l.Error(err, "Failed to create or update manager service")
+		setCondition(&mt.Status.Conditions, "Ready", metav1.ConditionFalse, "ReconcileError", err.Error())
+		_ = r.Status().Update(ctx, mt)
+		return ctrl.Result{}, err
+	}
+
+	setCondition(&mt.Status.Conditions, "Ready", metav1.ConditionTrue, "DeploymentReady", "Manager deployment is active")
 	if err := r.Status().Update(ctx, mt); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -135,4 +206,8 @@ func (r *MirrorTargetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mirrorv1alpha1.MirrorTarget{}).
 		Complete(r)
+}
+
+func pointerTo[T any](v T) *T {
+	return &v
 }

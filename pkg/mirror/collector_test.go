@@ -16,7 +16,7 @@ var _ = Describe("Collector", func() {
 	)
 
 	BeforeEach(func() {
-		mc = mirrorclient.NewMirrorClient()
+		mc = mirrorclient.NewMirrorClient(nil, "")
 		col = NewCollector(mc)
 	})
 

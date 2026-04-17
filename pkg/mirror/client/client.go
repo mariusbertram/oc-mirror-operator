@@ -3,33 +3,48 @@ package client
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/regclient/regclient"
 	"github.com/regclient/regclient/config"
+	"github.com/regclient/regclient/types/blob"
+	"github.com/regclient/regclient/types/descriptor"
+	"github.com/regclient/regclient/types/manifest"
 	"github.com/regclient/regclient/types/ref"
 )
 
 // MirrorClient handles image mirroring using regclient
 type MirrorClient struct {
-	RC *regclient.RegClient
+	rc *regclient.RegClient
 }
 
 // NewMirrorClient creates a new MirrorClient
-func NewMirrorClient(insecureHosts ...string) *MirrorClient {
+func NewMirrorClient(insecureHosts []string, authConfigPath string) *MirrorClient {
 	opts := []regclient.Opt{}
+
+	hostConfigs := make([]config.Host, 0)
 	if len(insecureHosts) > 0 {
-		hostConfigs := make([]config.Host, len(insecureHosts))
-		for i, h := range insecureHosts {
-			hostConfigs[i] = config.Host{
+		for _, h := range insecureHosts {
+			hostConfigs = append(hostConfigs, config.Host{
 				Name: h,
 				TLS:  config.TLSInsecure,
-			}
+			})
 		}
+	}
+
+	// Add auth config path if provided
+	if authConfigPath != "" {
+		// regclient automatically picks up DOCKER_CONFIG if set,
+		// but we can also explicitly set it or use WithConfigHosts
+	}
+
+	if len(hostConfigs) > 0 {
 		opts = append(opts, regclient.WithConfigHosts(hostConfigs))
 	}
+
 	return &MirrorClient{
-		RC: regclient.New(opts...),
+		rc: regclient.New(opts...),
 	}
 }
 
@@ -50,7 +65,7 @@ func (c *MirrorClient) CopyImage(ctx context.Context, src, dest string) error {
 		destRef.Tag = tag
 	}
 
-	err = c.RC.ImageCopy(ctx, srcRef, destRef,
+	err = c.rc.ImageCopy(ctx, srcRef, destRef,
 		regclient.ImageWithDigestTags(),
 		regclient.ImageWithReferrers(),
 	)
@@ -68,7 +83,7 @@ func (c *MirrorClient) CheckExist(ctx context.Context, image string) (bool, erro
 		return false, err
 	}
 
-	_, err = c.RC.ManifestHead(ctx, r)
+	_, err = c.rc.ManifestHead(ctx, r)
 	if err != nil {
 		return false, nil
 	}
@@ -83,10 +98,30 @@ func (c *MirrorClient) GetDigest(ctx context.Context, image string) (string, err
 		return "", err
 	}
 
-	m, err := c.RC.ManifestHead(ctx, r)
+	m, err := c.rc.ManifestHead(ctx, r)
 	if err != nil {
 		return "", err
 	}
 
 	return m.GetDescriptor().Digest.String(), nil
+}
+
+// ManifestGet retrieves a manifest from the registry.
+func (c *MirrorClient) ManifestGet(ctx context.Context, r ref.Ref) (manifest.Manifest, error) {
+	return c.rc.ManifestGet(ctx, r)
+}
+
+// ManifestPut pushes a manifest to the registry.
+func (c *MirrorClient) ManifestPut(ctx context.Context, r ref.Ref, m manifest.Manifest) error {
+	return c.rc.ManifestPut(ctx, r, m)
+}
+
+// BlobGet retrieves a blob from the registry.
+func (c *MirrorClient) BlobGet(ctx context.Context, r ref.Ref, d descriptor.Descriptor) (blob.Reader, error) {
+	return c.rc.BlobGet(ctx, r, d)
+}
+
+// BlobPut pushes a blob to the registry.
+func (c *MirrorClient) BlobPut(ctx context.Context, r ref.Ref, d descriptor.Descriptor, rdr io.Reader) (descriptor.Descriptor, error) {
+	return c.rc.BlobPut(ctx, r, d, rdr)
 }
