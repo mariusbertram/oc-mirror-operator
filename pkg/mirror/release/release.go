@@ -1,16 +1,22 @@
 package release
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/blang/semver/v4"
 	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
+	"github.com/regclient/regclient/types/manifest"
+	"github.com/regclient/regclient/types/platform"
+	"github.com/regclient/regclient/types/ref"
 )
 
 const (
@@ -41,7 +47,9 @@ func New(client *mirrorclient.MirrorClient) *ReleaseResolver {
 	}
 }
 
-func (r *ReleaseResolver) ResolveRelease(ctx context.Context, channel, minVersion, maxVersion string, arch []string, full, shortestPath bool) ([]string, error) {
+// FetchGraph retrieves the raw Cincinnati upgrade graph for the given channel and arch.
+// It is exported so callers (e.g., integration tests) can inspect nodes and edges directly.
+func (r *ReleaseResolver) FetchGraph(ctx context.Context, channel string, arch []string) (*Graph, error) {
 	u, err := url.Parse(OcpUpdateURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse update URL: %w", err)
@@ -79,6 +87,14 @@ func (r *ReleaseResolver) ResolveRelease(ctx context.Context, channel, minVersio
 	if err := json.Unmarshal(body, &graph); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal release graph: %w", err)
 	}
+	return &graph, nil
+}
+
+func (r *ReleaseResolver) ResolveRelease(ctx context.Context, channel, minVersion, maxVersion string, arch []string, full, shortestPath bool) ([]string, error) {
+	graph, err := r.FetchGraph(ctx, channel, arch)
+	if err != nil {
+		return nil, err
+	}
 
 	// full: return all nodes in the channel
 	if full {
@@ -102,7 +118,7 @@ func (r *ReleaseResolver) ResolveRelease(ctx context.Context, channel, minVersio
 	// both minVersion and maxVersion set
 	if minVersion != "" && maxVersion != "" {
 		if shortestPath {
-			return r.shortestPath(&graph, minVersion, maxVersion)
+			return r.shortestPath(graph, minVersion, maxVersion)
 		}
 		minSV, err := semver.ParseTolerant(minVersion)
 		if err != nil {
@@ -147,8 +163,130 @@ func (r *ReleaseResolver) ResolveRelease(ctx context.Context, channel, minVersio
 	return nil, fmt.Errorf("no version constraints specified for channel %s", channel)
 }
 
+// imageStream is a minimal representation of an OpenShift ImageStream used to
+// parse the release-manifests/image-references file embedded in a release payload.
+type imageStream struct {
+	Spec struct {
+		Tags []struct {
+			Name string `json:"name"`
+			From struct {
+				Name string `json:"name"`
+			} `json:"from"`
+		} `json:"tags"`
+	} `json:"spec"`
+}
+
+// ExtractComponentImages pulls the release payload image, locates the
+// release-manifests/image-references layer, and returns all ~190 component
+// image references contained in it.
+//
+// If the payload is a multi-arch manifest list, the platform-specific manifest
+// for the requested arch is resolved first. The caller must provide a non-nil
+// MirrorClient when constructing the ReleaseResolver via New().
+func (r *ReleaseResolver) ExtractComponentImages(ctx context.Context, payloadImage, arch string) ([]string, error) {
+	if r.client == nil {
+		return nil, fmt.Errorf("ExtractComponentImages requires a non-nil MirrorClient")
+	}
+
+	imgRef, err := ref.New(payloadImage)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse payload image reference %q: %w", payloadImage, err)
+	}
+
+	m, err := r.client.ManifestGet(ctx, imgRef)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get manifest for %s: %w", payloadImage, err)
+	}
+
+	// If the manifest is a list (multi-arch), resolve the requested platform.
+	if m.IsList() {
+		p, parseErr := platform.Parse(fmt.Sprintf("linux/%s", arch))
+		if parseErr != nil {
+			return nil, fmt.Errorf("failed to parse platform linux/%s: %w", arch, parseErr)
+		}
+		desc, descErr := manifest.GetPlatformDesc(m, &p)
+		if descErr != nil {
+			return nil, fmt.Errorf("no manifest found for linux/%s in %s: %w", arch, payloadImage, descErr)
+		}
+		imgRef.Digest = desc.Digest.String()
+		imgRef.Tag = ""
+		m, err = r.client.ManifestGet(ctx, imgRef)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get platform manifest for %s: %w", payloadImage, err)
+		}
+	}
+
+	layers, err := m.GetLayers()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get layers from manifest: %w", err)
+	}
+	if len(layers) == 0 {
+		return nil, fmt.Errorf("release payload %s has no layers", payloadImage)
+	}
+
+	// image-references is placed in the release-manifests overlay layer.
+	// Scan layers from last to first — it is typically the last or second-to-last.
+	for i := len(layers) - 1; i >= 0; i-- {
+		blobRdr, blobErr := r.client.BlobGet(ctx, imgRef, layers[i])
+		if blobErr != nil {
+			continue
+		}
+		images, found, scanErr := scanLayerForImageReferences(blobRdr)
+		_ = blobRdr.Close()
+		if scanErr != nil || !found {
+			continue
+		}
+		return images, nil
+	}
+
+	return nil, fmt.Errorf("release-manifests/image-references not found in any layer of %s", payloadImage)
+}
+
+// scanLayerForImageReferences reads a gzipped tar layer and looks for
+// release-manifests/image-references. Returns (images, found, error).
+func scanLayerForImageReferences(rdr io.Reader) ([]string, bool, error) {
+	gz, err := gzip.NewReader(rdr)
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to create gzip reader: %w", err)
+	}
+	defer gz.Close()
+
+	tr := tar.NewReader(gz)
+	for {
+		hdr, nextErr := tr.Next()
+		if nextErr == io.EOF {
+			break
+		}
+		if nextErr != nil {
+			return nil, false, fmt.Errorf("tar read error: %w", nextErr)
+		}
+
+		if !strings.HasSuffix(hdr.Name, "image-references") {
+			continue
+		}
+
+		data, readErr := io.ReadAll(tr)
+		if readErr != nil {
+			return nil, false, fmt.Errorf("failed to read image-references: %w", readErr)
+		}
+
+		var is imageStream
+		if jsonErr := json.Unmarshal(data, &is); jsonErr != nil {
+			return nil, false, fmt.Errorf("failed to parse image-references: %w", jsonErr)
+		}
+
+		images := make([]string, 0, len(is.Spec.Tags))
+		for _, tag := range is.Spec.Tags {
+			if tag.From.Name != "" {
+				images = append(images, tag.From.Name)
+			}
+		}
+		return images, true, nil
+	}
+	return nil, false, nil
+}
+
 // shortestPath uses BFS over the Cincinnati graph edges to find the shortest
-// upgrade path between two versions and returns their images.
 func (r *ReleaseResolver) shortestPath(graph *Graph, fromVersion, toVersion string) ([]string, error) {
 	versionIdx := make(map[string]int, len(graph.Nodes))
 	for i, node := range graph.Nodes {

@@ -137,6 +137,10 @@ test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expect
 	KIND_CLUSTER=$(KIND_CLUSTER) go test ./test/e2e/ -v -ginkgo.v
 	$(MAKE) cleanup-test-e2e
 
+.PHONY: test-integration
+test-integration: fmt vet ## Run integration tests (Cincinnati API + Catalog FBC) without a cluster.
+	SKIP_CLUSTER_SETUP=true go test ./test/e2e/ -v -ginkgo.v --ginkgo.label-filter="integration || release || catalog"
+
 .PHONY: cleanup-test-e2e
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
 	@$(KIND) delete cluster --name $(KIND_CLUSTER)

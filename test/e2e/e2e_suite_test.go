@@ -37,6 +37,11 @@ var (
 	// isCertManagerAlreadyInstalled will be set true when CertManager CRDs be found on the cluster
 	isCertManagerAlreadyInstalled = false
 
+	// skipClusterSetup=true skips docker-build + Kind image loading and CertManager installation.
+	// Set this when only running integration tests that do not need a live cluster
+	// (e.g., Cincinnati API and Catalog FBC tests): SKIP_CLUSTER_SETUP=true.
+	skipClusterSetup = os.Getenv("SKIP_CLUSTER_SETUP") == "true"
+
 	// projectImage is the name of the image which will be build and loaded
 	// with the code source changes to be tested.
 	projectImage = "example.com/ocp-mirror:v0.0.1"
@@ -53,6 +58,11 @@ func TestE2E(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
+	if skipClusterSetup {
+		_, _ = fmt.Fprintf(GinkgoWriter, "SKIP_CLUSTER_SETUP=true: skipping docker-build, Kind load and CertManager setup\n")
+		return
+	}
+
 	By("building the manager(Operator) image")
 	cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", projectImage))
 	_, err := utils.Run(cmd)

@@ -300,7 +300,7 @@ func (m *MirrorManager) startWorker(ctx context.Context, mt *mirrorv1alpha1.Mirr
 			},
 		},
 		Spec: corev1.PodSpec{
-			RestartPolicy: corev1.RestartPolicyNever,
+			RestartPolicy:      corev1.RestartPolicyNever,
 			ServiceAccountName: "oc-mirror-worker",
 			SecurityContext: &corev1.PodSecurityContext{
 				RunAsNonRoot: pointerTo(true),

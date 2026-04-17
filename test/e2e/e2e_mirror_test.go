@@ -28,7 +28,7 @@ import (
 	"github.com/mariusbertram/oc-mirror-operator/test/utils"
 )
 
-var _ = Describe("ocp-mirror Operator E2E", Ordered, func() {
+var _ = Describe("ocp-mirror Operator E2E", Ordered, Label("cluster"), func() {
 	const (
 		mirrorNamespace = "default"
 		targetName      = "internal-registry"

@@ -45,20 +45,28 @@ func (c *Collector) CollectTargetImages(ctx context.Context, spec *mirrorv1alpha
 			arch = []string{"amd64"}
 		}
 
-		images, err := c.releaseResolver.ResolveRelease(ctx, rel.Name, rel.MinVersion, rel.MaxVersion, arch, rel.Full, rel.ShortestPath)
+		payloadImages, err := c.releaseResolver.ResolveRelease(ctx, rel.Name, rel.MinVersion, rel.MaxVersion, arch, rel.Full, rel.ShortestPath)
 		if err != nil {
 			fmt.Printf("Warning: failed to resolve release %s/%s: %v\n", rel.Name, rel.MaxVersion, err)
 			continue
 		}
-		for _, img := range images {
-			tag := "latest"
-			if strings.Contains(img, ":") {
-				tag = strings.Split(img, ":")[1]
-			} else if strings.Contains(img, "@") {
-				tag = strings.Replace(strings.Split(img, "@")[1], ":", "-", 1)
+
+		// For each release payload image, extract the ~190 component images.
+		for _, payloadImg := range payloadImages {
+			// Always include the payload image itself (needed for the release update graph).
+			dest := releaseDestination(target.Spec.Registry, rel.MaxVersion, payloadImg)
+			results = append(results, c.toTargetImage(payloadImg, dest, meta))
+
+			// Extract component images from the payload's image-references layer.
+			componentImages, extractErr := c.releaseResolver.ExtractComponentImages(ctx, payloadImg, arch[0])
+			if extractErr != nil {
+				fmt.Printf("Warning: failed to extract component images from %s: %v\n", payloadImg, extractErr)
+				continue
 			}
-			dest := fmt.Sprintf("%s/openshift/release:%s-%s", target.Spec.Registry, rel.MaxVersion, tag)
-			results = append(results, c.toTargetImage(img, dest, meta))
+			for _, compImg := range componentImages {
+				compDest := releaseDestination(target.Spec.Registry, rel.MaxVersion, compImg)
+				results = append(results, c.toTargetImage(compImg, compDest, meta))
+			}
 		}
 	}
 
@@ -108,7 +116,27 @@ func (c *Collector) toTargetImage(src, dest string, meta *state.Metadata) Target
 	}
 }
 
-// catalogDestination builds a unique destination path for each catalog image by
+// releaseDestination builds a unique destination path for a release payload or
+// component image. Component images come from quay.io/openshift-release-dev/ocp-v4.0-art-dev
+// and are stored under the release version directory to avoid collisions.
+func releaseDestination(registry, releaseVersion, img string) string {
+	// Strip registry prefix from the image to keep only the path.
+	imgNoTag := strings.Split(img, ":")[0]
+	imgNoDigest := strings.Split(imgNoTag, "@")[0]
+
+	parts := strings.SplitN(imgNoDigest, "/", 2)
+	namePath := imgNoDigest
+	if len(parts) > 1 && (strings.Contains(parts[0], ".") || strings.Contains(parts[0], ":")) {
+		namePath = parts[1]
+	}
+
+	ver := releaseVersion
+	if ver == "" {
+		ver = "latest"
+	}
+	return fmt.Sprintf("%s/openshift/release/%s/%s", registry, ver, namePath)
+}
+
 // preserving the image's repository path (minus the source registry) so that
 // different catalogs never overwrite each other in the target registry.
 func catalogDestination(registry, catalogImage, tag string) string {
