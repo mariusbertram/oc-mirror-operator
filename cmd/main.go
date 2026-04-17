@@ -17,10 +17,17 @@ limitations under the License.
 package main
 
 import (
+	"bytes"
+	"context"
 	"crypto/tls"
+	"encoding/json"
 	"flag"
+	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -37,9 +44,9 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	"github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
+	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
 	"github.com/mariusbertram/oc-mirror-operator/internal/controller"
-	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror"
+	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/manager"
 	// +kubebuilder:scaffold:imports
 )
@@ -102,21 +109,69 @@ func runWorker() {
 	fs.BoolVar(&insecure, "insecure", false, "Allow insecure registry")
 	fs.Parse(os.Args[2:])
 
-	c := mirror.NewMirrorClient() // Todo: handle insecure and auth
-	if err := c.CopyImage(context.Background(), src, dest); err != nil {
+	insecureHosts := []string{}
+	if insecure {
+		parts := strings.Split(dest, "/")
+		if len(parts) > 0 {
+			insecureHosts = append(insecureHosts, parts[0])
+		}
+	}
+
+	c := mirrorclient.NewMirrorClient(insecureHosts, os.Getenv("DOCKER_CONFIG"))
+	err := c.CopyImage(context.Background(), src, dest)
+	if err != nil {
 		setupLog.Error(err, "failed to mirror image")
+		reportStatus(dest, "", err.Error())
 		os.Exit(1)
 	}
 
-	// Discover digest of the mirrored image
 	digest, err := c.GetDigest(context.Background(), dest)
 	if err != nil {
 		setupLog.Error(err, "failed to verify mirrored image digest")
+		reportStatus(dest, "", err.Error())
 		os.Exit(1)
 	}
 
 	setupLog.Info("successfully mirrored image", "src", src, "dest", dest, "digest", digest)
-	fmt.Printf("RESULT_DIGEST=%s\n", digest)
+	reportStatus(dest, digest, "")
+}
+
+type WorkerStatusRequest struct {
+	PodName     string `json:"podName"`
+	Destination string `json:"destination"`
+	Digest      string `json:"digest"`
+	Error       string `json:"error,omitempty"`
+}
+
+func reportStatus(dest, digest, errMsg string) {
+	managerURL := os.Getenv("MANAGER_URL")
+	podName := os.Getenv("POD_NAME")
+	if managerURL == "" || podName == "" {
+		return
+	}
+
+	req := WorkerStatusRequest{
+		PodName:     podName,
+		Destination: dest,
+		Digest:      digest,
+		Error:       errMsg,
+	}
+
+	body, _ := json.Marshal(req)
+	httpReq, err := http.NewRequest("POST", managerURL+"/status", bytes.NewBuffer(body))
+	if err != nil {
+		fmt.Printf("Failed to build status request: %v\n", err)
+		return
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+os.Getenv("WORKER_TOKEN"))
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+	resp, err := httpClient.Do(httpReq)
+	if err != nil {
+		fmt.Printf("Failed to report status to manager: %v\n", err)
+		return
+	}
+	defer resp.Body.Close()
 }
 
 func runController() {
@@ -146,7 +201,7 @@ func runController() {
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	opts := zap.Options{
-		Development: true,
+		Development: false,
 	}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
