@@ -46,6 +46,7 @@ import (
 
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
 	"github.com/mariusbertram/oc-mirror-operator/internal/controller"
+	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror"
 	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/manager"
 	// +kubebuilder:scaffold:imports
@@ -148,9 +149,19 @@ func runWorkerBatch(insecure bool, batchJSON string) {
 	// Build a single client reused for all images in the batch.
 	c := buildMirrorClient(insecure, items[0].Dest)
 
+	// Compute optimal mirror order: images with the most shared blobs go first
+	// so that subsequent images find those blobs via anonymous mount (zero-copy).
+	sources := make([]string, len(items))
+	dests := make([]string, len(items))
+	for i, item := range items {
+		sources[i] = item.Source
+		dests[i] = item.Dest
+	}
+	sources, dests = mirror.PlanMirrorOrder(context.Background(), c, sources, dests)
+
 	anyFailed := false
-	for _, item := range items {
-		if !mirrorOneImage(c, item.Source, item.Dest) {
+	for i := range sources {
+		if !mirrorOneImage(c, sources[i], dests[i]) {
 			anyFailed = true
 		}
 	}
@@ -173,18 +184,18 @@ func buildMirrorClient(insecure bool, firstDest string) *mirrorclient.MirrorClie
 	return mirrorclient.NewMirrorClient(insecureHosts, os.Getenv("DOCKER_CONFIG"), destHost)
 }
 
-// mirrorOneImage mirrors src→dest with up to 3 retries and reports the result
-// to the manager via the status API. Returns true on success, false on failure.
+// mirrorOneImage mirrors src→dest with a single retry for transient errors and
+// reports the result to the manager via the status API. Returns true on success.
+// The manager handles higher-level retry orchestration (Failed→Pending requeue).
 func mirrorOneImage(c *mirrorclient.MirrorClient, src, dest string) bool {
 	fmt.Printf("Starting mirror: %s -> %s\n", src, dest)
 
 	var effectiveDest string
 	var lastErr error
-	for attempt := 1; attempt <= 3; attempt++ {
+	for attempt := 1; attempt <= 2; attempt++ {
 		if attempt > 1 {
-			delay := time.Duration(attempt*10) * time.Second
-			fmt.Printf("Retry attempt %d/3 after %v...\n", attempt, delay)
-			time.Sleep(delay)
+			fmt.Printf("Retry attempt 2/2 after 15s...\n")
+			time.Sleep(15 * time.Second)
 		}
 		effectiveDest, lastErr = c.CopyImage(context.Background(), src, dest)
 		if lastErr == nil {

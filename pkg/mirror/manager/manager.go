@@ -270,13 +270,19 @@ func (m *MirrorManager) reconcile(ctx context.Context) error {
 		return err
 	}
 
+	// Default concurrency=1 (one worker pod at a time) to avoid Quay blob
+	// upload digest-mismatch errors. Quay's storage backend can corrupt
+	// concurrent uploads of the same blob to different repositories. With
+	// sequential processing, regclient's anonymous blob mount
+	// (POST ?mount=<digest>) finds blobs pushed by earlier images in Quay's
+	// global storage, skipping the upload entirely (zero-copy).
 	concurrency := mt.Spec.Concurrency
 	if concurrency <= 0 {
-		concurrency = 20
+		concurrency = 1
 	}
 	batchSize := mt.Spec.BatchSize
 	if batchSize <= 0 {
-		batchSize = 10
+		batchSize = 50
 	}
 
 	for _, is := range imageSets.Items {
@@ -333,7 +339,8 @@ func (m *MirrorManager) reconcile(ctx context.Context) error {
 			if entry.State == "Failed" {
 				if entry.RetryCount < 10 {
 					entry.State = "Pending"
-					entry.RetryCount++
+					// Don't increment here; retryCount was already incremented
+					// when the failure was recorded in setImageStateLocked.
 					stateChanged = true
 				}
 				continue
