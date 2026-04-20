@@ -16,11 +16,6 @@ type ImageSetSpec struct {
 
 // ImageSetStatus defines the observed state of ImageSet
 type ImageSetStatus struct {
-	// TargetImages is the list of images that need to be mirrored.
-	// This is generated from the ImageSet configuration.
-	// +optional
-	TargetImages []TargetImageStatus `json:"targetImages,omitempty"`
-
 	// Conditions represent the latest available observations of an object's state
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
@@ -33,27 +28,17 @@ type ImageSetStatus struct {
 	// +optional
 	MirroredImages int `json:"mirroredImages,omitempty"`
 
-	// StateDigest is the digest of the OCI metadata blob in the target registry.
+	// PendingImages is the number of images waiting to be mirrored or in progress.
 	// +optional
-	StateDigest string `json:"stateDigest,omitempty"`
+	PendingImages int `json:"pendingImages,omitempty"`
+
+	// FailedImages is the number of images that failed mirroring (exhausted retries).
+	// +optional
+	FailedImages int `json:"failedImages,omitempty"`
 
 	// ObservedGeneration is the generation of the ImageSet that was last reconciled.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
-}
-
-// TargetImageStatus defines the observed state of a single image mirroring.
-type TargetImageStatus struct {
-	// Source is the source image reference.
-	Source string `json:"source"`
-	// Destination is the destination image reference in the target registry.
-	Destination string `json:"destination"`
-	// State is the current state of the mirroring for this image.
-	// Pending, Mirrored, Failed, Skipped
-	State string `json:"state"`
-	// LastError is the last error message if the mirroring failed.
-	// +optional
-	LastError string `json:"lastError,omitempty"`
 }
 
 // +kubebuilder:object:root=true

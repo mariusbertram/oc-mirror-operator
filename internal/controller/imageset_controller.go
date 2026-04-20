@@ -21,7 +21,7 @@ import (
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/catalog/builder"
 	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
-	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/state"
+	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/imagestate"
 )
 
 // ImageSetReconciler reconciles a ImageSet object
@@ -30,7 +30,6 @@ type ImageSetReconciler struct {
 	Scheme          *runtime.Scheme
 	MirrorClient    *mirrorclient.MirrorClient
 	Collector       *mirror.Collector
-	StateManager    *state.StateManager
 	CatalogBuildMgr *builder.CatalogBuildManager
 }
 
@@ -39,6 +38,7 @@ type ImageSetReconciler struct {
 // +kubebuilder:rbac:groups=mirror.openshift.io,resources=imagesets/finalizers,verbs=update
 // +kubebuilder:rbac:groups=mirror.openshift.io,resources=mirrortargets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 
 func (r *ImageSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	l := log.FromContext(ctx)
@@ -74,9 +74,7 @@ func (r *ImageSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	// Build per-reconcile mirror client that honours the target's insecure setting.
-	// The struct-level r.StateManager / r.Collector are injected in tests and used
-	// as fallback when the target is not configured as insecure.
-	stateManager := r.StateManager
+	// The struct-level r.Collector is used as fallback when target is not insecure.
 	collector := r.Collector
 	if mt.Spec.Insecure {
 		host := mt.Spec.Registry
@@ -84,55 +82,56 @@ func (r *ImageSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			host = host[:i]
 		}
 		mc := mirrorclient.NewMirrorClient([]string{host}, "")
-		stateManager = state.New(mc)
 		collector = mirror.NewCollector(mc)
 	}
 
-	// 3. Load Metadata from registry (non-fatal: continue with empty metadata on error)
-	metaRepo := fmt.Sprintf("%s/oc-mirror-metadata", mt.Spec.Registry)
-	meta, _, err := stateManager.ReadMetadata(ctx, metaRepo, "latest")
-	if err != nil {
-		l.Error(err, "Failed to read metadata from registry")
-		meta = &state.Metadata{MirroredImages: make(map[string]string)}
-	}
-
-	// 4. Generate target image list for releases and additional images.
+	// 3. Generate target image list for releases and additional images.
 	// Operator catalog images are handled by CatalogBuildJobs (step 2) and are
 	// NOT resolved in-memory here to avoid downloading multi-GB catalog layers
 	// inside the controller pod.
-	if len(is.Status.TargetImages) == 0 || is.Status.ObservedGeneration != is.Generation {
+	existingState, loadErr := imagestate.Load(ctx, r.Client, is.Namespace, is.Name)
+	if loadErr != nil {
+		l.Error(loadErr, "Failed to load image state ConfigMap")
+	}
+
+	if len(existingState) == 0 || is.Status.ObservedGeneration != is.Generation {
 		l.Info("Generating image list for ImageSet")
-		images, err := collector.CollectTargetImages(ctx, &is.Spec, mt, meta)
+		images, err := collector.CollectTargetImages(ctx, &is.Spec, mt, nil)
 		if err != nil {
 			setCondition(&is.Status.Conditions, "Ready", metav1.ConditionFalse, "CollectionFailed", err.Error())
 			_ = r.Status().Update(ctx, is)
 			return ctrl.Result{}, err
 		}
 
-		targetStatus := make([]mirrorv1alpha1.TargetImageStatus, len(images))
-		for i, img := range images {
-			targetStatus[i] = mirrorv1alpha1.TargetImageStatus{
-				Source:      img.Source,
-				Destination: img.Destination,
-				State:       img.State,
+		// Build new state, preserving Mirrored/Failed entries from the existing
+		// ConfigMap so already-mirrored images are not re-queued.
+		newState := make(imagestate.ImageState, len(images))
+		for _, img := range images {
+			if existing, ok := existingState[img.Destination]; ok && existing.State != "Pending" {
+				newState[img.Destination] = existing
+			} else {
+				newState[img.Destination] = &imagestate.ImageEntry{
+					Source: img.Source,
+					State:  img.State,
+				}
 			}
 		}
 
-		is.Status.TargetImages = targetStatus
-		is.Status.TotalImages = len(targetStatus)
-		// Calculate mirrored count from generated list
-		mirrored := 0
-		for _, img := range targetStatus {
-			if img.State == "Mirrored" {
-				mirrored++
-			}
+		if err := imagestate.Save(ctx, r.Client, is.Namespace, is, newState); err != nil {
+			l.Error(err, "Failed to save image state ConfigMap")
 		}
-		is.Status.MirroredImages = mirrored
+		existingState = newState
 		is.Status.ObservedGeneration = is.Generation
-		setCondition(&is.Status.Conditions, "Ready", metav1.ConditionTrue, "Collected", fmt.Sprintf("Collected %d images", len(targetStatus)))
-		if err := r.Status().Update(ctx, is); err != nil {
-			return ctrl.Result{}, err
-		}
+	}
+
+	total, mirrored, pending, failed := imagestate.Counts(existingState)
+	is.Status.TotalImages = total
+	is.Status.MirroredImages = mirrored
+	is.Status.PendingImages = pending
+	is.Status.FailedImages = failed
+	setCondition(&is.Status.Conditions, "Ready", metav1.ConditionTrue, "Collected", fmt.Sprintf("Collected %d images", total))
+	if err := r.Status().Update(ctx, is); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	return ctrl.Result{}, nil
@@ -236,7 +235,6 @@ func catalogTargetRef(registry string, op mirrorv1alpha1.Operator) string {
 func (r *ImageSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.MirrorClient = mirrorclient.NewMirrorClient(nil, "")
 	r.Collector = mirror.NewCollector(r.MirrorClient)
-	r.StateManager = state.New(r.MirrorClient)
 	r.CatalogBuildMgr = builder.New()
 
 	return ctrl.NewControllerManagedBy(mgr).

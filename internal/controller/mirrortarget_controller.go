@@ -305,6 +305,12 @@ func (r *MirrorTargetReconciler) ensureCoordinatorRBAC(ctx context.Context, mt *
 				Resources: []string{"secrets"},
 				Verbs:     []string{"get", "list", "watch"},
 			},
+			// Required to store and read per-image mirror state.
+			{
+				APIGroups: []string{""},
+				Resources: []string{"configmaps"},
+				Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
+			},
 		}
 		return nil
 	}); err != nil {
