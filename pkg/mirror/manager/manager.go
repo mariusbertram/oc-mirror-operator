@@ -320,7 +320,7 @@ func (m *MirrorManager) reconcile(ctx context.Context) error {
 
 			if img.State == "Failed" {
 				retryCount := parseRetryCount(img.LastError)
-				if retryCount < 3 {
+				if retryCount < 10 {
 					img.State = "Pending"
 					img.LastError = incrementRetryCount(img.LastError, retryCount)
 					_ = m.Client.Status().Update(ctx, &is)

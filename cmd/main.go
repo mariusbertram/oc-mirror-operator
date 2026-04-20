@@ -121,7 +121,23 @@ func runWorker() {
 
 	c := mirrorclient.NewMirrorClient(insecureHosts, os.Getenv("DOCKER_CONFIG"))
 	fmt.Printf("Starting mirror: %s -> %s\n", src, dest)
-	effectiveDest, err := c.CopyImage(context.Background(), src, dest)
+
+	// Retry up to 3 times for transient blob-upload failures (e.g. Quay chunk 404)
+	var effectiveDest string
+	var lastErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		if attempt > 1 {
+			delay := time.Duration(attempt*10) * time.Second
+			fmt.Printf("Retry attempt %d/3 after %v...\n", attempt, delay)
+			time.Sleep(delay)
+		}
+		effectiveDest, lastErr = c.CopyImage(context.Background(), src, dest)
+		if lastErr == nil {
+			break
+		}
+		fmt.Printf("Attempt %d failed: %v\n", attempt, lastErr)
+	}
+	err := lastErr
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ERROR: failed to mirror image %s: %v\n", src, err)
 		setupLog.Error(err, "failed to mirror image")
