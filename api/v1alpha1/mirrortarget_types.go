@@ -41,6 +41,13 @@ type MirrorTargetSpec struct {
 	// Worker configuration for the worker pods started by the manager.
 	// +optional
 	Worker PodConfig `json:"worker,omitempty"`
+
+	// Concurrency controls how many worker pods may run in parallel.
+	// Defaults to 20 if not set.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=100
+	Concurrency int `json:"concurrency,omitempty"`
 }
 
 // MirrorTargetStatus defines the observed state of MirrorTarget

@@ -153,11 +153,18 @@ func releasePayloadDestination(registry, releaseVersion, img string) string {
 }
 
 // releaseComponentDestination builds the destination for a component image extracted
-// from a release payload. The tag is omitted here; CopyImage will synthesise a
-// sha256-derived tag from the source digest.
-//   e.g. quay.io/openshift-release-dev/ocp-v4.0-art-dev@sha256:… → registry/openshift-release-dev/ocp-v4.0-art-dev
+// from a release payload. The source digest is encoded as the tag so each distinct
+// component image gets a unique, deterministic destination.
+//   e.g. quay.io/openshift-release-dev/ocp-v4.0-art-dev@sha256:184844… →
+//        registry/openshift-release-dev/ocp-v4.0-art-dev:sha256-184844…
 func releaseComponentDestination(registry, img string) string {
-	return fmt.Sprintf("%s/%s", registry, imageNamePath(img))
+	namePath := imageNamePath(img)
+	// Derive a stable tag from the digest so each component gets a unique destination.
+	if idx := strings.Index(img, "@sha256:"); idx >= 0 {
+		tag := "sha256-" + img[idx+8:] // "sha256-{hex}"
+		return fmt.Sprintf("%s/%s:%s", registry, namePath, tag)
+	}
+	return fmt.Sprintf("%s/%s", registry, namePath)
 }
 
 // catalogDestination preserves the image's repository path (minus the source registry)

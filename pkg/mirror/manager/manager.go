@@ -101,8 +101,18 @@ func NewWithClients(c client.Client, cs kubernetes.Interface, targetName, namesp
 func (m *MirrorManager) Run(ctx context.Context) error {
 	fmt.Printf("Starting Mirror Manager for %s in namespace %s\n", m.TargetName, m.Namespace)
 
+	// Rebuild in-progress state from any worker pods that survived a manager restart.
+	if err := m.syncInProgressFromPods(ctx); err != nil {
+		fmt.Printf("Warning: could not sync in-progress state from pods: %v\n", err)
+	}
+
 	// Start Status API Server
 	go m.runStatusAPI(ctx)
+
+	// Run reconcile once immediately on startup, then every 30s.
+	if err := m.reconcile(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "Error reconciling: %v\n", err)
+	}
 
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
@@ -117,6 +127,29 @@ func (m *MirrorManager) Run(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+// syncInProgressFromPods rebuilds m.inProgress from existing worker pods so that
+// a manager restart does not re-dispatch images that are already being mirrored.
+func (m *MirrorManager) syncInProgressFromPods(ctx context.Context) error {
+	pods, err := m.Clientset.CoreV1().Pods(m.Namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("app=oc-mirror-worker,mirrortarget=%s", m.TargetName),
+	})
+	if err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, pod := range pods.Items {
+		if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+			continue
+		}
+		if dest, ok := pod.Annotations["mirror.openshift.io/destination"]; ok && dest != "" {
+			m.inProgress[dest] = pod.Name
+			fmt.Printf("Recovered in-progress worker %s for %s\n", pod.Name, dest)
+		}
+	}
+	return nil
 }
 
 func (m *MirrorManager) runStatusAPI(ctx context.Context) {
@@ -274,8 +307,12 @@ func (m *MirrorManager) reconcile(ctx context.Context) error {
 				continue
 			}
 
-			// Check if we have too many workers
-			if len(m.inProgress) >= 10 {
+			// Honour the configured concurrency limit (default 20).
+			concurrency := mt.Spec.Concurrency
+			if concurrency <= 0 {
+				concurrency = 20
+			}
+			if len(m.inProgress) >= concurrency {
 				break
 			}
 
@@ -393,6 +430,9 @@ func (m *MirrorManager) startWorker(ctx context.Context, mt *mirrorv1alpha1.Mirr
 			Labels: map[string]string{
 				"app":          "oc-mirror-worker",
 				"mirrortarget": m.TargetName,
+			},
+			Annotations: map[string]string{
+				"mirror.openshift.io/destination": dest,
 			},
 		},
 		Spec: corev1.PodSpec{
