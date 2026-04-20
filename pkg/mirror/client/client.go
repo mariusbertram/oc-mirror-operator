@@ -19,18 +19,40 @@ type MirrorClient struct {
 	rc *regclient.RegClient
 }
 
-// NewMirrorClient creates a new MirrorClient
-func NewMirrorClient(insecureHosts []string, authConfigPath string) *MirrorClient {
+// NewMirrorClient creates a new MirrorClient.
+// insecureHosts: registry hostnames that should use plain HTTP / skip TLS verification.
+// destHosts: registry hostnames of destination registries; these are configured with
+// BlobMax=-1 to force single-PUT blob uploads and avoid Quay chunked-upload session issues.
+// authConfigPath: path to a Docker credential store directory (mounted secret).
+func NewMirrorClient(insecureHosts []string, authConfigPath string, destHosts ...string) *MirrorClient {
 	opts := []regclient.Opt{}
 
-	hostConfigs := make([]config.Host, 0)
-	if len(insecureHosts) > 0 {
-		for _, h := range insecureHosts {
-			hostConfigs = append(hostConfigs, config.Host{
-				Name: h,
-				TLS:  config.TLSDisabled,
-			})
+	hostMap := make(map[string]config.Host)
+
+	// Add destination hosts with BlobMax=-1 first (lower priority, overridden by insecure).
+	for _, h := range destHosts {
+		if h == "" {
+			continue
 		}
+		hostMap[h] = config.Host{
+			Name:    h,
+			BlobMax: -1, // disable chunked PATCH uploads; single PUT avoids session-expiry 404s
+		}
+	}
+	for _, h := range insecureHosts {
+		if h == "" {
+			continue
+		}
+		hostMap[h] = config.Host{
+			Name:    h,
+			TLS:     config.TLSDisabled,
+			BlobMax: -1,
+		}
+	}
+
+	hostConfigs := make([]config.Host, 0, len(hostMap))
+	for _, hc := range hostMap {
+		hostConfigs = append(hostConfigs, hc)
 	}
 
 	// Add auth config path if provided (e.g. DOCKER_CONFIG or mounted secret)

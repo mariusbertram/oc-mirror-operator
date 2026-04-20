@@ -119,7 +119,13 @@ func runWorker() {
 		}
 	}
 
-	c := mirrorclient.NewMirrorClient(insecureHosts, os.Getenv("DOCKER_CONFIG"))
+	// Extract destination host to configure BlobMax=-1 (single-PUT uploads)
+	destHost := ""
+	if parts := strings.Split(dest, "/"); len(parts) > 0 {
+		destHost = parts[0]
+	}
+
+	c := mirrorclient.NewMirrorClient(insecureHosts, os.Getenv("DOCKER_CONFIG"), destHost)
 	fmt.Printf("Starting mirror: %s -> %s\n", src, dest)
 
 	// Retry up to 3 times for transient blob-upload failures (e.g. Quay chunk 404)

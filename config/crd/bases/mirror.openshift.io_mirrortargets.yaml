@@ -44,6 +44,13 @@ spec:
                   AuthSecret is a reference to a Secret containing the credentials for the target registry.
                   The Secret should contain "username" and "password" or a ".dockerconfigjson".
                 type: string
+              concurrency:
+                description: |-
+                  Concurrency controls how many worker pods may run in parallel.
+                  Defaults to 20 if not set.
+                maximum: 100
+                minimum: 1
+                type: integer
               insecure:
                 description: Insecure allows connecting to the registry without TLS
                   or with self-signed certs
