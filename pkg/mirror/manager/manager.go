@@ -41,6 +41,7 @@ type MirrorManager struct {
 	Scheme       *runtime.Scheme
 	Image        string
 	StateManager *state.StateManager
+	mirrorClient *mirrorclient.MirrorClient
 
 	workerToken string
 
@@ -72,11 +73,12 @@ func New(targetName, namespace string, scheme *runtime.Scheme) (*MirrorManager, 
 		return nil, fmt.Errorf("OPERATOR_IMAGE environment variable is required but not set")
 	}
 
-	return NewWithClients(c, cs, targetName, namespace, image, scheme), nil
+	authConfigPath := os.Getenv("DOCKER_CONFIG")
+	return NewWithClients(c, cs, targetName, namespace, image, authConfigPath, scheme), nil
 }
 
-func NewWithClients(c client.Client, cs kubernetes.Interface, targetName, namespace, image string, scheme *runtime.Scheme) *MirrorManager {
-	mc := mirrorclient.NewMirrorClient(nil, "")
+func NewWithClients(c client.Client, cs kubernetes.Interface, targetName, namespace, image, authConfigPath string, scheme *runtime.Scheme) *MirrorManager {
+	mc := mirrorclient.NewMirrorClient(nil, authConfigPath)
 
 	tokenBytes := make([]byte, 32)
 	rand.Read(tokenBytes)
@@ -89,6 +91,7 @@ func NewWithClients(c client.Client, cs kubernetes.Interface, targetName, namesp
 		Scheme:       scheme,
 		Image:        image,
 		StateManager: state.New(mc),
+		mirrorClient: mc,
 		workerToken:  hex.EncodeToString(tokenBytes),
 		inProgress:   make(map[string]string),
 		mirrored:     make(map[string]bool),
@@ -223,6 +226,26 @@ func (m *MirrorManager) reconcile(ctx context.Context) error {
 
 		for i := range is.Status.TargetImages {
 			img := &is.Status.TargetImages[i]
+
+			// For images already marked Mirrored in k8s status: verify they actually exist
+			// in the target registry. If the manager restarted and in-memory state was lost,
+			// re-check via the registry API before trusting the stale k8s status.
+			if img.State == "Mirrored" && !m.mirrored[img.Destination] {
+				exists, checkErr := m.mirrorClient.CheckExist(ctx, img.Destination)
+				if checkErr != nil {
+					fmt.Printf("CheckExist error for %s: %v – will retry mirror\n", img.Destination, checkErr)
+				}
+				if exists {
+					m.mirrored[img.Destination] = true
+					continue
+				}
+				// Not actually in registry — reset so it gets re-mirrored.
+				fmt.Printf("Image %s marked Mirrored but not found in registry; resetting to Pending\n", img.Destination)
+				img.State = "Pending"
+				img.LastError = ""
+				hasChanged = true
+				_ = m.Client.Status().Update(ctx, &is)
+			}
 
 			// Skip if already mirrored (in-memory or persisted metadata)
 			if m.mirrored[img.Destination] || m.meta.MirroredImages[img.Destination] != "" {

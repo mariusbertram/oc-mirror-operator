@@ -66,7 +66,8 @@ func (c *Collector) CollectTargetImages(ctx context.Context, spec *mirrorv1alpha
 		// For each release payload image, extract the ~190 component images.
 		for _, payloadImg := range payloadImages {
 			// Always include the payload image itself (needed for the release update graph).
-			dest := releaseDestination(target.Spec.Registry, effectiveMaxVersion, payloadImg)
+			// Tag it with the release version so it is addressable by version number.
+			dest := releasePayloadDestination(target.Spec.Registry, effectiveMaxVersion, payloadImg)
 			results = append(results, c.toTargetImage(payloadImg, dest, meta))
 
 			// Extract component images from the payload's image-references layer.
@@ -76,7 +77,7 @@ func (c *Collector) CollectTargetImages(ctx context.Context, spec *mirrorv1alpha
 				continue
 			}
 			for _, compImg := range componentImages {
-				compDest := releaseDestination(target.Spec.Registry, effectiveMaxVersion, compImg)
+				compDest := releaseComponentDestination(target.Spec.Registry, compImg)
 				results = append(results, c.toTargetImage(compImg, compDest, meta))
 			}
 		}
@@ -128,38 +129,39 @@ func (c *Collector) toTargetImage(src, dest string, meta *state.Metadata) Target
 	}
 }
 
-// releaseDestination builds a unique destination path for a release payload or
-// component image. Component images come from quay.io/openshift-release-dev/ocp-v4.0-art-dev
-// and are stored under the release version directory to avoid collisions.
-func releaseDestination(registry, releaseVersion, img string) string {
-	// Strip registry prefix from the image to keep only the path.
+// imageNamePath strips the registry host from an image reference and returns only the
+// repository path (e.g. "quay.io/foo/bar@sha256:…" → "foo/bar").
+func imageNamePath(img string) string {
 	imgNoTag := strings.Split(img, ":")[0]
 	imgNoDigest := strings.Split(imgNoTag, "@")[0]
-
 	parts := strings.SplitN(imgNoDigest, "/", 2)
-	namePath := imgNoDigest
 	if len(parts) > 1 && (strings.Contains(parts[0], ".") || strings.Contains(parts[0], ":")) {
-		namePath = parts[1]
+		return parts[1]
 	}
-
-	ver := releaseVersion
-	if ver == "" {
-		ver = "latest"
-	}
-	return fmt.Sprintf("%s/openshift/release/%s/%s", registry, ver, namePath)
+	return imgNoDigest
 }
 
-// preserving the image's repository path (minus the source registry) so that
-// different catalogs never overwrite each other in the target registry.
-func catalogDestination(registry, catalogImage, tag string) string {
-	imageNoTag := strings.Split(catalogImage, ":")[0]
-	imageNoDigest := strings.Split(imageNoTag, "@")[0]
-
-	parts := strings.SplitN(imageNoDigest, "/", 2)
-	nameWithPath := imageNoDigest
-	if len(parts) > 1 && (strings.Contains(parts[0], ".") || strings.Contains(parts[0], ":")) {
-		nameWithPath = parts[1]
+// releasePayloadDestination builds the destination for a release payload image.
+// The release version is used as the tag so the image is addressable by version.
+//   e.g. quay.io/openshift-release-dev/ocp-release@sha256:abc → registry/openshift-release-dev/ocp-release:4.21.9
+func releasePayloadDestination(registry, releaseVersion, img string) string {
+	tag := releaseVersion
+	if tag == "" {
+		tag = "latest"
 	}
+	return fmt.Sprintf("%s/%s:%s", registry, imageNamePath(img), tag)
+}
 
-	return fmt.Sprintf("%s/%s:%s", registry, nameWithPath, tag)
+// releaseComponentDestination builds the destination for a component image extracted
+// from a release payload. The tag is omitted here; CopyImage will synthesise a
+// sha256-derived tag from the source digest.
+//   e.g. quay.io/openshift-release-dev/ocp-v4.0-art-dev@sha256:… → registry/openshift-release-dev/ocp-v4.0-art-dev
+func releaseComponentDestination(registry, img string) string {
+	return fmt.Sprintf("%s/%s", registry, imageNamePath(img))
+}
+
+// catalogDestination preserves the image's repository path (minus the source registry)
+// so that different catalogs never overwrite each other in the target registry.
+func catalogDestination(registry, catalogImage, tag string) string {
+	return fmt.Sprintf("%s/%s:%s", registry, imageNamePath(catalogImage), tag)
 }

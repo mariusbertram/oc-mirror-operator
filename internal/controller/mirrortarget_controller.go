@@ -154,8 +154,32 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 									Name:  "OPERATOR_IMAGE",
 									Value: os.Getenv("OPERATOR_IMAGE"),
 								},
+								{
+									Name:  "DOCKER_CONFIG",
+									Value: "/docker-config",
+								},
+							},
+							VolumeMounts: []corev1.VolumeMount{
+								{
+									Name:      "dockerconfig",
+									MountPath: "/docker-config",
+									ReadOnly:  true,
+								},
 							},
 							Resources: mt.Spec.Manager.Resources,
+						},
+					},
+					Volumes: []corev1.Volume{
+						{
+							Name: "dockerconfig",
+							VolumeSource: corev1.VolumeSource{
+								Secret: &corev1.SecretVolumeSource{
+									SecretName: mt.Spec.AuthSecret,
+									Items: []corev1.KeyToPath{
+										{Key: "config.json", Path: "config.json"},
+									},
+								},
+							},
 						},
 					},
 					NodeSelector: mt.Spec.Manager.NodeSelector,

@@ -67,7 +67,8 @@ func (c *MirrorClient) CopyImage(ctx context.Context, src, dest string) (string,
 		return "", fmt.Errorf("failed to parse destination reference %s: %w", dest, err)
 	}
 
-	if srcRef.Digest != "" && srcRef.Tag == "" {
+	// Synthesise a tag from the source digest only when the destination has no explicit tag.
+	if srcRef.Digest != "" && srcRef.Tag == "" && destRef.Tag == "" {
 		tag := strings.Replace(srcRef.Digest, ":", "-", 1)
 		destRef.Tag = tag
 	}

@@ -74,7 +74,7 @@ var _ = Describe("Operator Lifecycle", func() {
 		Expect(updatedIS.Status.TargetImages).To(Not(BeEmpty()))
 
 		// 5. Run Mirror Manager
-		m := manager.NewWithClients(cl, cs, mt.Name, ns, "test-image:latest", scheme)
+		m := manager.NewWithClients(cl, cs, mt.Name, ns, "test-image:latest", "", scheme)
 		Expect(m).NotTo(BeNil())
 	})
 })

@@ -26,7 +26,7 @@ var _ = Describe("Mirror Manager", func() {
 		c := fake.NewClientBuilder().WithScheme(scheme).Build()
 		cs := k8sfake.NewSimpleClientset()
 
-		m = NewWithClients(c, cs, "test", "default", "test-image:latest", scheme)
+		m = NewWithClients(c, cs, "test", "default", "test-image:latest", "", scheme)
 	})
 
 	Context("Reconcile Logic", func() {
@@ -42,7 +42,7 @@ var _ = Describe("Mirror Manager", func() {
 				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.io"},
 			}
 			c := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(mt).Build()
-			m = NewWithClients(c, m.Clientset, "test", "default", "test-image:latest", scheme)
+			m = NewWithClients(c, m.Clientset, "test", "default", "test-image:latest", "", scheme)
 
 			err := m.reconcile(context.TODO())
 			Expect(err).NotTo(HaveOccurred())

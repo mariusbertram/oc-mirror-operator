@@ -29,7 +29,7 @@ BUNDLE_METADATA_OPTS ?= $(BUNDLE_CHANNELS) $(BUNDLE_DEFAULT_CHANNEL)
 #
 # For example, running 'make bundle-build bundle-push catalog-build catalog-push' will build and push both
 # mirror.openshift.io/ocp-mirror-bundle:$VERSION and mirror.openshift.io/ocp-mirror-catalog:$VERSION.
-IMAGE_TAG_BASE ?= mirror.openshift.io/ocp-mirror
+IMAGE_TAG_BASE ?= quay.lab.brtrm.dev/oc-mirror-operator
 
 # BUNDLE_IMG defines the image:tag used for the bundle.
 # You can use it as an arg. (E.g make bundle-build BUNDLE_IMG=<some-registry>/<project-name-bundle>:<tag>)
@@ -41,7 +41,7 @@ BUNDLE_GEN_FLAGS ?= -q --overwrite --version $(VERSION) $(BUNDLE_METADATA_OPTS)
 # USE_IMAGE_DIGESTS defines if images are resolved via tags or digests
 # You can enable this value if you would like to use SHA Based Digests
 # To enable set flag to true
-USE_IMAGE_DIGESTS ?= false
+USE_IMAGE_DIGESTS ?= true
 ifeq ($(USE_IMAGE_DIGESTS), true)
 	BUNDLE_GEN_FLAGS += --use-image-digests
 endif
@@ -220,6 +220,27 @@ podman-buildx: ## Build and push multi-arch image for the manager using podman f
 	- podman manifest rm ${IMG}
 	podman build --platform $(PLATFORMS) --manifest ${IMG} .
 	podman manifest push ${IMG} docker://${IMG}
+
+.PHONY: podman-buildx-local
+podman-buildx-local: ## Build multi-arch image for the manager using podman (local, no push).
+	- podman manifest rm ${IMG}
+	podman build --platform $(PLATFORMS) --manifest ${IMG} .
+	@echo "✓ Multi-arch manifest created: ${IMG}"
+	@podman manifest inspect ${IMG}
+
+.PHONY: podman-buildx-push
+podman-buildx-push: ## Push existing podman manifest to registry.
+	podman manifest push ${IMG} docker://${IMG}
+	@echo "✓ Manifest pushed to registry: ${IMG}"
+
+.PHONY: podman-buildx-inspect
+podman-buildx-inspect: ## Inspect the built multi-arch manifest.
+	podman manifest inspect ${IMG}
+
+.PHONY: podman-build-single
+podman-build-single: ## Build single-arch image using podman (default: native arch).
+	podman build -t ${IMG} .
+	@echo "✓ Single-arch image built: ${IMG}"
 
 .PHONY: build-installer
 build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.
