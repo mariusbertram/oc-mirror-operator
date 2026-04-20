@@ -5,16 +5,20 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
+	"sort"
 	"strings"
 	"testing/fstest"
+	"time"
 
 	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
 	godigest "github.com/opencontainers/go-digest"
 	"github.com/operator-framework/operator-registry/alpha/declcfg"
+	"github.com/regclient/regclient/types/blob"
 	"github.com/regclient/regclient/types/descriptor"
 	"github.com/regclient/regclient/types/manifest"
 	"github.com/regclient/regclient/types/mediatype"
@@ -356,7 +360,60 @@ func (r *CatalogResolver) BuildFilteredCatalogImage(ctx context.Context, sourceC
 		return "", fmt.Errorf("registry client is required for BuildFilteredCatalogImage")
 	}
 
-	// 1. Extract and filter the FBC.
+	// 1. Parse references.
+	srcRef, err := ref.New(sourceCatalogImage)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse source catalog reference %s: %w", sourceCatalogImage, err)
+	}
+	destRef, err := ref.New(targetRef)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse target reference %s: %w", targetRef, err)
+	}
+
+	// 2. Get the source manifest (resolve manifest list → linux/amd64).
+	srcManifest, err := r.client.ManifestGet(ctx, srcRef)
+	if err != nil {
+		return "", fmt.Errorf("failed to get source manifest for %s: %w", sourceCatalogImage, err)
+	}
+	if srcManifest.IsList() {
+		p, parseErr := platform.Parse("linux/amd64")
+		if parseErr != nil {
+			return "", fmt.Errorf("failed to parse platform: %w", parseErr)
+		}
+		desc, descErr := manifest.GetPlatformDesc(srcManifest, &p)
+		if descErr != nil {
+			return "", fmt.Errorf("no linux/amd64 manifest in %s: %w", sourceCatalogImage, descErr)
+		}
+		srcRef.Digest = desc.Digest.String()
+		srcRef.Tag = ""
+		srcManifest, err = r.client.ManifestGet(ctx, srcRef)
+		if err != nil {
+			return "", fmt.Errorf("failed to get platform manifest: %w", err)
+		}
+	}
+
+	// 3. Get source image config (preserves entrypoint, labels, rootfs, etc.).
+	srcConfig, err := r.client.ImageConfig(ctx, srcRef)
+	if err != nil {
+		return "", fmt.Errorf("failed to get source image config: %w", err)
+	}
+
+	// 4. Get all source layers.
+	srcLayers, err := srcManifest.GetLayers()
+	if err != nil {
+		return "", fmt.Errorf("failed to get source layers: %w", err)
+	}
+	fmt.Printf("Source catalog %s: %d layers\n", sourceCatalogImage, len(srcLayers))
+
+	// 5. Copy ALL source layers to target (cross-repo mount if same registry).
+	for i, layer := range srcLayers {
+		fmt.Printf("Copying source layer %d/%d (%s, %d bytes)\n", i+1, len(srcLayers), layer.Digest.String()[:16], layer.Size)
+		if err := r.client.BlobCopy(ctx, srcRef, destRef, layer); err != nil {
+			return "", fmt.Errorf("failed to copy source layer %d (%s): %w", i, layer.Digest, err)
+		}
+	}
+
+	// 6. Extract and filter the FBC.
 	cfg, err := r.loadFBCFromImage(ctx, sourceCatalogImage)
 	if err != nil {
 		return "", fmt.Errorf("failed to load FBC from %s: %w", sourceCatalogImage, err)
@@ -366,14 +423,15 @@ func (r *CatalogResolver) BuildFilteredCatalogImage(ctx context.Context, sourceC
 	if err != nil {
 		return "", fmt.Errorf("failed to filter FBC: %w", err)
 	}
+	fmt.Printf("Filtered FBC: %d packages, %d channels, %d bundles\n",
+		len(filtered.Packages), len(filtered.Channels), len(filtered.Bundles))
 
-	// 2. Serialize filtered FBC to YAML and pack into a gzip-tar layer.
-	layerData, err := buildFBCLayer(filtered)
+	// 7. Build the filtered FBC layer (gzip-tar with opaque whiteout).
+	layerData, uncompressedDigest, err := buildFBCLayer(filtered)
 	if err != nil {
 		return "", fmt.Errorf("failed to build FBC layer: %w", err)
 	}
 
-	// 3. Push the layer blob.
 	layerDigest := godigest.FromBytes(layerData)
 	layerDesc := descriptor.Descriptor{
 		MediaType: mediatype.OCI1LayerGzip,
@@ -381,38 +439,49 @@ func (r *CatalogResolver) BuildFilteredCatalogImage(ctx context.Context, sourceC
 		Size:      int64(len(layerData)),
 	}
 
-	destRef, err := ref.New(targetRef)
-	if err != nil {
-		return "", fmt.Errorf("failed to parse target reference %s: %w", targetRef, err)
-	}
-
+	// 8. Push the filtered FBC layer blob.
 	if _, err = r.client.BlobPut(ctx, destRef, layerDesc, bytes.NewReader(layerData)); err != nil {
 		return "", fmt.Errorf("failed to push FBC layer blob: %w", err)
 	}
 
-	// 4. Build and push a minimal OCI image config with the OLM catalog label.
-	configData, err := buildCatalogImageConfig()
+	// 9. Build new image config: keep source config, append our diff_id.
+	imgCfg := srcConfig.GetConfig()
+	imgCfg.RootFS.DiffIDs = append(imgCfg.RootFS.DiffIDs, uncompressedDigest)
+	// Ensure the OLM catalog label is set.
+	if imgCfg.Config.Labels == nil {
+		imgCfg.Config.Labels = make(map[string]string)
+	}
+	imgCfg.Config.Labels["operators.operatorframework.io.index.configs.v1"] = "/configs"
+	// Append a history entry for our layer.
+	now := time.Now().UTC()
+	imgCfg.History = append(imgCfg.History, v1.History{
+		Created:   &now,
+		CreatedBy: "oc-mirror-operator: filtered FBC overlay",
+		Comment:   fmt.Sprintf("filtered to %d packages", len(filtered.Packages)),
+	})
+
+	newConfig := blob.NewOCIConfig(blob.WithImage(imgCfg))
+	configData, err := newConfig.RawBody()
 	if err != nil {
-		return "", fmt.Errorf("failed to build image config: %w", err)
+		return "", fmt.Errorf("failed to serialize image config: %w", err)
 	}
+	configDesc := newConfig.GetDescriptor()
 
-	configDigest := godigest.FromBytes(configData)
-	configDesc := descriptor.Descriptor{
-		MediaType: mediatype.OCI1ImageConfig,
-		Digest:    configDigest,
-		Size:      int64(len(configData)),
-	}
-
+	// 10. Push the new config blob.
 	if _, err = r.client.BlobPut(ctx, destRef, configDesc, bytes.NewReader(configData)); err != nil {
 		return "", fmt.Errorf("failed to push image config blob: %w", err)
 	}
 
-	// 5. Build and push the OCI image manifest.
+	// 11. Build manifest: all source layers + our FBC layer, new config.
+	allLayers := make([]descriptor.Descriptor, len(srcLayers)+1)
+	copy(allLayers, srcLayers)
+	allLayers[len(srcLayers)] = layerDesc
+
 	ociM := v1.Manifest{
 		Versioned: v1.ManifestSchemaVersion,
 		MediaType: mediatype.OCI1Manifest,
 		Config:    configDesc,
-		Layers:    []descriptor.Descriptor{layerDesc},
+		Layers:    allLayers,
 	}
 
 	m, err := manifest.New(manifest.WithOrig(ociM))
@@ -420,10 +489,13 @@ func (r *CatalogResolver) BuildFilteredCatalogImage(ctx context.Context, sourceC
 		return "", fmt.Errorf("failed to create OCI manifest: %w", err)
 	}
 
+	// 12. Push manifest to target.
 	if err = r.client.ManifestPut(ctx, destRef, m); err != nil {
 		return "", fmt.Errorf("failed to push catalog manifest to %s: %w", targetRef, err)
 	}
 
+	fmt.Printf("Catalog image pushed: %s (source layers: %d, filtered packages: %d)\n",
+		targetRef, len(srcLayers), len(filtered.Packages))
 	return m.GetDescriptor().Digest.String(), nil
 }
 
@@ -431,7 +503,13 @@ func (r *CatalogResolver) BuildFilteredCatalogImage(ctx context.Context, sourceC
 // whose content mirrors the standard catalog image layout:
 //
 //	configs/<package-name>/catalog.yaml
-func buildFBCLayer(cfg *declcfg.DeclarativeConfig) ([]byte, error) {
+//
+// The layer includes an OCI opaque whiteout (configs/.wh..wh..opq) to ensure
+// it completely overrides any /configs content from lower layers.
+// It also includes proper directory entries and is deterministically ordered.
+//
+// Returns the gzip-compressed layer data and the uncompressed tar digest (diff_id).
+func buildFBCLayer(cfg *declcfg.DeclarativeConfig) ([]byte, godigest.Digest, error) {
 	// Build a per-package map so we can write one catalog.yaml per package.
 	pkgCfgs := make(map[string]*declcfg.DeclarativeConfig)
 	for _, p := range cfg.Packages {
@@ -450,14 +528,53 @@ func buildFBCLayer(cfg *declcfg.DeclarativeConfig) ([]byte, error) {
 		}
 	}
 
-	var buf bytes.Buffer
-	gzw := gzip.NewWriter(&buf)
-	tw := tar.NewWriter(gzw)
+	// Sort package names for deterministic output.
+	pkgNames := make([]string, 0, len(pkgCfgs))
+	for name := range pkgCfgs {
+		pkgNames = append(pkgNames, name)
+	}
+	sort.Strings(pkgNames)
 
-	for pkgName, pkgCfg := range pkgCfgs {
+	// Write uncompressed tar to compute diff_id, then gzip.
+	var uncompressedBuf bytes.Buffer
+	diffIDHash := sha256.New()
+	uncompressedWriter := io.MultiWriter(&uncompressedBuf, diffIDHash)
+	tw := tar.NewWriter(uncompressedWriter)
+
+	// Write the configs/ directory entry.
+	if err := tw.WriteHeader(&tar.Header{
+		Typeflag: tar.TypeDir,
+		Name:     "configs/",
+		Mode:     0755,
+	}); err != nil {
+		return nil, "", fmt.Errorf("failed to write configs dir header: %w", err)
+	}
+
+	// Write OCI opaque whiteout to override all lower-layer /configs content.
+	if err := tw.WriteHeader(&tar.Header{
+		Typeflag: tar.TypeReg,
+		Name:     "configs/.wh..wh..opq",
+		Size:     0,
+		Mode:     0644,
+	}); err != nil {
+		return nil, "", fmt.Errorf("failed to write opaque whiteout header: %w", err)
+	}
+
+	for _, pkgName := range pkgNames {
+		pkgCfg := pkgCfgs[pkgName]
+
+		// Write package directory entry.
+		if err := tw.WriteHeader(&tar.Header{
+			Typeflag: tar.TypeDir,
+			Name:     "configs/" + pkgName + "/",
+			Mode:     0755,
+		}); err != nil {
+			return nil, "", fmt.Errorf("failed to write dir header for %s: %w", pkgName, err)
+		}
+
 		var yamlBuf bytes.Buffer
 		if err := declcfg.WriteYAML(*pkgCfg, &yamlBuf); err != nil {
-			return nil, fmt.Errorf("failed to write YAML for package %s: %w", pkgName, err)
+			return nil, "", fmt.Errorf("failed to write YAML for package %s: %w", pkgName, err)
 		}
 
 		path := "configs/" + pkgName + "/catalog.yaml"
@@ -468,41 +585,30 @@ func buildFBCLayer(cfg *declcfg.DeclarativeConfig) ([]byte, error) {
 			Mode:     0644,
 		}
 		if err := tw.WriteHeader(hdr); err != nil {
-			return nil, fmt.Errorf("failed to write tar header for %s: %w", path, err)
+			return nil, "", fmt.Errorf("failed to write tar header for %s: %w", path, err)
 		}
 		if _, err := io.Copy(tw, &yamlBuf); err != nil {
-			return nil, fmt.Errorf("failed to write tar content for %s: %w", path, err)
+			return nil, "", fmt.Errorf("failed to write tar content for %s: %w", path, err)
 		}
 	}
 
 	if err := tw.Close(); err != nil {
-		return nil, fmt.Errorf("failed to finalise tar: %w", err)
+		return nil, "", fmt.Errorf("failed to finalise tar: %w", err)
+	}
+
+	diffID := godigest.NewDigestFromBytes(godigest.SHA256, diffIDHash.Sum(nil))
+
+	// Gzip the tar.
+	var gzBuf bytes.Buffer
+	gzw := gzip.NewWriter(&gzBuf)
+	if _, err := io.Copy(gzw, &uncompressedBuf); err != nil {
+		return nil, "", fmt.Errorf("failed to gzip tar: %w", err)
 	}
 	if err := gzw.Close(); err != nil {
-		return nil, fmt.Errorf("failed to finalise gzip: %w", err)
+		return nil, "", fmt.Errorf("failed to finalise gzip: %w", err)
 	}
 
-	return buf.Bytes(), nil
+	return gzBuf.Bytes(), diffID, nil
 }
 
-// ociImageConfig is a minimal OCI image configuration sufficient for a catalog image.
-type ociImageConfig struct {
-	Config ociImageConfigInner `json:"config"`
-}
 
-type ociImageConfigInner struct {
-	Labels map[string]string `json:"Labels,omitempty"`
-}
-
-// buildCatalogImageConfig returns a minimal OCI image config JSON that marks
-// the image as an OLM FBC catalog (the label tells OLM where configs live).
-func buildCatalogImageConfig() ([]byte, error) {
-	cfg := ociImageConfig{
-		Config: ociImageConfigInner{
-			Labels: map[string]string{
-				"operators.operatorframework.io.index.configs.v1": "/configs",
-			},
-		},
-	}
-	return json.Marshal(cfg)
-}

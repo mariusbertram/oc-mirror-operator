@@ -153,13 +153,28 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs(
 		return nil
 	}
 
-	// If the CatalogReady condition is already True, don't recreate
-	// jobs that were cleaned up by TTL.
+	// Compute a build signature from operator image + packages so we detect
+	// when a rebuild is needed (operator image upgrade, package list change).
+	buildSig := r.CatalogBuildMgr.BuildSignature(operators)
+	lastSig := ""
+	if is.Annotations != nil {
+		lastSig = is.Annotations["mirror.openshift.io/catalog-build-sig"]
+	}
+
+	catalogNeedsRebuild := lastSig != "" && lastSig != buildSig
+	if catalogNeedsRebuild {
+		l.Info("Catalog build signature changed, forcing rebuild", "old", lastSig, "new", buildSig)
+	}
+
+	// If the CatalogReady condition is already True AND the signature hasn't
+	// changed, don't recreate jobs that were cleaned up by TTL.
 	catalogAlreadyReady := false
-	for _, c := range is.Status.Conditions {
-		if c.Type == "CatalogReady" && c.Status == metav1.ConditionTrue {
-			catalogAlreadyReady = true
-			break
+	if !catalogNeedsRebuild {
+		for _, c := range is.Status.Conditions {
+			if c.Type == "CatalogReady" && c.Status == metav1.ConditionTrue {
+				catalogAlreadyReady = true
+				break
+			}
 		}
 	}
 
@@ -186,6 +201,15 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs(
 		phase, err := builder.GetBuildJobStatus(ctx, r.Client, jobName, is.Namespace)
 		if err != nil {
 			return err
+		}
+
+		// If a rebuild is needed, delete the old Job first.
+		if catalogNeedsRebuild && phase != builder.JobPhaseNotFound {
+			l.Info("Deleting stale CatalogBuildJob for rebuild", "job", jobName)
+			if delErr := builder.DeleteBuildJob(ctx, r.Client, jobName, is.Namespace); delErr != nil {
+				l.Error(delErr, "Failed to delete stale CatalogBuildJob", "job", jobName)
+			}
+			phase = builder.JobPhaseNotFound
 		}
 
 		// If the job was TTL-cleaned but catalog was already built, treat as succeeded.
@@ -215,6 +239,17 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs(
 			allSucceeded = false
 		default:
 			allSucceeded = false
+		}
+	}
+
+	// Store build signature in annotation.
+	if allSucceeded {
+		if is.Annotations == nil {
+			is.Annotations = make(map[string]string)
+		}
+		is.Annotations["mirror.openshift.io/catalog-build-sig"] = buildSig
+		if err := r.Update(ctx, is); err != nil {
+			l.Error(err, "Failed to update catalog build signature annotation")
 		}
 	}
 

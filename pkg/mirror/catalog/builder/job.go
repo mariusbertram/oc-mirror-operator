@@ -22,8 +22,10 @@ package builder
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -186,6 +188,18 @@ func (m *CatalogBuildManager) buildJobSpec(
 	var volumes []corev1.Volume
 	var volumeMounts []corev1.VolumeMount
 
+	// Blob buffer volume for large layer copies (used by bufferLargeBlobs hook).
+	volumes = append(volumes, corev1.Volume{
+		Name: "blob-buffer",
+		VolumeSource: corev1.VolumeSource{
+			EmptyDir: &corev1.EmptyDirVolumeSource{},
+		},
+	})
+	volumeMounts = append(volumeMounts, corev1.VolumeMount{
+		Name:      "blob-buffer",
+		MountPath: "/tmp/blob-buffer",
+	})
+
 	if mt.Spec.AuthSecret != "" {
 		volumes = append(volumes, corev1.Volume{
 			Name: "registry-auth",
@@ -240,4 +254,42 @@ func (m *CatalogBuildManager) buildJobSpec(
 			},
 		},
 	}
+}
+
+// DeleteBuildJob deletes a catalog build Job so it can be recreated.
+func DeleteBuildJob(ctx context.Context, c client.Client, name, namespace string) error {
+	job := &batchv1.Job{}
+	if err := c.Get(ctx, client.ObjectKey{Name: name, Namespace: namespace}, job); err != nil {
+		if errors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	propagation := metav1.DeletePropagationBackground
+	return c.Delete(ctx, job, &client.DeleteOptions{
+		PropagationPolicy: &propagation,
+	})
+}
+
+// BuildSignature computes a deterministic hash of the operator image and
+// package configuration. When this changes, catalog builds should be re-run.
+func (m *CatalogBuildManager) BuildSignature(operators []mirrorv1alpha1.Operator) string {
+	h := sha256.New()
+	// Include the operator image so image upgrades force a rebuild.
+	fmt.Fprintf(h, "image=%s\n", m.operatorImage)
+
+	for _, op := range operators {
+		if op.Catalog == "" {
+			continue
+		}
+		fmt.Fprintf(h, "catalog=%s\n", op.Catalog)
+		fmt.Fprintf(h, "full=%t\n", op.Full)
+		var pkgs []string
+		for _, p := range op.Packages {
+			pkgs = append(pkgs, p.Name)
+		}
+		sort.Strings(pkgs)
+		fmt.Fprintf(h, "packages=%s\n", strings.Join(pkgs, ","))
+	}
+	return fmt.Sprintf("%x", h.Sum(nil))[:16]
 }

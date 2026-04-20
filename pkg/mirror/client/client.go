@@ -194,6 +194,17 @@ func (c *MirrorClient) BlobPut(ctx context.Context, r ref.Ref, d descriptor.Desc
 	return c.rc.BlobPut(ctx, r, d, rdr)
 }
 
+// BlobCopy copies a blob from src to dst, using cross-repo mount when possible.
+// Large blobs are pre-buffered to disk via the reader hook to avoid upload timeouts.
+func (c *MirrorClient) BlobCopy(ctx context.Context, src, dst ref.Ref, d descriptor.Descriptor) error {
+	return c.rc.BlobCopy(ctx, src, dst, d, regclient.BlobWithReaderHook(bufferLargeBlobs))
+}
+
+// ImageConfig retrieves the OCI image config for a given ref and platform.
+func (c *MirrorClient) ImageConfig(ctx context.Context, r ref.Ref) (*blob.BOCIConfig, error) {
+	return c.rc.ImageConfig(ctx, r, regclient.ImageWithPlatform("linux/amd64"))
+}
+
 // tempFileReader wraps an os.File and removes the file on Close.
 type tempFileReader struct {
 	*os.File
