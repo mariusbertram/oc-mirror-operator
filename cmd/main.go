@@ -103,32 +103,81 @@ func runManager() {
 }
 
 func runWorker() {
-	var src, dest string
 	var insecure bool
 	fs := flag.NewFlagSet("worker", flag.ExitOnError)
-	fs.StringVar(&src, "src", "", "Source image")
-	fs.StringVar(&dest, "dest", "", "Destination image")
 	fs.BoolVar(&insecure, "insecure", false, "Allow insecure registry")
+	// --src / --dest kept for backward compatibility
+	var src, dest string
+	fs.StringVar(&src, "src", "", "Source image (legacy single-image mode)")
+	fs.StringVar(&dest, "dest", "", "Destination image (legacy single-image mode)")
 	fs.Parse(os.Args[2:])
 
-	insecureHosts := []string{}
-	if insecure {
-		parts := strings.Split(dest, "/")
-		if len(parts) > 0 {
-			insecureHosts = append(insecureHosts, parts[0])
+	// Batch mode: process all images in the JSON-encoded MIRROR_BATCH env var.
+	if batchJSON := os.Getenv("MIRROR_BATCH"); batchJSON != "" {
+		runWorkerBatch(insecure, batchJSON)
+		return
+	}
+
+	// Legacy single-image mode (used only when called without MIRROR_BATCH).
+	if src == "" || dest == "" {
+		fmt.Fprintln(os.Stderr, "ERROR: MIRROR_BATCH env var or --src/--dest flags are required")
+		os.Exit(1)
+	}
+	c := buildMirrorClient(insecure, dest)
+	if !mirrorOneImage(c, src, dest) {
+		os.Exit(1)
+	}
+}
+
+type BatchItem struct {
+	Source string `json:"source"`
+	Dest   string `json:"dest"`
+}
+
+func runWorkerBatch(insecure bool, batchJSON string) {
+	var items []BatchItem
+	if err := json.Unmarshal([]byte(batchJSON), &items); err != nil {
+		fmt.Fprintf(os.Stderr, "ERROR: failed to parse MIRROR_BATCH: %v\n", err)
+		os.Exit(1)
+	}
+	if len(items) == 0 {
+		fmt.Println("Empty batch, nothing to do")
+		return
+	}
+
+	// Build a single client reused for all images in the batch.
+	c := buildMirrorClient(insecure, items[0].Dest)
+
+	anyFailed := false
+	for _, item := range items {
+		if !mirrorOneImage(c, item.Source, item.Dest) {
+			anyFailed = true
 		}
 	}
-
-	// Extract destination host to configure BlobMax=-1 (single-PUT uploads)
-	destHost := ""
-	if parts := strings.Split(dest, "/"); len(parts) > 0 {
-		destHost = parts[0]
+	// Exit 0 even if some images failed; individual failures are reported via
+	// the status API so the manager can apply per-image retry logic.
+	if anyFailed {
+		fmt.Println("Batch completed with errors (see above)")
 	}
+}
 
-	c := mirrorclient.NewMirrorClient(insecureHosts, os.Getenv("DOCKER_CONFIG"), destHost)
+func buildMirrorClient(insecure bool, firstDest string) *mirrorclient.MirrorClient {
+	insecureHosts := []string{}
+	destHost := ""
+	if parts := strings.Split(firstDest, "/"); len(parts) > 0 {
+		destHost = parts[0]
+		if insecure {
+			insecureHosts = append(insecureHosts, destHost)
+		}
+	}
+	return mirrorclient.NewMirrorClient(insecureHosts, os.Getenv("DOCKER_CONFIG"), destHost)
+}
+
+// mirrorOneImage mirrors src→dest with up to 3 retries and reports the result
+// to the manager via the status API. Returns true on success, false on failure.
+func mirrorOneImage(c *mirrorclient.MirrorClient, src, dest string) bool {
 	fmt.Printf("Starting mirror: %s -> %s\n", src, dest)
 
-	// Retry up to 3 times for transient blob-upload failures (e.g. Quay chunk 404)
 	var effectiveDest string
 	var lastErr error
 	for attempt := 1; attempt <= 3; attempt++ {
@@ -143,25 +192,26 @@ func runWorker() {
 		}
 		fmt.Printf("Attempt %d failed: %v\n", attempt, lastErr)
 	}
-	err := lastErr
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "ERROR: failed to mirror image %s: %v\n", src, err)
-		setupLog.Error(err, "failed to mirror image")
-		reportStatus(dest, "", err.Error())
-		os.Exit(1)
+	if lastErr != nil {
+		fmt.Fprintf(os.Stderr, "ERROR: failed to mirror %s: %v\n", src, lastErr)
+		setupLog.Error(lastErr, "failed to mirror image")
+		reportStatus(dest, "", lastErr.Error())
+		return false
 	}
+
 	fmt.Printf("Copy complete, verifying digest at %s\n", effectiveDest)
 	digest, err := c.GetDigest(context.Background(), effectiveDest)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "ERROR: failed to verify mirrored image digest: %v\n", err)
+		fmt.Fprintf(os.Stderr, "ERROR: failed to verify digest for %s: %v\n", src, err)
 		setupLog.Error(err, "failed to verify mirrored image digest")
 		reportStatus(dest, "", err.Error())
-		os.Exit(1)
+		return false
 	}
 
 	fmt.Printf("Successfully mirrored %s -> %s (digest: %s)\n", src, dest, digest)
 	setupLog.Info("successfully mirrored image", "src", src, "dest", dest, "digest", digest)
 	reportStatus(dest, digest, "")
+	return true
 }
 
 type WorkerStatusRequest struct {

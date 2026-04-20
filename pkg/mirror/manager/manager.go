@@ -33,6 +33,12 @@ type WorkerStatusRequest struct {
 	Error       string `json:"error,omitempty"`
 }
 
+// BatchItem describes a single image to be mirrored within a worker batch.
+type BatchItem struct {
+	Source string `json:"source"`
+	Dest   string `json:"dest"`
+}
+
 type MirrorManager struct {
 	Client       client.Client
 	Clientset    kubernetes.Interface
@@ -144,6 +150,18 @@ func (m *MirrorManager) syncInProgressFromPods(ctx context.Context) error {
 		if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
 			continue
 		}
+		// New multi-dest annotation (batch mode)
+		if destsJSON, ok := pod.Annotations["mirror.openshift.io/destinations"]; ok && destsJSON != "" {
+			var dests []string
+			if json.Unmarshal([]byte(destsJSON), &dests) == nil {
+				for _, dest := range dests {
+					m.inProgress[dest] = pod.Name
+					fmt.Printf("Recovered in-progress worker %s for %s\n", pod.Name, dest)
+				}
+				continue
+			}
+		}
+		// Backward compat: legacy single-dest annotation
 		if dest, ok := pod.Annotations["mirror.openshift.io/destination"]; ok && dest != "" {
 			m.inProgress[dest] = pod.Name
 			fmt.Printf("Recovered in-progress worker %s for %s\n", pod.Name, dest)
@@ -204,9 +222,10 @@ func (m *MirrorManager) handleStatusUpdate(w http.ResponseWriter, r *http.Reques
 		m.updateImageStatusLocked(context.Background(), req.Destination, "Mirrored", "")
 	}
 
-	// Clean up pod
+	// Remove from in-progress tracking. The pod itself is cleaned up by
+	// cleanupFinishedWorkers() once it reaches Succeeded/Failed, so that
+	// other batch items in the same pod can continue reporting.
 	delete(m.inProgress, req.Destination)
-	_ = m.Clientset.CoreV1().Pods(m.Namespace).Delete(context.Background(), req.PodName, metav1.DeleteOptions{})
 
 	w.WriteHeader(http.StatusOK)
 }
@@ -286,6 +305,8 @@ func (m *MirrorManager) reconcile(ctx context.Context) error {
 			continue
 		}
 
+		var pendingImages []BatchItem
+
 		for i := range is.Status.TargetImages {
 			img := &is.Status.TargetImages[i]
 
@@ -331,29 +352,46 @@ func (m *MirrorManager) reconcile(ctx context.Context) error {
 			if img.State != "Pending" {
 				continue
 			}
-
 			if m.inProgress[img.Destination] != "" {
 				continue
 			}
 
-			// Honour the configured concurrency limit (default 20).
-			concurrency := mt.Spec.Concurrency
-			if concurrency <= 0 {
-				concurrency = 20
-			}
-			if len(m.inProgress) >= concurrency {
-				break
-			}
+			pendingImages = append(pendingImages, BatchItem{Source: img.Source, Dest: img.Destination})
+		}
 
-			// Start a worker pod
-			podName, err := m.startWorker(ctx, mt, img.Source, img.Destination)
+		// Dispatch pending images as batches, respecting concurrency (pod count).
+		concurrency := mt.Spec.Concurrency
+		if concurrency <= 0 {
+			concurrency = 20
+		}
+		batchSize := mt.Spec.BatchSize
+		if batchSize <= 0 {
+			batchSize = 10
+		}
+
+		activePods := map[string]struct{}{}
+		for _, podName := range m.inProgress {
+			activePods[podName] = struct{}{}
+		}
+
+		for i := 0; i < len(pendingImages) && len(activePods) < concurrency; i += batchSize {
+			end := i + batchSize
+			if end > len(pendingImages) {
+				end = len(pendingImages)
+			}
+			batch := pendingImages[i:end]
+
+			podName, err := m.startWorkerBatch(ctx, mt, batch)
 			if err != nil {
-				fmt.Printf("Failed to start worker for %s: %v\n", img.Destination, err)
+				fmt.Printf("Failed to start worker batch: %v\n", err)
 				continue
 			}
-			m.inProgress[img.Destination] = podName
-			fmt.Printf("Started worker pod %s for image %s\n", podName, img.Destination)
+			for _, item := range batch {
+				m.inProgress[item.Dest] = podName
+			}
+			activePods[podName] = struct{}{}
 			hasChanged = true
+			fmt.Printf("Started worker pod %s for batch of %d images\n", podName, len(batch))
 		}
 	}
 
@@ -408,7 +446,19 @@ func (m *MirrorManager) updateImageStatus(ctx context.Context, dest, state, last
 	m.updateImageStatusLocked(ctx, dest, state, lastError)
 }
 
-func (m *MirrorManager) startWorker(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget, src, dest string) (string, error) {
+func (m *MirrorManager) startWorkerBatch(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget, items []BatchItem) (string, error) {
+	batchJSON, err := json.Marshal(items)
+	if err != nil {
+		return "", fmt.Errorf("failed to encode batch: %w", err)
+	}
+
+	// Annotation stores just the destination refs for pod-recovery on manager restart.
+	dests := make([]string, len(items))
+	for i, item := range items {
+		dests[i] = item.Dest
+	}
+	destsJSON, _ := json.Marshal(dests)
+
 	managerHost := fmt.Sprintf("%s-manager.%s.svc.cluster.local", m.TargetName, m.Namespace)
 
 	envVars := []corev1.EnvVar{
@@ -428,13 +478,13 @@ func (m *MirrorManager) startWorker(ctx context.Context, mt *mirrorv1alpha1.Mirr
 				},
 			},
 		},
+		{
+			Name:  "MIRROR_BATCH",
+			Value: string(batchJSON),
+		},
 	}
 
-	containerArgs := []string{
-		"worker",
-		"--src", src,
-		"--dest", dest,
-	}
+	containerArgs := []string{"worker"}
 	if mt.Spec.Insecure {
 		containerArgs = append(containerArgs, "--insecure")
 	}
@@ -442,7 +492,6 @@ func (m *MirrorManager) startWorker(ctx context.Context, mt *mirrorv1alpha1.Mirr
 	var volumeMounts []corev1.VolumeMount
 	var volumes []corev1.Volume
 
-	// Only mount auth secret if one is configured
 	if mt.Spec.AuthSecret != "" {
 		envVars = append(envVars, corev1.EnvVar{
 			Name:  "DOCKER_CONFIG",
@@ -475,7 +524,7 @@ func (m *MirrorManager) startWorker(ctx context.Context, mt *mirrorv1alpha1.Mirr
 				"mirrortarget": m.TargetName,
 			},
 			Annotations: map[string]string{
-				"mirror.openshift.io/destination": dest,
+				"mirror.openshift.io/destinations": string(destsJSON),
 			},
 		},
 		Spec: corev1.PodSpec{

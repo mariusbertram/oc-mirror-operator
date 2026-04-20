@@ -48,6 +48,14 @@ type MirrorTargetSpec struct {
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=100
 	Concurrency int `json:"concurrency,omitempty"`
+
+	// BatchSize controls how many images are mirrored per worker pod.
+	// A higher value reduces pod-start overhead at the cost of coarser failure granularity.
+	// Defaults to 10 if not set.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=100
+	BatchSize int `json:"batchSize,omitempty"`
 }
 
 // MirrorTargetStatus defines the observed state of MirrorTarget
