@@ -6,6 +6,70 @@ Im Gegensatz zum statischen `oc-mirror` CLI-Tool arbeitet dieser Operator cloud-
 
 ---
 
+## Feature-Vergleich: oc-mirror-operator vs. oc-mirror CLI
+
+### ✅ Implementierte Features
+
+| Feature | oc-mirror CLI | oc-mirror-operator | Anmerkungen |
+|---------|:---:|:---:|-------------|
+| **OpenShift Release Mirroring** | ✅ | ✅ | Cincinnati-Graph-Auflösung, Versions-Ranges, BFS Shortest-Path, Full-Channel-Modus |
+| **Release Component-Images** | ✅ | ✅ | Automatische Extraktion aller ~190 Component-Images aus dem Release-Payload |
+| **Multi-Architektur Support** | ✅ | ✅ | `architectures: [amd64, arm64, ...]` — Multi-Arch-Manifest-Auflösung |
+| **OCP und OKD** | ✅ | ✅ | `type: ocp` (Default) oder `type: okd` |
+| **Operator-Katalog Mirroring** | ✅ | ✅ | FBC-Parsing, Package-Filterung, Bundle-Image-Extraktion |
+| **Gefiltertes Katalog-Image** | ✅ | ✅ | Neues OCI-Image mit gefiltertem FBC-Layer wird gebaut und gepusht |
+| **Package/Channel-Filterung** | ✅ | ✅ | Einzelne Packages und Channels selektierbar |
+| **Version-Ranges (Operators)** | ✅ | ✅ | `minVersion` / `maxVersion` pro Package oder Channel |
+| **Additional Images** | ✅ | ✅ | Einzelne Images mit optionalem `targetRepo` / `targetTag` |
+| **Cosign-Signaturen** | ✅ | ✅ | Tag-basierte `.sig` Signaturen werden automatisch mit kopiert |
+| **OCI Referrers** | ✅ | ✅ | Attestations, SBOMs über `regclient.ImageWithReferrers()` |
+| **Release-Signaturen** | ✅ | ✅ | Download von mirror.openshift.com/pub/openshift-v4/signatures |
+| **Inkrementelles Mirroring** | ✅ | ✅ | Bereits gespiegelte Images werden übersprungen (ConfigMap-State) |
+| **Registry-Verifikation** | ✗ | ✅ | Manager prüft regelmäßig ob Images in der Ziel-Registry existieren und queued fehlende neu |
+| **Automatische Retries** | ✗ | ✅ | Bis zu 10 Wiederholungen pro Image bei Fehlern |
+| **Kontinuierliches Mirroring** | ✗ | ✅ | Reconcile-Loop alle 30s — neue Images werden automatisch erkannt und gespiegelt |
+| **Deklarativ via CRDs** | ✗ | ✅ | `MirrorTarget` + `ImageSet` Custom Resources |
+| **Skalierbare Worker-Pods** | ✗ | ✅ | Konfigurierbare Concurrency (bis 100 Pods) und BatchSize (bis 100 Images/Pod) |
+| **Ephemeral-Volume Blob-Buffering** | ✗ | ✅ | Große Blobs (>100 MiB) werden auf emptyDir gepuffert — kein OOM bei Multi-GB Layern |
+
+### ⚠️ Teilweise implementiert
+
+| Feature | oc-mirror CLI | oc-mirror-operator | Status |
+|---------|:---:|:---:|--------|
+| **IDMS/ITMS-Generierung** | ✅ | ⚠️ | Code vorhanden (`GenerateIDMS()` / `GenerateITMS()`), aber nicht automatisch angewendet oder exportiert |
+| **Operator SkipDependencies** | ✅ | ⚠️ | API-Feld definiert, wird im Collector aber nicht ausgewertet |
+| **Operator TargetCatalog** | ✅ | ⚠️ | API-Feld definiert, wird bei der Ziel-Berechnung aber nicht verwendet |
+
+### ❌ Nicht implementierte Features
+
+| Feature | oc-mirror CLI | oc-mirror-operator | Bemerkung |
+|---------|:---:|:---:|-----------|
+| **Blocked Images** | ✅ | ❌ | API-Feld `blockedImages` existiert, wird aber nirgends ausgewertet |
+| **Helm Chart Mirroring** | ✅ | ❌ | Vollständige API-Typen definiert (`Helm`, `Repository`, `Chart`), aber Collector ignoriert `spec.mirror.helm` |
+| **Mirror-to-Disk** | ✅ | ❌ | `oc-mirror` kann in ein lokales Archiv spiegeln — kein Äquivalent im Operator (nicht sinnvoll im Cluster-Kontext) |
+| **Disk-to-Mirror** | ✅ | ❌ | `oc-mirror` kann von einem lokalen Archiv in eine Registry spiegeln — `platform.release` Feld existiert, wird aber nicht verwendet |
+| **Enclave Support** | ✅ | ❌ | Kein Konzept für Air-Gap-Transfer über Datenträger — der Operator benötigt Netzwerkzugang zu Quell- und Ziel-Registry |
+| **UpdateService CR** | ✅ | ❌ | `oc-mirror` generiert ein UpdateService CR für OSUS — nicht implementiert |
+| **Cincinnati Graph Data** | ✅ | ❌ | `platform.graph: true` Feld existiert, Graph-Daten werden aber nicht in die Ziel-Registry gepusht |
+| **Pruning / Image-Bereinigung** | ✅ | ❌ | Kein automatisches Löschen veralteter Images aus der Ziel-Registry |
+| **Samples** | ✅ | ❌ | API-Feld existiert, explizit als "not implemented" markiert |
+| **KubeVirt Container** | ✅ | ❌ | `platform.kubeVirtContainer` Feld existiert, wird nicht ausgewertet |
+
+### Operator-spezifische Features (kein Äquivalent in oc-mirror CLI)
+
+| Feature | Beschreibung |
+|---------|-------------|
+| **Cloud-native Orchestrierung** | Läuft als Kubernetes-Operator im Cluster — kein manuelles CLI-Aufrufen nötig |
+| **Worker-Pod-Architektur** | Parallele Worker-Pods mit konfigurierbarer Concurrency und Batch-Größe |
+| **Authentifizierte Status-API** | Worker melden Ergebnisse via Bearer-Token-geschütztem HTTP-Endpoint |
+| **ConfigMap-basierter State** | Gzip-komprimierter Image-State in ConfigMaps (~30 Bytes/Image) — kein PV nötig |
+| **Restricted Pod Security** | Alle Pods laufen mit `runAsNonRoot`, Drop-All-Capabilities, Seccomp |
+| **Namespace-scoped RBAC** | Keine ClusterRole — alle Rechte auf den Operator-Namespace begrenzt |
+| **Registry-Existenz-Check** | Periodische Prüfung ob Images in der Ziel-Registry noch vorhanden sind |
+| **Quay-Kompatibilität** | Spezielles Blob-Buffering für Quay-Registries (Upload-Session-Timeout-Workaround) |
+
+---
+
 ## Architektur
 
 Die Architektur folgt einem skalierbaren **Drei-Schichten-Modell**:
@@ -19,16 +83,17 @@ Die Architektur folgt einem skalierbaren **Drei-Schichten-Modell**:
 │  │  MirrorTarget CR │           │   Operator (Control Plane)   │    │
 │  └──────────────────┘  reconcile│   internal/controller/       │    │
 │                         ───────►│                              │    │
-│                                 └──────────────┬─────────────-─┘    │
+│                                 └──────────────┬───────────────┘    │
 │                                                │ creates Deployment │
 │                                                ▼                    │
 │                                 ┌──────────────────────────────┐    │
 │                                 │  Manager Pod (Orchestrator)  │    │
 │                                 │  pkg/mirror/manager/         │    │
 │                                 │                              │    │
-│                                 │  • Liest OCI-State           │    │
+│                                 │  • Lädt Image-State          │    │
 │                                 │  • Verwaltet Worker-Queue    │    │
 │                                 │  • HTTP Status-API (:8080)   │    │
+│                                 │  • Registry-Verifikation     │    │
 │                                 └──────┬──────────────┬────────┘    │
 │                                        │ creates Pods │ receives    │
 │                                        ▼              │ POST /status│
@@ -36,13 +101,11 @@ Die Architektur folgt einem skalierbaren **Drei-Schichten-Modell**:
 │                                 │ Worker Pod 1 │──────┘             │
 │                                 │ Worker Pod 2 │                    │
 │                                 │ Worker Pod N │                    │
-│                                 │ (max 10)     │                    │
 │                                 └──────┬───────┘                    │
-│                                        │ kopiert Images             │
+│                                        │ regclient + emptyDir       │
 │                                        ▼                            │
 │                                 ┌──────────────────────────────┐    │
 │                                 │   Ziel-Registry              │    │
-│                                 │   + OCI Metadata Blob        │    │
 │                                 └──────────────────────────────┘    │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -52,17 +115,17 @@ Die Architektur folgt einem skalierbaren **Drei-Schichten-Modell**:
 | Schicht | Komponente | Beschreibung |
 |---------|------------|-------------|
 | **Control Plane** | `Operator` (`internal/controller/`) | Überwacht CRs, berechnet Image-Soll-Listen via Cincinnati-API und FBC-Parsing, setzt Status-Conditions |
-| **Orchestration** | `Manager` (`pkg/mirror/manager/`) | Ein Deployment pro `MirrorTarget`. Liest OCI-State, startet Worker-Pods, empfängt Ergebnisse via authentifizierter HTTP-API |
-| **Execution** | `Worker` (kurzlebige Pods) | Kopiert jeweils ein Image mit `regclient`, meldet Digest und Status via `POST /status` an den Manager |
-| **State** | OCI Metadata Blob | Mirroring-Status wird als OCI-Artifact in der Ziel-Registry gespeichert — kein PV/PVC nötig |
+| **Orchestration** | `Manager` (`pkg/mirror/manager/`) | Ein Deployment pro `MirrorTarget`. Lädt Image-State, startet Worker-Pods, empfängt Ergebnisse via authentifizierter HTTP-API, verifiziert Registry-Zustand |
+| **Execution** | `Worker` (kurzlebige Pods) | Kopiert Image-Batches mit `regclient`, puffert große Blobs auf emptyDir, kopiert Signaturen, meldet Status via `POST /status` |
+| **State** | ConfigMap (gzip-JSON) | Per-Image Mirroring-Status in Kubernetes ConfigMaps — kein PV/PVC nötig, ~30 Bytes pro Image |
 
 ### Datenfluss
 
 1. Nutzer erstellt `MirrorTarget` + `ImageSet` CRs
-2. **Operator** löst via Cincinnati-API (Releases) und Catalog-Image (Operators) die vollständige Image-Liste auf und schreibt sie als `Status.TargetImages`
-3. **Manager** liest die `ImageSet`-Status-Liste, prüft den OCI-State auf bereits gespiegelte Images und startet Worker-Pods für ausstehende Images (max. 10 parallel)
-4. **Worker** kopiert das Image, ruft `GET /status` des Managers mit Digest und `Bearer`-Token auf
-5. Manager aktualisiert OCI-State und `ImageSet.Status.MirroredImages`
+2. **Operator** löst via Cincinnati-API (Releases) und Catalog-Image (Operators) die vollständige Image-Liste auf und speichert sie als gzip-komprimierte ConfigMap
+3. **Manager** lädt den Image-State, prüft ob gespiegelte Images noch in der Ziel-Registry vorhanden sind und startet Worker-Pods für ausstehende Images
+4. **Worker** kopiert Images (inkl. Signaturen und Referrers), puffert große Blobs auf Ephemeral Volume und meldet Ergebnisse via `POST /status` an den Manager
+5. Manager aktualisiert Image-State und `ImageSet.Status`
 
 ---
 
@@ -79,36 +142,29 @@ metadata:
   name: internal-registry
   namespace: oc-mirror-system
 spec:
-  # Ziel-Registry (Pflicht)
+  # Ziel-Registry inkl. Basis-Pfad (Pflicht)
   registry: "registry.example.com/mirror"
 
   # Referenz auf ein Secret mit Registry-Credentials (empfohlen)
-  # Das Secret muss ein .dockerconfigjson-Key enthalten
   authSecret: "target-registry-creds"
 
   # Für Registries mit self-signed Zertifikaten
   insecure: false
 
-  # Ressourcen für den Manager-Pod (optional)
-  manager:
-    resources:
-      requests: { cpu: "100m", memory: "128Mi" }
-      limits:   { cpu: "500m", memory: "512Mi" }
-    nodeSelector:
-      kubernetes.io/arch: amd64
+  # Parallelität: max. gleichzeitige Worker-Pods (default: 20, max: 100)
+  concurrency: 20
 
-  # Ressourcen für die Worker-Pods (optional)
+  # Images pro Worker-Pod (default: 10, max: 100)
+  batchSize: 10
+
+  # Ressourcen für Worker-Pods (optional)
   worker:
     resources:
       requests: { cpu: "200m", memory: "256Mi" }
       limits:   { cpu: "1000m", memory: "1Gi" }
+    nodeSelector: {}
+    tolerations: []
 ```
-
-**Status-Felder:**
-
-| Feld | Beschreibung |
-|------|-------------|
-| `status.conditions[Ready]` | `True` wenn Manager-Deployment aktiv, `False` bei Fehler |
 
 ### ImageSet
 
@@ -118,23 +174,21 @@ Definiert welche Inhalte gespiegelt werden sollen.
 apiVersion: mirror.openshift.io/v1alpha1
 kind: ImageSet
 metadata:
-  name: ocp-4-15-sync
+  name: ocp-4-21-sync
   namespace: oc-mirror-system
 spec:
-  # Referenz auf einen MirrorTarget im selben Namespace (Pflicht)
   targetRef: "internal-registry"
 
   mirror:
     # OpenShift / OKD Platform Releases
     platform:
-      architectures: ["amd64", "arm64"]
+      architectures: ["amd64"]
       channels:
-        - name: stable-4.15
-          type: ocp                # ocp (default) oder okd
-          minVersion: "4.15.0"    # optional: Untergrenze
-          maxVersion: "4.15.12"   # Obergrenze
-          shortestPath: true       # Nur Upgrade-Pfad-Nodes (BFS über Cincinnati-Graph)
-          # full: true             # Alternativ: alle Nodes im Channel
+        - name: stable-4.21
+          type: ocp
+          minVersion: "4.21.0"
+          maxVersion: "4.21.9"
+          shortestPath: true
 
     # OLM Operator-Kataloge
     operators:
@@ -143,20 +197,13 @@ spec:
           - name: openshift-gitops-operator
             channels:
               - name: stable
-          - name: compliance-operator
-            minVersion: "5.0.0"
-            maxVersion: "6.0.0"
 
     # Einzelne zusätzliche Images
     additionalImages:
       - name: "registry.redhat.io/ubi9/ubi:latest"
-      - name: "quay.io/prometheus/prometheus@sha256:abc123..."
-        targetRepo: "mirror/prometheus"
+      - name: "quay.io/prometheus/prometheus:v2.45.0"
+        targetRepo: "custom/prometheus"
         targetTag: "v2.45.0"
-
-    # Images, die von der Spiegelung ausgeschlossen werden sollen
-    blockedImages:
-      - name: "registry.redhat.io/example/unwanted:latest"
 ```
 
 **Status-Felder:**
@@ -165,25 +212,51 @@ spec:
 |------|-------------|
 | `status.totalImages` | Gesamtanzahl zu spiegelnder Images |
 | `status.mirroredImages` | Erfolgreich gespiegelte Images |
-| `status.observedGeneration` | Zuletzt reconciliierte Spec-Generation |
-| `status.targetImages[]` | Details pro Image: `source`, `destination`, `state` (`Pending`/`Mirrored`/`Failed`), `lastError` |
-| `status.conditions[Ready]` | `True` wenn Collection erfolgreich, `False` mit `reason` bei Fehler |
-| `status.stateDigest` | Digest des OCI-Metadaten-Blobs in der Ziel-Registry |
+| `status.pendingImages` | Ausstehende Images |
+| `status.failedImages` | Fehlgeschlagene Images |
+| `status.conditions[Ready]` | `True` wenn Collection erfolgreich |
 
-**Image-States:**
+**Image-States (im ConfigMap-State):**
 
 | State | Bedeutung |
 |-------|-----------|
 | `Pending` | Warte auf Worker-Pod |
-| `Mirrored` | Erfolgreich gespiegelt (Digest bekannt) |
-| `Failed` | Fehler — wird bis zu 3× automatisch wiederholt (`lastError` enthält Details) |
+| `Mirrored` | Erfolgreich gespiegelt (Digest verifiziert) |
+| `Failed` | Fehler — wird bis zu 10× automatisch wiederholt |
+
+---
+
+## Zielpfad-Mapping
+
+Der Operator bildet Quell-Images wie folgt auf Ziel-Pfade ab:
+
+| Typ | Quelle | Ziel |
+|-----|--------|------|
+| **Release-Payload** | `quay.io/openshift-release-dev/ocp-release:4.21.9-x86_64` | `registry/openshift-release-dev/ocp-release:4.21.9` |
+| **Release-Component** | `quay.io/openshift-release-dev/ocp-v4.0-art-dev@sha256:abc123...` | `registry/openshift-release-dev/ocp-v4.0-art-dev:sha256-abc123...` |
+| **Operator-Bundle** | `registry.redhat.io/openshift-gitops-1/argocd-rhel8@sha256:def456...` | `registry/openshift-gitops-1/argocd-rhel8:sha256-def456...` |
+| **Additional Image** | `quay.io/prometheus/prometheus:v2.45.0` | `registry/prometheus/prometheus:v2.45.0` |
+
+Dabei wird `registry` durch den Wert aus `MirrorTarget.spec.registry` ersetzt. Der Upstream-Repository-Pfad bleibt erhalten.
+
+---
+
+## Blob-Buffering für große Images
+
+Worker-Pods verwenden ein **emptyDir Ephemeral Volume** (`/tmp/blob-buffer`) um große Blobs (>100 MiB) vor dem Upload zwischenzuspeichern. Damit wird ein Quay-spezifisches Problem umgangen, bei dem Upload-Sessions während langsamer Cross-Registry-Transfers ablaufen.
+
+Der Ablauf für große Blobs:
+1. Blob wird von der Quell-Registry heruntergeladen und in eine Temp-Datei geschrieben
+2. Monolithischer PUT von der lokalen Datei zur Ziel-Registry (schnell)
+3. Temp-Datei wird nach dem Upload gelöscht
+
+Vorteile gegenüber RAM-Buffering: Kein OOM-Risiko bei Multi-GB Layern.
 
 ---
 
 ## Voraussetzungen
 
 - Kubernetes ≥ 1.26 oder OpenShift ≥ 4.13
-- `CONTROLLER_IMAGE` Umgebungsvariable **muss** gesetzt sein (kein Default)
 - Zugriff auf Quell-Registries (ggf. Pull-Secret im Cluster)
 - Schreibzugriff auf die Ziel-Registry (via `authSecret`)
 
@@ -194,10 +267,7 @@ spec:
 ### 1. CRDs und Operator deployen
 
 ```bash
-# CRDs installieren
 make install
-
-# Operator deployen (setzt CONTROLLER_IMAGE voraus)
 export IMG=my-registry.example.com/oc-mirror-operator:v0.0.1
 make deploy IMG=$IMG
 ```
@@ -205,7 +275,6 @@ make deploy IMG=$IMG
 ### 2. Registry-Credentials erstellen
 
 ```bash
-# Docker-Config als Secret (für die Ziel-Registry)
 kubectl create secret docker-registry target-registry-creds \
   --docker-server=registry.example.com \
   --docker-username=<user> \
@@ -227,7 +296,7 @@ kubectl apply -f config/samples/imageset_full_sample.yaml
 kubectl get mirrortarget,imageset -n oc-mirror-system
 
 # Fortschritt
-kubectl describe imageset ocp-4-15-sync -n oc-mirror-system
+kubectl describe imageset ocp-4-21-sync -n oc-mirror-system
 
 # Manager-Logs
 kubectl logs deployment/internal-registry-manager -n oc-mirror-system -f
@@ -245,9 +314,9 @@ Der Operator läuft mit einer **namespace-scoped `Role`** (nicht `ClusterRole`).
 
 | Service Account | Berechtigungen |
 |-----------------|----------------|
-| `oc-mirror-operator-controller-manager` | CRD-Verwaltung, Deployments, Services, Secrets (read) |
-| `oc-mirror-coordinator` | ImageSet-Status schreiben, Pods erstellen/löschen |
-| `oc-mirror-worker` | Keine Cluster-Rechte (`automountServiceAccountToken: false`) |
+| `oc-mirror-operator-controller-manager` | CRD-Verwaltung, Deployments, Services, ConfigMaps, Secrets (read) |
+| `oc-mirror-coordinator` | ImageSet-Status schreiben, Pods erstellen/löschen, ConfigMaps lesen/schreiben |
+| `oc-mirror-worker` | Keine Cluster-Rechte |
 
 ### Pod Security
 Alle dynamisch erstellten Pods (Manager und Worker) laufen mit **restricted Pod Security Standards**:
@@ -257,10 +326,10 @@ Alle dynamisch erstellten Pods (Manager und Worker) laufen mit **restricted Pod 
 - `seccompProfile: RuntimeDefault`
 
 ### Worker-Authentifizierung
-Worker-Pods authentifizieren sich am Manager-Status-Endpoint via **Bearer Token**. Der Token wird beim Manager-Start zufällig generiert und über eine Umgebungsvariable an Worker-Pods übergeben. Jeder Fake-Status-Request ohne gültigen Token wird mit HTTP 401 abgewiesen.
+Worker-Pods authentifizieren sich am Manager-Status-Endpoint via **Bearer Token**. Der Token wird beim Manager-Start zufällig generiert und über eine Umgebungsvariable an Worker-Pods übergeben.
 
 ### Registry-Credentials
-Das `authSecret` aus `MirrorTarget.spec.authSecret` wird als Volume (`/run/secrets/dockerconfig/config.json`) in Worker-Pods gemountet. Der Manager-Pod hat keinen direkten Registry-Zugriff.
+Das `authSecret` wird als Volume (`/run/secrets/dockerconfig/config.json`) in Worker-Pods gemountet. Der Manager-Pod hat keinen direkten Registry-Zugriff.
 
 ---
 
@@ -277,59 +346,35 @@ kubectl / oc
 ### Lokaler Build
 
 ```bash
-# Alle Tests + Build
-make test
-
-# Nur bauen
-make build
-
-# Linter
-make lint
+make test      # Tests + Build
+make build     # Nur bauen
+make lint      # Linter
 ```
 
-### Multi-Architektur Container-Image
+### Container-Image
 
 ```bash
-# Podman (empfohlen für OpenShift-Umgebungen)
 make podman-buildx IMG=my-registry.io/oc-mirror-operator:latest
-
-# Docker
+# oder
 make docker-buildx IMG=my-registry.io/oc-mirror-operator:latest
 ```
 
-### Unit-Tests
+### Tests
 
 ```bash
-# Alle pkg/ Unit-Tests mit Coverage
-go test ./pkg/... -coverprofile cover.out
-go tool cover -func cover.out
+# Unit-Tests
+go test ./pkg/... -v
 
-# Nur Manager-Tests
-go test ./pkg/mirror/manager/... -v
-
-# Nur Release-Resolver-Tests
-go test ./pkg/mirror/release/... -v
-```
-
-### Controller-Tests (envtest)
-
-Die Controller-Tests nutzen `envtest` (embedded etcd + kube-apiserver):
-
-```bash
-# envtest-Binaries herunterladen (einmalig)
-make setup-envtest
-
-# Tests ausführen
+# Controller-Tests (envtest)
+make setup-envtest   # einmalig
 make test
 ```
 
 ### CRD-Manifeste regenerieren
 
-Nach Änderungen an den API-Typen in `api/v1alpha1/`:
-
 ```bash
-make manifests   # CRD YAMLs regenerieren
-make generate    # DeepCopy-Methoden regenerieren
+make manifests   # CRD YAMLs
+make generate    # DeepCopy-Methoden
 ```
 
 ---
@@ -338,10 +383,14 @@ make generate    # DeepCopy-Methoden regenerieren
 
 | Einschränkung | Details |
 |---------------|---------|
-| **Polling-basierter Manager** | Der Manager-Pod verwendet einen 30s-Ticker statt event-driven Reconciliation. Geplante Verbesserung: controller-runtime Controller im Manager. |
-| **In-Memory Worker-Queue** | Die `inProgress`-Map im Manager-Pod ist nicht persistent. Bei Pod-Restart werden laufende Worker neu gestartet (idempotent durch `CheckExist`-Prüfung). |
-| **FBC-Parsing unvollständig** | `CatalogResolver.ResolveCatalog` gibt aktuell nur das Catalog-Image zurück; vollständige FBC-Layer-Extraktion und Bundle-Image-Auflösung sind in Arbeit. |
-| **Kein HA-Modus** | Leader Election ist konfigurierbar (`--leader-elect`), aber standardmäßig deaktiviert. Für Produktivumgebungen aktivieren. |
+| **Polling-basierter Manager** | 30s-Ticker statt event-driven Reconciliation |
+| **In-Memory Worker-Queue** | `inProgress`-Map nicht persistent; bei Manager-Restart werden laufende Worker per Pod-Sync wiederhergestellt |
+| **Blocked Images nicht implementiert** | `spec.mirror.blockedImages` wird akzeptiert aber ignoriert |
+| **Helm Charts nicht implementiert** | `spec.mirror.helm` API-Typen definiert, aber Collector wertet sie nicht aus |
+| **IDMS/ITMS nicht angewendet** | Generierungs-Code vorhanden, aber nicht in den Reconcile-Loop integriert |
+| **Kein Pruning** | Veraltete Images werden nicht automatisch aus der Ziel-Registry gelöscht |
+| **Kein Mirror-to-Disk** | Air-Gap-Transfer über Datenträger ist nicht möglich — der Operator benötigt Netzwerkzugang zu beiden Registries |
+| **Kein HA-Modus** | Leader Election konfigurierbar (`--leader-elect`), aber standardmäßig deaktiviert |
 
 ---
 
@@ -359,13 +408,13 @@ oc-mirror-operator/
 ├── internal/controller/       # Kubebuilder-Reconciler
 │   ├── mirrortarget_controller.go
 │   ├── imageset_controller.go
-│   └── conditions.go          # Shared Status-Condition Helper
+│   └── conditions.go
 └── pkg/mirror/
-    ├── client/                # MirrorClient (regclient wrapper)
+    ├── client/                # MirrorClient (regclient-Wrapper, Blob-Buffering)
     ├── collector.go           # Image-Liste aus ImageSet-Spec aufbauen
-    ├── manager/               # Manager-Logik (Worker-Orchestrierung)
-    ├── release/               # Cincinnati-API-Client (Version-Range, BFS)
-    ├── catalog/               # FBC-Resolver (Operator-Kataloge)
-    ├── state/                 # OCI-backed Metadaten-Persistenz
-    └── idms_itms.go           # IDMS/ITMS-Generierung für OpenShift
+    ├── manager/               # Manager-Logik (Worker-Orchestrierung, State)
+    ├── release/               # Cincinnati-API-Client (Graph, BFS, Signatures)
+    ├── catalog/               # FBC-Resolver + Catalog-Builder
+    ├── imagestate/            # ConfigMap-basierte State-Persistenz (gzip-JSON)
+    └── idms_itms.go           # IDMS/ITMS-Generierung (noch nicht integriert)
 ```
