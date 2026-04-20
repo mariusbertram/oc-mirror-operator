@@ -73,10 +73,7 @@ func (c *MirrorClient) CopyImage(ctx context.Context, src, dest string) (string,
 		destRef.Tag = tag
 	}
 
-	err = c.rc.ImageCopy(ctx, srcRef, destRef,
-		regclient.ImageWithDigestTags(),
-		regclient.ImageWithReferrers(),
-	)
+	err = c.rc.ImageCopy(ctx, srcRef, destRef)
 	if err != nil {
 		return "", fmt.Errorf("failed to copy image %s to %s: %w", src, dest, err)
 	}
