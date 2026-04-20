@@ -382,13 +382,19 @@ func (m *MirrorManager) updateImageStatusLocked(ctx context.Context, dest, st, l
 			if is.Status.TargetImages[i].Destination == dest {
 				is.Status.TargetImages[i].State = st
 				is.Status.TargetImages[i].LastError = lastError
-				if st == "Mirrored" {
-					is.Status.MirroredImages++
-				}
 				changed = true
 			}
 		}
 		if changed {
+			// Recompute mirroredImages from actual state to avoid double-counting
+			// when images transition Mirrored→Pending→Mirrored due to registry resets.
+			count := 0
+			for i := range is.Status.TargetImages {
+				if is.Status.TargetImages[i].State == "Mirrored" {
+					count++
+				}
+			}
+			is.Status.MirroredImages = count
 			if err := m.Client.Status().Update(ctx, &is); err != nil {
 				fmt.Printf("Failed to update ImageSet %s status: %v\n", is.Name, err)
 			}
