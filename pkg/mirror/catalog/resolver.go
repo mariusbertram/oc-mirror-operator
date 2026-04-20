@@ -452,6 +452,9 @@ func (r *CatalogResolver) BuildFilteredCatalogImage(ctx context.Context, sourceC
 		imgCfg.Config.Labels = make(map[string]string)
 	}
 	imgCfg.Config.Labels["operators.operatorframework.io.index.configs.v1"] = "/configs"
+	// Since we remove the pre-built cache (opaque whiteout), disable integrity
+	// enforcement so opm rebuilds it on first serve.
+	imgCfg.Config.Cmd = []string{"serve", "/configs", "--cache-dir=/tmp/cache", "--cache-enforce-integrity=false"}
 	// Append a history entry for our layer.
 	now := time.Now().UTC()
 	imgCfg.History = append(imgCfg.History, v1.History{
@@ -558,6 +561,37 @@ func buildFBCLayer(cfg *declcfg.DeclarativeConfig) ([]byte, godigest.Digest, err
 		Mode:     0644,
 	}); err != nil {
 		return nil, "", fmt.Errorf("failed to write opaque whiteout header: %w", err)
+	}
+
+	// Invalidate the pre-built opm serve cache from the source catalog image.
+	// The source image ships a pogreb cache under /tmp/cache/ that is keyed to
+	// the full unfiltered catalog. Our filtered /configs makes it stale, so opm
+	// would fatal with "cache requires rebuild". The opaque whiteout removes
+	// the old cache directory and opm will rebuild it on first start.
+	// We explicitly write tmp/ with mode 01777 (sticky + world-writable) to
+	// ensure /tmp is writable in the overlay — opm writes temp files there
+	// during cache rebuild (e.g. /tmp/opm-cache-build-*.json).
+	if err := tw.WriteHeader(&tar.Header{
+		Typeflag: tar.TypeDir,
+		Name:     "tmp/",
+		Mode:     01777,
+	}); err != nil {
+		return nil, "", fmt.Errorf("failed to write tmp dir header: %w", err)
+	}
+	if err := tw.WriteHeader(&tar.Header{
+		Typeflag: tar.TypeDir,
+		Name:     "tmp/cache/",
+		Mode:     01777,
+	}); err != nil {
+		return nil, "", fmt.Errorf("failed to write cache dir header: %w", err)
+	}
+	if err := tw.WriteHeader(&tar.Header{
+		Typeflag: tar.TypeReg,
+		Name:     "tmp/cache/.wh..wh..opq",
+		Size:     0,
+		Mode:     0644,
+	}); err != nil {
+		return nil, "", fmt.Errorf("failed to write cache whiteout header: %w", err)
 	}
 
 	for _, pkgName := range pkgNames {
