@@ -202,6 +202,87 @@ func TestFilterFBC_EmptyPackages(t *testing.T) {
 	}
 }
 
+func TestFilterFBC_CompanionDependencyPackage(t *testing.T) {
+	// Simulates the Red Hat ODF pattern: odf-operator has no deps,
+	// but odf-dependencies package declares olm.package.required for sub-operators.
+	cfg := &declcfg.DeclarativeConfig{
+		Packages: []declcfg.Package{
+			{Name: "odf-operator"},
+			{Name: "odf-dependencies"},
+			{Name: "ocs-operator"},
+			{Name: "mcg-operator"},
+			{Name: "unrelated"},
+		},
+		Channels: []declcfg.Channel{
+			{Name: "stable", Package: "odf-operator"},
+			{Name: "stable", Package: "odf-dependencies"},
+			{Name: "stable", Package: "ocs-operator"},
+			{Name: "stable", Package: "mcg-operator"},
+			{Name: "stable", Package: "unrelated"},
+		},
+		Bundles: []declcfg.Bundle{
+			{
+				Name:    "odf-operator.v4.21.0",
+				Package: "odf-operator",
+				Image:   "registry.example.com/odf-bundle@sha256:111",
+				Properties: []property.Property{
+					{Type: "olm.package", Value: json.RawMessage(`{"packageName":"odf-operator","version":"4.21.0"}`)},
+					// No olm.package.required — odf-operator handles deps programmatically
+				},
+			},
+			{
+				Name:    "odf-dependencies.v4.21.0",
+				Package: "odf-dependencies",
+				Image:   "registry.example.com/odf-deps-bundle@sha256:222",
+				Properties: []property.Property{
+					{Type: "olm.package", Value: json.RawMessage(`{"packageName":"odf-dependencies","version":"4.21.0"}`)},
+					{Type: olmPackageRequired, Value: json.RawMessage(`{"packageName":"ocs-operator","versionRange":">=4.21.0"}`)},
+					{Type: olmPackageRequired, Value: json.RawMessage(`{"packageName":"mcg-operator","versionRange":">=4.21.0"}`)},
+				},
+			},
+			{
+				Name:    "ocs-operator.v4.21.0",
+				Package: "ocs-operator",
+				Image:   "registry.example.com/ocs-bundle@sha256:333",
+			},
+			{
+				Name:    "mcg-operator.v4.21.0",
+				Package: "mcg-operator",
+				Image:   "registry.example.com/mcg-bundle@sha256:444",
+			},
+			{
+				Name:    "unrelated.v1.0.0",
+				Package: "unrelated",
+				Image:   "registry.example.com/unrelated@sha256:555",
+			},
+		},
+	}
+
+	resolver := &CatalogResolver{}
+	filtered, err := resolver.FilterFBC(context.Background(), cfg, []string{"odf-operator"})
+	if err != nil {
+		t.Fatalf("FilterFBC: %v", err)
+	}
+
+	// Should include: odf-operator + odf-dependencies (companion) + ocs-operator + mcg-operator
+	pkgNames := map[string]bool{}
+	for _, p := range filtered.Packages {
+		pkgNames[p.Name] = true
+	}
+
+	if len(filtered.Packages) != 4 {
+		t.Errorf("expected 4 packages, got %d: %v", len(filtered.Packages), pkgNames)
+	}
+	for _, expected := range []string{"odf-operator", "odf-dependencies", "ocs-operator", "mcg-operator"} {
+		if !pkgNames[expected] {
+			t.Errorf("expected %s to be included, got %v", expected, pkgNames)
+		}
+	}
+	if pkgNames["unrelated"] {
+		t.Error("unrelated should not be included")
+	}
+}
+
 func TestExtractImages(t *testing.T) {
 	cfg := &declcfg.DeclarativeConfig{
 		Bundles: []declcfg.Bundle{

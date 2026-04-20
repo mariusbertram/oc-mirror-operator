@@ -240,7 +240,25 @@ func (r *CatalogResolver) FilterFBC(ctx context.Context, cfg *declcfg.Declarativ
 		pkgSet[p] = true
 	}
 
-	queue := make([]string, 0, len(packages))
+	// Auto-discover companion dependency packages (Red Hat convention).
+	// For "foo-operator" check "foo-dependencies"; also check
+	// "<name>-dependencies", "<name>-dependency", "<name>-deps".
+	for _, p := range packages {
+		candidates := []string{p + "-dependencies", p + "-dependency", p + "-deps"}
+		if strings.HasSuffix(p, "-operator") {
+			base := strings.TrimSuffix(p, "-operator")
+			candidates = append(candidates, base+"-dependencies")
+		}
+		for _, c := range candidates {
+			if catalogPkgs[c] && !pkgSet[c] {
+				pkgSet[c] = true
+				fmt.Printf("Including companion dependency package: %s (for %s)\n", c, p)
+				break // one match is enough
+			}
+		}
+	}
+
+	queue := make([]string, 0, len(pkgSet))
 	for p := range pkgSet {
 		queue = append(queue, p)
 	}
