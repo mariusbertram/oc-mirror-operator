@@ -160,7 +160,52 @@ func (r *ReleaseResolver) ResolveRelease(ctx context.Context, channel, minVersio
 		return images, nil
 	}
 
-	return nil, fmt.Errorf("no version constraints specified for channel %s", channel)
+	// no constraints: return only the latest version in the channel
+	latest := latestNode(graph)
+	if latest == nil {
+		return nil, fmt.Errorf("no nodes found in channel %s", channel)
+	}
+	fmt.Printf("No version constraint specified for channel %s, defaulting to latest: %s\n", channel, latest.Version)
+	return []string{latest.Image}, nil
+}
+
+// ResolveLatestVersion returns the highest semver version available in the given channel.
+// It is used by the collector to determine the destination path when no version is pinned.
+func (r *ReleaseResolver) ResolveLatestVersion(ctx context.Context, channel string, arch []string) (string, error) {
+	graph, err := r.FetchGraph(ctx, channel, arch)
+	if err != nil {
+		return "", err
+	}
+	n := latestNode(graph)
+	if n == nil {
+		return "", fmt.Errorf("no nodes found in channel %s", channel)
+	}
+	return n.Version, nil
+}
+
+// latestNode returns the node with the highest semver in the graph.
+func latestNode(graph *Graph) *Node {
+	var best *Node
+	for i := range graph.Nodes {
+		node := &graph.Nodes[i]
+		if best == nil {
+			best = node
+			continue
+		}
+		sv, err := semver.ParseTolerant(node.Version)
+		if err != nil {
+			continue
+		}
+		bestSV, err := semver.ParseTolerant(best.Version)
+		if err != nil {
+			best = node
+			continue
+		}
+		if sv.GT(bestSV) {
+			best = node
+		}
+	}
+	return best
 }
 
 // imageStream is a minimal representation of an OpenShift ImageStream used to

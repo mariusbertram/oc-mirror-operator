@@ -264,10 +264,22 @@ func (r *MirrorTargetReconciler) ensureCoordinatorRBAC(ctx context.Context, mt *
 				Resources: []string{"imagesets/status"},
 				Verbs:     []string{"get", "update", "patch"},
 			},
+			// Required to set blockOwnerDeletion on worker pods whose owner is a MirrorTarget.
+			{
+				APIGroups: []string{"mirror.openshift.io"},
+				Resources: []string{"mirrortargets/finalizers"},
+				Verbs:     []string{"update"},
+			},
 			{
 				APIGroups: []string{""},
 				Resources: []string{"pods"},
 				Verbs:     []string{"get", "list", "watch", "create", "delete"},
+			},
+			// Required to read the authSecret referenced in MirrorTarget.
+			{
+				APIGroups: []string{""},
+				Resources: []string{"secrets"},
+				Verbs:     []string{"get", "list", "watch"},
 			},
 		}
 		return nil

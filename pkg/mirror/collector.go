@@ -45,6 +45,18 @@ func (c *Collector) CollectTargetImages(ctx context.Context, spec *mirrorv1alpha
 			arch = []string{"amd64"}
 		}
 
+		// Resolve the effective max version for use in destination paths.
+		// When the user hasn't pinned a version we look it up dynamically.
+		effectiveMaxVersion := rel.MaxVersion
+		if effectiveMaxVersion == "" && !rel.Full && rel.MinVersion == "" {
+			resolved, resolveErr := c.releaseResolver.ResolveLatestVersion(ctx, rel.Name, arch)
+			if resolveErr != nil {
+				fmt.Printf("Warning: failed to resolve latest version for channel %s: %v\n", rel.Name, resolveErr)
+			} else {
+				effectiveMaxVersion = resolved
+			}
+		}
+
 		payloadImages, err := c.releaseResolver.ResolveRelease(ctx, rel.Name, rel.MinVersion, rel.MaxVersion, arch, rel.Full, rel.ShortestPath)
 		if err != nil {
 			fmt.Printf("Warning: failed to resolve release %s/%s: %v\n", rel.Name, rel.MaxVersion, err)
@@ -54,7 +66,7 @@ func (c *Collector) CollectTargetImages(ctx context.Context, spec *mirrorv1alpha
 		// For each release payload image, extract the ~190 component images.
 		for _, payloadImg := range payloadImages {
 			// Always include the payload image itself (needed for the release update graph).
-			dest := releaseDestination(target.Spec.Registry, rel.MaxVersion, payloadImg)
+			dest := releaseDestination(target.Spec.Registry, effectiveMaxVersion, payloadImg)
 			results = append(results, c.toTargetImage(payloadImg, dest, meta))
 
 			// Extract component images from the payload's image-references layer.
@@ -64,7 +76,7 @@ func (c *Collector) CollectTargetImages(ctx context.Context, spec *mirrorv1alpha
 				continue
 			}
 			for _, compImg := range componentImages {
-				compDest := releaseDestination(target.Spec.Registry, rel.MaxVersion, compImg)
+				compDest := releaseDestination(target.Spec.Registry, effectiveMaxVersion, compImg)
 				results = append(results, c.toTargetImage(compImg, compDest, meta))
 			}
 		}

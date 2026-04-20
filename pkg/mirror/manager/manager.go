@@ -47,6 +47,7 @@ type MirrorManager struct {
 	// State in memory
 	mu         sync.RWMutex
 	inProgress map[string]string // imageDestination -> podName
+	mirrored   map[string]bool   // imageDestination -> true once successfully mirrored
 	meta       *state.Metadata
 }
 
@@ -90,6 +91,7 @@ func NewWithClients(c client.Client, cs kubernetes.Interface, targetName, namesp
 		StateManager: state.New(mc),
 		workerToken:  hex.EncodeToString(tokenBytes),
 		inProgress:   make(map[string]string),
+		mirrored:     make(map[string]bool),
 	}
 }
 
@@ -162,6 +164,7 @@ func (m *MirrorManager) handleStatusUpdate(w http.ResponseWriter, r *http.Reques
 		if m.meta != nil {
 			m.meta.MirroredImages[req.Destination] = req.Digest
 		}
+		m.mirrored[req.Destination] = true
 		m.updateImageStatus(context.Background(), req.Destination, "Mirrored", "")
 	}
 
@@ -201,6 +204,10 @@ func (m *MirrorManager) reconcile(ctx context.Context) error {
 		meta = &state.Metadata{MirroredImages: make(map[string]string)}
 	}
 	m.meta = meta
+	// Sync in-memory mirrored set from persisted metadata (survives manager restarts).
+	for dest := range meta.MirroredImages {
+		m.mirrored[dest] = true
+	}
 
 	imageSets := &mirrorv1alpha1.ImageSetList{}
 	if err := m.Client.List(ctx, imageSets, client.InNamespace(m.Namespace)); err != nil {
@@ -217,8 +224,8 @@ func (m *MirrorManager) reconcile(ctx context.Context) error {
 		for i := range is.Status.TargetImages {
 			img := &is.Status.TargetImages[i]
 
-			// Skip if already in metadata
-			if m.meta.MirroredImages[img.Destination] != "" {
+			// Skip if already mirrored (in-memory or persisted metadata)
+			if m.mirrored[img.Destination] || m.meta.MirroredImages[img.Destination] != "" {
 				if img.State != "Mirrored" {
 					img.State = "Mirrored"
 					_ = m.Client.Status().Update(ctx, &is)
@@ -349,7 +356,7 @@ func (m *MirrorManager) startWorker(ctx context.Context, mt *mirrorv1alpha1.Mirr
 				Secret: &corev1.SecretVolumeSource{
 					SecretName: mt.Spec.AuthSecret,
 					Items: []corev1.KeyToPath{
-						{Key: ".dockerconfigjson", Path: "config.json"},
+						{Key: "config.json", Path: "config.json"},
 					},
 				},
 			},

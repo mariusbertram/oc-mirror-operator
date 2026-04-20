@@ -118,14 +118,14 @@ func runWorker() {
 	}
 
 	c := mirrorclient.NewMirrorClient(insecureHosts, os.Getenv("DOCKER_CONFIG"))
-	err := c.CopyImage(context.Background(), src, dest)
+	effectiveDest, err := c.CopyImage(context.Background(), src, dest)
 	if err != nil {
 		setupLog.Error(err, "failed to mirror image")
 		reportStatus(dest, "", err.Error())
 		os.Exit(1)
 	}
 
-	digest, err := c.GetDigest(context.Background(), dest)
+	digest, err := c.GetDigest(context.Background(), effectiveDest)
 	if err != nil {
 		setupLog.Error(err, "failed to verify mirrored image digest")
 		reportStatus(dest, "", err.Error())

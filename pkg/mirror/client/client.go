@@ -33,10 +33,15 @@ func NewMirrorClient(insecureHosts []string, authConfigPath string) *MirrorClien
 		}
 	}
 
-	// Add auth config path if provided
+	// Add auth config path if provided (e.g. DOCKER_CONFIG or mounted secret)
 	if authConfigPath != "" {
-		// regclient automatically picks up DOCKER_CONFIG if set,
-		// but we can also explicitly set it or use WithConfigHosts
+		// Try {path}/config.json first (Kubernetes secret mount convention),
+		// fall back to the path itself if it looks like a direct config file.
+		configFile := authConfigPath + "/config.json"
+		opts = append(opts, regclient.WithDockerCredsFile(configFile))
+	} else {
+		// Fall back to the default Docker credential store ($DOCKER_CONFIG or ~/.docker/config.json)
+		opts = append(opts, regclient.WithDockerCreds())
 	}
 
 	if len(hostConfigs) > 0 {
@@ -49,15 +54,17 @@ func NewMirrorClient(insecureHosts []string, authConfigPath string) *MirrorClien
 }
 
 // CopyImage copies an image from source to destination, including signatures.
-func (c *MirrorClient) CopyImage(ctx context.Context, src, dest string) error {
+// It returns the effective destination reference that was actually pushed (which may
+// differ from dest when src is a digest-only reference and a tag is synthesized).
+func (c *MirrorClient) CopyImage(ctx context.Context, src, dest string) (string, error) {
 	srcRef, err := ref.New(src)
 	if err != nil {
-		return fmt.Errorf("failed to parse source reference %s: %w", src, err)
+		return "", fmt.Errorf("failed to parse source reference %s: %w", src, err)
 	}
 
 	destRef, err := ref.New(dest)
 	if err != nil {
-		return fmt.Errorf("failed to parse destination reference %s: %w", dest, err)
+		return "", fmt.Errorf("failed to parse destination reference %s: %w", dest, err)
 	}
 
 	if srcRef.Digest != "" && srcRef.Tag == "" {
@@ -70,10 +77,10 @@ func (c *MirrorClient) CopyImage(ctx context.Context, src, dest string) error {
 		regclient.ImageWithReferrers(),
 	)
 	if err != nil {
-		return fmt.Errorf("failed to copy image %s to %s: %w", src, dest, err)
+		return "", fmt.Errorf("failed to copy image %s to %s: %w", src, dest, err)
 	}
 
-	return nil
+	return destRef.CommonName(), nil
 }
 
 // CheckExist checks if an image exists at the destination registry

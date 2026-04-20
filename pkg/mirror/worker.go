@@ -74,7 +74,7 @@ func (p *WorkerPool) worker(ctx context.Context) {
 				continue
 			}
 
-			err = p.client.CopyImage(ctx, t.Source, t.Destination)
+			_, err = p.client.CopyImage(ctx, t.Source, t.Destination)
 			p.results <- TaskResult{Task: t, Error: err}
 		}
 	}
