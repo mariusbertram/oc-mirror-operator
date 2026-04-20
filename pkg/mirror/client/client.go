@@ -80,7 +80,30 @@ func (c *MirrorClient) CopyImage(ctx context.Context, src, dest string) (string,
 		return "", fmt.Errorf("failed to copy image %s to %s: %w", src, dest, err)
 	}
 
-	return destRef.CommonName(), nil
+	effectiveDest := destRef.CommonName()
+
+	// Cosign stores signatures as tag-based manifests: sha256-{digest}.sig
+	// These are NOT returned by the OCI referrers API so ImageWithReferrers
+	// does not copy them. Copy the .sig tag explicitly when the source has a digest.
+	if srcRef.Digest != "" {
+		digest := strings.TrimPrefix(srcRef.Digest, "sha256:")
+		sigTag := "sha256-" + digest + ".sig"
+
+		srcSigRef := srcRef
+		srcSigRef.Tag = sigTag
+		srcSigRef.Digest = ""
+
+		destSigRef := destRef
+		destSigRef.Tag = sigTag
+		destSigRef.Digest = ""
+
+		// Best-effort: skip silently if the .sig tag does not exist at the source.
+		if err := c.rc.ImageCopy(ctx, srcSigRef, destSigRef); err == nil {
+			fmt.Printf("Copied cosign signature %s\n", sigTag)
+		}
+	}
+
+	return effectiveDest, nil
 }
 
 // CheckExist checks if an image exists at the destination registry

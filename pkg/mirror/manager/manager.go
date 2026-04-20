@@ -195,13 +195,13 @@ func (m *MirrorManager) handleStatusUpdate(w http.ResponseWriter, r *http.Reques
 	fmt.Printf("Received status update from %s for %s\n", req.PodName, req.Destination)
 
 	if req.Error != "" {
-		m.updateImageStatus(context.Background(), req.Destination, "Failed", req.Error)
+		m.updateImageStatusLocked(context.Background(), req.Destination, "Failed", req.Error)
 	} else {
 		if m.meta != nil {
 			m.meta.MirroredImages[req.Destination] = req.Digest
 		}
 		m.mirrored[req.Destination] = true
-		m.updateImageStatus(context.Background(), req.Destination, "Mirrored", "")
+		m.updateImageStatusLocked(context.Background(), req.Destination, "Mirrored", "")
 	}
 
 	// Clean up pod
@@ -211,7 +211,36 @@ func (m *MirrorManager) handleStatusUpdate(w http.ResponseWriter, r *http.Reques
 	w.WriteHeader(http.StatusOK)
 }
 
+// cleanupFinishedWorkers checks all pods in m.inProgress and removes any that
+// have finished (Succeeded or Failed) without calling the status API. Failed pods
+// have their ImageSet status reset to Pending so they will be retried.
+// Caller must NOT hold m.mu.
+func (m *MirrorManager) cleanupFinishedWorkers(ctx context.Context) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for dest, podName := range m.inProgress {
+		pod, err := m.Clientset.CoreV1().Pods(m.Namespace).Get(ctx, podName, metav1.GetOptions{})
+		if err != nil {
+			// Pod gone — clean up
+			delete(m.inProgress, dest)
+			continue
+		}
+		if pod.Status.Phase != corev1.PodSucceeded && pod.Status.Phase != corev1.PodFailed {
+			continue
+		}
+		delete(m.inProgress, dest)
+		if pod.Status.Phase == corev1.PodFailed {
+			fmt.Printf("Worker pod %s for %s failed without reporting; resetting to Pending\n", podName, dest)
+			m.updateImageStatusLocked(ctx, dest, "Pending", "")
+		}
+		_ = m.Clientset.CoreV1().Pods(m.Namespace).Delete(ctx, podName, metav1.DeleteOptions{})
+	}
+}
+
 func (m *MirrorManager) reconcile(ctx context.Context) error {
+	m.cleanupFinishedWorkers(ctx)
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -339,7 +368,9 @@ func (m *MirrorManager) reconcile(ctx context.Context) error {
 	return nil
 }
 
-func (m *MirrorManager) updateImageStatus(ctx context.Context, dest, state, lastError string) {
+// updateImageStatusLocked updates the ImageSet status for a given destination.
+// Caller must hold m.mu OR call from a context where no lock contention exists (e.g., cleanupFinishedWorkers).
+func (m *MirrorManager) updateImageStatusLocked(ctx context.Context, dest, st, lastError string) {
 	imageSets := &mirrorv1alpha1.ImageSetList{}
 	if err := m.Client.List(ctx, imageSets, client.InNamespace(m.Namespace)); err != nil {
 		return
@@ -349,9 +380,9 @@ func (m *MirrorManager) updateImageStatus(ctx context.Context, dest, state, last
 		changed := false
 		for i := range is.Status.TargetImages {
 			if is.Status.TargetImages[i].Destination == dest {
-				is.Status.TargetImages[i].State = state
+				is.Status.TargetImages[i].State = st
 				is.Status.TargetImages[i].LastError = lastError
-				if state == "Mirrored" {
+				if st == "Mirrored" {
 					is.Status.MirroredImages++
 				}
 				changed = true
@@ -363,6 +394,12 @@ func (m *MirrorManager) updateImageStatus(ctx context.Context, dest, state, last
 			}
 		}
 	}
+}
+
+func (m *MirrorManager) updateImageStatus(ctx context.Context, dest, state, lastError string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.updateImageStatusLocked(ctx, dest, state, lastError)
 }
 
 func (m *MirrorManager) startWorker(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget, src, dest string) (string, error) {
