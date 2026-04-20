@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/regclient/regclient"
@@ -19,24 +20,38 @@ type MirrorClient struct {
 	rc *regclient.RegClient
 }
 
+// largeBlobThreshold is the size above which blobs are pre-buffered to disk
+// before upload. This works around a Quay-specific issue where chunked uploads
+// (PATCH-based) lose the upload session before the final PUT, resulting in
+// BLOB_UPLOAD_UNKNOWN errors. By buffering to an ephemeral volume first, the
+// monolithic PUT streams data quickly from local disk instead of a slow
+// cross-registry pipe — without consuming large amounts of memory.
+const largeBlobThreshold = 100 * 1024 * 1024 // 100 MiB
+
+// blobBufferDir is the directory used for temporary blob buffer files.
+// Worker pods mount an emptyDir volume here.
+const blobBufferDir = "/tmp/blob-buffer"
+
 // NewMirrorClient creates a new MirrorClient.
 // insecureHosts: registry hostnames that should use plain HTTP / skip TLS verification.
-// destHosts: registry hostnames of destination registries; these are configured with
-// BlobMax=-1 to force single-PUT blob uploads and avoid Quay chunked-upload session issues.
+// destHosts: registry hostnames of destination registries; configured with BlobMax=-1
+// to always use monolithic PUT (fast when blobs are pre-buffered by the reader hook).
 // authConfigPath: path to a Docker credential store directory (mounted secret).
 func NewMirrorClient(insecureHosts []string, authConfigPath string, destHosts ...string) *MirrorClient {
 	opts := []regclient.Opt{}
 
 	hostMap := make(map[string]config.Host)
 
-	// Add destination hosts with BlobMax=-1 first (lower priority, overridden by insecure).
+	// Add destination hosts with BlobMax=-1 (monolithic PUT for all blob sizes).
+	// Large blobs are pre-buffered into memory by the ImageWithBlobReaderHook so
+	// the PUT streams fast from RAM, avoiding Quay upload-session expiry.
 	for _, h := range destHosts {
 		if h == "" {
 			continue
 		}
 		hostMap[h] = config.Host{
 			Name:    h,
-			BlobMax: -1, // disable chunked PATCH uploads; single PUT avoids session-expiry 404s
+			BlobMax: -1,
 		}
 	}
 	for _, h := range insecureHosts {
@@ -97,6 +112,7 @@ func (c *MirrorClient) CopyImage(ctx context.Context, src, dest string) (string,
 
 	err = c.rc.ImageCopy(ctx, srcRef, destRef,
 		regclient.ImageWithReferrers(),
+		regclient.ImageWithBlobReaderHook(bufferLargeBlobs),
 	)
 	if err != nil {
 		return "", fmt.Errorf("failed to copy image %s to %s: %w", src, dest, err)
@@ -176,4 +192,64 @@ func (c *MirrorClient) BlobGet(ctx context.Context, r ref.Ref, d descriptor.Desc
 // BlobPut pushes a blob to the registry.
 func (c *MirrorClient) BlobPut(ctx context.Context, r ref.Ref, d descriptor.Descriptor, rdr io.Reader) (descriptor.Descriptor, error) {
 	return c.rc.BlobPut(ctx, r, d, rdr)
+}
+
+// tempFileReader wraps an os.File and removes the file on Close.
+type tempFileReader struct {
+	*os.File
+}
+
+func (r *tempFileReader) Close() error {
+	err := r.File.Close()
+	_ = os.Remove(r.File.Name())
+	return err
+}
+
+// bufferLargeBlobs is a regclient BlobReaderHook that pre-buffers large blobs
+// to disk before they are pushed to the destination.
+//
+// Without this hook, regclient streams large blobs directly from the source
+// registry HTTP response into the destination upload. For very large blobs
+// (>100 MiB) this can take minutes, causing Quay to expire the upload session
+// before the final PUT completes → BLOB_UPLOAD_UNKNOWN.
+//
+// By writing the blob to a temp file on an ephemeral volume first, the
+// subsequent monolithic PUT (BlobMax=-1) streams from local disk, completing
+// quickly without consuming large amounts of memory.
+func bufferLargeBlobs(br *blob.BReader) (*blob.BReader, error) {
+	d := br.GetDescriptor()
+	if d.Size > 0 && d.Size <= largeBlobThreshold {
+		return br, nil
+	}
+
+	fmt.Printf("Buffering large blob (%d bytes) to disk before upload\n", d.Size)
+
+	f, err := os.CreateTemp(blobBufferDir, "blob-*.tmp")
+	if err != nil {
+		_ = br.Close()
+		return nil, fmt.Errorf("failed to create temp file for blob buffer: %w", err)
+	}
+
+	n, err := io.Copy(f, br)
+	_ = br.Close()
+	if err != nil {
+		_ = f.Close()
+		_ = os.Remove(f.Name())
+		return nil, fmt.Errorf("failed to buffer blob to disk: %w", err)
+	}
+
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		_ = f.Close()
+		_ = os.Remove(f.Name())
+		return nil, fmt.Errorf("failed to seek blob buffer file: %w", err)
+	}
+
+	if d.Size <= 0 {
+		d.Size = n
+	}
+
+	return blob.NewReader(
+		blob.WithReader(&tempFileReader{f}),
+		blob.WithDesc(d),
+	), nil
 }

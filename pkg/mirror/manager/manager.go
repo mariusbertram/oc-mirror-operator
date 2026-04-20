@@ -471,6 +471,18 @@ func (m *MirrorManager) startWorkerBatch(ctx context.Context, mt *mirrorv1alpha1
 	var volumeMounts []corev1.VolumeMount
 	var volumes []corev1.Volume
 
+	// Ephemeral volume for buffering large blobs to disk before upload.
+	volumeMounts = append(volumeMounts, corev1.VolumeMount{
+		Name:      "blob-buffer",
+		MountPath: "/tmp/blob-buffer",
+	})
+	volumes = append(volumes, corev1.Volume{
+		Name: "blob-buffer",
+		VolumeSource: corev1.VolumeSource{
+			EmptyDir: &corev1.EmptyDirVolumeSource{},
+		},
+	})
+
 	if mt.Spec.AuthSecret != "" {
 		envVars = append(envVars, corev1.EnvVar{
 			Name:  "DOCKER_CONFIG",
