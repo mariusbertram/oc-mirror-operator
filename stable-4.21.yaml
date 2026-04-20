@@ -4,4 +4,7 @@ mirror:
   platform:
     channels:
       - name: stable-4.21
-        
+  operators:
+    - catalog: "registry.redhat.io/redhat/redhat-operator-index:v4.21"
+      packages:
+        - name: odf-operator

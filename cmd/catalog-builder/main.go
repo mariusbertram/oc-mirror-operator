@@ -63,14 +63,17 @@ func main() {
 		}
 	}
 
+	authDir := os.Getenv("DOCKER_CONFIG")
+
 	slog.Info("starting catalog-builder",
 		"source", source,
 		"target", target,
 		"packages", packages,
 		"insecureHosts", insecureHosts,
+		"authDir", authDir,
 	)
 
-	mc := mirrorclient.NewMirrorClient(insecureHosts, "")
+	mc := mirrorclient.NewMirrorClient(insecureHosts, authDir)
 	resolver := catalog.New(mc)
 
 	ctx := context.Background()

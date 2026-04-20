@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -81,7 +82,7 @@ func (r *ImageSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		if i := strings.Index(host, "/"); i >= 0 {
 			host = host[:i]
 		}
-		mc := mirrorclient.NewMirrorClient([]string{host}, "")
+		mc := mirrorclient.NewMirrorClient([]string{host}, os.Getenv("DOCKER_CONFIG"))
 		collector = mirror.NewCollector(mc)
 	}
 
@@ -152,6 +153,16 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs(
 		return nil
 	}
 
+	// If the CatalogReady condition is already True, don't recreate
+	// jobs that were cleaned up by TTL.
+	catalogAlreadyReady := false
+	for _, c := range is.Status.Conditions {
+		if c.Type == "CatalogReady" && c.Status == metav1.ConditionTrue {
+			catalogAlreadyReady = true
+			break
+		}
+	}
+
 	allSucceeded := true
 	anyFailed := false
 
@@ -171,15 +182,27 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs(
 		// Derive the target catalog image reference.
 		targetRef := catalogTargetRef(mt.Spec.Registry, op)
 
-		// Ensure the Job exists (no-op if it already does).
-		if err := r.CatalogBuildMgr.EnsureCatalogBuildJob(ctx, r.Client, is, mt, op.Catalog, targetRef, packages); err != nil {
-			return fmt.Errorf("failed to ensure CatalogBuildJob for %s: %w", op.Catalog, err)
-		}
-
 		jobName := builder.JobName(is.Name, op.Catalog)
 		phase, err := builder.GetBuildJobStatus(ctx, r.Client, jobName, is.Namespace)
 		if err != nil {
 			return err
+		}
+
+		// If the job was TTL-cleaned but catalog was already built, treat as succeeded.
+		if phase == builder.JobPhaseNotFound && catalogAlreadyReady {
+			l.Info("CatalogBuildJob already completed (TTL-cleaned)", "job", jobName)
+			continue
+		}
+
+		// Ensure the Job exists (no-op if it already does).
+		if phase == builder.JobPhaseNotFound {
+			if err := r.CatalogBuildMgr.EnsureCatalogBuildJob(ctx, r.Client, is, mt, op.Catalog, targetRef, packages); err != nil {
+				return fmt.Errorf("failed to ensure CatalogBuildJob for %s: %w", op.Catalog, err)
+			}
+			phase, err = builder.GetBuildJobStatus(ctx, r.Client, jobName, is.Namespace)
+			if err != nil {
+				return err
+			}
 		}
 
 		l.Info("CatalogBuildJob status", "job", jobName, "phase", phase)
@@ -233,7 +256,8 @@ func catalogTargetRef(registry string, op mirrorv1alpha1.Operator) string {
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *ImageSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	r.MirrorClient = mirrorclient.NewMirrorClient(nil, "")
+	authDir := os.Getenv("DOCKER_CONFIG")
+	r.MirrorClient = mirrorclient.NewMirrorClient(nil, authDir)
 	r.Collector = mirror.NewCollector(r.MirrorClient)
 	r.CatalogBuildMgr = builder.New()
 

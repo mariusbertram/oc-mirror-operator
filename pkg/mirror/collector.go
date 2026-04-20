@@ -77,13 +77,15 @@ func (c *Collector) CollectTargetImages(ctx context.Context, spec *mirrorv1alpha
 				continue
 			}
 			for _, compImg := range componentImages {
-				compDest := releaseComponentDestination(target.Spec.Registry, compImg)
+				compDest := componentDestination(target.Spec.Registry, compImg)
 				results = append(results, c.toTargetImage(compImg, compDest, meta))
 			}
 		}
 	}
 
-	// 2. Collect Operators
+	// 2. Collect Operators (bundle and related images)
+	// The filtered catalog image is built and pushed by a separate CatalogBuildJob;
+	// here we only collect the bundle/related images that need to be mirrored.
 	for _, op := range spec.Mirror.Operators {
 		pkgs := []string{}
 		for _, p := range op.Packages {
@@ -96,11 +98,7 @@ func (c *Collector) CollectTargetImages(ctx context.Context, spec *mirrorv1alpha
 			continue
 		}
 		for _, img := range images {
-			tag := "latest"
-			if strings.Contains(op.Catalog, ":") {
-				tag = strings.Split(op.Catalog, ":")[len(strings.Split(op.Catalog, ":"))-1]
-			}
-			dest := catalogDestination(target.Spec.Registry, img, tag)
+			dest := componentDestination(target.Spec.Registry, img)
 			results = append(results, c.toTargetImage(img, dest, meta))
 		}
 	}
@@ -152,12 +150,12 @@ func releasePayloadDestination(registry, releaseVersion, img string) string {
 	return fmt.Sprintf("%s/%s:%s", registry, imageNamePath(img), tag)
 }
 
-// releaseComponentDestination builds the destination for a component image extracted
-// from a release payload. The source digest is encoded as the tag so each distinct
-// component image gets a unique, deterministic destination.
+// componentDestination builds the destination for a component image (release or
+// operator bundle). The source digest is encoded as the tag so each distinct
+// image gets a unique, deterministic destination.
 //   e.g. quay.io/openshift-release-dev/ocp-v4.0-art-dev@sha256:184844… →
 //        registry/openshift-release-dev/ocp-v4.0-art-dev:sha256-184844…
-func releaseComponentDestination(registry, img string) string {
+func componentDestination(registry, img string) string {
 	namePath := imageNamePath(img)
 	// Derive a stable tag from the digest so each component gets a unique destination.
 	if idx := strings.Index(img, "@sha256:"); idx >= 0 {
@@ -167,8 +165,3 @@ func releaseComponentDestination(registry, img string) string {
 	return fmt.Sprintf("%s/%s", registry, namePath)
 }
 
-// catalogDestination preserves the image's repository path (minus the source registry)
-// so that different catalogs never overwrite each other in the target registry.
-func catalogDestination(registry, catalogImage, tag string) string {
-	return fmt.Sprintf("%s/%s:%s", registry, imageNamePath(catalogImage), tag)
-}

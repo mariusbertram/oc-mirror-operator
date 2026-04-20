@@ -35,23 +35,18 @@ func New(client *mirrorclient.MirrorClient) *CatalogResolver {
 }
 
 // ResolveCatalog pulls the catalog image, extracts the File-Based Catalog (FBC)
-// from the image layers, filters it to the requested packages, and returns all
-// bundle + related images — including the catalog image itself.
+// from the image layers, filters it to the requested packages (including
+// transitive dependencies), and returns all bundle + related images.
 //
-// When no MirrorClient is available (e.g., unit tests), only the catalog image
-// reference is returned.
+// The source catalog image itself is NOT included — the filtered catalog is
+// built and pushed separately by the CatalogBuildJob.
 func (r *CatalogResolver) ResolveCatalog(ctx context.Context, catalogImage string, packages []string) ([]string, error) {
 	if _, err := ref.New(catalogImage); err != nil {
 		return nil, fmt.Errorf("failed to parse catalog image reference: %w", err)
 	}
 
-	// Always include the catalog index image itself (needed at the target registry
-	// so that OLM can serve the FBC).
-	images := []string{catalogImage}
-
 	if r.client == nil {
-		// No registry client available — return only the catalog image.
-		return images, nil
+		return nil, nil
 	}
 
 	cfg, err := r.loadFBCFromImage(ctx, catalogImage)
@@ -64,9 +59,10 @@ func (r *CatalogResolver) ResolveCatalog(ctx context.Context, catalogImage strin
 		return nil, fmt.Errorf("failed to filter FBC: %w", err)
 	}
 
-	componentImages := r.ExtractImages(filtered)
-	images = append(images, componentImages...)
-	return images, nil
+	fmt.Printf("Catalog %s: filtered to %d packages, %d channels, %d bundles\n",
+		catalogImage, len(filtered.Packages), len(filtered.Channels), len(filtered.Bundles))
+
+	return r.ExtractImages(filtered), nil
 }
 
 // loadFBCFromImage fetches all image layers, collects every file under configs/,
@@ -176,37 +172,84 @@ func extractFBCLayer(r io.Reader, fsMap fstest.MapFS) int {
 	return count
 }
 
-// FilterFBC implements the in-memory filtering of a declarative configuration
+// olmPackageRequired is the property type that declares a dependency on another package.
+const olmPackageRequired = "olm.package.required"
+
+// packageRequiredValue is the JSON structure for an olm.package.required property.
+type packageRequiredValue struct {
+	PackageName string `json:"packageName"`
+}
+
+// FilterFBC implements the in-memory filtering of a declarative configuration.
+// It includes transitive dependencies by resolving olm.package.required
+// properties from bundles of selected packages.
 func (r *CatalogResolver) FilterFBC(ctx context.Context, cfg *declcfg.DeclarativeConfig, packages []string) (*declcfg.DeclarativeConfig, error) {
 	if len(packages) == 0 {
 		return cfg, nil
 	}
 
-	filtered := &declcfg.DeclarativeConfig{
-		Packages: []declcfg.Package{},
-		Channels: []declcfg.Channel{},
-		Bundles:  []declcfg.Bundle{},
+	// Build index of which packages exist in the full catalog.
+	catalogPkgs := make(map[string]bool, len(cfg.Packages))
+	for _, p := range cfg.Packages {
+		catalogPkgs[p.Name] = true
 	}
 
-	pkgMap := make(map[string]bool)
+	// Resolve transitive dependencies via olm.package.required.
+	pkgSet := make(map[string]bool, len(packages))
 	for _, p := range packages {
-		pkgMap[p] = true
+		pkgSet[p] = true
+	}
+
+	bundlesByPkg := make(map[string][]declcfg.Bundle)
+	for _, b := range cfg.Bundles {
+		bundlesByPkg[b.Package] = append(bundlesByPkg[b.Package], b)
+	}
+
+	// BFS over package dependencies until no new packages are discovered.
+	queue := make([]string, 0, len(packages))
+	for p := range pkgSet {
+		queue = append(queue, p)
+	}
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+
+		for _, b := range bundlesByPkg[current] {
+			for _, prop := range b.Properties {
+				if prop.Type != olmPackageRequired {
+					continue
+				}
+				var req packageRequiredValue
+				if json.Unmarshal(prop.Value, &req) != nil || req.PackageName == "" {
+					continue
+				}
+				if !pkgSet[req.PackageName] && catalogPkgs[req.PackageName] {
+					pkgSet[req.PackageName] = true
+					queue = append(queue, req.PackageName)
+					fmt.Printf("Including dependency package: %s (required by %s)\n", req.PackageName, current)
+				}
+			}
+		}
+	}
+
+	filtered := &declcfg.DeclarativeConfig{
+		Packages: make([]declcfg.Package, 0),
+		Channels: make([]declcfg.Channel, 0),
+		Bundles:  make([]declcfg.Bundle, 0),
 	}
 
 	for _, p := range cfg.Packages {
-		if pkgMap[p.Name] {
+		if pkgSet[p.Name] {
 			filtered.Packages = append(filtered.Packages, p)
 		}
 	}
-
 	for _, c := range cfg.Channels {
-		if pkgMap[c.Package] {
+		if pkgSet[c.Package] {
 			filtered.Channels = append(filtered.Channels, c)
 		}
 	}
-
 	for _, b := range cfg.Bundles {
-		if pkgMap[b.Package] {
+		if pkgSet[b.Package] {
 			filtered.Bundles = append(filtered.Bundles, b)
 		}
 	}
