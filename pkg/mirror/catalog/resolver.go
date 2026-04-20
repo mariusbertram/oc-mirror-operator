@@ -172,17 +172,33 @@ func extractFBCLayer(r io.Reader, fsMap fstest.MapFS) int {
 	return count
 }
 
-// olmPackageRequired is the property type that declares a dependency on another package.
-const olmPackageRequired = "olm.package.required"
+// OLM property types for dependency resolution.
+const (
+	olmPackageRequired = "olm.package.required"
+	olmGVKRequired     = "olm.gvk.required"
+	olmGVK             = "olm.gvk"
+)
 
 // packageRequiredValue is the JSON structure for an olm.package.required property.
 type packageRequiredValue struct {
 	PackageName string `json:"packageName"`
 }
 
+// gvkValue is the JSON structure for olm.gvk and olm.gvk.required properties.
+type gvkValue struct {
+	Group   string `json:"group"`
+	Version string `json:"version"`
+	Kind    string `json:"kind"`
+}
+
+// gvkKey returns a unique string key for indexing.
+func (g gvkValue) gvkKey() string {
+	return g.Group + "/" + g.Version + "/" + g.Kind
+}
+
 // FilterFBC implements the in-memory filtering of a declarative configuration.
-// It includes transitive dependencies by resolving olm.package.required
-// properties from bundles of selected packages.
+// It includes transitive dependencies by resolving both olm.package.required
+// and olm.gvk.required properties from bundles of selected packages.
 func (r *CatalogResolver) FilterFBC(ctx context.Context, cfg *declcfg.DeclarativeConfig, packages []string) (*declcfg.DeclarativeConfig, error) {
 	if len(packages) == 0 {
 		return cfg, nil
@@ -194,18 +210,36 @@ func (r *CatalogResolver) FilterFBC(ctx context.Context, cfg *declcfg.Declarativ
 		catalogPkgs[p.Name] = true
 	}
 
-	// Resolve transitive dependencies via olm.package.required.
-	pkgSet := make(map[string]bool, len(packages))
-	for _, p := range packages {
-		pkgSet[p] = true
-	}
-
 	bundlesByPkg := make(map[string][]declcfg.Bundle)
 	for _, b := range cfg.Bundles {
 		bundlesByPkg[b.Package] = append(bundlesByPkg[b.Package], b)
 	}
 
-	// BFS over package dependencies until no new packages are discovered.
+	// Build GVK provider index: GVK key → set of package names that provide it.
+	gvkProviders := make(map[string]map[string]bool)
+	for _, b := range cfg.Bundles {
+		for _, prop := range b.Properties {
+			if prop.Type != olmGVK {
+				continue
+			}
+			var g gvkValue
+			if json.Unmarshal(prop.Value, &g) != nil {
+				continue
+			}
+			key := g.gvkKey()
+			if gvkProviders[key] == nil {
+				gvkProviders[key] = make(map[string]bool)
+			}
+			gvkProviders[key][b.Package] = true
+		}
+	}
+
+	// Resolve transitive dependencies via BFS.
+	pkgSet := make(map[string]bool, len(packages))
+	for _, p := range packages {
+		pkgSet[p] = true
+	}
+
 	queue := make([]string, 0, len(packages))
 	for p := range pkgSet {
 		queue = append(queue, p)
@@ -216,17 +250,29 @@ func (r *CatalogResolver) FilterFBC(ctx context.Context, cfg *declcfg.Declarativ
 
 		for _, b := range bundlesByPkg[current] {
 			for _, prop := range b.Properties {
-				if prop.Type != olmPackageRequired {
-					continue
-				}
-				var req packageRequiredValue
-				if json.Unmarshal(prop.Value, &req) != nil || req.PackageName == "" {
-					continue
-				}
-				if !pkgSet[req.PackageName] && catalogPkgs[req.PackageName] {
-					pkgSet[req.PackageName] = true
-					queue = append(queue, req.PackageName)
-					fmt.Printf("Including dependency package: %s (required by %s)\n", req.PackageName, current)
+				switch prop.Type {
+				case olmPackageRequired:
+					var req packageRequiredValue
+					if json.Unmarshal(prop.Value, &req) != nil || req.PackageName == "" {
+						continue
+					}
+					if !pkgSet[req.PackageName] && catalogPkgs[req.PackageName] {
+						pkgSet[req.PackageName] = true
+						queue = append(queue, req.PackageName)
+						fmt.Printf("Including dependency package: %s (required by %s via olm.package.required)\n", req.PackageName, current)
+					}
+				case olmGVKRequired:
+					var g gvkValue
+					if json.Unmarshal(prop.Value, &g) != nil {
+						continue
+					}
+					for provider := range gvkProviders[g.gvkKey()] {
+						if !pkgSet[provider] && catalogPkgs[provider] {
+							pkgSet[provider] = true
+							queue = append(queue, provider)
+							fmt.Printf("Including dependency package: %s (provides %s/%s required by %s)\n", provider, g.Group, g.Kind, current)
+						}
+					}
 				}
 			}
 		}
