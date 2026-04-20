@@ -16,8 +16,9 @@ Im Gegensatz zum statischen `oc-mirror` CLI-Tool arbeitet dieser Operator cloud-
 | **Release Component-Images** | ✅ | ✅ | Automatische Extraktion aller ~190 Component-Images aus dem Release-Payload |
 | **Multi-Architektur Support** | ✅ | ✅ | `architectures: [amd64, arm64, ...]` — Multi-Arch-Manifest-Auflösung |
 | **OCP und OKD** | ✅ | ✅ | `type: ocp` (Default) oder `type: okd` |
-| **Operator-Katalog Mirroring** | ✅ | ✅ | FBC-Parsing, Package-Filterung, Bundle-Image-Extraktion |
-| **Gefiltertes Katalog-Image** | ✅ | ✅ | Neues OCI-Image mit gefiltertem FBC-Layer wird gebaut und gepusht |
+| **Operator-Katalog Mirroring** | ✅ | ✅ | FBC-Parsing, Package-Filterung, Bundle-Image-Extraktion mit automatischer Dependency-Resolution |
+| **Operator Dependency Resolution** | ✅ | ✅ | Transitive BFS-Auflösung von `olm.package.required`, `olm.gvk.required` und Companion-Packages (z.B. `odf-operator` → `odf-dependencies`) |
+| **Gefiltertes Katalog-Image (OLM v0+v1)** | ✅ | ✅ | Source-Image als Basis + FBC-Overlay-Layer mit Opaque Whiteouts — kompatibel mit CatalogSource (gRPC) und ClusterCatalog |
 | **Package/Channel-Filterung** | ✅ | ✅ | Einzelne Packages und Channels selektierbar |
 | **Version-Ranges (Operators)** | ✅ | ✅ | `minVersion` / `maxVersion` pro Package oder Channel |
 | **Additional Images** | ✅ | ✅ | Einzelne Images mit optionalem `targetRepo` / `targetTag` |
@@ -31,13 +32,15 @@ Im Gegensatz zum statischen `oc-mirror` CLI-Tool arbeitet dieser Operator cloud-
 | **Deklarativ via CRDs** | ✗ | ✅ | `MirrorTarget` + `ImageSet` Custom Resources |
 | **Skalierbare Worker-Pods** | ✗ | ✅ | Konfigurierbare Concurrency (bis 100 Pods) und BatchSize (bis 100 Images/Pod) |
 | **Ephemeral-Volume Blob-Buffering** | ✗ | ✅ | Große Blobs (>100 MiB) werden auf emptyDir gepuffert — kein OOM bei Multi-GB Layern |
+| **Blob-Replikationsplanung** | ✗ | ✅ | Greedy-Set-Cover-Algorithmus optimiert die Mirror-Reihenfolge für maximale Blob-Wiederverwendung |
+| **Automatischer Catalog-Rebuild** | ✗ | ✅ | Build-Signatur erkennt Änderungen an Packages/Katalogen und triggert automatischen Rebuild |
+| **Worker-Pod-Lifecycle** | ✗ | ✅ | Automatische Bereinigung abgeschlossener/fehlgeschlagener Worker- und Orphan-Pods |
 
 ### ⚠️ Teilweise implementiert
 
 | Feature | oc-mirror CLI | oc-mirror-operator | Status |
 |---------|:---:|:---:|--------|
 | **IDMS/ITMS-Generierung** | ✅ | ⚠️ | Code vorhanden (`GenerateIDMS()` / `GenerateITMS()`), aber nicht automatisch angewendet oder exportiert |
-| **Operator SkipDependencies** | ✅ | ⚠️ | API-Feld definiert, wird im Collector aber nicht ausgewertet |
 | **Operator TargetCatalog** | ✅ | ⚠️ | API-Feld definiert, wird bei der Ziel-Berechnung aber nicht verwendet |
 
 ### ❌ Nicht implementierte Features
@@ -67,12 +70,14 @@ Im Gegensatz zum statischen `oc-mirror` CLI-Tool arbeitet dieser Operator cloud-
 | **Namespace-scoped RBAC** | Keine ClusterRole — alle Rechte auf den Operator-Namespace begrenzt |
 | **Registry-Existenz-Check** | Periodische Prüfung ob Images in der Ziel-Registry noch vorhanden sind |
 | **Quay-Kompatibilität** | Spezielles Blob-Buffering für Quay-Registries (Upload-Session-Timeout-Workaround) |
+| **Blob-Replikationsplanung** | Greedy-Set-Cover optimiert Mirror-Reihenfolge: Shared-Layer werden zuerst gepusht → Folge-Images nutzen Blob-Mount (Zero-Copy) |
+| **Catalog-Build-Signatur** | SHA256-Hash über Operator-Image + Katalog + Package-Liste erkennt automatisch wann ein Rebuild nötig ist |
 
 ---
 
 ## Architektur
 
-Die Architektur folgt einem skalierbaren **Drei-Schichten-Modell**:
+Die Architektur folgt einem skalierbaren **Drei-Schichten-Modell** mit einem zusätzlichen **Catalog-Build-System**:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -83,30 +88,33 @@ Die Architektur folgt einem skalierbaren **Drei-Schichten-Modell**:
 │  │  MirrorTarget CR │           │   Operator (Control Plane)   │    │
 │  └──────────────────┘  reconcile│   internal/controller/       │    │
 │                         ───────►│                              │    │
-│                                 └──────────────┬───────────────┘    │
-│                                                │ creates Deployment │
-│                                                ▼                    │
-│                                 ┌──────────────────────────────┐    │
-│                                 │  Manager Pod (Orchestrator)  │    │
-│                                 │  pkg/mirror/manager/         │    │
-│                                 │                              │    │
-│                                 │  • Lädt Image-State          │    │
-│                                 │  • Verwaltet Worker-Queue    │    │
-│                                 │  • HTTP Status-API (:8080)   │    │
-│                                 │  • Registry-Verifikation     │    │
 │                                 └──────┬──────────────┬────────┘    │
-│                                        │ creates Pods │ receives    │
-│                                        ▼              │ POST /status│
-│                                 ┌──────────────┐      │             │
-│                                 │ Worker Pod 1 │──────┘             │
-│                                 │ Worker Pod 2 │                    │
-│                                 │ Worker Pod N │                    │
-│                                 └──────┬───────┘                    │
-│                                        │ regclient + emptyDir       │
-│                                        ▼                            │
-│                                 ┌──────────────────────────────┐    │
-│                                 │   Ziel-Registry              │    │
-│                                 └──────────────────────────────┘    │
+│                                        │ creates      │ creates     │
+│                                        │ Deployment   │ Job         │
+│                                        ▼              ▼             │
+│                  ┌────────────────────────┐  ┌────────────────────┐ │
+│                  │ Manager Pod            │  │ Catalog-Builder    │ │
+│                  │ pkg/mirror/manager/    │  │ Job                │ │
+│                  │                        │  │ cmd/catalog-builder│ │
+│                  │ • Lädt Image-State     │  │                    │ │
+│                  │ • Verwaltet Worker-Q   │  │ • Filtert FBC      │ │
+│                  │ • HTTP Status-API      │  │ • Löst Deps auf    │ │
+│                  │ • Registry-Verifikation│  │ • Baut OCI-Image   │ │
+│                  │ • Worker-Pod-Cleanup   │  │ • Pusht Catalog    │ │
+│                  └──────┬────────────┬────┘  └────────────────────┘ │
+│                         │ creates    │ receives                     │
+│                         │ Pods       │ POST /status                 │
+│                         ▼            │                              │
+│                  ┌──────────────┐    │                              │
+│                  │ Worker Pod 1 │────┘                              │
+│                  │ Worker Pod 2 │                                   │
+│                  │ Worker Pod N │                                   │
+│                  └──────┬───────┘                                   │
+│                         │ regclient + emptyDir                      │
+│                         ▼                                           │
+│                  ┌──────────────────────────────┐                   │
+│                  │   Ziel-Registry              │                   │
+│                  └──────────────────────────────┘                   │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -114,18 +122,87 @@ Die Architektur folgt einem skalierbaren **Drei-Schichten-Modell**:
 
 | Schicht | Komponente | Beschreibung |
 |---------|------------|-------------|
-| **Control Plane** | `Operator` (`internal/controller/`) | Überwacht CRs, berechnet Image-Soll-Listen via Cincinnati-API und FBC-Parsing, setzt Status-Conditions |
-| **Orchestration** | `Manager` (`pkg/mirror/manager/`) | Ein Deployment pro `MirrorTarget`. Lädt Image-State, startet Worker-Pods, empfängt Ergebnisse via authentifizierter HTTP-API, verifiziert Registry-Zustand |
+| **Control Plane** | `Operator` (`internal/controller/`) | Überwacht CRs, berechnet Image-Soll-Listen via Cincinnati-API und FBC-Parsing, erstellt Catalog-Build-Jobs, setzt Status-Conditions |
+| **Orchestration** | `Manager` (`pkg/mirror/manager/`) | Ein Deployment pro `MirrorTarget`. Lädt Image-State, plant Mirror-Reihenfolge (Blob-Planner), startet Worker-Pods, empfängt Ergebnisse via authentifizierter HTTP-API, verifiziert Registry-Zustand, bereinigt abgeschlossene Pods |
 | **Execution** | `Worker` (kurzlebige Pods) | Kopiert Image-Batches mit `regclient`, puffert große Blobs auf emptyDir, kopiert Signaturen, meldet Status via `POST /status` |
+| **Catalog Build** | `Catalog-Builder` (K8s Job) | Pro Quell-Katalog ein Job: filtert FBC, löst Dependencies auf, baut OCI-Image mit Source-Layers + FBC-Overlay, pusht in Ziel-Registry |
 | **State** | ConfigMap (gzip-JSON) | Per-Image Mirroring-Status in Kubernetes ConfigMaps — kein PV/PVC nötig, ~30 Bytes pro Image |
 
 ### Datenfluss
 
 1. Nutzer erstellt `MirrorTarget` + `ImageSet` CRs
 2. **Operator** löst via Cincinnati-API (Releases) und Catalog-Image (Operators) die vollständige Image-Liste auf und speichert sie als gzip-komprimierte ConfigMap
-3. **Manager** lädt den Image-State, prüft ob gespiegelte Images noch in der Ziel-Registry vorhanden sind und startet Worker-Pods für ausstehende Images
-4. **Worker** kopiert Images (inkl. Signaturen und Referrers), puffert große Blobs auf Ephemeral Volume und meldet Ergebnisse via `POST /status` an den Manager
-5. Manager aktualisiert Image-State und `ImageSet.Status`
+3. **Operator** erstellt Catalog-Builder-Jobs für jeden konfigurierten Operator-Katalog (mit Build-Signatur zur Änderungserkennung)
+4. **Catalog-Builder** filtert FBC, löst Dependencies auf, baut OCI-Image und pusht es in die Ziel-Registry
+5. **Manager** lädt den Image-State, plant die Mirror-Reihenfolge via Blob-Planner, prüft ob gespiegelte Images noch in der Ziel-Registry vorhanden sind und startet Worker-Pods
+6. **Worker** kopiert Images (inkl. Signaturen und Referrers), puffert große Blobs auf Ephemeral Volume und meldet Ergebnisse via `POST /status` an den Manager
+7. Manager bereinigt abgeschlossene/fehlgeschlagene Worker-Pods und aktualisiert Image-State und `ImageSet.Status`
+
+---
+
+## Operator-Katalog-System
+
+Der Operator baut gefilterte OCI-Katalog-Images, die mit **OLM v0** (CatalogSource/gRPC) und **OLM v1** (ClusterCatalog) kompatibel sind.
+
+### Dependency Resolution
+
+Beim Filtern eines Operator-Katalogs werden automatisch alle transitiven Dependencies via **BFS-Traversierung** aufgelöst:
+
+| Dependency-Typ | Beschreibung | Beispiel |
+|----------------|-------------|---------|
+| `olm.package.required` | Direkte Package-Dependencies aus Bundle-Properties | `odf-dependencies` requires `cephcsi-operator` |
+| `olm.gvk.required` | GVK-Dependencies (Group/Version/Kind), aufgelöst zum Provider-Package | Bundle benötigt `StorageCluster` API → `ocs-operator` |
+| Companion-Packages | Red-Hat-Namenskonvention: `<name>-dependencies`, `<name>-deps` | `odf-operator` → `odf-dependencies` |
+
+### Gefiltertes Katalog-Image (OCI Layer-Architektur)
+
+```
+┌──────────────────────────────────────────┐
+│  Layer 6: Filtered FBC Overlay (neu)     │  ← configs/<pkg>/catalog.yaml
+│           + Opaque Whiteouts             │  ← configs/.wh..wh..opq
+│           + Cache-Invalidierung          │  ← tmp/cache/.wh..wh..opq
+├──────────────────────────────────────────┤
+│  Layer 5: Original FBC (full catalog)    │  ← durch Whiteout überdeckt
+│  Layer 4: opm Binary + Tools             │
+│  Layer 3: OS Dependencies                │
+│  Layer 2: Base OS (RHEL UBI)             │
+│  Layer 1: Root Filesystem                │
+└──────────────────────────────────────────┘
+```
+
+- **Source-Image als Basis**: Alle Original-Layers werden per Blob-Copy übernommen (behält `opm` Binary, Entrypoint, OS)
+- **FBC-Overlay**: Neuer Layer mit gefiltertem FBC + OCI Opaque Whiteout (`configs/.wh..wh..opq`) überdeckt den vollen Katalog
+- **Cache-Invalidierung**: Opaque Whiteout für `/tmp/cache/` entfernt den vorgebauten `opm`-Cache; `--cache-enforce-integrity=false` im Image-Cmd erlaubt Neuaufbau
+- **OLM-Label**: `operators.operatorframework.io.index.configs.v1=/configs` für Kompatibilität mit beiden OLM-Versionen
+
+### Build-Signatur und Automatischer Rebuild
+
+Katalog-Builds werden über eine **Build-Signatur** (SHA256-Hash) verwaltet:
+- Eingabe: Operator-Image + Katalog-URLs + Full-Flag + sortierte Package-Namen
+- Gespeichert als Annotation: `mirror.openshift.io/catalog-build-sig`
+- Bei Signatur-Änderung (neues Package, geänderter Katalog): alter Job wird gelöscht, neuer Build gestartet
+
+### Catalog-Builder Job
+
+Pro Quell-Katalog wird ein Kubernetes Job erstellt:
+- Container: Gleich Operator-Image, Entrypoint `/catalog-builder`
+- Konfiguration über Umgebungsvariablen: `SOURCE_CATALOG`, `TARGET_REF`, `CATALOG_PACKAGES`
+- emptyDir-Volume `/tmp/blob-buffer` für große Layer-Blobs
+- Max 3 Retries, 10 Minuten TTL nach Abschluss
+
+---
+
+## Blob-Replikationsplanung
+
+Der Manager optimiert die Mirror-Reihenfolge mittels eines **Greedy-Set-Cover-Algorithmus** (`PlanMirrorOrder`):
+
+1. **Phase 1**: Manifeste aller Images abrufen, Blob-Digests pro Image sammeln
+2. **Phase 2**: Blob-Häufigkeit zählen (wie viele Images referenzieren jeden Blob)
+3. **Phase 3**: Greedy-Sortierung:
+   - **Erstes Image**: Dasjenige dessen Blobs in den meisten anderen Images vorkommen (Shared-Layer werden zuerst gepusht)
+   - **Folge-Images**: Bevorzugt Images mit den meisten bereits hochgeladenen Blobs (maximiert Blob-Mount-Treffer)
+
+**Effekt**: Blobs die von einem früheren Image gepusht wurden, werden von `regclient` via Anonymous-Blob-Mount (Zero-Copy) verlinkt — kein erneuter Daten-Transfer nötig.
 
 ---
 
@@ -190,13 +267,13 @@ spec:
           maxVersion: "4.21.9"
           shortestPath: true
 
-    # OLM Operator-Kataloge
+    # OLM Operator-Kataloge (mit automatischer Dependency-Resolution)
     operators:
-      - catalog: "registry.redhat.io/redhat/redhat-operator-index:v4.15"
+      - catalog: "registry.redhat.io/redhat/redhat-operator-index:v4.21"
         packages:
-          - name: openshift-gitops-operator
-            channels:
-              - name: stable
+          - name: odf-operator
+            # Dependencies (odf-dependencies, cephcsi-operator, etc.)
+            # werden automatisch aufgelöst und mit gespiegelt
 
     # Einzelne zusätzliche Images
     additionalImages:
@@ -391,6 +468,7 @@ make generate    # DeepCopy-Methoden
 | **Kein Pruning** | Veraltete Images werden nicht automatisch aus der Ziel-Registry gelöscht |
 | **Kein Mirror-to-Disk** | Air-Gap-Transfer über Datenträger ist nicht möglich — der Operator benötigt Netzwerkzugang zu beiden Registries |
 | **Kein HA-Modus** | Leader Election konfigurierbar (`--leader-elect`), aber standardmäßig deaktiviert |
+| **Kein Catalog-Cache Pre-Build** | Gefilterter Katalog nutzt `--cache-enforce-integrity=false` — Cache wird beim ersten `opm serve` gebaut (einige Sekunden Startup-Delay) |
 
 ---
 
@@ -399,7 +477,9 @@ make generate    # DeepCopy-Methoden
 ```
 oc-mirror-operator/
 ├── api/v1alpha1/              # CRD-Typen (MirrorTarget, ImageSet)
-├── cmd/main.go                # Einsprungpunkt: controller | manager | worker
+├── cmd/
+│   ├── main.go                # Einsprungpunkt: controller | manager | worker
+│   └── catalog-builder/       # Catalog-Builder Binary (läuft in K8s Jobs)
 ├── config/
 │   ├── crd/                   # Generierte CRD-Manifeste
 │   ├── rbac/                  # Role, RoleBinding, ServiceAccounts
@@ -410,11 +490,14 @@ oc-mirror-operator/
 │   ├── imageset_controller.go
 │   └── conditions.go
 └── pkg/mirror/
-    ├── client/                # MirrorClient (regclient-Wrapper, Blob-Buffering)
+    ├── client/                # MirrorClient (regclient-Wrapper, Blob-Buffering, BlobCopy)
     ├── collector.go           # Image-Liste aus ImageSet-Spec aufbauen
-    ├── manager/               # Manager-Logik (Worker-Orchestrierung, State)
+    ├── planner.go             # Blob-Replikationsplanung (Greedy Set-Cover)
+    ├── manager/               # Manager-Logik (Worker-Orchestrierung, State, Pod-Cleanup)
     ├── release/               # Cincinnati-API-Client (Graph, BFS, Signatures)
-    ├── catalog/               # FBC-Resolver + Catalog-Builder
+    ├── catalog/
+    │   ├── resolver.go        # FBC-Resolver: FilterFBC, Dependency-Resolution, Image-Build
+    │   └── builder/           # Catalog-Builder Job-Management, Build-Signatur
     ├── imagestate/            # ConfigMap-basierte State-Persistenz (gzip-JSON)
     └── idms_itms.go           # IDMS/ITMS-Generierung (noch nicht integriert)
 ```
