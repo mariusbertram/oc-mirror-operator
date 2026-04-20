@@ -136,6 +136,7 @@ func (m *MirrorManager) Run(ctx context.Context) error {
 
 // syncInProgressFromPods rebuilds m.inProgress from existing worker pods so that
 // a manager restart does not re-dispatch images that are already being mirrored.
+// It also deletes any completed/failed worker pods left over from a previous run.
 func (m *MirrorManager) syncInProgressFromPods(ctx context.Context) error {
 	pods, err := m.Clientset.CoreV1().Pods(m.Namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: fmt.Sprintf("app=oc-mirror-worker,mirrortarget=%s", m.TargetName),
@@ -147,6 +148,8 @@ func (m *MirrorManager) syncInProgressFromPods(ctx context.Context) error {
 	defer m.mu.Unlock()
 	for _, pod := range pods.Items {
 		if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+			fmt.Printf("Cleaning up finished worker pod %s (%s)\n", pod.Name, pod.Status.Phase)
+			_ = m.Clientset.CoreV1().Pods(m.Namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{})
 			continue
 		}
 		// New multi-dest annotation (batch mode)
@@ -226,18 +229,19 @@ func (m *MirrorManager) handleStatusUpdate(w http.ResponseWriter, r *http.Reques
 	w.WriteHeader(http.StatusOK)
 }
 
-// cleanupFinishedWorkers checks all pods in m.inProgress and removes any that
-// have finished (Succeeded or Failed) without calling the status API. Failed pods
-// have their ImageSet status reset to Pending so they will be retried.
+// cleanupFinishedWorkers removes completed/failed worker pods.
+// First it handles tracked pods in m.inProgress (resetting Failed images to
+// Pending), then it sweeps for any orphaned finished pods that fell out of
+// tracking (e.g. due to a manager restart).
 // Caller must NOT hold m.mu.
 func (m *MirrorManager) cleanupFinishedWorkers(ctx context.Context) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
+	// 1. Tracked pods in m.inProgress.
+	deletedPods := map[string]struct{}{}
 	for dest, podName := range m.inProgress {
 		pod, err := m.Clientset.CoreV1().Pods(m.Namespace).Get(ctx, podName, metav1.GetOptions{})
 		if err != nil {
-			// Pod gone — clean up
 			delete(m.inProgress, dest)
 			continue
 		}
@@ -249,7 +253,30 @@ func (m *MirrorManager) cleanupFinishedWorkers(ctx context.Context) {
 			fmt.Printf("Worker pod %s for %s failed without reporting; resetting to Pending\n", podName, dest)
 			m.setImageStateLocked(dest, "Pending", "")
 		}
-		_ = m.Clientset.CoreV1().Pods(m.Namespace).Delete(ctx, podName, metav1.DeleteOptions{})
+		if _, already := deletedPods[podName]; !already {
+			_ = m.Clientset.CoreV1().Pods(m.Namespace).Delete(ctx, podName, metav1.DeleteOptions{})
+			deletedPods[podName] = struct{}{}
+		}
+	}
+
+	m.mu.Unlock()
+
+	// 2. Sweep for any orphaned finished worker pods not in m.inProgress.
+	pods, err := m.Clientset.CoreV1().Pods(m.Namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("app=oc-mirror-worker,mirrortarget=%s", m.TargetName),
+	})
+	if err != nil {
+		return
+	}
+	for _, pod := range pods.Items {
+		if pod.Status.Phase != corev1.PodSucceeded && pod.Status.Phase != corev1.PodFailed {
+			continue
+		}
+		if _, already := deletedPods[pod.Name]; already {
+			continue
+		}
+		fmt.Printf("Cleaning up orphaned worker pod %s (%s)\n", pod.Name, pod.Status.Phase)
+		_ = m.Clientset.CoreV1().Pods(m.Namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{})
 	}
 }
 
