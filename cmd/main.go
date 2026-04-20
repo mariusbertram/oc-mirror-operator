@@ -67,9 +67,11 @@ func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "manager":
+			ctrl.SetLogger(zap.New(zap.UseFlagOptions(&zap.Options{Development: true})))
 			runManager()
 			return
 		case "worker":
+			ctrl.SetLogger(zap.New(zap.UseFlagOptions(&zap.Options{Development: true})))
 			runWorker()
 			return
 		}
@@ -118,20 +120,24 @@ func runWorker() {
 	}
 
 	c := mirrorclient.NewMirrorClient(insecureHosts, os.Getenv("DOCKER_CONFIG"))
+	fmt.Printf("Starting mirror: %s -> %s\n", src, dest)
 	effectiveDest, err := c.CopyImage(context.Background(), src, dest)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "ERROR: failed to mirror image %s: %v\n", src, err)
 		setupLog.Error(err, "failed to mirror image")
 		reportStatus(dest, "", err.Error())
 		os.Exit(1)
 	}
-
+	fmt.Printf("Copy complete, verifying digest at %s\n", effectiveDest)
 	digest, err := c.GetDigest(context.Background(), effectiveDest)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "ERROR: failed to verify mirrored image digest: %v\n", err)
 		setupLog.Error(err, "failed to verify mirrored image digest")
 		reportStatus(dest, "", err.Error())
 		os.Exit(1)
 	}
 
+	fmt.Printf("Successfully mirrored %s -> %s (digest: %s)\n", src, dest, digest)
 	setupLog.Info("successfully mirrored image", "src", src, "dest", dest, "digest", digest)
 	reportStatus(dest, digest, "")
 }
