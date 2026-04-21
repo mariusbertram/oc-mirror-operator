@@ -7,10 +7,14 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -36,6 +40,8 @@ type MirrorTargetReconciler struct {
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=route.openshift.io,resources=routes,verbs=get;list;watch;create;update;patch;delete
 
 func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	l := log.FromContext(ctx)
@@ -167,6 +173,10 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 								},
 							},
 							Resources: mt.Spec.Manager.Resources,
+							Ports: []corev1.ContainerPort{
+								{Name: "status", ContainerPort: 8080, Protocol: corev1.ProtocolTCP},
+								{Name: "resources", ContainerPort: 8081, Protocol: corev1.ProtocolTCP},
+							},
 						},
 					},
 					Volumes: []corev1.Volume{
@@ -225,6 +235,47 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	})
 	if err != nil {
 		l.Error(err, "Failed to create or update manager service")
+		setCondition(&mt.Status.Conditions, "Ready", metav1.ConditionFalse, "ReconcileError", err.Error())
+		_ = r.Status().Update(ctx, mt)
+		return ctrl.Result{}, err
+	}
+
+	// Resource API Service (port 8081) — serves IDMS, ITMS, CatalogSource, etc.
+	resourceSvc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fmt.Sprintf("%s-resources", mt.Name),
+			Namespace: mt.Namespace,
+		},
+	}
+	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, resourceSvc, func() error {
+		if err := controllerutil.SetControllerReference(mt, resourceSvc, r.Scheme); err != nil {
+			return err
+		}
+		resourceSvc.Labels = map[string]string{
+			"app":          "oc-mirror-manager",
+			"mirrortarget": mt.Name,
+		}
+		resourceSvc.Spec = corev1.ServiceSpec{
+			Selector: resourceSvc.Labels,
+			Ports: []corev1.ServicePort{
+				{
+					Name: "resources",
+					Port: 8081,
+				},
+			},
+		}
+		return nil
+	})
+	if err != nil {
+		l.Error(err, "Failed to create or update resources service")
+		setCondition(&mt.Status.Conditions, "Ready", metav1.ConditionFalse, "ReconcileError", err.Error())
+		_ = r.Status().Update(ctx, mt)
+		return ctrl.Result{}, err
+	}
+
+	// Create Route/Ingress for the resource server based on ExposeConfig.
+	if err := r.reconcileExposure(ctx, mt); err != nil {
+		l.Error(err, "Failed to reconcile resource server exposure")
 		setCondition(&mt.Status.Conditions, "Ready", metav1.ConditionFalse, "ReconcileError", err.Error())
 		_ = r.Status().Update(ctx, mt)
 		return ctrl.Result{}, err
@@ -353,6 +404,210 @@ func (r *MirrorTargetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mirrorv1alpha1.MirrorTarget{}).
 		Complete(r)
+}
+
+// reconcileExposure creates/updates/cleans up Route, Ingress, or HTTPRoute
+// based on the MirrorTarget's ExposeConfig.
+func (r *MirrorTargetReconciler) reconcileExposure(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget) error {
+	l := log.FromContext(ctx)
+
+	exposeType := mirrorv1alpha1.ExposeTypeService // default
+	if mt.Spec.Expose != nil && mt.Spec.Expose.Type != "" {
+		exposeType = mt.Spec.Expose.Type
+	} else {
+		// Auto-detect OpenShift: check if Route API exists.
+		if r.hasRouteAPI(ctx) {
+			exposeType = mirrorv1alpha1.ExposeTypeRoute
+		}
+	}
+
+	resourceSvcName := fmt.Sprintf("%s-resources", mt.Name)
+
+	// Clean up exposure objects that don't match desired type.
+	if exposeType != mirrorv1alpha1.ExposeTypeRoute {
+		r.deleteRoute(ctx, mt)
+	}
+	if exposeType != mirrorv1alpha1.ExposeTypeIngress {
+		r.deleteIngress(ctx, mt)
+	}
+
+	switch exposeType {
+	case mirrorv1alpha1.ExposeTypeRoute:
+		return r.ensureRoute(ctx, mt, resourceSvcName)
+	case mirrorv1alpha1.ExposeTypeIngress:
+		return r.ensureIngress(ctx, mt, resourceSvcName)
+	case mirrorv1alpha1.ExposeTypeService:
+		l.Info("Resource server exposed via Service only", "service", resourceSvcName)
+		return nil
+	case mirrorv1alpha1.ExposeTypeGatewayAPI:
+		l.Info("GatewayAPI exposure not yet implemented — using Service only")
+		return nil
+	default:
+		return nil
+	}
+}
+
+// hasRouteAPI checks if the OpenShift Route API is available.
+func (r *MirrorTargetReconciler) hasRouteAPI(ctx context.Context) bool {
+	route := &unstructured.Unstructured{}
+	route.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "route.openshift.io",
+		Version: "v1",
+		Kind:    "Route",
+	})
+	route.SetName("__probe__")
+	route.SetNamespace("default")
+	// Try to Get a non-existent Route. If the API is not installed, we get a NoMatch error.
+	err := r.Get(ctx, client.ObjectKeyFromObject(route), route)
+	if err == nil {
+		return true
+	}
+	// If the error is "no match" the API doesn't exist.
+	if meta.IsNoMatchError(err) {
+		return false
+	}
+	// NotFound means the API exists but the object doesn't.
+	return errors.IsNotFound(err)
+}
+
+// ensureRoute creates or updates an OpenShift Route for the resource server.
+func (r *MirrorTargetReconciler) ensureRoute(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget, svcName string) error {
+	l := log.FromContext(ctx)
+
+	route := &unstructured.Unstructured{}
+	route.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "route.openshift.io",
+		Version: "v1",
+		Kind:    "Route",
+	})
+	route.SetName(fmt.Sprintf("%s-resources", mt.Name))
+	route.SetNamespace(mt.Namespace)
+
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, route, func() error {
+		if err := controllerutil.SetControllerReference(mt, route, r.Scheme); err != nil {
+			return err
+		}
+		route.SetLabels(map[string]string{
+			"app":          "oc-mirror-resources",
+			"mirrortarget": mt.Name,
+		})
+
+		spec := map[string]interface{}{
+			"to": map[string]interface{}{
+				"kind": "Service",
+				"name": svcName,
+			},
+			"port": map[string]interface{}{
+				"targetPort": "resources",
+			},
+			"tls": map[string]interface{}{
+				"termination":                   "edge",
+				"insecureEdgeTerminationPolicy": "Redirect",
+			},
+		}
+		// Only set host when user explicitly provides it.
+		if mt.Spec.Expose != nil && mt.Spec.Expose.Host != "" {
+			spec["host"] = mt.Spec.Expose.Host
+		}
+		route.Object["spec"] = spec
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create/update Route: %w", err)
+	}
+
+	l.Info("Route for resource server reconciled", "route", route.GetName())
+	return nil
+}
+
+// ensureIngress creates or updates a networking.k8s.io/v1 Ingress.
+func (r *MirrorTargetReconciler) ensureIngress(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget, svcName string) error {
+	l := log.FromContext(ctx)
+
+	host := ""
+	ingressClass := ""
+	if mt.Spec.Expose != nil {
+		host = mt.Spec.Expose.Host
+		ingressClass = mt.Spec.Expose.IngressClassName
+	}
+	if host == "" {
+		return fmt.Errorf("Ingress exposure requires a host to be set in spec.expose.host")
+	}
+
+	ingress := &networkingv1.Ingress{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fmt.Sprintf("%s-resources", mt.Name),
+			Namespace: mt.Namespace,
+		},
+	}
+
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, ingress, func() error {
+		if err := controllerutil.SetControllerReference(mt, ingress, r.Scheme); err != nil {
+			return err
+		}
+		ingress.Labels = map[string]string{
+			"app":          "oc-mirror-resources",
+			"mirrortarget": mt.Name,
+		}
+		pathType := networkingv1.PathTypePrefix
+		ingress.Spec = networkingv1.IngressSpec{
+			Rules: []networkingv1.IngressRule{
+				{
+					Host: host,
+					IngressRuleValue: networkingv1.IngressRuleValue{
+						HTTP: &networkingv1.HTTPIngressRuleValue{
+							Paths: []networkingv1.HTTPIngressPath{
+								{
+									Path:     "/resources",
+									PathType: &pathType,
+									Backend: networkingv1.IngressBackend{
+										Service: &networkingv1.IngressServiceBackend{
+											Name: svcName,
+											Port: networkingv1.ServiceBackendPort{Number: 8081},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+		if ingressClass != "" {
+			ingress.Spec.IngressClassName = &ingressClass
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create/update Ingress: %w", err)
+	}
+
+	l.Info("Ingress for resource server reconciled", "ingress", ingress.Name)
+	return nil
+}
+
+// deleteRoute removes the Route if it exists.
+func (r *MirrorTargetReconciler) deleteRoute(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget) {
+	route := &unstructured.Unstructured{}
+	route.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "route.openshift.io",
+		Version: "v1",
+		Kind:    "Route",
+	})
+	route.SetName(fmt.Sprintf("%s-resources", mt.Name))
+	route.SetNamespace(mt.Namespace)
+	_ = r.Delete(ctx, route)
+}
+
+// deleteIngress removes the Ingress if it exists.
+func (r *MirrorTargetReconciler) deleteIngress(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget) {
+	ingress := &networkingv1.Ingress{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fmt.Sprintf("%s-resources", mt.Name),
+			Namespace: mt.Namespace,
+		},
+	}
+	_ = r.Delete(ctx, ingress)
 }
 
 func pointerTo[T any](v T) *T {

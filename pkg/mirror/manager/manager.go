@@ -22,6 +22,7 @@ import (
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
 	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/imagestate"
+	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/resources"
 )
 
 type WorkerStatusRequest struct {
@@ -111,8 +112,11 @@ func (m *MirrorManager) Run(ctx context.Context) error {
 		fmt.Printf("Warning: could not sync in-progress state from pods: %v\n", err)
 	}
 
-	// Start Status API Server
+	// Start Status API Server (internal, port 8080)
 	go m.runStatusAPI(ctx)
+
+	// Start Resource Server (public, port 8081)
+	go resources.NewServer(m.Client, m.Namespace, m.TargetName).Run(ctx)
 
 	// Run reconcile once immediately on startup, then every 30s.
 	if err := m.reconcile(ctx); err != nil {

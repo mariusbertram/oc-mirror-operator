@@ -59,6 +59,46 @@ spec:
                 maximum: 100
                 minimum: 1
                 type: integer
+              expose:
+                description: |-
+                  Expose configures how the resource server endpoint is exposed externally.
+                  The resource server provides IDMS, ITMS, CatalogSource, ClusterCatalog,
+                  and release signature resources via HTTP.
+                properties:
+                  gatewayRef:
+                    description: GatewayRef references the Gateway resource (only
+                      for type=GatewayAPI).
+                    properties:
+                      name:
+                        description: Name of the Gateway resource.
+                        type: string
+                      namespace:
+                        description: Namespace of the Gateway resource (defaults to
+                          the MirrorTarget namespace).
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  host:
+                    description: |-
+                      Host is the external hostname for Route or Ingress.
+                      Auto-generated if omitted (OpenShift Route only).
+                    type: string
+                  ingressClassName:
+                    description: IngressClassName selects the Ingress controller (only
+                      for type=Ingress).
+                    type: string
+                  type:
+                    description: |-
+                      Type determines the exposure mechanism: Route (default on OpenShift),
+                      Ingress, GatewayAPI, or Service (default on plain Kubernetes).
+                    enum:
+                    - Route
+                    - Ingress
+                    - GatewayAPI
+                    - Service
+                    type: string
+                type: object
               insecure:
                 description: Insecure allows connecting to the registry without TLS
                   or with self-signed certs

@@ -20,6 +20,48 @@ type PodConfig struct {
 	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
 }
 
+// ExposeType defines how the resource server is exposed.
+// +kubebuilder:validation:Enum=Route;Ingress;GatewayAPI;Service
+type ExposeType string
+
+const (
+	ExposeTypeRoute      ExposeType = "Route"
+	ExposeTypeIngress    ExposeType = "Ingress"
+	ExposeTypeGatewayAPI ExposeType = "GatewayAPI"
+	ExposeTypeService    ExposeType = "Service"
+)
+
+// GatewayReference references a Gateway for HTTPRoute creation.
+type GatewayReference struct {
+	// Name of the Gateway resource.
+	Name string `json:"name"`
+	// Namespace of the Gateway resource (defaults to the MirrorTarget namespace).
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
+}
+
+// ExposeConfig configures how the resource server HTTP endpoint is exposed.
+// On OpenShift, if no explicit type is set, a Route is auto-created.
+type ExposeConfig struct {
+	// Type determines the exposure mechanism: Route (default on OpenShift),
+	// Ingress, GatewayAPI, or Service (default on plain Kubernetes).
+	// +optional
+	Type ExposeType `json:"type,omitempty"`
+
+	// Host is the external hostname for Route or Ingress.
+	// Auto-generated if omitted (OpenShift Route only).
+	// +optional
+	Host string `json:"host,omitempty"`
+
+	// IngressClassName selects the Ingress controller (only for type=Ingress).
+	// +optional
+	IngressClassName string `json:"ingressClassName,omitempty"`
+
+	// GatewayRef references the Gateway resource (only for type=GatewayAPI).
+	// +optional
+	GatewayRef *GatewayReference `json:"gatewayRef,omitempty"`
+}
+
 // MirrorTargetSpec defines the desired state of MirrorTarget
 type MirrorTargetSpec struct {
 	// Registry is the URL of the target registry (e.g. registry.example.com/mirror)
@@ -33,6 +75,12 @@ type MirrorTargetSpec struct {
 	// The Secret should contain "username" and "password" or a ".dockerconfigjson".
 	// +optional
 	AuthSecret string `json:"authSecret,omitempty"`
+
+	// Expose configures how the resource server endpoint is exposed externally.
+	// The resource server provides IDMS, ITMS, CatalogSource, ClusterCatalog,
+	// and release signature resources via HTTP.
+	// +optional
+	Expose *ExposeConfig `json:"expose,omitempty"`
 
 	// Manager configuration for the mirroring manager pod.
 	// +optional
