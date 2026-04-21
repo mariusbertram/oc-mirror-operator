@@ -17,6 +17,7 @@ import (
 	"github.com/regclient/regclient/types/manifest"
 	"github.com/regclient/regclient/types/platform"
 	"github.com/regclient/regclient/types/ref"
+	"sigs.k8s.io/yaml"
 )
 
 const (
@@ -331,7 +332,182 @@ func scanLayerForImageReferences(rdr io.Reader) ([]string, bool, error) {
 	return nil, false, nil
 }
 
-// shortestPath uses BFS over the Cincinnati graph edges to find the shortest
+// --- KubeVirt Container Image Extraction ---
+
+// bootimagesConfigMap is a minimal representation of the
+// 0000_50_installer_coreos-bootimages ConfigMap in a release payload.
+type bootimagesConfigMap struct {
+	Data struct {
+		Stream string `json:"stream"`
+	} `json:"data"`
+}
+
+// coreOSStream is the JSON structure embedded in the bootimages ConfigMap
+// under the "stream" key.
+type coreOSStream struct {
+	Architectures map[string]coreOSArch `json:"architectures"`
+}
+
+type coreOSArch struct {
+	Images map[string]coreOSImage `json:"images,omitempty"`
+}
+
+type coreOSImage struct {
+	Image     string `json:"image"`
+	DigestRef string `json:"digest-ref"`
+}
+
+// ExtractKubeVirtImages extracts the KubeVirt container disk images from a
+// release payload. It looks for the 0000_50_installer_coreos-bootimages
+// ConfigMap in the release-manifests layer and returns the digest-ref for
+// each architecture that has a kubevirt image.
+func (r *ReleaseResolver) ExtractKubeVirtImages(ctx context.Context, payloadImage string, arches []string) ([]string, error) {
+	if r.client == nil {
+		return nil, fmt.Errorf("ExtractKubeVirtImages requires a non-nil MirrorClient")
+	}
+
+	imgRef, err := ref.New(payloadImage)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse payload image reference %q: %w", payloadImage, err)
+	}
+
+	// Use first arch for the platform manifest resolution.
+	primaryArch := "amd64"
+	if len(arches) > 0 {
+		primaryArch = arches[0]
+	}
+
+	m, err := r.client.ManifestGet(ctx, imgRef)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get manifest for %s: %w", payloadImage, err)
+	}
+
+	if m.IsList() {
+		p, parseErr := platform.Parse(fmt.Sprintf("linux/%s", primaryArch))
+		if parseErr != nil {
+			return nil, fmt.Errorf("failed to parse platform linux/%s: %w", primaryArch, parseErr)
+		}
+		desc, descErr := manifest.GetPlatformDesc(m, &p)
+		if descErr != nil {
+			return nil, fmt.Errorf("no manifest found for linux/%s in %s: %w", primaryArch, payloadImage, descErr)
+		}
+		imgRef.Digest = desc.Digest.String()
+		imgRef.Tag = ""
+		m, err = r.client.ManifestGet(ctx, imgRef)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get platform manifest for %s: %w", payloadImage, err)
+		}
+	}
+
+	layers, err := m.GetLayers()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get layers from manifest: %w", err)
+	}
+
+	// Scan layers from last to first for the bootimages ConfigMap.
+	for i := len(layers) - 1; i >= 0; i-- {
+		blobRdr, blobErr := r.client.BlobGet(ctx, imgRef, layers[i])
+		if blobErr != nil {
+			continue
+		}
+		images, found, scanErr := scanLayerForKubeVirtImages(blobRdr, arches)
+		_ = blobRdr.Close()
+		if scanErr != nil || !found {
+			continue
+		}
+		return images, nil
+	}
+
+	return nil, fmt.Errorf("coreos-bootimages not found in any layer of %s", payloadImage)
+}
+
+// scanLayerForKubeVirtImages reads a gzipped tar layer and looks for
+// 0000_50_installer_coreos-bootimages. Returns digest-refs for requested architectures.
+func scanLayerForKubeVirtImages(rdr io.Reader, arches []string) ([]string, bool, error) {
+	gz, err := gzip.NewReader(rdr)
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to create gzip reader: %w", err)
+	}
+	defer gz.Close()
+
+	// Map user arch names to CoreOS stream arch names.
+	archMap := map[string]string{
+		"amd64":   "x86_64",
+		"x86_64":  "x86_64",
+		"arm64":   "aarch64",
+		"aarch64": "aarch64",
+		"s390x":   "s390x",
+		"ppc64le": "ppc64le",
+	}
+
+	wantArches := make(map[string]bool)
+	for _, a := range arches {
+		if mapped, ok := archMap[a]; ok {
+			wantArches[mapped] = true
+		} else {
+			wantArches[a] = true
+		}
+	}
+
+	tr := tar.NewReader(gz)
+	for {
+		hdr, nextErr := tr.Next()
+		if nextErr == io.EOF {
+			break
+		}
+		if nextErr != nil {
+			return nil, false, fmt.Errorf("tar read error: %w", nextErr)
+		}
+
+		// Match the installer bootimages file (not the artifacts variant).
+		if !strings.HasSuffix(hdr.Name, "installer_coreos-bootimages.yaml") {
+			continue
+		}
+
+		data, readErr := io.ReadAll(tr)
+		if readErr != nil {
+			return nil, false, fmt.Errorf("failed to read coreos-bootimages: %w", readErr)
+		}
+
+		// The file is a Kubernetes ConfigMap YAML with a "stream" key
+		// containing embedded JSON. Use a YAML parser to properly handle
+		// line folding in single-quoted strings.
+		var cm bootimagesConfigMap
+		if yamlErr := yaml.Unmarshal(data, &cm); yamlErr != nil {
+			return nil, false, fmt.Errorf("failed to parse coreos-bootimages YAML: %w", yamlErr)
+		}
+		if cm.Data.Stream == "" {
+			return nil, false, fmt.Errorf("coreos-bootimages ConfigMap has empty stream field")
+		}
+
+		var stream coreOSStream
+		if jsonErr := json.Unmarshal([]byte(cm.Data.Stream), &stream); jsonErr != nil {
+			return nil, false, fmt.Errorf("failed to parse stream JSON: %w", jsonErr)
+		}
+		return collectKubeVirtRefs(stream, wantArches), true, nil
+	}
+	return nil, false, nil
+}
+
+// collectKubeVirtRefs extracts kubevirt digest-refs for the wanted architectures.
+func collectKubeVirtRefs(stream coreOSStream, wantArches map[string]bool) []string {
+	var refs []string
+	for archName, archData := range stream.Architectures {
+		if len(wantArches) > 0 && !wantArches[archName] {
+			continue
+		}
+		if kv, ok := archData.Images["kubevirt"]; ok {
+			ref := kv.DigestRef
+			if ref == "" {
+				ref = kv.Image
+			}
+			if ref != "" {
+				refs = append(refs, ref)
+			}
+		}
+	}
+	return refs
+}
 func (r *ReleaseResolver) shortestPath(graph *Graph, fromVersion, toVersion string) ([]string, error) {
 	versionIdx := make(map[string]int, len(graph.Nodes))
 	for i, node := range graph.Nodes {

@@ -80,6 +80,20 @@ func (c *Collector) CollectTargetImages(ctx context.Context, spec *mirrorv1alpha
 				compDest := componentDestination(target.Spec.Registry, compImg)
 				results = append(results, c.toTargetImage(compImg, compDest, meta))
 			}
+
+			// Extract KubeVirt container disk images if requested.
+			if spec.Mirror.Platform.KubeVirtContainer {
+				kvImages, kvErr := c.releaseResolver.ExtractKubeVirtImages(ctx, payloadImg, arch)
+				if kvErr != nil {
+					fmt.Printf("Warning: failed to extract KubeVirt images from %s: %v\n", payloadImg, kvErr)
+				} else {
+					for _, kvImg := range kvImages {
+						kvDest := componentDestination(target.Spec.Registry, kvImg)
+						results = append(results, c.toTargetImage(kvImg, kvDest, meta))
+						fmt.Printf("KubeVirt image added: %s\n", kvImg)
+					}
+				}
+			}
 		}
 	}
 
