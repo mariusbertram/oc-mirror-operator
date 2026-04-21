@@ -271,6 +271,15 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs(
 func catalogTargetRef(registry string, op mirrorv1alpha1.Operator) string {
 	tag := op.TargetTag
 	if tag == "" {
+		// Default to the source catalog's tag (e.g. "v4.21" from "index:v4.21").
+		// Skip digest references (contain "@").
+		if !strings.Contains(op.Catalog, "@") {
+			if i := strings.LastIndex(op.Catalog, ":"); i >= 0 && !strings.Contains(op.Catalog[i:], "/") {
+				tag = op.Catalog[i+1:]
+			}
+		}
+	}
+	if tag == "" {
 		tag = "latest"
 	}
 	if op.TargetCatalog != "" {
