@@ -57,7 +57,7 @@ Im Gegensatz zum statischen `oc-mirror` CLI-Tool arbeitet dieser Operator cloud-
 | **Cincinnati Graph Data** | ✅ | ❌ | `platform.graph: true` Feld existiert, Graph-Daten werden aber nicht in die Ziel-Registry gepusht |
 | **Pruning / Image-Bereinigung** | ✅ | ❌ | Kein automatisches Löschen veralteter Images aus der Ziel-Registry |
 | **Samples** | ✅ | ❌ | API-Feld existiert, explizit als "not implemented" markiert |
-| **KubeVirt Container** | ✅ | ❌ | `platform.kubeVirtContainer` Feld existiert, wird nicht ausgewertet |
+| **KubeVirt Container** | ✅ | ✅ | `platform.kubeVirtContainer: true` extrahiert KubeVirt-Disk-Images aus dem Release-Payload |
 
 ### Operator-spezifische Features (kein Äquivalent in oc-mirror CLI)
 
@@ -219,6 +219,29 @@ Der Manager optimiert die Mirror-Reihenfolge mittels eines **Greedy-Set-Cover-Al
 
 ---
 
+## KubeVirt Container-Disk-Images
+
+Wenn `platform.kubeVirtContainer: true` gesetzt ist, extrahiert der Operator die **KubeVirt Container-Disk-Images** (RHCOS-basiert) aus dem Release-Payload und spiegelt sie automatisch mit.
+
+### Funktionsweise
+
+1. Der Collector liest den `0000_50_installer_coreos-bootimages` ConfigMap aus dem Release-Payload
+2. Aus dem eingebetteten CoreOS-Stream-JSON werden die `kubevirt.digest-ref` Einträge pro Architektur extrahiert
+3. Die Images werden wie reguläre Component-Images in die Ziel-Registry gespiegelt
+
+### Architektur-Mapping
+
+| ImageSet `architectures` | CoreOS Stream Architektur | KubeVirt verfügbar |
+|--------------------------|--------------------------|-------------------|
+| `amd64` | `x86_64` | ✅ |
+| `s390x` | `s390x` | ✅ |
+| `arm64` | `aarch64` | ❌ (nicht in allen Releases) |
+| `ppc64le` | `ppc64le` | ❌ (nicht in allen Releases) |
+
+> **Hinweis**: Nicht alle Architekturen haben KubeVirt-Images. Fehlende Architekturen werden übersprungen, nicht als Fehler gemeldet.
+
+---
+
 ## Resource Server (HTTP-API)
 
 Der Manager-Pod hostet auf Port **8081** einen HTTP-Server, der Cluster-Ressourcen im YAML-Format bereitstellt. Diese Ressourcen können direkt mit `kubectl apply` oder via GitOps auf den Cluster angewendet werden.
@@ -328,6 +351,7 @@ spec:
     # OpenShift / OKD Platform Releases
     platform:
       architectures: ["amd64"]
+      kubeVirtContainer: true  # KubeVirt Container-Disk-Images mit spiegeln
       channels:
         - name: stable-4.21
           type: ocp
@@ -379,6 +403,7 @@ Der Operator bildet Quell-Images wie folgt auf Ziel-Pfade ab:
 |-----|--------|------|
 | **Release-Payload** | `quay.io/openshift-release-dev/ocp-release:4.21.9-x86_64` | `registry/openshift-release-dev/ocp-release:4.21.9` |
 | **Release-Component** | `quay.io/openshift-release-dev/ocp-v4.0-art-dev@sha256:abc123...` | `registry/openshift-release-dev/ocp-v4.0-art-dev:sha256-abc123...` |
+| **KubeVirt Disk** | `quay.io/openshift-release-dev/ocp-v4.0-art-dev@sha256:5ce03d...` | `registry/openshift-release-dev/ocp-v4.0-art-dev:sha256-5ce03d...` |
 | **Operator-Bundle** | `registry.redhat.io/openshift-gitops-1/argocd-rhel8@sha256:def456...` | `registry/openshift-gitops-1/argocd-rhel8:sha256-def456...` |
 | **Additional Image** | `quay.io/prometheus/prometheus:v2.45.0` | `registry/prometheus/prometheus:v2.45.0` |
 
