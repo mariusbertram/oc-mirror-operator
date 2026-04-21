@@ -157,7 +157,9 @@ func runWorkerBatch(insecure bool, batchJSON string) {
 		sources[i] = item.Source
 		dests[i] = item.Dest
 	}
-	sources, dests = mirror.PlanMirrorOrder(context.Background(), c, sources, dests)
+	planCtx, planCancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	sources, dests = mirror.PlanMirrorOrder(planCtx, c, sources, dests)
+	planCancel()
 
 	anyFailed := false
 	for i := range sources {
@@ -190,6 +192,9 @@ func buildMirrorClient(insecure bool, firstDest string) *mirrorclient.MirrorClie
 func mirrorOneImage(c *mirrorclient.MirrorClient, src, dest string) bool {
 	fmt.Printf("Starting mirror: %s -> %s\n", src, dest)
 
+	// Per-image timeout prevents indefinite hangs on stalled blob uploads.
+	const imageTimeout = 20 * time.Minute
+
 	var effectiveDest string
 	var lastErr error
 	for attempt := 1; attempt <= 2; attempt++ {
@@ -197,7 +202,9 @@ func mirrorOneImage(c *mirrorclient.MirrorClient, src, dest string) bool {
 			fmt.Printf("Retry attempt 2/2 after 15s...\n")
 			time.Sleep(15 * time.Second)
 		}
-		effectiveDest, lastErr = c.CopyImage(context.Background(), src, dest)
+		ctx, cancel := context.WithTimeout(context.Background(), imageTimeout)
+		effectiveDest, lastErr = c.CopyImage(ctx, src, dest)
+		cancel()
 		if lastErr == nil {
 			break
 		}
@@ -211,7 +218,9 @@ func mirrorOneImage(c *mirrorclient.MirrorClient, src, dest string) bool {
 	}
 
 	fmt.Printf("Copy complete, verifying digest at %s\n", effectiveDest)
-	digest, err := c.GetDigest(context.Background(), effectiveDest)
+	verifyCtx, verifyCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	digest, err := c.GetDigest(verifyCtx, effectiveDest)
+	verifyCancel()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ERROR: failed to verify digest for %s: %v\n", src, err)
 		setupLog.Error(err, "failed to verify mirrored image digest")
