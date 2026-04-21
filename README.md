@@ -25,6 +25,7 @@ Im Gegensatz zum statischen `oc-mirror` CLI-Tool arbeitet dieser Operator cloud-
 | **Cosign-Signaturen** | ✅ | ✅ | Tag-basierte `.sig` Signaturen werden automatisch mit kopiert |
 | **OCI Referrers** | ✅ | ✅ | Attestations, SBOMs über `regclient.ImageWithReferrers()` |
 | **Release-Signaturen** | ✅ | ✅ | Download von mirror.openshift.com/pub/openshift-v4/signatures |
+| **IDMS/ITMS-Generierung** | ✅ | ✅ | ImageDigestMirrorSet und ImageTagMirrorSet — bereitgestellt via Resource Server HTTP-API |
 | **Inkrementelles Mirroring** | ✅ | ✅ | Bereits gespiegelte Images werden übersprungen (ConfigMap-State) |
 | **Registry-Verifikation** | ✗ | ✅ | Manager prüft regelmäßig ob Images in der Ziel-Registry existieren und queued fehlende neu |
 | **Automatische Retries** | ✗ | ✅ | Bis zu 10 Wiederholungen pro Image bei Fehlern |
@@ -34,14 +35,14 @@ Im Gegensatz zum statischen `oc-mirror` CLI-Tool arbeitet dieser Operator cloud-
 | **Ephemeral-Volume Blob-Buffering** | ✗ | ✅ | Große Blobs (>100 MiB) werden auf emptyDir gepuffert — kein OOM bei Multi-GB Layern |
 | **Blob-Replikationsplanung** | ✗ | ✅ | Greedy-Set-Cover-Algorithmus optimiert die Mirror-Reihenfolge für maximale Blob-Wiederverwendung |
 | **Automatischer Catalog-Rebuild** | ✗ | ✅ | Build-Signatur erkennt Änderungen an Packages/Katalogen und triggert automatischen Rebuild |
+| **Resource Server (HTTP-API)** | ✗ | ✅ | IDMS, ITMS, CatalogSource, ClusterCatalog und Signatur-ConfigMaps per HTTP abrufbar — mit OpenShift Route, Ingress oder Service |
 | **Worker-Pod-Lifecycle** | ✗ | ✅ | Automatische Bereinigung abgeschlossener/fehlgeschlagener Worker- und Orphan-Pods |
 
 ### ⚠️ Teilweise implementiert
 
 | Feature | oc-mirror CLI | oc-mirror-operator | Status |
 |---------|:---:|:---:|--------|
-| **IDMS/ITMS-Generierung** | ✅ | ⚠️ | Code vorhanden (`GenerateIDMS()` / `GenerateITMS()`), aber nicht automatisch angewendet oder exportiert |
-| **Operator TargetCatalog** | ✅ | ⚠️ | API-Feld definiert, wird bei der Ziel-Berechnung aber nicht verwendet |
+| **GatewayAPI-Exposure** | ✗ | ⚠️ | API-Feld definiert (`spec.expose.type: GatewayAPI`), HTTPRoute-Erstellung noch nicht implementiert |
 
 ### ❌ Nicht implementierte Features
 
@@ -72,12 +73,13 @@ Im Gegensatz zum statischen `oc-mirror` CLI-Tool arbeitet dieser Operator cloud-
 | **Quay-Kompatibilität** | Spezielles Blob-Buffering für Quay-Registries (Upload-Session-Timeout-Workaround) |
 | **Blob-Replikationsplanung** | Greedy-Set-Cover optimiert Mirror-Reihenfolge: Shared-Layer werden zuerst gepusht → Folge-Images nutzen Blob-Mount (Zero-Copy) |
 | **Catalog-Build-Signatur** | SHA256-Hash über Operator-Image + Katalog + Package-Liste erkennt automatisch wann ein Rebuild nötig ist |
+| **Resource Server (HTTP-API)** | Stellt IDMS/ITMS, CatalogSource, ClusterCatalog und Signatur-ConfigMaps per REST bereit — Route (OpenShift), Ingress oder Service |
 
 ---
 
 ## Architektur
 
-Die Architektur folgt einem skalierbaren **Drei-Schichten-Modell** mit einem zusätzlichen **Catalog-Build-System**:
+Die Architektur folgt einem skalierbaren **Drei-Schichten-Modell** mit **Catalog-Build-System** und **Resource Server**:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -91,6 +93,8 @@ Die Architektur folgt einem skalierbaren **Drei-Schichten-Modell** mit einem zus
 │                                 └──────┬──────────────┬────────┘    │
 │                                        │ creates      │ creates     │
 │                                        │ Deployment   │ Job         │
+│                                        │ Service ×2   │             │
+│                                        │ Route/Ingress│             │
 │                                        ▼              ▼             │
 │                  ┌────────────────────────┐  ┌────────────────────┐ │
 │                  │ Manager Pod            │  │ Catalog-Builder    │ │
@@ -98,15 +102,22 @@ Die Architektur folgt einem skalierbaren **Drei-Schichten-Modell** mit einem zus
 │                  │                        │  │ cmd/catalog-builder│ │
 │                  │ • Lädt Image-State     │  │                    │ │
 │                  │ • Verwaltet Worker-Q   │  │ • Filtert FBC      │ │
-│                  │ • HTTP Status-API      │  │ • Löst Deps auf    │ │
-│                  │ • Registry-Verifikation│  │ • Baut OCI-Image   │ │
-│                  │ • Worker-Pod-Cleanup   │  │ • Pusht Catalog    │ │
-│                  └──────┬────────────┬────┘  └────────────────────┘ │
-│                         │ creates    │ receives                     │
-│                         │ Pods       │ POST /status                 │
-│                         ▼            │                              │
-│                  ┌──────────────┐    │                              │
-│                  │ Worker Pod 1 │────┘                              │
+│                  │ • HTTP Status-API :8080│  │ • Löst Deps auf    │ │
+│                  │ • Resource Server :8081│  │ • Baut OCI-Image   │ │
+│                  │ • Registry-Verifikation│  │ • Pusht Catalog    │ │
+│                  │ • Worker-Pod-Cleanup   │  │                    │ │
+│                  └──────┬────────┬───┬────┘  └────────────────────┘ │
+│                         │creates │   │ :8081                        │
+│                         │Pods    │   ▼                              │
+│                         │     ┌──┴──────────────────────┐           │
+│                         │     │ Route / Ingress / Svc   │           │
+│                         │     │ → /resources/           │           │
+│                         │     │ IDMS, ITMS, CatalogSrc  │           │
+│                         │     │ ClusterCatalog, Sigs    │           │
+│                         │     └─────────────────────────┘           │
+│                         │ receives POST /status                     │
+│                  ┌──────▼───────┐                                   │
+│                  │ Worker Pod 1 │                                   │
 │                  │ Worker Pod 2 │                                   │
 │                  │ Worker Pod N │                                   │
 │                  └──────┬───────┘                                   │
@@ -123,7 +134,8 @@ Die Architektur folgt einem skalierbaren **Drei-Schichten-Modell** mit einem zus
 | Schicht | Komponente | Beschreibung |
 |---------|------------|-------------|
 | **Control Plane** | `Operator` (`internal/controller/`) | Überwacht CRs, berechnet Image-Soll-Listen via Cincinnati-API und FBC-Parsing, erstellt Catalog-Build-Jobs, setzt Status-Conditions |
-| **Orchestration** | `Manager` (`pkg/mirror/manager/`) | Ein Deployment pro `MirrorTarget`. Lädt Image-State, plant Mirror-Reihenfolge (Blob-Planner), startet Worker-Pods, empfängt Ergebnisse via authentifizierter HTTP-API, verifiziert Registry-Zustand, bereinigt abgeschlossene Pods |
+| **Orchestration** | `Manager` (`pkg/mirror/manager/`) | Ein Deployment pro `MirrorTarget`. Lädt Image-State, plant Mirror-Reihenfolge (Blob-Planner), startet Worker-Pods, empfängt Ergebnisse via authentifizierter HTTP-API (:8080), verifiziert Registry-Zustand, bereinigt abgeschlossene Pods |
+| **Resource Server** | `Resource Server` (`pkg/mirror/resources/`) | Integriert im Manager-Pod auf Port :8081. Stellt IDMS, ITMS, CatalogSource, ClusterCatalog und Signatur-ConfigMaps per HTTP-REST bereit. Exponiert via Route (OpenShift), Ingress oder Service |
 | **Execution** | `Worker` (kurzlebige Pods) | Kopiert Image-Batches mit `regclient`, puffert große Blobs auf emptyDir, kopiert Signaturen, meldet Status via `POST /status` |
 | **Catalog Build** | `Catalog-Builder` (K8s Job) | Pro Quell-Katalog ein Job: filtert FBC, löst Dependencies auf, baut OCI-Image mit Source-Layers + FBC-Overlay, pusht in Ziel-Registry |
 | **State** | ConfigMap (gzip-JSON) | Per-Image Mirroring-Status in Kubernetes ConfigMaps — kein PV/PVC nötig, ~30 Bytes pro Image |
@@ -137,6 +149,7 @@ Die Architektur folgt einem skalierbaren **Drei-Schichten-Modell** mit einem zus
 5. **Manager** lädt den Image-State, plant die Mirror-Reihenfolge via Blob-Planner, prüft ob gespiegelte Images noch in der Ziel-Registry vorhanden sind und startet Worker-Pods
 6. **Worker** kopiert Images (inkl. Signaturen und Referrers), puffert große Blobs auf Ephemeral Volume und meldet Ergebnisse via `POST /status` an den Manager
 7. Manager bereinigt abgeschlossene/fehlgeschlagene Worker-Pods und aktualisiert Image-State und `ImageSet.Status`
+8. **Resource Server** (Port 8081 im Manager-Pod) stellt Cluster-Ressourcen per HTTP bereit — IDMS, ITMS, CatalogSource, ClusterCatalog und Signatur-ConfigMaps werden erst ausgeliefert wenn das jeweilige ImageSet den Status `Ready` hat
 
 ---
 
@@ -206,6 +219,53 @@ Der Manager optimiert die Mirror-Reihenfolge mittels eines **Greedy-Set-Cover-Al
 
 ---
 
+## Resource Server (HTTP-API)
+
+Der Manager-Pod hostet auf Port **8081** einen HTTP-Server, der Cluster-Ressourcen im YAML-Format bereitstellt. Diese Ressourcen können direkt mit `kubectl apply` oder via GitOps auf den Cluster angewendet werden.
+
+### Endpoints
+
+| Endpoint | Ressource | Beschreibung |
+|----------|-----------|-------------|
+| `GET /resources/` | JSON-Index | Übersicht aller ImageSets mit ihren verfügbaren Ressourcen und Katalogen |
+| `GET /resources/{imageset}/idms.yaml` | `ImageDigestMirrorSet` | Digest-basierte Mirror-Regeln für alle gespiegelten Images |
+| `GET /resources/{imageset}/itms.yaml` | `ImageTagMirrorSet` | Tag-basierte Mirror-Regeln (falls tag-basierte Images vorhanden) |
+| `GET /resources/{imageset}/catalogs/{name}/catalogsource.yaml` | `CatalogSource` | OLM v0-kompatible CatalogSource (gRPC) für den gefilterten Katalog |
+| `GET /resources/{imageset}/catalogs/{name}/clustercatalog.yaml` | `ClusterCatalog` | OLM v1-kompatible ClusterCatalog-Ressource |
+| `GET /resources/{imageset}/signature-configmaps.yaml` | ConfigMaps | Release-Signatur-ConfigMaps im OpenShift-Verifikationsformat |
+
+### Ready-Gating
+
+Ressourcen werden erst ausgeliefert, wenn das zugehörige ImageSet den Status `Ready` hat. Anfragen vor Abschluss des Mirrorings erhalten HTTP `409 Conflict`. Der JSON-Index (`/resources/`) zeigt für jedes ImageSet den `ready`-Status an.
+
+### Exposure-Optionen
+
+Die externe Erreichbarkeit wird über `MirrorTarget.spec.expose` konfiguriert:
+
+| Typ | Beschreibung | Automatik |
+|-----|-------------|-----------|
+| **Route** (default auf OpenShift) | OpenShift Route mit Edge-TLS-Terminierung | Auto-Erkennung via Route-API-Discovery |
+| **Ingress** | `networking.k8s.io/v1` Ingress | Erfordert `host` und optional `ingressClassName` |
+| **GatewayAPI** | Gateway-API HTTPRoute | API-Feld definiert, Implementation ausstehend |
+| **Service** (default auf K8s) | Nur ClusterIP-Service, keine externe Exposition | Fallback wenn keine Route-API verfügbar |
+
+Beim Wechsel des Exposure-Typs (z.B. Route → Ingress) werden veraltete Objekte automatisch bereinigt.
+
+### Beispiel-Nutzung
+
+```bash
+# Index abrufen
+curl -sk https://<route-host>/resources/ | jq .
+
+# IDMS direkt anwenden
+curl -sk https://<route-host>/resources/ocp-release-4-21/idms.yaml | kubectl apply -f -
+
+# CatalogSource für gefilterten Operator-Katalog
+curl -sk https://<route-host>/resources/ocp-release-4-21/catalogs/redhat-operator-index/catalogsource.yaml | kubectl apply -f -
+```
+
+---
+
 ## Custom Resources
 
 ### MirrorTarget
@@ -233,6 +293,14 @@ spec:
 
   # Images pro Worker-Pod (default: 10, max: 100)
   batchSize: 10
+
+  # Resource-Server-Exposure (optional)
+  # Auf OpenShift wird automatisch eine Route erstellt, wenn nicht konfiguriert.
+  expose:
+    # Optionen: Route (default auf OpenShift), Ingress, GatewayAPI, Service
+    type: Route
+    # Externer Hostname (optional — bei Route wird automatisch generiert)
+    # host: "mirror-resources.example.com"
 
   # Ressourcen für Worker-Pods (optional)
   worker:
@@ -391,8 +459,8 @@ Der Operator läuft mit einer **namespace-scoped `Role`** (nicht `ClusterRole`).
 
 | Service Account | Berechtigungen |
 |-----------------|----------------|
-| `oc-mirror-operator-controller-manager` | CRD-Verwaltung, Deployments, Services, ConfigMaps, Secrets (read) |
-| `oc-mirror-coordinator` | ImageSet-Status schreiben, Pods erstellen/löschen, ConfigMaps lesen/schreiben |
+| `oc-mirror-operator-controller-manager` | CRD-Verwaltung, Deployments, Services, ConfigMaps, Secrets (read), Routes, Ingresses |
+| `oc-mirror-coordinator` | ImageSet-Status schreiben, Pods erstellen/löschen, ConfigMaps lesen/schreiben, MirrorTargets lesen |
 | `oc-mirror-worker` | Keine Cluster-Rechte |
 
 ### Pod Security
@@ -464,7 +532,7 @@ make generate    # DeepCopy-Methoden
 | **In-Memory Worker-Queue** | `inProgress`-Map nicht persistent; bei Manager-Restart werden laufende Worker per Pod-Sync wiederhergestellt |
 | **Blocked Images nicht implementiert** | `spec.mirror.blockedImages` wird akzeptiert aber ignoriert |
 | **Helm Charts nicht implementiert** | `spec.mirror.helm` API-Typen definiert, aber Collector wertet sie nicht aus |
-| **IDMS/ITMS nicht angewendet** | Generierungs-Code vorhanden, aber nicht in den Reconcile-Loop integriert |
+| **GatewayAPI nicht implementiert** | `spec.expose.type: GatewayAPI` API-Feld definiert, HTTPRoute-Erstellung noch ausstehend |
 | **Kein Pruning** | Veraltete Images werden nicht automatisch aus der Ziel-Registry gelöscht |
 | **Kein Mirror-to-Disk** | Air-Gap-Transfer über Datenträger ist nicht möglich — der Operator benötigt Netzwerkzugang zu beiden Registries |
 | **Kein HA-Modus** | Leader Election konfigurierbar (`--leader-elect`), aber standardmäßig deaktiviert |
@@ -494,10 +562,12 @@ oc-mirror-operator/
     ├── collector.go           # Image-Liste aus ImageSet-Spec aufbauen
     ├── planner.go             # Blob-Replikationsplanung (Greedy Set-Cover)
     ├── manager/               # Manager-Logik (Worker-Orchestrierung, State, Pod-Cleanup)
+    ├── resources/             # Resource Server (HTTP-API) und IDMS/ITMS/Catalog-Generierung
+    │   ├── resources.go       # IDMS, ITMS, CatalogSource, ClusterCatalog, Signatur-Generation
+    │   └── server.go          # HTTP-Server (:8081), per-ImageSet Endpoints, Ready-Gating
     ├── release/               # Cincinnati-API-Client (Graph, BFS, Signatures)
     ├── catalog/
     │   ├── resolver.go        # FBC-Resolver: FilterFBC, Dependency-Resolution, Image-Build
     │   └── builder/           # Catalog-Builder Job-Management, Build-Signatur
-    ├── imagestate/            # ConfigMap-basierte State-Persistenz (gzip-JSON)
-    └── idms_itms.go           # IDMS/ITMS-Generierung (noch nicht integriert)
+    └── imagestate/            # ConfigMap-basierte State-Persistenz (gzip-JSON)
 ```
