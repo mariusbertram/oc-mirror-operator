@@ -59,6 +59,10 @@ type ImageEntry struct {
 	// Empty for OriginAdditional and for legacy entries; partition logic
 	// must treat empty as "any sig" to remain backward-compatible.
 	EntrySig string `json:"entrySig,omitempty"`
+	// OriginRef is a human-readable label describing which spec entry produced
+	// this entry, e.g. "registry.../redhat-operator-index:v4.21 [web-terminal]"
+	// or "stable-4.14 [amd64]". Used to surface failed-image details in status.
+	OriginRef string `json:"originRef,omitempty"`
 }
 
 // ImageState maps destination image reference → ImageEntry.

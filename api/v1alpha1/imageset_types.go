@@ -13,6 +13,22 @@ type ImageSetSpec struct {
 	Mirror Mirror `json:"mirror"`
 }
 
+// FailedImageDetail describes a single image that could not be mirrored.
+type FailedImageDetail struct {
+	// Source is the upstream image reference.
+	Source string `json:"source"`
+	// Destination is the mirroring target reference.
+	Destination string `json:"destination"`
+	// Error is the last error message from the mirroring attempt.
+	// +optional
+	Error string `json:"error,omitempty"`
+	// Origin is a human-readable description of which spec entry produced
+	// this image (e.g. "registry.../redhat-operator-index:v4.21 [web-terminal]"
+	// or "stable-4.14 [amd64]").
+	// +optional
+	Origin string `json:"origin,omitempty"`
+}
+
 // ImageSetStatus defines the observed state of ImageSet
 type ImageSetStatus struct {
 	// Conditions represent the latest available observations of an object's state
@@ -34,6 +50,12 @@ type ImageSetStatus struct {
 	// FailedImages is the number of images that failed mirroring (exhausted retries).
 	// +optional
 	FailedImages int `json:"failedImages,omitempty"`
+
+	// FailedImageDetails lists the images that failed mirroring with their error
+	// and the spec entry that referenced them. Capped at 20 entries to bound
+	// status size; the FailedImages counter always reflects the full count.
+	// +optional
+	FailedImageDetails []FailedImageDetail `json:"failedImageDetails,omitempty"`
 
 	// ObservedGeneration is the generation of the ImageSet that was last reconciled.
 	// +optional

@@ -13,6 +13,7 @@ package manager
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -107,7 +108,7 @@ func (m *MirrorManager) resolveImageSet(ctx context.Context, is *mirrorv1alpha1.
 	if err != nil {
 		return nil, false, fmt.Errorf("collect additional images: %w", err)
 	}
-	mergeIntoStateWithSig(newState, additional, imagestate.OriginAdditional, "", currentState)
+	mergeIntoStateWithSig(newState, additional, imagestate.OriginAdditional, "", "additional", currentState)
 
 	// Drop any annotation whose sig is no longer in spec.
 	if pruneObsoleteCacheAnnotations(newAnnotations, is) {
@@ -183,7 +184,8 @@ func (m *MirrorManager) resolveReleaseSection(
 			carryOverByOriginAndSig(currentState, newState, imagestate.OriginRelease, sig)
 			continue
 		}
-		mergeIntoStateWithSig(newState, images, imagestate.OriginRelease, sig, currentState)
+		originRef := fmt.Sprintf("%s [%s]", ch.Name, strings.Join(arch, ","))
+		mergeIntoStateWithSig(newState, images, imagestate.OriginRelease, sig, originRef, currentState)
 
 		if annotations[annoKey] != freshSig {
 			annotations[annoKey] = freshSig
@@ -229,7 +231,16 @@ func (m *MirrorManager) resolveOperatorSection(
 			carryOverByOriginAndSig(currentState, newState, imagestate.OriginOperator, sig)
 			continue
 		}
-		mergeIntoStateWithSig(newState, images, imagestate.OriginOperator, sig, currentState)
+		pkgNames := make([]string, 0, len(op.Packages))
+		for _, p := range op.Packages {
+			pkgNames = append(pkgNames, p.Name)
+		}
+		sort.Strings(pkgNames)
+		originRef := op.Catalog
+		if len(pkgNames) > 0 {
+			originRef = fmt.Sprintf("%s [%s]", op.Catalog, strings.Join(pkgNames, ", "))
+		}
+		mergeIntoStateWithSig(newState, images, imagestate.OriginOperator, sig, originRef, currentState)
 
 		if annotations[annoKey] != freshDigest {
 			annotations[annoKey] = freshDigest
@@ -248,13 +259,14 @@ func (m *MirrorManager) resolveOperatorSection(
 // entries that both depend on a shared bundle), the LAST writer wins for
 // EntrySig; the State is preserved across either writer because we look up
 // `prev` by destination only.
-func mergeIntoStateWithSig(dst imagestate.ImageState, images []mirror.TargetImage, origin imagestate.ImageOrigin, sig string, prev imagestate.ImageState) {
+func mergeIntoStateWithSig(dst imagestate.ImageState, images []mirror.TargetImage, origin imagestate.ImageOrigin, sig, originRef string, prev imagestate.ImageState) {
 	for _, img := range images {
 		entry := &imagestate.ImageEntry{
-			Source:   img.Source,
-			State:    "Pending",
-			Origin:   origin,
-			EntrySig: sig,
+			Source:    img.Source,
+			State:     "Pending",
+			Origin:    origin,
+			EntrySig:  sig,
+			OriginRef: originRef,
 		}
 		if existing, ok := prev[img.Destination]; ok && existing != nil && existing.Origin == origin {
 			if existing.State == "Mirrored" || existing.State == "Failed" {

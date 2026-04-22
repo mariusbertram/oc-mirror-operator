@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"sort"
 	"sync"
 	"time"
 
@@ -723,6 +724,25 @@ func (m *MirrorManager) updateImageSetStatusLocked(ctx context.Context, is *mirr
 		now := metav1.Now()
 		is.Status.LastSuccessfulPollTime = &now
 	}
+
+	// Collect failed image details (capped at 20 to bound status size).
+	details := make([]mirrorv1alpha1.FailedImageDetail, 0, failed)
+	for dest, entry := range state {
+		if entry == nil || entry.State != "Failed" {
+			continue
+		}
+		details = append(details, mirrorv1alpha1.FailedImageDetail{
+			Source:      entry.Source,
+			Destination: dest,
+			Error:       entry.LastError,
+			Origin:      entry.OriginRef,
+		})
+	}
+	sort.Slice(details, func(i, j int) bool { return details[i].Destination < details[j].Destination })
+	if len(details) > 20 {
+		details = details[:20]
+	}
+	is.Status.FailedImageDetails = details
 
 	readyStatus := metav1.ConditionTrue
 	readyReason := "Collected"
