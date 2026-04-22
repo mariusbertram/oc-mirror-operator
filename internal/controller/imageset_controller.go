@@ -78,8 +78,9 @@ func (r *ImageSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	// 3. Ensure a CatalogBuildJob exists for each configured operator catalog.
-	// This is done before the expensive image-list collection so that catalog
-	// builds start immediately without waiting for release image traversal.
+	// The job triggers when (a) all operator-origin imagestate entries are
+	// Mirrored, OR (b) the user sets the "mirror.openshift.io/recollect"
+	// annotation on the ImageSet (one-shot, cleared after recollection).
 	if err := r.reconcileCatalogBuildJobs(ctx, is, mt, pollExpired); err != nil {
 		l.Error(err, "Failed to reconcile catalog build jobs")
 		setCondition(&is.Status.Conditions, "CatalogReady", metav1.ConditionFalse, "CatalogBuildFailed", err.Error(), is.Generation)
@@ -87,123 +88,23 @@ func (r *ImageSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
-	// Build per-reconcile mirror client that honours the target's insecure setting.
-	// The struct-level r.Collector is used as fallback when target is not insecure.
-	collector := r.Collector
-	if mt.Spec.Insecure {
-		host := mt.Spec.Registry
-		if i := strings.Index(host, "/"); i >= 0 {
-			host = host[:i]
-		}
-		mc := mirrorclient.NewMirrorClient([]string{host}, os.Getenv("DOCKER_CONFIG"))
-		collector = mirror.NewCollector(mc)
-	}
-
-	// 4. Generate target image list for releases and additional images.
-	// Operator catalog images are handled by CatalogBuildJobs (step 3) and are
-	// NOT resolved in-memory here to avoid downloading multi-GB catalog layers
-	// inside the controller pod.
-	existingState, loadErr := imagestate.Load(ctx, r.Client, is.Namespace, is.Name)
-	if loadErr != nil {
-		l.Error(loadErr, "Failed to load image state ConfigMap")
-	}
-
-	needsCollection := len(existingState) == 0 ||
-		is.Status.ObservedGeneration != is.Generation ||
-		pollExpired
-
-	if needsCollection {
-		if pollExpired {
-			l.Info("Poll interval expired, re-collecting upstream content",
-				"lastPoll", is.Status.LastSuccessfulPollTime.Time,
-				"interval", pollInterval)
-			// Reset Failed entries to Pending so they get retried.
-			for dest, entry := range existingState {
-				if entry.State == "Failed" {
-					existingState[dest] = &imagestate.ImageEntry{
-						Source: entry.Source,
-						State:  "Pending",
-					}
-				}
-			}
-		} else {
-			l.Info("Generating image list for ImageSet")
-		}
-
-		images, err := collector.CollectTargetImages(ctx, &is.Spec, mt, nil)
-		if err != nil {
-			setCondition(&is.Status.Conditions, "Ready", metav1.ConditionFalse, "CollectionFailed", err.Error(), is.Generation)
-			_ = r.Status().Update(ctx, is)
-			return ctrl.Result{}, err
-		}
-
-		// Build new state, preserving Mirrored entries from the existing
-		// ConfigMap so already-mirrored images are not re-queued.
-		newState := make(imagestate.ImageState, len(images))
-		for _, img := range images {
-			if existing, ok := existingState[img.Destination]; ok && existing.State != "Pending" {
-				newState[img.Destination] = existing
-			} else {
-				newState[img.Destination] = &imagestate.ImageEntry{
-					Source: img.Source,
-					State:  img.State,
-				}
-			}
-		}
-
-		// Detect images that were removed from the spec (in old state but not in new).
-		// If the cleanup annotation is set, create a cleanup Job for these images.
-		removedImages := make(imagestate.ImageState)
-		for dest, entry := range existingState {
-			if _, ok := newState[dest]; !ok && entry.State == "Mirrored" {
-				removedImages[dest] = entry
-			}
-		}
-		if len(removedImages) > 0 {
-			cleanupPolicy := mt.Annotations[mirrorv1alpha1.CleanupPolicyAnnotation]
-			if cleanupPolicy == mirrorv1alpha1.CleanupPolicyDelete {
-				l.Info("Images removed from spec, scheduling cleanup", "count", len(removedImages))
-				if err := r.createPartialCleanupJob(ctx, is, mt, removedImages); err != nil {
-					l.Error(err, "Failed to create partial cleanup job")
-				}
-			} else {
-				l.Info("Images removed from spec but cleanup-policy not set to Delete",
-					"count", len(removedImages))
-			}
-		}
-
-		if err := imagestate.Save(ctx, r.Client, is.Namespace, is, newState); err != nil {
-			l.Error(err, "Failed to save image state ConfigMap")
-			// Surface the failure on the CR and propagate the error to retry.
-			// CRITICAL: do NOT update ObservedGeneration / LastSuccessfulPollTime
-			// when persistence failed, otherwise the next reconcile would treat
-			// this generation as fully processed and never re-collect.
-			setCondition(&is.Status.Conditions, "Ready", metav1.ConditionFalse, "PersistFailed", err.Error(), is.Generation)
-			_ = r.Status().Update(ctx, is)
-			return ctrl.Result{}, err
-		}
-		existingState = newState
-		is.Status.ObservedGeneration = is.Generation
-		now := metav1.Now()
-		is.Status.LastSuccessfulPollTime = &now
-	}
-
-	// Seed LastSuccessfulPollTime for existing ImageSets that were reconciled
-	// before the polling feature was added.
-	if is.Status.LastSuccessfulPollTime == nil && len(existingState) > 0 {
-		now := metav1.Now()
-		is.Status.LastSuccessfulPollTime = &now
-	}
-
-	total, mirrored, pending, failed := imagestate.Counts(existingState)
-	is.Status.TotalImages = total
-	is.Status.MirroredImages = mirrored
-	is.Status.PendingImages = pending
-	is.Status.FailedImages = failed
-	setCondition(&is.Status.Conditions, "Ready", metav1.ConditionTrue, "Collected", fmt.Sprintf("Collected %d images", total), is.Generation)
-	if err := r.Status().Update(ctx, is); err != nil {
-		return ctrl.Result{}, err
-	}
+	// Image-list resolution + state ConfigMap + ImageSet.Status counts are
+	// owned by the per-MirrorTarget Manager pod. The Manager has the
+	// upstream registry credentials (via DOCKER_CONFIG) and runs the only
+	// writer to imagestate, avoiding races with the controller. The
+	// controller's job here is limited to:
+	//   - validating bindings (done above)
+	//   - keeping CatalogBuild jobs in sync (done above)
+	//   - requeueing on pollInterval so MirrorTarget changes propagate
+	//
+	// The Manager publishes:
+	//   - imagestate ConfigMap (per ImageSet)
+	//   - is.Status.{TotalImages,MirroredImages,PendingImages,FailedImages}
+	//   - is.Status.ObservedGeneration / LastSuccessfulPollTime
+	//   - is.Status.Conditions for "Ready"
+	//
+	// The controller leaves these fields alone.
+	_ = pollExpired // currently used only by reconcileCatalogBuildJobs
 
 	if pollingEnabled {
 		return ctrl.Result{RequeueAfter: pollInterval}, nil
@@ -258,6 +159,30 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs(
 	operators := is.Spec.Mirror.Operators
 	if len(operators) == 0 {
 		return nil
+	}
+
+	// Gate: only launch / re-launch catalog build jobs when (a) the
+	// "mirror.openshift.io/recollect" annotation requests it as a one-shot,
+	// or (b) all operator-origin entries in the per-ImageSet imagestate
+	// ConfigMap have reached the "Mirrored" state. Building the filtered
+	// catalog before bundle images are present in the target registry would
+	// produce a catalog that references unresolved digests.
+	_, recollectRequested := is.Annotations[mirrorv1alpha1.RecollectAnnotation]
+	operatorMirroringComplete, knowState := operatorImagesMirrored(ctx, r.Client, is)
+	gateOpen := recollectRequested || operatorMirroringComplete
+	if !gateOpen {
+		if knowState {
+			l.Info("Catalog build deferred: operator images still mirroring",
+				"imageSet", is.Name)
+		} else {
+			l.Info("Catalog build deferred: imagestate not yet populated by manager",
+				"imageSet", is.Name)
+		}
+		setCondition(&is.Status.Conditions, "CatalogReady", metav1.ConditionFalse,
+			"WaitingForOperatorMirror",
+			"waiting for operator bundle images to be mirrored before building filtered catalog",
+			is.Generation)
+		return r.Status().Update(ctx, is)
 	}
 
 	// Compute a build signature from operator image + packages so we detect
@@ -372,11 +297,46 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs(
 		setCondition(&is.Status.Conditions, "CatalogReady", metav1.ConditionFalse, "CatalogBuildFailed", "one or more catalog build jobs failed", is.Generation)
 	case allSucceeded:
 		setCondition(&is.Status.Conditions, "CatalogReady", metav1.ConditionTrue, "CatalogBuildSucceeded", "all catalog images built successfully", is.Generation)
+		// Honoring the recollect annotation is one-shot: clear it after a
+		// successful catalog build so subsequent reconciles use the
+		// signature-based gating again.
+		if recollectRequested {
+			if is.Annotations != nil {
+				delete(is.Annotations, mirrorv1alpha1.RecollectAnnotation)
+				if err := r.Update(ctx, is); err != nil {
+					l.Error(err, "Failed to clear recollect annotation")
+				}
+			}
+		}
 	default:
 		setCondition(&is.Status.Conditions, "CatalogReady", metav1.ConditionFalse, "CatalogBuildRunning", "catalog build jobs are still running", is.Generation)
 	}
 
 	return r.Status().Update(ctx, is)
+}
+
+// operatorImagesMirrored returns (allMirrored, knowState).
+// allMirrored = true when every operator-origin entry in the imagestate
+// ConfigMap is in state "Mirrored" AND there is at least one such entry.
+// knowState = false when no imagestate ConfigMap exists yet (manager hasn't
+// performed initial resolution); the gate is closed in that case so we don't
+// kick off a build with zero source data.
+func operatorImagesMirrored(ctx context.Context, c client.Client, is *mirrorv1alpha1.ImageSet) (bool, bool) {
+	state, err := imagestate.Load(ctx, c, is.Namespace, is.Name)
+	if err != nil || len(state) == 0 {
+		return false, false
+	}
+	hasOperator := false
+	for _, e := range state {
+		if e == nil || e.Origin != imagestate.OriginOperator {
+			continue
+		}
+		hasOperator = true
+		if e.State != "Mirrored" {
+			return false, true
+		}
+	}
+	return hasOperator, true
 }
 
 // catalogTargetRef builds the target image reference for a filtered catalog image.
@@ -444,6 +404,26 @@ func (r *ImageSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 					})
 				}
 				return requests
+			}),
+		).
+		// Watch the per-ImageSet imagestate ConfigMap (suffixed "-images")
+		// owned by the manager pod. When the manager flips the last
+		// operator-origin entry to Mirrored we want to immediately re-evaluate
+		// the catalog-build gate instead of waiting for the next pollInterval.
+		Watches(
+			&corev1.ConfigMap{},
+			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
+				name := obj.GetName()
+				const suffix = "-images"
+				if !strings.HasSuffix(name, suffix) {
+					return nil
+				}
+				return []reconcile.Request{{
+					NamespacedName: types.NamespacedName{
+						Name:      strings.TrimSuffix(name, suffix),
+						Namespace: obj.GetNamespace(),
+					},
+				}}
 			}),
 		).
 		Complete(r)

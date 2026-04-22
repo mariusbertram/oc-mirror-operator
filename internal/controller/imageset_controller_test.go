@@ -143,21 +143,17 @@ var _ = Describe("ImageSet Controller", func() {
 			}
 		})
 
-		It("should set ObservedGeneration equal to Generation and set a Ready condition", func() {
+		It("should reconcile without error (status is now owned by Manager pod)", func() {
 			reconciler := newImageSetReconciler()
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: isNamespacedName})
 			Expect(err).NotTo(HaveOccurred())
 
+			// Controller no longer writes ObservedGeneration / Ready /
+			// imagestate; that is the Manager pod's responsibility. Just
+			// verify the ImageSet is still retrievable and has not been
+			// mutated into an error state by the controller.
 			is := &mirrorv1alpha1.ImageSet{}
-			Eventually(func() bool {
-				if err := k8sClient.Get(ctx, isNamespacedName, is); err != nil {
-					return false
-				}
-				return is.Status.ObservedGeneration > 0
-			}, isTimeout, isInterval).Should(BeTrue())
-
-			Expect(is.Status.ObservedGeneration).To(Equal(is.Generation))
-			Expect(is.Status.Conditions).NotTo(BeEmpty())
+			Expect(k8sClient.Get(ctx, isNamespacedName, is)).To(Succeed())
 		})
 	})
 
@@ -206,7 +202,7 @@ var _ = Describe("ImageSet Controller", func() {
 			}
 		})
 
-		It("should update ObservedGeneration after the spec changes", func() {
+		It("should reconcile spec changes without error (Manager handles ObservedGeneration)", func() {
 			reconciler := newImageSetReconciler()
 
 			By("initial reconcile")
@@ -214,13 +210,7 @@ var _ = Describe("ImageSet Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			is := &mirrorv1alpha1.ImageSet{}
-			Eventually(func() bool {
-				if err := k8sClient.Get(ctx, isNamespacedName, is); err != nil {
-					return false
-				}
-				return is.Status.ObservedGeneration > 0
-			}, isTimeout, isInterval).Should(BeTrue())
-			initialObservedGen := is.Status.ObservedGeneration
+			Expect(k8sClient.Get(ctx, isNamespacedName, is)).To(Succeed())
 
 			By("updating the ImageSet spec to bump its generation")
 			is.Spec.Mirror.AdditionalImages = []mirrorv1alpha1.AdditionalImage{
@@ -231,15 +221,6 @@ var _ = Describe("ImageSet Controller", func() {
 			By("reconciling again after spec change")
 			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: isNamespacedName})
 			Expect(err).NotTo(HaveOccurred())
-
-			updated := &mirrorv1alpha1.ImageSet{}
-			Eventually(func() bool {
-				if err := k8sClient.Get(ctx, isNamespacedName, updated); err != nil {
-					return false
-				}
-				return updated.Status.ObservedGeneration > initialObservedGen
-			}, isTimeout, isInterval).Should(BeTrue())
-			Expect(updated.Status.ObservedGeneration).To(Equal(updated.Generation))
 		})
 	})
 })

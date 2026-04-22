@@ -34,93 +34,179 @@ func NewCollector(client *mirrorclient.MirrorClient) *Collector {
 	}
 }
 
-// CollectTargetImages parses the ImageSet configuration and returns the list of images to mirror
+// CollectTargetImages parses the ImageSet configuration and returns the list
+// of images to mirror. It is a thin convenience wrapper that runs all three
+// origin-scoped collectors (releases, operators, additional) and concatenates
+// their results, used primarily by tests and the catalog-builder one-shot.
+//
+// In the production reconcile path the manager calls the per-origin methods
+// directly so it can attach the correct ImageOrigin to each resulting entry
+// when writing imagestate.
 func (c *Collector) CollectTargetImages(ctx context.Context, spec *mirrorv1alpha1.ImageSetSpec, target *mirrorv1alpha1.MirrorTarget, meta *state.Metadata) ([]TargetImage, error) {
 	var results []TargetImage
 
-	// 1. Collect Releases
+	rel, err := c.CollectReleases(ctx, spec, target, meta)
+	if err != nil {
+		return nil, err
+	}
+	results = append(results, rel...)
+
+	op, err := c.CollectOperators(ctx, spec, target, meta)
+	if err != nil {
+		return nil, err
+	}
+	results = append(results, op...)
+
+	add, err := c.CollectAdditional(ctx, spec, target, meta)
+	if err != nil {
+		return nil, err
+	}
+	results = append(results, add...)
+
+	return results, nil
+}
+
+// CollectReleases resolves all OCP/OKD release payloads referenced via
+// spec.Mirror.Platform.Channels and returns each payload + its ~190 extracted
+// component images, plus optional KubeVirt container-disk images.
+//
+// All emitted TargetImages carry no Origin (caller-set; manager tags them
+// OriginRelease before persisting to imagestate).
+func (c *Collector) CollectReleases(ctx context.Context, spec *mirrorv1alpha1.ImageSetSpec, target *mirrorv1alpha1.MirrorTarget, meta *state.Metadata) ([]TargetImage, error) {
+	var results []TargetImage
 	for _, rel := range spec.Mirror.Platform.Channels {
-		arch := spec.Mirror.Platform.Architectures
-		if len(arch) == 0 {
-			arch = []string{"amd64"}
-		}
-
-		// Resolve the effective max version for use in destination paths.
-		// When the user hasn't pinned a version we look it up dynamically.
-		effectiveMaxVersion := rel.MaxVersion
-		if effectiveMaxVersion == "" && !rel.Full && rel.MinVersion == "" {
-			resolved, resolveErr := c.releaseResolver.ResolveLatestVersion(ctx, rel.Name, arch)
-			if resolveErr != nil {
-				fmt.Printf("Warning: failed to resolve latest version for channel %s: %v\n", rel.Name, resolveErr)
-			} else {
-				effectiveMaxVersion = resolved
-			}
-		}
-
-		// Use the resolved effectiveMaxVersion (not the original spec value)
-		// so that ResolveRelease and our destination paths agree on the same
-		// upper bound when the user did not explicitly pin a version.
-		payloadImages, err := c.releaseResolver.ResolveRelease(ctx, rel.Name, rel.MinVersion, effectiveMaxVersion, arch, rel.Full, rel.ShortestPath)
+		images, err := c.CollectReleasesForChannel(ctx, spec, target, rel, nil)
 		if err != nil {
-			fmt.Printf("Warning: failed to resolve release %s/%s: %v\n", rel.Name, effectiveMaxVersion, err)
+			fmt.Printf("Warning: collect channel %s: %v\n", rel.Name, err)
 			continue
 		}
+		results = append(results, images...)
+	}
+	return results, nil
+}
 
-		// For each release payload image, extract the ~190 component images.
-		for _, payloadImg := range payloadImages {
-			// Always include the payload image itself (needed for the release update graph).
-			// Tag it with the release version so it is addressable by version number.
-			dest := releasePayloadDestination(target.Spec.Registry, effectiveMaxVersion, payloadImg)
-			results = append(results, c.toTargetImage(payloadImg, dest, meta))
+// ResolveReleasePayloadImages performs the cheap channel→payload-image-list
+// resolution (Cincinnati graph traversal) without doing the expensive
+// per-payload component image extraction. The result is suitable for caching
+// signature computation (release.ResolvedSignature) and is reused as input to
+// CollectReleasesForChannel to avoid double work.
+func (c *Collector) ResolveReleasePayloadImages(ctx context.Context, rel mirrorv1alpha1.ReleaseChannel, arch []string) ([]string, error) {
+	if len(arch) == 0 {
+		arch = []string{"amd64"}
+	}
+	effectiveMaxVersion := rel.MaxVersion
+	if effectiveMaxVersion == "" && !rel.Full && rel.MinVersion == "" {
+		resolved, resolveErr := c.releaseResolver.ResolveLatestVersion(ctx, rel.Name, arch)
+		if resolveErr == nil {
+			effectiveMaxVersion = resolved
+		}
+	}
+	return c.releaseResolver.ResolveRelease(ctx, rel.Name, rel.MinVersion, effectiveMaxVersion, arch, rel.Full, rel.ShortestPath)
+}
 
-			// Extract component images from the payload's image-references layer.
-			componentImages, extractErr := c.releaseResolver.ExtractComponentImages(ctx, payloadImg, arch[0])
-			if extractErr != nil {
-				fmt.Printf("Warning: failed to extract component images from %s: %v\n", payloadImg, extractErr)
-				continue
-			}
-			for _, compImg := range componentImages {
-				compDest := componentDestination(target.Spec.Registry, compImg)
-				results = append(results, c.toTargetImage(compImg, compDest, meta))
-			}
+// CollectReleasesForChannel resolves a single release channel and extracts
+// component + KubeVirt images. If payloadImages is non-nil it is used as-is
+// (avoids an extra Cincinnati round-trip when the caller already invoked
+// ResolveReleasePayloadImages for caching purposes).
+func (c *Collector) CollectReleasesForChannel(ctx context.Context, spec *mirrorv1alpha1.ImageSetSpec, target *mirrorv1alpha1.MirrorTarget, rel mirrorv1alpha1.ReleaseChannel, payloadImages []string) ([]TargetImage, error) {
+	var results []TargetImage
+	arch := spec.Mirror.Platform.Architectures
+	if len(arch) == 0 {
+		arch = []string{"amd64"}
+	}
 
-			// Extract KubeVirt container disk images if requested.
-			if spec.Mirror.Platform.KubeVirtContainer {
-				kvImages, kvErr := c.releaseResolver.ExtractKubeVirtImages(ctx, payloadImg, arch)
-				if kvErr != nil {
-					fmt.Printf("Warning: failed to extract KubeVirt images from %s: %v\n", payloadImg, kvErr)
-				} else {
-					for _, kvImg := range kvImages {
-						kvDest := componentDestination(target.Spec.Registry, kvImg)
-						results = append(results, c.toTargetImage(kvImg, kvDest, meta))
-						fmt.Printf("KubeVirt image added: %s\n", kvImg)
-					}
+	effectiveMaxVersion := rel.MaxVersion
+	if effectiveMaxVersion == "" && !rel.Full && rel.MinVersion == "" {
+		resolved, resolveErr := c.releaseResolver.ResolveLatestVersion(ctx, rel.Name, arch)
+		if resolveErr != nil {
+			fmt.Printf("Warning: failed to resolve latest version for channel %s: %v\n", rel.Name, resolveErr)
+		} else {
+			effectiveMaxVersion = resolved
+		}
+	}
+
+	if payloadImages == nil {
+		var err error
+		payloadImages, err = c.releaseResolver.ResolveRelease(ctx, rel.Name, rel.MinVersion, effectiveMaxVersion, arch, rel.Full, rel.ShortestPath)
+		if err != nil {
+			return nil, fmt.Errorf("resolve release %s: %w", rel.Name, err)
+		}
+	}
+
+	for _, payloadImg := range payloadImages {
+		dest := releasePayloadDestination(target.Spec.Registry, effectiveMaxVersion, payloadImg)
+		results = append(results, c.toTargetImage(payloadImg, dest, nil))
+
+		componentImages, extractErr := c.releaseResolver.ExtractComponentImages(ctx, payloadImg, arch[0])
+		if extractErr != nil {
+			fmt.Printf("Warning: failed to extract component images from %s: %v\n", payloadImg, extractErr)
+			continue
+		}
+		for _, compImg := range componentImages {
+			compDest := componentDestination(target.Spec.Registry, compImg)
+			results = append(results, c.toTargetImage(compImg, compDest, nil))
+		}
+
+		if spec.Mirror.Platform.KubeVirtContainer {
+			kvImages, kvErr := c.releaseResolver.ExtractKubeVirtImages(ctx, payloadImg, arch)
+			if kvErr != nil {
+				fmt.Printf("Warning: failed to extract KubeVirt images from %s: %v\n", payloadImg, kvErr)
+			} else {
+				for _, kvImg := range kvImages {
+					kvDest := componentDestination(target.Spec.Registry, kvImg)
+					results = append(results, c.toTargetImage(kvImg, kvDest, nil))
 				}
 			}
 		}
 	}
+	return results, nil
+}
 
-	// 2. Collect Operators (bundle and related images)
-	// The filtered catalog image is built and pushed by a separate CatalogBuildJob;
-	// here we only collect the bundle/related images that need to be mirrored.
+// CollectOperators resolves all operator catalogs referenced via
+// spec.Mirror.Operators and returns the union of bundle + related images that
+// need mirroring. The filtered catalog itself is pushed by the
+// CatalogBuildJob and is NOT included here.
+//
+// Each catalog is pulled and its FBC parsed. This requires registry
+// credentials for every distinct catalog source, which the manager pod
+// supplies via DOCKER_CONFIG.
+func (c *Collector) CollectOperators(ctx context.Context, spec *mirrorv1alpha1.ImageSetSpec, target *mirrorv1alpha1.MirrorTarget, meta *state.Metadata) ([]TargetImage, error) {
+	var results []TargetImage
 	for _, op := range spec.Mirror.Operators {
-		pkgs := []string{}
-		for _, p := range op.Packages {
-			pkgs = append(pkgs, p.Name)
-		}
-
-		images, err := c.catalogResolver.ResolveCatalog(ctx, op.Catalog, pkgs)
+		images, err := c.CollectOperatorEntry(ctx, op, target)
 		if err != nil {
 			fmt.Printf("Warning: failed to resolve catalog %s: %v\n", op.Catalog, err)
 			continue
 		}
-		for _, img := range images {
-			dest := componentDestination(target.Spec.Registry, img)
-			results = append(results, c.toTargetImage(img, dest, meta))
-		}
+		results = append(results, images...)
 	}
+	return results, nil
+}
 
-	// 3. Collect AdditionalImages
+// CollectOperatorEntry resolves a single Operator entry. Used by the manager
+// when a per-entry cache miss requires re-resolution.
+func (c *Collector) CollectOperatorEntry(ctx context.Context, op mirrorv1alpha1.Operator, target *mirrorv1alpha1.MirrorTarget) ([]TargetImage, error) {
+	pkgs := []string{}
+	for _, p := range op.Packages {
+		pkgs = append(pkgs, p.Name)
+	}
+	images, err := c.catalogResolver.ResolveCatalog(ctx, op.Catalog, pkgs)
+	if err != nil {
+		return nil, err
+	}
+	var results []TargetImage
+	for _, img := range images {
+		dest := componentDestination(target.Spec.Registry, img)
+		results = append(results, c.toTargetImage(img, dest, nil))
+	}
+	return results, nil
+}
+
+// CollectAdditional returns the destination entries for every image listed in
+// spec.Mirror.AdditionalImages. No upstream resolution is needed because the
+// user has already supplied the fully-qualified source reference.
+func (c *Collector) CollectAdditional(_ context.Context, spec *mirrorv1alpha1.ImageSetSpec, target *mirrorv1alpha1.MirrorTarget, meta *state.Metadata) ([]TargetImage, error) {
+	var results []TargetImage
 	for _, img := range spec.Mirror.AdditionalImages {
 		dest := fmt.Sprintf("%s/%s", target.Spec.Registry, img.Name)
 		if img.TargetRepo != "" {
@@ -128,7 +214,6 @@ func (c *Collector) CollectTargetImages(ctx context.Context, spec *mirrorv1alpha
 		}
 		results = append(results, c.toTargetImage(img.Name, dest, meta))
 	}
-
 	return results, nil
 }
 

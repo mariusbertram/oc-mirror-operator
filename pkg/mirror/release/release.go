@@ -4,11 +4,14 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -46,6 +49,31 @@ func New(client *mirrorclient.MirrorClient) *ReleaseResolver {
 			Timeout: 30 * time.Second,
 		},
 	}
+}
+
+// ResolvedSignature returns a stable hash that uniquely identifies the result
+// of ResolveRelease for a given channel-spec entry. It is the SHA-256 hex of
+// the sorted, comma-joined payload-image references (which themselves embed
+// upstream digests in OCP cincinnati graphs).
+//
+// Used by the manager as a cheap caching probe: if the new ResolvedSignature
+// matches the value previously stored in the ImageSet annotation, the
+// expensive ExtractComponentImages calls can be skipped because the resolved
+// payload set is unchanged.
+//
+// Returns an empty string if the input list is empty.
+func ResolvedSignature(payloadImages []string) string {
+	if len(payloadImages) == 0 {
+		return ""
+	}
+	sorted := append([]string(nil), payloadImages...)
+	sort.Strings(sorted)
+	h := sha256.New()
+	for _, p := range sorted {
+		_, _ = h.Write([]byte(p))
+		_, _ = h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // FetchGraph retrieves the raw Cincinnati upgrade graph for the given channel and arch.

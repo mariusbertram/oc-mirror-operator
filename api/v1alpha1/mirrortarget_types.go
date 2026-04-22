@@ -126,6 +126,39 @@ const (
 	CleanupPolicyAnnotation = "mirror.openshift.io/cleanup-policy"
 	// CleanupPolicyDelete triggers registry image deletion on ImageSet removal.
 	CleanupPolicyDelete = "Delete"
+
+	// CatalogBuildSigAnnotation tracks the last input signature used to build
+	// the operator catalog. Set on ImageSet by the controller after a catalog
+	// build job completes successfully. When the computed signature changes,
+	// the controller schedules a new catalog build.
+	CatalogBuildSigAnnotation = "mirror.openshift.io/catalog-build-sig"
+
+	// RecollectAnnotation forces the manager to re-resolve all upstream content
+	// (releases, operator catalogs, additional images) on the next reconcile,
+	// regardless of cached digests. The value is unused; presence is the trigger.
+	// The annotation is removed by the manager once recollection completes so
+	// that it is a one-shot trigger.
+	RecollectAnnotation = "mirror.openshift.io/recollect"
+
+	// CatalogDigestAnnotationPrefix is prepended to a stable signature hash of
+	// a single operator-spec entry (catalog reference + sorted package list)
+	// to form the annotation key that stores the last resolved upstream
+	// manifest digest. Example:
+	//   mirror.openshift.io/catalog-digest-<sha256-of-entry-sig>=sha256:abc...
+	// Each spec.mirror.operators[] entry gets its own annotation, so the same
+	// catalog can be referenced multiple times with different package filters
+	// without collisions. The manager re-resolves a given entry only when the
+	// upstream digest differs from the cached one OR the entry signature
+	// changes (different packages, different catalog ref, …) which yields a
+	// new annotation key altogether.
+	CatalogDigestAnnotationPrefix = "mirror.openshift.io/catalog-digest-"
+
+	// ReleaseDigestAnnotationPrefix is prepended to a stable signature hash of
+	// a single release-channel-spec entry (channel name + sorted architectures
+	// + min/max bounds + Full/ShortestPath flags + KubeVirt flag) to form the
+	// annotation key that stores the last resolved channel-head digest.
+	// Each spec.mirror.platform.channels[] entry gets its own annotation.
+	ReleaseDigestAnnotationPrefix = "mirror.openshift.io/release-digest-"
 )
 
 // MirrorTargetStatus defines the observed state of MirrorTarget

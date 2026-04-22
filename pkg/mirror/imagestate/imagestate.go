@@ -23,13 +23,42 @@ import (
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
 )
 
+// ImageOrigin identifies which collector source produced a given imagestate
+// entry. Used for ownership tracking when multiple writers (controller +
+// manager) update the same ConfigMap.
+type ImageOrigin string
+
+const (
+	// OriginRelease marks images extracted from OCP release payloads
+	// (platform.channels) and KubeVirt container disks.
+	OriginRelease ImageOrigin = "release"
+	// OriginOperator marks bundle and related images extracted from operator
+	// catalogs (mirror.operators[]).
+	OriginOperator ImageOrigin = "operator"
+	// OriginAdditional marks images explicitly enumerated via
+	// mirror.additionalImages.
+	OriginAdditional ImageOrigin = "additional"
+)
+
 // ImageEntry tracks the mirroring state of a single image.
 // The destination image reference is the map key in ImageState.
 type ImageEntry struct {
-	Source     string `json:"source"`
-	State      string `json:"state"` // Pending | Mirrored | Failed
-	LastError  string `json:"lastError,omitempty"`
-	RetryCount int    `json:"retryCount,omitempty"`
+	Source     string      `json:"source"`
+	State      string      `json:"state"` // Pending | Mirrored | Failed
+	LastError  string      `json:"lastError,omitempty"`
+	RetryCount int         `json:"retryCount,omitempty"`
+	// Origin records which collector produced this entry. Empty for entries
+	// written by older controller versions (treated as OriginRelease for
+	// backward compatibility during migration).
+	Origin ImageOrigin `json:"origin,omitempty"`
+	// EntrySig is the per-spec-entry signature that produced this entry —
+	// e.g. the OperatorEntrySignature for OriginOperator or the
+	// ReleaseChannelSignature for OriginRelease. It allows the manager to
+	// carry forward only entries belonging to a cache-hit spec entry while
+	// dropping entries from removed/changed entries.
+	// Empty for OriginAdditional and for legacy entries; partition logic
+	// must treat empty as "any sig" to remain backward-compatible.
+	EntrySig string `json:"entrySig,omitempty"`
 }
 
 // ImageState maps destination image reference → ImageEntry.

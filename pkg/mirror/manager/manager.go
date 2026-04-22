@@ -505,6 +505,45 @@ func (m *MirrorManager) reconcile(ctx context.Context) error {
 		}
 		m.imageStates[is.Name] = isState
 
+		// Manager-side resolution: enumerate upstream images for this ImageSet
+		// (releases, operator catalogs, additional) using the manager's
+		// registry credentials, with per-entry digest caching via ImageSet
+		// annotations.
+		//
+		// The resolution does cheap network probes (manifest digest + Cincinnati
+		// graph) so we gate it via shouldResolve() — only on initial state,
+		// recollect annotation, spec change, or pollInterval elapsed.
+		//
+		// We release the manager mutex around the upstream fetches and merge
+		// concurrent worker callbacks back into the result before saving so
+		// status updates that fire during the unlock window are not lost.
+		justResolved := false
+		if shouldResolve(&is, mt, isState) {
+			isCopy := is.DeepCopy()
+			stateSnap := cloneImageState(isState)
+			m.mu.Unlock()
+			newState, resolved, resolveErr := m.resolveImageSet(ctx, isCopy, mt, stateSnap)
+			m.mu.Lock()
+			if resolveErr != nil {
+				fmt.Printf("Warning: failed to resolve ImageSet %s: %v\n", is.Name, resolveErr)
+			} else {
+				// Even if state is byte-identical (resolved==false), we still
+				// performed a successful poll cycle and should advance the
+				// poll clock to avoid re-probing every reconcile tick.
+				justResolved = true
+				if resolved {
+					live := m.imageStates[is.Name]
+					newState = mergeWorkerUpdates(newState, live)
+					if err := imagestate.Save(ctx, m.Client, m.Namespace, &is, newState); err != nil {
+						fmt.Printf("Warning: failed to save resolved state for %s: %v\n", is.Name, err)
+					} else {
+						isState = newState
+						m.imageStates[is.Name] = isState
+					}
+				}
+			}
+		}
+
 		// Periodic drift detection: clear the in-memory mirrored cache every 5
 		// minutes so the loop below re-verifies that mirrored images still exist
 		// in the target registry. This catches manual deletions or registry wipes.
@@ -633,7 +672,7 @@ func (m *MirrorManager) reconcile(ctx context.Context) error {
 				fmt.Printf("Warning: failed to save image state for %s: %v\n", is.Name, err)
 			}
 		}
-		m.updateImageSetStatusLocked(ctx, &is, isState)
+		m.updateImageSetStatusLocked(ctx, &is, isState, justResolved)
 	}
 
 	return nil
@@ -663,17 +702,70 @@ func (m *MirrorManager) setImageStateLocked(dest, st, lastError string) {
 	}
 }
 
-// updateImageSetStatusLocked updates the ImageSet status with aggregate counts.
+// updateImageSetStatusLocked updates the ImageSet status with aggregate
+// counts, ObservedGeneration, and the Ready condition. The Manager is the
+// sole writer of these fields (the controller only writes the CatalogReady
+// condition).
+//
+// LastSuccessfulPollTime is updated only when justResolved is true, so the
+// pollInterval gate in shouldResolve() works correctly. Status churn from
+// worker callbacks does not reset the poll clock.
+//
 // Caller must hold m.mu.
-func (m *MirrorManager) updateImageSetStatusLocked(ctx context.Context, is *mirrorv1alpha1.ImageSet, state imagestate.ImageState) {
+func (m *MirrorManager) updateImageSetStatusLocked(ctx context.Context, is *mirrorv1alpha1.ImageSet, state imagestate.ImageState, justResolved bool) {
 	total, mirrored, pending, failed := imagestate.Counts(state)
 	is.Status.TotalImages = total
 	is.Status.MirroredImages = mirrored
 	is.Status.PendingImages = pending
 	is.Status.FailedImages = failed
+	is.Status.ObservedGeneration = is.Generation
+	if justResolved {
+		now := metav1.Now()
+		is.Status.LastSuccessfulPollTime = &now
+	}
+
+	readyStatus := metav1.ConditionTrue
+	readyReason := "Collected"
+	readyMsg := fmt.Sprintf("Collected %d images (%d mirrored, %d pending, %d failed)", total, mirrored, pending, failed)
+	if total == 0 {
+		readyStatus = metav1.ConditionFalse
+		readyReason = "Empty"
+		readyMsg = "no images resolved yet"
+	}
+	setReadyCondition(&is.Status.Conditions, readyStatus, readyReason, readyMsg, is.Generation)
+
 	if err := m.Client.Status().Update(ctx, is); err != nil {
 		fmt.Printf("Failed to update ImageSet %s status: %v\n", is.Name, err)
 	}
+}
+
+// setReadyCondition manages a "Ready" condition on the ImageSet. Local helper
+// to avoid importing the controller package.
+func setReadyCondition(conditions *[]metav1.Condition, status metav1.ConditionStatus, reason, message string, gen int64) {
+	if conditions == nil {
+		return
+	}
+	for i, c := range *conditions {
+		if c.Type != "Ready" {
+			continue
+		}
+		if c.Status != status || c.Reason != reason || c.Message != message || c.ObservedGeneration != gen {
+			(*conditions)[i].Status = status
+			(*conditions)[i].Reason = reason
+			(*conditions)[i].Message = message
+			(*conditions)[i].ObservedGeneration = gen
+			(*conditions)[i].LastTransitionTime = metav1.Now()
+		}
+		return
+	}
+	*conditions = append(*conditions, metav1.Condition{
+		Type:               "Ready",
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: gen,
+		LastTransitionTime: metav1.Now(),
+	})
 }
 
 func (m *MirrorManager) startWorkerBatch(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget, items []BatchItem) (string, error) {

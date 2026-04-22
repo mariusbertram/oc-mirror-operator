@@ -101,6 +101,29 @@ func New(client *mirrorclient.MirrorClient) *CatalogResolver {
 	return &CatalogResolver{client: client}
 }
 
+// GetCatalogDigest performs a lightweight manifest lookup against the catalog
+// source registry and returns the upstream digest (e.g. "sha256:abc…").
+//
+// This is the cheap caching probe used by the manager: if the returned digest
+// matches a previously cached value (stored as an annotation on the ImageSet),
+// the manager skips the expensive ResolveCatalog call entirely.
+//
+// If the source reference already pins a digest, that digest is returned
+// without a network round-trip.
+func (r *CatalogResolver) GetCatalogDigest(ctx context.Context, catalogImage string) (string, error) {
+	parsed, err := ref.New(catalogImage)
+	if err != nil {
+		return "", fmt.Errorf("parse catalog image reference: %w", err)
+	}
+	if parsed.Digest != "" {
+		return parsed.Digest, nil
+	}
+	if r.client == nil {
+		return "", fmt.Errorf("no client configured")
+	}
+	return r.client.GetDigest(ctx, catalogImage)
+}
+
 // ResolveCatalog pulls the catalog image, extracts the File-Based Catalog (FBC)
 // from the image layers, filters it to the requested packages (including
 // transitive dependencies), and returns all bundle + related images.
