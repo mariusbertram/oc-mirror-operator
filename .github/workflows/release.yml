@@ -260,7 +260,7 @@ jobs:
 
           # ── Copy logo ───────────────────────────────────────────────────
           # Source the logo from the operator repo (checked out in step 1)
-          LOGO_SRC="${GITHUB_WORKSPACE}/oc-mirror-operator-logo.svg"
+          LOGO_SRC="${GITHUB_WORKSPACE}/docs/oc-mirror-operator-logo.svg"
           if [ -f "$LOGO_SRC" ]; then
             cp "$LOGO_SRC" "${OPERATOR_DIR}/logo/oc-mirror-operator-logo.svg"
           fi
