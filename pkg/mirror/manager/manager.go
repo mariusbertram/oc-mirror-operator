@@ -251,6 +251,7 @@ func (m *MirrorManager) syncInProgressFromPods(ctx context.Context) error {
 func (m *MirrorManager) runStatusAPI(ctx context.Context) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/status", m.handleStatusUpdate)
+	mux.HandleFunc("/should-mirror", m.handleShouldMirror)
 
 	server := &http.Server{
 		Addr:              ":8080",
@@ -314,6 +315,64 @@ func (m *MirrorManager) handleStatusUpdate(w http.ResponseWriter, r *http.Reques
 	w.WriteHeader(http.StatusOK)
 }
 
+// handleShouldMirror lets a worker check, just before mirroring an image,
+// whether the image is still required by any ImageSet on this MirrorTarget.
+// This prevents wasting work when the user shrinks an ImageSet (removed
+// operator, narrowed version range) while a worker batch is still in flight.
+//
+// Responses:
+//
+//	200 OK    — image is still pending or failed (worker should mirror it)
+//	410 Gone  — image is already Mirrored or no longer in any state
+//	            (worker MUST skip it)
+//	401 Unauthorized — bad/missing Bearer token
+//	400 Bad Request  — missing dest query parameter
+//
+// The decision is taken under the manager mutex against the most recently
+// reconciled state cache. Worst-case latency between user-edit and the
+// worker honouring it is one reconcile cycle (≈30 s).
+func (m *MirrorManager) handleShouldMirror(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	authHeader := r.Header.Get("Authorization")
+	expected := "Bearer " + m.workerToken
+	if subtle.ConstantTimeCompare([]byte(authHeader), []byte(expected)) != 1 {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	dest := r.URL.Query().Get("dest")
+	if dest == "" {
+		http.Error(w, "missing dest", http.StatusBadRequest)
+		return
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for _, state := range m.imageStates {
+		entry, ok := state[dest]
+		if !ok {
+			continue
+		}
+		switch entry.State {
+		case "Mirrored":
+			// Already done — skip.
+			w.WriteHeader(http.StatusGone)
+			return
+		default:
+			// Pending / Failed / anything else — mirror it.
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+	}
+
+	// Not present in any reconciled image state → image was removed from spec.
+	w.WriteHeader(http.StatusGone)
+}
 // cleanupFinishedWorkers removes completed/failed worker pods.
 // First it handles tracked pods in m.inProgress (resetting Failed images to
 // Pending), then it sweeps for any orphaned finished pods that fell out of

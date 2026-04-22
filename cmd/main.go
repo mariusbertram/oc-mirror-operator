@@ -24,6 +24,7 @@ import (
 	"flag"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -172,6 +173,16 @@ func runWorkerBatch(insecure bool, batchJSON string) {
 
 	anyFailed := false
 	for i := range sources {
+		// Ask the manager whether this destination is still required. The
+		// user may have shrunk the ImageSet (operator removed, version
+		// range narrowed) since this batch was dispatched. If the image is
+		// no longer needed (or has already been mirrored by a parallel
+		// worker after a re-collection), skip it instead of wasting bandwidth
+		// and registry storage.
+		if !shouldMirror(dests[i]) {
+			fmt.Printf("Skipping %s: no longer required by any ImageSet\n", dests[i])
+			continue
+		}
 		// Refresh the mirror client every 20 images to prevent auth token
 		// accumulation that causes "Request Header Too Large" (nginx 8KB limit).
 		if i > 0 && i%20 == 0 {
@@ -392,6 +403,36 @@ func reportStatus(dest, digest, errMsg string) {
 		return
 	}
 	defer resp.Body.Close()
+}
+
+// shouldMirror queries the manager whether `dest` is still required.
+// Returns true on 200 OK, false on 410 Gone. On any error (network failure,
+// missing env vars, manager unreachable) it returns true so the worker fails
+// safe: an outdated mirror is preferable to skipping a still-required image.
+func shouldMirror(dest string) bool {
+	managerURL := os.Getenv("MANAGER_URL")
+	if managerURL == "" {
+		return true
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	httpReq, err := http.NewRequestWithContext(ctx, "GET",
+		managerURL+"/should-mirror?dest="+url.QueryEscape(dest), nil)
+	if err != nil {
+		return true
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+os.Getenv("WORKER_TOKEN"))
+	httpClient := &http.Client{Timeout: 5 * time.Second}
+	resp, err := httpClient.Do(httpReq)
+	if err != nil {
+		fmt.Printf("Failed to query /should-mirror for %s: %v (proceeding)\n", dest, err)
+		return true
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusGone {
+		return false
+	}
+	return true
 }
 
 func runController() {

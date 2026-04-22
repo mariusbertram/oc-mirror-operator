@@ -139,7 +139,7 @@ Die Architektur folgt einem skalierbaren **Drei-Schichten-Modell** mit **Catalog
 | **Control Plane** | `Operator` (`internal/controller/`) | Überwacht CRs, berechnet Image-Soll-Listen via Cincinnati-API und FBC-Parsing, erstellt Catalog-Build-Jobs und Cleanup-Jobs, periodisches Upstream-Polling, setzt Status-Conditions |
 | **Orchestration** | `Manager` (`pkg/mirror/manager/`) | Ein Deployment pro `MirrorTarget`. Lädt Image-State, plant Mirror-Reihenfolge (Blob-Planner), startet Worker-Pods, empfängt Ergebnisse via authentifizierter HTTP-API (:8080), verifiziert Registry-Zustand, bereinigt abgeschlossene Pods |
 | **Resource Server** | `Resource Server` (`pkg/mirror/resources/`) | Integriert im Manager-Pod auf Port :8081. Stellt IDMS, ITMS, CatalogSource, ClusterCatalog und Signatur-ConfigMaps per HTTP-REST bereit. Exponiert via Route (OpenShift), Ingress oder Service |
-| **Execution** | `Worker` (kurzlebige Pods) | Kopiert Image-Batches mit `regclient`, puffert große Blobs auf emptyDir, kopiert Signaturen, meldet Status via `POST /status` |
+| **Execution** | `Worker` (kurzlebige Pods) | Kopiert Image-Batches mit `regclient`, puffert große Blobs auf emptyDir, kopiert Signaturen, fragt vor jedem Image den Manager via `GET /should-mirror` ob das Ziel noch benötigt wird, meldet Status via `POST /status` |
 | **Catalog Build** | `Catalog-Builder` (K8s Job) | Pro Quell-Katalog ein Job: filtert FBC, löst Dependencies auf, baut OCI-Image mit Source-Layers + FBC-Overlay, pusht in Ziel-Registry |
 | **State** | ConfigMap (gzip-JSON) | Per-Image Mirroring-Status in Kubernetes ConfigMaps — kein PV/PVC nötig, ~30 Bytes pro Image |
 
@@ -155,6 +155,7 @@ Die Architektur folgt einem skalierbaren **Drei-Schichten-Modell** mit **Catalog
 8. **Resource Server** (Port 8081 im Manager-Pod) stellt Cluster-Ressourcen per HTTP bereit — IDMS, ITMS, CatalogSource, ClusterCatalog und Signatur-ConfigMaps werden erst ausgeliefert wenn das jeweilige ImageSet den Status `Ready` hat
 9. **Periodisches Polling**: Operator prüft in konfigurierbarem Intervall (`pollInterval`, Default: 24h) ob Upstream-Quellen (Cincinnati, Kataloge) neue Images enthalten und triggert bei Bedarf erneute Collection + Catalog-Rebuild
 10. **Image-Cleanup**: Beim Entfernen eines ImageSets aus dem MirrorTarget oder bei Spec-Änderungen (z.B. Operator entfernt) erstellt der Operator Cleanup-Jobs, die nicht mehr benötigte Images aus der Ziel-Registry löschen (Annotation-gesteuert)
+11. **Live-Skip obsoleter Images**: Reduziert der Nutzer ein ImageSet (Operator entfernt, Versions-Range eingeschränkt) während Worker bereits laufen, fragt jeder Worker vor dem Kopieren via `GET /should-mirror?dest=...` beim Manager nach. Antwortet der Manager mit `410 Gone` (Image nicht mehr im aktuellen State oder bereits Mirrored), überspringt der Worker das Image. Damit werden Bandbreite und Registry-Storage nicht für inzwischen obsolete Images verbraucht. Worst-case Latenz bis zum Skip: ein Manager-Reconcile-Zyklus (~30 s).
 
 ---
 
