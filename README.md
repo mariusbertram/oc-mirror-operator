@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/oc-mirror-operator-logo-large.svg" alt="oc-mirror-operator logo" width="200" />
+</p>
+
 # oc-mirror-operator
 
 The `oc-mirror-operator` is a Kubernetes operator for automating and continuously mirroring OpenShift Releases, operator catalogs, and additional container images into a private registry.
