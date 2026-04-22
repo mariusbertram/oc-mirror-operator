@@ -271,6 +271,18 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs(
 		catalogNeedsRebuild = true
 	}
 
+	// Persist the new build signature IMMEDIATELY so that concurrent/subsequent
+	// reconcile loops do not keep seeing a mismatch and endlessly delete+recreate jobs.
+	if catalogNeedsRebuild {
+		if is.Annotations == nil {
+			is.Annotations = make(map[string]string)
+		}
+		is.Annotations["mirror.openshift.io/catalog-build-sig"] = buildSig
+		if err := r.Update(ctx, is); err != nil {
+			return fmt.Errorf("failed to persist catalog build signature: %w", err)
+		}
+	}
+
 	// If the CatalogReady condition is already True AND the signature hasn't
 	// changed, don't recreate jobs that were cleaned up by TTL.
 	catalogAlreadyReady := false
@@ -344,17 +356,6 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs(
 			allSucceeded = false
 		default:
 			allSucceeded = false
-		}
-	}
-
-	// Store build signature in annotation.
-	if allSucceeded {
-		if is.Annotations == nil {
-			is.Annotations = make(map[string]string)
-		}
-		is.Annotations["mirror.openshift.io/catalog-build-sig"] = buildSig
-		if err := r.Update(ctx, is); err != nil {
-			l.Error(err, "Failed to update catalog build signature annotation")
 		}
 	}
 
