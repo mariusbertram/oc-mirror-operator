@@ -383,6 +383,36 @@ spec:
                   - type
                   type: object
                 type: array
+              failedImageDetails:
+                description: |-
+                  FailedImageDetails lists the images that failed mirroring with their error
+                  and the spec entry that referenced them. Capped at 20 entries to bound
+                  status size; the FailedImages counter always reflects the full count.
+                items:
+                  description: FailedImageDetail describes a single image that could
+                    not be mirrored.
+                  properties:
+                    destination:
+                      description: Destination is the mirroring target reference.
+                      type: string
+                    error:
+                      description: Error is the last error message from the mirroring
+                        attempt.
+                      type: string
+                    origin:
+                      description: |-
+                        Origin is a human-readable description of which spec entry produced
+                        this image (e.g. "registry.../redhat-operator-index:v4.21 [web-terminal]"
+                        or "stable-4.14 [amd64]").
+                      type: string
+                    source:
+                      description: Source is the upstream image reference.
+                      type: string
+                  required:
+                  - destination
+                  - source
+                  type: object
+                type: array
               failedImages:
                 description: FailedImages is the number of images that failed mirroring
                   (exhausted retries).

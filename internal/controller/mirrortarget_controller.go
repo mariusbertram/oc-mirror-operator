@@ -201,7 +201,7 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 								"--mirrortarget", mt.Name,
 								"--namespace", mt.Namespace,
 							},
-							Env: managerContainerEnv(mt),
+							Env:          managerContainerEnv(mt),
 							VolumeMounts: managerContainerVolumeMounts(mt),
 							Resources:    mt.Spec.Manager.Resources,
 							Ports: []corev1.ContainerPort{
@@ -210,7 +210,7 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 							},
 						},
 					},
-					Volumes: managerPodVolumes(mt),
+					Volumes:      managerPodVolumes(mt),
 					NodeSelector: mt.Spec.Manager.NodeSelector,
 					Tolerations:  mt.Spec.Manager.Tolerations,
 				},
@@ -555,6 +555,7 @@ func (r *MirrorTargetReconciler) ensureNetworkPolicies(ctx context.Context, mt *
 	}
 	return nil
 }
+
 // creates cleanup Jobs for them (if cleanup-policy annotation is "Delete"),
 // and tracks cleanup progress.
 func (r *MirrorTargetReconciler) reconcileCleanup(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget) error {

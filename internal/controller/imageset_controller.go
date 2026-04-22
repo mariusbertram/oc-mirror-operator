@@ -315,9 +315,12 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs(
 	return r.Status().Update(ctx, is)
 }
 
-// operatorImagesMirrored returns (allMirrored, knowState).
-// allMirrored = true when every operator-origin entry in the imagestate
-// ConfigMap is in state "Mirrored" AND there is at least one such entry.
+// operatorImagesMirrored returns (complete, knowState).
+// complete = true when every operator-origin entry in the imagestate ConfigMap
+// is either "Mirrored" or permanently failed (RetryCount >= 10), AND there is
+// at least one such entry. Permanently-failed images are treated as done so
+// that a single unavailable upstream image does not block the catalog build
+// indefinitely; the failure is surfaced via ImageSet.status.failedImageDetails.
 // knowState = false when no imagestate ConfigMap exists yet (manager hasn't
 // performed initial resolution); the gate is closed in that case so we don't
 // kick off a build with zero source data.
@@ -332,7 +335,7 @@ func operatorImagesMirrored(ctx context.Context, c client.Client, is *mirrorv1al
 			continue
 		}
 		hasOperator = true
-		if e.State != "Mirrored" {
+		if e.State != "Mirrored" && !(e.State == "Failed" && e.RetryCount >= 10) {
 			return false, true
 		}
 	}
@@ -537,30 +540,30 @@ func (r *ImageSetReconciler) createPartialCleanupJob(
 // partialCleanupEnv returns the env for the partial-cleanup container.
 // DOCKER_CONFIG is only exported when an AuthSecret is configured.
 func partialCleanupEnv(mt *mirrorv1alpha1.MirrorTarget) []corev1.EnvVar {
-if mt.Spec.AuthSecret == "" {
-return nil
-}
-return []corev1.EnvVar{{Name: "DOCKER_CONFIG", Value: "/docker-config"}}
+	if mt.Spec.AuthSecret == "" {
+		return nil
+	}
+	return []corev1.EnvVar{{Name: "DOCKER_CONFIG", Value: "/docker-config"}}
 }
 
 func partialCleanupVolumeMounts(mt *mirrorv1alpha1.MirrorTarget) []corev1.VolumeMount {
-if mt.Spec.AuthSecret == "" {
-return nil
-}
-return []corev1.VolumeMount{{Name: "docker-config", MountPath: "/docker-config", ReadOnly: true}}
+	if mt.Spec.AuthSecret == "" {
+		return nil
+	}
+	return []corev1.VolumeMount{{Name: "docker-config", MountPath: "/docker-config", ReadOnly: true}}
 }
 
 func partialCleanupVolumes(mt *mirrorv1alpha1.MirrorTarget) []corev1.Volume {
-if mt.Spec.AuthSecret == "" {
-return nil
-}
-return []corev1.Volume{{
-Name: "docker-config",
-VolumeSource: corev1.VolumeSource{
-Secret: &corev1.SecretVolumeSource{
-SecretName: mt.Spec.AuthSecret,
-Items:      []corev1.KeyToPath{{Key: ".dockerconfigjson", Path: "config.json"}},
-},
-},
-}}
+	if mt.Spec.AuthSecret == "" {
+		return nil
+	}
+	return []corev1.Volume{{
+		Name: "docker-config",
+		VolumeSource: corev1.VolumeSource{
+			Secret: &corev1.SecretVolumeSource{
+				SecretName: mt.Spec.AuthSecret,
+				Items:      []corev1.KeyToPath{{Key: ".dockerconfigjson", Path: "config.json"}},
+			},
+		},
+	}}
 }

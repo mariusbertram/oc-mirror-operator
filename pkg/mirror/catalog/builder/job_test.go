@@ -49,23 +49,23 @@ func TestSafeJobName_NoCollisionViaTruncation(t *testing.T) {
 // TestNew_RequiresOperatorImage ensures we fail fast when OPERATOR_IMAGE is
 // unset rather than launching catalog-build Jobs with a bogus image.
 func TestNew_RequiresOperatorImage(t *testing.T) {
-t.Setenv(OperatorImageEnvVar, "")
-_, err := New()
-if err == nil {
-t.Fatalf("expected error when OPERATOR_IMAGE is empty")
-}
-if !strings.Contains(err.Error(), OperatorImageEnvVar) {
-t.Fatalf("error %q does not mention env var name", err)
-}
+	t.Setenv(OperatorImageEnvVar, "")
+	_, err := New()
+	if err == nil {
+		t.Fatalf("expected error when OPERATOR_IMAGE is empty")
+	}
+	if !strings.Contains(err.Error(), OperatorImageEnvVar) {
+		t.Fatalf("error %q does not mention env var name", err)
+	}
 }
 
 func TestNew_AcceptsOperatorImage(t *testing.T) {
-t.Setenv(OperatorImageEnvVar, "registry.example.com/operator:v1")
-m, err := New()
-if err != nil {
-t.Fatalf("unexpected error: %v", err)
-}
-if m == nil {
-t.Fatalf("expected manager, got nil")
-}
+	t.Setenv(OperatorImageEnvVar, "registry.example.com/operator:v1")
+	m, err := New()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if m == nil {
+		t.Fatalf("expected manager, got nil")
+	}
 }

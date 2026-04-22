@@ -374,6 +374,7 @@ func (m *MirrorManager) handleShouldMirror(w http.ResponseWriter, r *http.Reques
 	// Not present in any reconciled image state → image was removed from spec.
 	w.WriteHeader(http.StatusGone)
 }
+
 // cleanupFinishedWorkers removes completed/failed worker pods.
 // First it handles tracked pods in m.inProgress (resetting Failed images to
 // Pending), then it sweeps for any orphaned finished pods that fell out of
@@ -725,10 +726,12 @@ func (m *MirrorManager) updateImageSetStatusLocked(ctx context.Context, is *mirr
 		is.Status.LastSuccessfulPollTime = &now
 	}
 
-	// Collect failed image details (capped at 20 to bound status size).
-	details := make([]mirrorv1alpha1.FailedImageDetail, 0, failed)
+	// Collect permanently-failed image details (retryCount >= 10, capped at 20
+	// to bound status size). Transient failures (still being retried) are
+	// excluded — they show up as pending until retries are exhausted.
+	details := make([]mirrorv1alpha1.FailedImageDetail, 0)
 	for dest, entry := range state {
-		if entry == nil || entry.State != "Failed" {
+		if entry == nil || entry.State != "Failed" || entry.RetryCount < 10 {
 			continue
 		}
 		details = append(details, mirrorv1alpha1.FailedImageDetail{

@@ -43,10 +43,10 @@ const (
 // ImageEntry tracks the mirroring state of a single image.
 // The destination image reference is the map key in ImageState.
 type ImageEntry struct {
-	Source     string      `json:"source"`
-	State      string      `json:"state"` // Pending | Mirrored | Failed
-	LastError  string      `json:"lastError,omitempty"`
-	RetryCount int         `json:"retryCount,omitempty"`
+	Source     string `json:"source"`
+	State      string `json:"state"` // Pending | Mirrored | Failed
+	LastError  string `json:"lastError,omitempty"`
+	RetryCount int    `json:"retryCount,omitempty"`
 	// Origin records which collector produced this entry. Empty for entries
 	// written by older controller versions (treated as OriginRelease for
 	// backward compatibility during migration).
