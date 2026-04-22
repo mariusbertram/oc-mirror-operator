@@ -165,26 +165,26 @@ func (m *MirrorManager) resolveReleaseSection(
 		sig := mirrorv1alpha1.ReleaseChannelSignature(ch, arch, is.Spec.Mirror.Platform.KubeVirtContainer)
 		annoKey := mirrorv1alpha1.ReleaseDigestAnnotationKey(sig)
 		cached := annotations[annoKey]
+		originRef := fmt.Sprintf("%s [%s]", ch.Name, strings.Join(arch, ","))
 
 		payloadImages, resolveErr := collector.ResolveReleasePayloadImages(ctx, ch, arch)
 		if resolveErr != nil {
 			fmt.Printf("Warning: probe release channel %s: %v\n", ch.Name, resolveErr)
-			carryOverByOriginAndSig(currentState, newState, imagestate.OriginRelease, sig)
+			carryOverByOriginAndSig(currentState, newState, imagestate.OriginRelease, sig, originRef)
 			continue
 		}
 		freshSig := release.ResolvedSignature(payloadImages)
 		if !recollect && cached != "" && cached == freshSig {
-			carryOverByOriginAndSig(currentState, newState, imagestate.OriginRelease, sig)
+			carryOverByOriginAndSig(currentState, newState, imagestate.OriginRelease, sig, originRef)
 			continue
 		}
 
 		images, err := collector.CollectReleasesForChannel(ctx, &is.Spec, mt, ch, payloadImages)
 		if err != nil {
 			fmt.Printf("Warning: collect release channel %s: %v\n", ch.Name, err)
-			carryOverByOriginAndSig(currentState, newState, imagestate.OriginRelease, sig)
+			carryOverByOriginAndSig(currentState, newState, imagestate.OriginRelease, sig, originRef)
 			continue
 		}
-		originRef := fmt.Sprintf("%s [%s]", ch.Name, strings.Join(arch, ","))
 		mergeIntoStateWithSig(newState, images, imagestate.OriginRelease, sig, originRef, currentState)
 
 		if annotations[annoKey] != freshSig {
@@ -213,24 +213,6 @@ func (m *MirrorManager) resolveOperatorSection(
 		annoKey := mirrorv1alpha1.CatalogDigestAnnotationKey(sig)
 		cached := annotations[annoKey]
 
-		freshDigest, err := resolver.GetCatalogDigest(ctx, op.Catalog)
-		if err != nil {
-			fmt.Printf("Warning: probe catalog %s: %v\n", op.Catalog, err)
-			carryOverByOriginAndSig(currentState, newState, imagestate.OriginOperator, sig)
-			continue
-		}
-
-		if !recollect && cached != "" && cached == freshDigest {
-			carryOverByOriginAndSig(currentState, newState, imagestate.OriginOperator, sig)
-			continue
-		}
-
-		images, err := collector.CollectOperatorEntry(ctx, op, mt)
-		if err != nil {
-			fmt.Printf("Warning: collect catalog %s: %v\n", op.Catalog, err)
-			carryOverByOriginAndSig(currentState, newState, imagestate.OriginOperator, sig)
-			continue
-		}
 		pkgNames := make([]string, 0, len(op.Packages))
 		for _, p := range op.Packages {
 			pkgNames = append(pkgNames, p.Name)
@@ -239,6 +221,25 @@ func (m *MirrorManager) resolveOperatorSection(
 		originRef := op.Catalog
 		if len(pkgNames) > 0 {
 			originRef = fmt.Sprintf("%s [%s]", op.Catalog, strings.Join(pkgNames, ", "))
+		}
+
+		freshDigest, err := resolver.GetCatalogDigest(ctx, op.Catalog)
+		if err != nil {
+			fmt.Printf("Warning: probe catalog %s: %v\n", op.Catalog, err)
+			carryOverByOriginAndSig(currentState, newState, imagestate.OriginOperator, sig, originRef)
+			continue
+		}
+
+		if !recollect && cached != "" && cached == freshDigest {
+			carryOverByOriginAndSig(currentState, newState, imagestate.OriginOperator, sig, originRef)
+			continue
+		}
+
+		images, err := collector.CollectOperatorEntry(ctx, op, mt)
+		if err != nil {
+			fmt.Printf("Warning: collect catalog %s: %v\n", op.Catalog, err)
+			carryOverByOriginAndSig(currentState, newState, imagestate.OriginOperator, sig, originRef)
+			continue
 		}
 		mergeIntoStateWithSig(newState, images, imagestate.OriginOperator, sig, originRef, currentState)
 
@@ -261,12 +262,18 @@ func (m *MirrorManager) resolveOperatorSection(
 // `prev` by destination only.
 func mergeIntoStateWithSig(dst imagestate.ImageState, images []mirror.TargetImage, origin imagestate.ImageOrigin, sig, originRef string, prev imagestate.ImageState) {
 	for _, img := range images {
+		// Per-image bundle reference takes precedence over the spec-level
+		// catalog+packages label; fall back to originRef when not set.
+		ref := originRef
+		if img.BundleRef != "" {
+			ref = fmt.Sprintf("%s — %s", originRef, img.BundleRef)
+		}
 		entry := &imagestate.ImageEntry{
 			Source:    img.Source,
 			State:     "Pending",
 			Origin:    origin,
 			EntrySig:  sig,
-			OriginRef: originRef,
+			OriginRef: ref,
 		}
 		if existing, ok := prev[img.Destination]; ok && existing != nil && existing.Origin == origin {
 			// Only carry forward Mirrored state — work we've already done.
@@ -287,11 +294,15 @@ func mergeIntoStateWithSig(dst imagestate.ImageState, images []mirror.TargetImag
 // carryOverByOriginAndSig copies entries from src into dst that match
 // (origin, sig) AND that don't already exist in dst (last writer wins).
 //
+// originRef is the current spec-level origin label; it is used to back-fill
+// any entry whose OriginRef is still empty (written by older controller
+// versions before per-image bundle enrichment was introduced).
+//
 // Backward-compat: entries with empty EntrySig are treated as legacy and
 // carried over for any sig matching their Origin so that older state is not
 // dropped on first migration. They will be re-tagged with a real sig the
 // next time their owning spec entry is re-resolved.
-func carryOverByOriginAndSig(src, dst imagestate.ImageState, origin imagestate.ImageOrigin, sig string) {
+func carryOverByOriginAndSig(src, dst imagestate.ImageState, origin imagestate.ImageOrigin, sig, originRef string) {
 	for dest, entry := range src {
 		if entry == nil || entry.Origin != origin {
 			continue
@@ -307,6 +318,11 @@ func carryOverByOriginAndSig(src, dst imagestate.ImageState, origin imagestate.I
 		// correctly.
 		if cp.EntrySig == "" {
 			cp.EntrySig = sig
+		}
+		// Back-fill OriginRef for entries written before per-image bundle refs
+		// were introduced so that failedImageDetails.origin is never empty.
+		if cp.OriginRef == "" && originRef != "" {
+			cp.OriginRef = originRef
 		}
 		dst[dest] = &cp
 	}

@@ -17,6 +17,10 @@ type TargetImage struct {
 	Source      string
 	Destination string
 	State       string
+	// BundleRef is a human-readable string listing the OLM bundle(s) that
+	// reference this image (e.g. "myoperator.v1.2.0, myoperator.v1.1.0").
+	// Set only for images collected from operator catalogs; empty otherwise.
+	BundleRef string
 }
 
 // Collector gathers the list of target images from an ImageSet configuration
@@ -190,14 +194,16 @@ func (c *Collector) CollectOperatorEntry(ctx context.Context, op mirrorv1alpha1.
 	for _, p := range op.Packages {
 		pkgs = append(pkgs, p.Name)
 	}
-	images, err := c.catalogResolver.ResolveCatalog(ctx, op.Catalog, pkgs)
+	imagesWithBundles, err := c.catalogResolver.ResolveCatalogWithBundles(ctx, op.Catalog, pkgs)
 	if err != nil {
 		return nil, err
 	}
 	var results []TargetImage
-	for _, img := range images {
+	for img, bundleRef := range imagesWithBundles {
 		dest := componentDestination(target.Spec.Registry, img)
-		results = append(results, c.toTargetImage(img, dest, nil))
+		ti := c.toTargetImage(img, dest, nil)
+		ti.BundleRef = bundleRef
+		results = append(results, ti)
 	}
 	return results, nil
 }

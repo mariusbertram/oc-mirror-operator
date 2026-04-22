@@ -426,24 +426,80 @@ func (r *CatalogResolver) FilterFBC(ctx context.Context, cfg *declcfg.Declarativ
 
 // ExtractImages returns all image references found in the FBC
 func (r *CatalogResolver) ExtractImages(cfg *declcfg.DeclarativeConfig) []string {
-	imageMap := make(map[string]bool)
-
-	for _, b := range cfg.Bundles {
-		if b.Image != "" {
-			imageMap[b.Image] = true
-		}
-		for _, ri := range b.RelatedImages {
-			if ri.Image != "" {
-				imageMap[ri.Image] = true
-			}
-		}
-	}
-
-	var images []string
-	for img := range imageMap {
+	refs := r.ExtractImagesWithBundles(cfg)
+	images := make([]string, 0, len(refs))
+	for img := range refs {
 		images = append(images, img)
 	}
 	return images
+}
+
+// ExtractImagesWithBundles returns all image references found in the FBC mapped
+// to a human-readable string listing the bundle(s) that reference each image.
+// The bundle list is deduped, sorted, and capped at 3 visible names; any
+// additional bundles are summarised as "(+N more)".
+func (r *CatalogResolver) ExtractImagesWithBundles(cfg *declcfg.DeclarativeConfig) map[string]string {
+	// Collect per-image bundle name sets (deduplicated).
+	bundleSets := make(map[string]map[string]struct{})
+	addRef := func(img, bundleName string) {
+		if img == "" {
+			return
+		}
+		if bundleSets[img] == nil {
+			bundleSets[img] = make(map[string]struct{})
+		}
+		bundleSets[img][bundleName] = struct{}{}
+	}
+
+	for _, b := range cfg.Bundles {
+		addRef(b.Image, b.Name)
+		for _, ri := range b.RelatedImages {
+			addRef(ri.Image, b.Name)
+		}
+	}
+
+	result := make(map[string]string, len(bundleSets))
+	for img, names := range bundleSets {
+		sorted := make([]string, 0, len(names))
+		for n := range names {
+			sorted = append(sorted, n)
+		}
+		sort.Strings(sorted)
+		result[img] = renderBundleRefs(sorted)
+	}
+	return result
+}
+
+// renderBundleRefs formats a sorted, deduped slice of bundle names into a
+// compact, human-readable string. Up to 3 names are shown; the rest are
+// summarised as "(+N more)".
+func renderBundleRefs(names []string) string {
+	const maxVisible = 3
+	if len(names) <= maxVisible {
+		return strings.Join(names, ", ")
+	}
+	visible := strings.Join(names[:maxVisible], ", ")
+	return fmt.Sprintf("%s (+%d more)", visible, len(names)-maxVisible)
+}
+
+// ResolveCatalogWithBundles is like ResolveCatalog but returns a map of image
+// reference → bundle-name string for use as per-image origin labels.
+func (r *CatalogResolver) ResolveCatalogWithBundles(ctx context.Context, catalogImage string, packages []string) (map[string]string, error) {
+	if _, err := ref.New(catalogImage); err != nil {
+		return nil, fmt.Errorf("failed to parse catalog image reference: %w", err)
+	}
+	if r.client == nil {
+		return nil, nil
+	}
+	cfg, err := r.loadFBCFromImage(ctx, catalogImage)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load FBC from %s: %w", catalogImage, err)
+	}
+	filtered, err := r.FilterFBC(ctx, cfg, packages)
+	if err != nil {
+		return nil, fmt.Errorf("failed to filter FBC: %w", err)
+	}
+	return r.ExtractImagesWithBundles(filtered), nil
 }
 
 // BuildFilteredCatalogImage pulls sourceCatalogImage, filters its FBC to the
