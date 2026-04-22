@@ -43,21 +43,21 @@ type MirrorTargetReconciler struct {
 // +kubebuilder:rbac:groups=mirror.openshift.io,resources=mirrortargets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=mirror.openshift.io,resources=mirrortargets/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=mirror.openshift.io,resources=mirrortargets/finalizers,verbs=update
-// secrets: create+update sind erforderlich, weil ensureCoordinatorRBAC dem
-// coordinator das Recht gibt, das Worker-Token-Secret zu erstellen/aktualisieren.
-// Kubernetes RBAC verhindert Privilege-Escalation: der Operator kann nur Verbs
-// vergeben, die er selbst besitzt. read-only auf foreign secrets würde daher
-// scheitern. Eigene Mutation auf foreign secrets erfolgt NICHT in diesem Code.
+// secrets: create+update are required because ensureCoordinatorRBAC grants the
+// coordinator the right to create/update the worker token secret. Kubernetes
+// RBAC prevents privilege escalation: the operator can only grant verbs it
+// holds itself. Read-only on foreign secrets would therefore fail. This code
+// does NOT mutate any secrets it does not own.
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
-// roles/rolebindings: list+watch sind erforderlich, weil controller-runtime
-// die typed-cache-Informer für CreateOrUpdate aufbaut (read durchläuft den
-// Cache). delete/patch/escalate/bind bleiben bewusst weg, um die Blast-Radius
-// im Falle einer Operator-Pod-Kompromittierung zu begrenzen. RoleBinding/Role
-// werden über OwnerReference garbage-collected.
+// roles/rolebindings: list+watch are required because controller-runtime builds
+// typed-cache informers for CreateOrUpdate (reads go through the cache).
+// delete/patch/escalate/bind are intentionally omitted to limit blast radius in
+// case of an operator pod compromise. RoleBinding/Role are garbage-collected via
+// OwnerReference.
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=route.openshift.io,resources=routes,verbs=get;list;watch;create;update;patch;delete

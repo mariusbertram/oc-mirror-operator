@@ -498,14 +498,24 @@ func (m *MirrorManager) reconcile(ctx context.Context) error {
 			continue
 		}
 
-		// Load per-image state from ConfigMap (cache in m.imageStates to avoid
-		// repeated reads; reloaded on every reconcile to pick up external changes).
-		isState, loadErr := imagestate.Load(ctx, m.Client, m.Namespace, is.Name)
-		if loadErr != nil {
-			fmt.Printf("Warning: failed to load image state for %s: %v\n", is.Name, loadErr)
-			isState = make(imagestate.ImageState)
+		// Use the cached in-memory state when it is already populated.
+		// Worker status callbacks update m.imageStates directly via
+		// setImageStateLocked, so reloading from the ConfigMap on every tick
+		// would overwrite their RetryCount / PermanentlyFailed changes before
+		// the stateChanged save at the end of the reconcile loop can persist
+		// them. On first access (or after a manager restart when the cache is
+		// empty) we load from the ConfigMap so accumulated state survives pod
+		// restarts.
+		isState, hasCached := m.imageStates[is.Name]
+		if !hasCached || len(isState) == 0 {
+			var loadErr error
+			isState, loadErr = imagestate.Load(ctx, m.Client, m.Namespace, is.Name)
+			if loadErr != nil {
+				fmt.Printf("Warning: failed to load image state for %s: %v\n", is.Name, loadErr)
+				isState = make(imagestate.ImageState)
+			}
+			m.imageStates[is.Name] = isState
 		}
-		m.imageStates[is.Name] = isState
 
 		// Manager-side resolution: enumerate upstream images for this ImageSet
 		// (releases, operator catalogs, additional) using the manager's
