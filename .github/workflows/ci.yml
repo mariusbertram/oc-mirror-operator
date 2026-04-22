@@ -1,0 +1,53 @@
+name: CI
+
+# Runs on every push and pull request. Validates that the code builds,
+# tests pass, and the bundle is well-formed — without pushing any images.
+
+on:
+  push:
+    branches:
+      - main
+      - 'feature/**'
+      - 'fix/**'
+  pull_request:
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Tidy and test
+        run: |
+          go mod tidy
+          make test
+
+  build-check:
+    name: Build check (multi-arch)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build operator image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false
+
+      - name: Build bundle image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: bundle.Dockerfile
+          platforms: linux/amd64
+          push: false
