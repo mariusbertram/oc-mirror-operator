@@ -30,6 +30,13 @@ import (
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/resources"
 )
 
+// Image entry state constants used throughout the manager.
+const (
+	stateMirrored = "Mirrored"
+	statePending  = "Pending"
+	stateFailed   = "Failed"
+)
+
 type WorkerStatusRequest struct {
 	PodName     string `json:"podName"`
 	Destination string `json:"destination"`
@@ -56,13 +63,13 @@ type MirrorManager struct {
 	workerToken string
 
 	// State in memory — protected by mu
-	mu               sync.RWMutex
-	inProgress       map[string]string                // dest → podName
-	mirrored         map[string]bool                  // dest → true once successfully mirrored
-	imageStates      map[string]imagestate.ImageState // imageSetName → ImageState
-	destToIS         map[string]string                // dest → imageSetName (reverse lookup)
-	lastDriftCheck   time.Time                        // last time we verified all mirrored images
-	dirtyStateNames  map[string]bool                  // isNames that need a ConfigMap save (PermanentlyFailed newly set)
+	mu              sync.RWMutex
+	inProgress      map[string]string                // dest → podName
+	mirrored        map[string]bool                  // dest → true once successfully mirrored
+	imageStates     map[string]imagestate.ImageState // imageSetName → ImageState
+	destToIS        map[string]string                // dest → imageSetName (reverse lookup)
+	lastDriftCheck  time.Time                        // last time we verified all mirrored images
+	dirtyStateNames map[string]bool                  // isNames that need a ConfigMap save (PermanentlyFailed newly set)
 }
 
 func New(targetName, namespace string, scheme *runtime.Scheme) (*MirrorManager, error) {
@@ -304,10 +311,10 @@ func (m *MirrorManager) handleStatusUpdate(w http.ResponseWriter, r *http.Reques
 	fmt.Printf("Received status update from %s for %s\n", req.PodName, req.Destination)
 
 	if req.Error != "" {
-		m.setImageStateLocked(req.Destination, "Failed", req.Error)
+		m.setImageStateLocked(req.Destination, stateFailed, req.Error)
 	} else {
 		m.mirrored[req.Destination] = true
-		m.setImageStateLocked(req.Destination, "Mirrored", "")
+		m.setImageStateLocked(req.Destination, stateMirrored, "")
 	}
 
 	// Remove from in-progress tracking. The pod itself is cleaned up by
@@ -362,7 +369,7 @@ func (m *MirrorManager) handleShouldMirror(w http.ResponseWriter, r *http.Reques
 			continue
 		}
 		switch entry.State {
-		case "Mirrored":
+		case stateMirrored:
 			// Already done — skip.
 			w.WriteHeader(http.StatusGone)
 			return
@@ -424,7 +431,7 @@ func (m *MirrorManager) cleanupFinishedWorkers(ctx context.Context) {
 				delete(m.inProgress, f.dest)
 				if f.phase == corev1.PodFailed {
 					fmt.Printf("Worker pod %s for %s failed without reporting; resetting to Pending\n", f.podName, f.dest)
-					m.setImageStateLocked(f.dest, "Pending", "")
+					m.setImageStateLocked(f.dest, statePending, "")
 				}
 			}
 		}
@@ -462,7 +469,7 @@ func (m *MirrorManager) cleanupFinishedWorkers(ctx context.Context) {
 	}
 }
 
-func (m *MirrorManager) reconcile(ctx context.Context) error {
+func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 	m.cleanupFinishedWorkers(ctx)
 
 	m.mu.Lock()
@@ -591,7 +598,7 @@ func (m *MirrorManager) reconcile(ctx context.Context) error {
 			// For images marked Mirrored in the ConfigMap but not yet verified
 			// in memory: check the registry during CheckExist windows to confirm
 			// they still exist (drift detection).
-			if entry.State == "Mirrored" && !m.mirrored[dest] {
+			if entry.State == stateMirrored && !m.mirrored[dest] {
 				if !driftCheckActive {
 					// Outside check window: trust the ConfigMap state.
 					m.mirrored[dest] = true
@@ -619,24 +626,24 @@ func (m *MirrorManager) reconcile(ctx context.Context) error {
 					continue
 				}
 				fmt.Printf("Image %s marked Mirrored but not found in registry; resetting to Pending\n", dest)
-				entry.State = "Pending"
+				entry.State = statePending
 				entry.LastError = ""
 				entry.RetryCount = 0
 				stateChanged = true
 			}
 
 			if m.mirrored[dest] {
-				if entry.State != "Mirrored" {
-					entry.State = "Mirrored"
+				if entry.State != stateMirrored {
+					entry.State = stateMirrored
 					stateChanged = true
 				}
 				continue
 			}
 
-			if entry.State == "Failed" {
+			if entry.State == stateFailed {
 				if entry.RetryCount < 10 {
 					// Transient failure: schedule immediate retry.
-					entry.State = "Pending"
+					entry.State = statePending
 					stateChanged = true
 				} else {
 					// Permanently failed. Ensure the flag is persisted: it may
@@ -664,12 +671,12 @@ func (m *MirrorManager) reconcile(ctx context.Context) error {
 						} else if exists {
 							fmt.Printf("Permanently-failed image %s found in target; marking Mirrored\n", dest)
 							m.mirrored[dest] = true
-							entry.State = "Mirrored"
+							entry.State = stateMirrored
 							entry.LastError = ""
 							stateChanged = true
 						} else {
 							fmt.Printf("Permanently-failed image %s not in target; resetting for retry\n", dest)
-							entry.State = "Pending"
+							entry.State = statePending
 							entry.RetryCount = 0 // fresh 10-attempt window; PermanentlyFailed stays true
 							stateChanged = true
 						}
@@ -678,7 +685,7 @@ func (m *MirrorManager) reconcile(ctx context.Context) error {
 				continue
 			}
 
-			if entry.State != "Pending" {
+			if entry.State != statePending {
 				continue
 			}
 			if m.inProgress[dest] != "" {
@@ -760,7 +767,7 @@ func (m *MirrorManager) setImageStateLocked(dest, st, lastError string) {
 	}
 	entry.State = st
 	entry.LastError = lastError
-	if st == "Failed" {
+	if st == stateFailed {
 		entry.RetryCount++
 		if entry.RetryCount >= 10 && !entry.PermanentlyFailed {
 			entry.PermanentlyFailed = true
@@ -800,7 +807,7 @@ func (m *MirrorManager) updateImageSetStatusLocked(ctx context.Context, is *mirr
 	// images are excluded — they recovered successfully.
 	details := make([]mirrorv1alpha1.FailedImageDetail, 0)
 	for dest, entry := range state {
-		if entry == nil || !entry.PermanentlyFailed || entry.State == "Mirrored" {
+		if entry == nil || !entry.PermanentlyFailed || entry.State == stateMirrored {
 			continue
 		}
 		details = append(details, mirrorv1alpha1.FailedImageDetail{

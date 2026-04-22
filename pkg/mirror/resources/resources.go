@@ -96,7 +96,7 @@ func GenerateIDMS(name string, state imagestate.ImageState) ([]byte, error) {
 	}
 	sort.Strings(sources)
 
-	var digestMirrors []confv1.ImageDigestMirrors
+	digestMirrors := make([]confv1.ImageDigestMirrors, 0, len(sources))
 	for _, src := range sources {
 		e := mirrorMap[src]
 		mirrors := make([]string, 0, len(e.mirrors))
@@ -164,7 +164,7 @@ func GenerateITMS(name string, state imagestate.ImageState) ([]byte, error) {
 	}
 	sort.Strings(sources)
 
-	var tagMirrors []confv1.ImageTagMirrors
+	tagMirrors := make([]confv1.ImageTagMirrors, 0, len(sources))
 	for _, src := range sources {
 		e := mirrorMap[src]
 		mirrors := make([]string, 0, len(e.mirrors))

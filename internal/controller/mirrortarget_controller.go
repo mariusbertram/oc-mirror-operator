@@ -549,7 +549,7 @@ func (r *MirrorTargetReconciler) ensureNetworkPolicies(ctx context.Context, mt *
 		stale := &networkingv1.NetworkPolicy{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: mt.Namespace},
 		}
-		if err := r.Client.Delete(ctx, stale); err != nil && !errors.IsNotFound(err) {
+		if err := r.Delete(ctx, stale); err != nil && !errors.IsNotFound(err) {
 			return fmt.Errorf("failed to delete obsolete NetworkPolicy %s: %w", name, err)
 		}
 	}
@@ -558,7 +558,7 @@ func (r *MirrorTargetReconciler) ensureNetworkPolicies(ctx context.Context, mt *
 
 // creates cleanup Jobs for them (if cleanup-policy annotation is "Delete"),
 // and tracks cleanup progress.
-func (r *MirrorTargetReconciler) reconcileCleanup(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget) error {
+func (r *MirrorTargetReconciler) reconcileCleanup(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget) error { //nolint:unparam
 	l := log.FromContext(ctx)
 
 	// Determine which ImageSets were removed since last reconcile.
@@ -1016,7 +1016,7 @@ func (r *MirrorTargetReconciler) ensureIngress(ctx context.Context, mt *mirrorv1
 		ingressClass = mt.Spec.Expose.IngressClassName
 	}
 	if host == "" {
-		return fmt.Errorf("Ingress exposure requires a host to be set in spec.expose.host")
+		return fmt.Errorf("ingress exposure requires a host to be set in spec.expose.host")
 	}
 
 	ingress := &networkingv1.Ingress{

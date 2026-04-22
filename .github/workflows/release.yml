@@ -86,7 +86,7 @@ jobs:
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
 
-  # ── 3. Build & push bundle image ─────────────────────────────────────────
+  # ── 3. Build & push bundle image (multi-arch) ────────────────────────────
   build-bundle:
     name: Build bundle image
     runs-on: ubuntu-latest
@@ -95,7 +95,10 @@ jobs:
       contents: read
       packages: write
     outputs:
+      # Tag reference (human-readable, mutable)
       bundle_image: ${{ steps.bundle-ref.outputs.ref }}
+      # Manifest-list digest (immutable, used for catalog PR and disconnected envs)
+      bundle_digest: ${{ steps.build.outputs.digest }}
 
     steps:
       - uses: actions/checkout@v4
@@ -127,6 +130,12 @@ jobs:
           echo "CSV updated to version ${VERSION} with image: ${NEW_REF}"
           grep -E "name: oc-mirror|version:|containerImage:|image:" "$CSV" | head -10
 
+      # QEMU is required for cross-compilation of the arm64 layer during
+      # multi-arch bundle builds. The bundle contains only YAML (no binaries),
+      # but OCI manifests still carry an os/arch header — a multi-arch manifest
+      # list ensures OPM init-containers can pull the bundle on any node arch.
+      - uses: docker/setup-qemu-action@v3
+
       - uses: docker/setup-buildx-action@v3
 
       - uses: docker/login-action@v3
@@ -135,15 +144,16 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push bundle image
+      - name: Build and push bundle image (multi-arch)
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
           file: bundle.Dockerfile
-          # Bundle images are OCI artifacts, not runnable containers —
-          # the operator-framework tooling (opm) handles them via
-          # registry pull, so multi-arch is not required here.
-          platforms: linux/amd64
+          # Build a manifest list covering both arches. Even though the bundle
+          # contains only YAML, OPM init-containers run on the node and must
+          # be able to pull the image on any supported architecture.
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: |
             ${{ env.BUNDLE_IMAGE }}:${{ needs.build-operator.outputs.version }}
@@ -154,6 +164,8 @@ jobs:
         run: |
           echo "ref=${{ env.BUNDLE_IMAGE }}:${{ needs.build-operator.outputs.version }}" \
             >> "$GITHUB_OUTPUT"
+          echo "Bundle image: ${{ env.BUNDLE_IMAGE }}:${{ needs.build-operator.outputs.version }}"
+          echo "Bundle manifest-list digest: ${{ steps.build.outputs.digest }}"
 
   # ── 4. GitHub Release ─────────────────────────────────────────────────────
   github-release:
@@ -194,10 +206,10 @@ jobs:
 
             ### Container Images
 
-            | Image | Reference |
-            |-------|-----------|
-            | Operator | `${{ env.OPERATOR_IMAGE }}:${{ github.ref_name }}` |
-            | Bundle   | `${{ needs.build-bundle.outputs.bundle_image }}` |
+            | Image | Tag | Digest (manifest list) |
+            |-------|-----|------------------------|
+            | Operator (multi-arch) | `${{ env.OPERATOR_IMAGE }}:${{ github.ref_name }}` | `${{ needs.build-operator.outputs.digest }}` |
+            | Bundle (multi-arch)   | `${{ needs.build-bundle.outputs.bundle_image }}` | `${{ needs.build-bundle.outputs.bundle_digest }}` |
 
             ### Changes
 
@@ -223,8 +235,13 @@ jobs:
           GH_TOKEN: ${{ secrets.CATALOG_PAT }}
           VERSION: ${{ needs.build-operator.outputs.version }}
           BUNDLE_REF: ${{ needs.build-bundle.outputs.bundle_image }}
+          BUNDLE_DIGEST: ${{ needs.build-bundle.outputs.bundle_digest }}
         run: |
           set -euo pipefail
+
+          # Use digest-pinned reference for reproducible disconnected installs.
+          # The manifest-list digest from build-push-action covers all platforms.
+          BUNDLE_DIGEST_REF="${{ env.BUNDLE_IMAGE }}@${BUNDLE_DIGEST}"
 
           # ── Clone catalog repo ──────────────────────────────────────────
           git clone "https://x-access-token:${GH_TOKEN}@github.com/${CATALOG_REPO}.git" /tmp/catalog
@@ -245,9 +262,9 @@ jobs:
           YAML_FILE="${OPERATOR_DIR}/operator.yaml"
 
           if [ -f "$YAML_FILE" ]; then
-            # Append new version only if not already present
-            if grep -qF "${BUNDLE_REF}" "$YAML_FILE"; then
-              echo "Bundle ${BUNDLE_REF} already present — nothing to do."
+            # Append new version only if not already present (check both digest and tag)
+            if grep -qF "${BUNDLE_DIGEST_REF}" "$YAML_FILE" || grep -qF "${BUNDLE_REF}" "$YAML_FILE"; then
+              echo "Bundle ${BUNDLE_DIGEST_REF} already present — nothing to do."
               exit 0
             fi
             python3 - <<PYEOF
@@ -256,7 +273,7 @@ jobs:
           with open(path) as f:
               data = yaml.safe_load(f)
           bundles = data.setdefault("Stable", {}).setdefault("Bundles", [])
-          bundles.append({"Image": "${BUNDLE_REF}"})
+          bundles.append({"Image": "${BUNDLE_DIGEST_REF}"})
           with open(path, "w") as f:
               yaml.dump(data, f, default_flow_style=False, sort_keys=False)
           print("Appended bundle to", path)
@@ -268,7 +285,7 @@ jobs:
           GenerateMinorChannels: true
           Stable:
             Bundles:
-              - Image: ${BUNDLE_REF}
+              - Image: ${BUNDLE_DIGEST_REF}
           YAMLEOF
           fi
 
@@ -285,7 +302,7 @@ jobs:
 
           git commit -m "feat(oc-mirror): add oc-mirror-operator v${VERSION}
 
-          Bundle image: ${BUNDLE_REF}
+          Bundle image: ${BUNDLE_DIGEST_REF}
           Operator image: ${{ env.OPERATOR_IMAGE }}:${{ github.ref_name }}@${{ needs.build-operator.outputs.digest }}"
 
           git push origin "$BRANCH"
@@ -300,9 +317,9 @@ jobs:
 
           This PR registers the new release in the brtrm-dev-catalog.
 
-          ### Bundle Image
+          ### Bundle Image (multi-arch manifest list)
           \`\`\`
-          ${BUNDLE_REF}
+          ${BUNDLE_DIGEST_REF}
           \`\`\`
 
           ### Operator Image

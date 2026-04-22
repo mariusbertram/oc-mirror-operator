@@ -101,7 +101,7 @@ func (r *ReleaseResolver) FetchGraph(ctx context.Context, channel string, arch [
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch release graph: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("unexpected status code %d from %s", resp.StatusCode, u.String())
@@ -290,7 +290,7 @@ func (r *ReleaseResolver) ExtractComponentImages(ctx context.Context, payloadIma
 		}
 	}
 
-	layers, err := m.GetLayers()
+	layers, err := m.GetLayers() //nolint:staticcheck
 	if err != nil {
 		return nil, fmt.Errorf("failed to get layers from manifest: %w", err)
 	}
@@ -323,7 +323,7 @@ func scanLayerForImageReferences(rdr io.Reader) ([]string, bool, error) {
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to create gzip reader: %w", err)
 	}
-	defer gz.Close()
+	defer func() { _ = gz.Close() }()
 
 	tr := tar.NewReader(gz)
 	for {
@@ -427,7 +427,7 @@ func (r *ReleaseResolver) ExtractKubeVirtImages(ctx context.Context, payloadImag
 		}
 	}
 
-	layers, err := m.GetLayers()
+	layers, err := m.GetLayers() //nolint:staticcheck
 	if err != nil {
 		return nil, fmt.Errorf("failed to get layers from manifest: %w", err)
 	}
@@ -456,7 +456,7 @@ func scanLayerForKubeVirtImages(rdr io.Reader, arches []string) ([]string, bool,
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to create gzip reader: %w", err)
 	}
-	defer gz.Close()
+	defer func() { _ = gz.Close() }()
 
 	// Map user arch names to CoreOS stream arch names.
 	archMap := map[string]string{
@@ -525,12 +525,12 @@ func collectKubeVirtRefs(stream coreOSStream, wantArches map[string]bool) []stri
 			continue
 		}
 		if kv, ok := archData.Images["kubevirt"]; ok {
-			ref := kv.DigestRef
-			if ref == "" {
-				ref = kv.Image
+			kvRef := kv.DigestRef
+			if kvRef == "" {
+				kvRef = kv.Image
 			}
-			if ref != "" {
-				refs = append(refs, ref)
+			if kvRef != "" {
+				refs = append(refs, kvRef)
 			}
 		}
 	}

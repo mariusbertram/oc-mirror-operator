@@ -112,7 +112,13 @@ func (c *Collector) ResolveReleasePayloadImages(ctx context.Context, rel mirrorv
 // component + KubeVirt images. If payloadImages is non-nil it is used as-is
 // (avoids an extra Cincinnati round-trip when the caller already invoked
 // ResolveReleasePayloadImages for caching purposes).
-func (c *Collector) CollectReleasesForChannel(ctx context.Context, spec *mirrorv1alpha1.ImageSetSpec, target *mirrorv1alpha1.MirrorTarget, rel mirrorv1alpha1.ReleaseChannel, payloadImages []string) ([]TargetImage, error) {
+func (c *Collector) CollectReleasesForChannel(
+	ctx context.Context,
+	spec *mirrorv1alpha1.ImageSetSpec,
+	target *mirrorv1alpha1.MirrorTarget,
+	rel mirrorv1alpha1.ReleaseChannel,
+	payloadImages []string,
+) ([]TargetImage, error) {
 	var results []TargetImage
 	arch := spec.Mirror.Platform.Architectures
 	if len(arch) == 0 {
@@ -190,7 +196,7 @@ func (c *Collector) CollectOperators(ctx context.Context, spec *mirrorv1alpha1.I
 // CollectOperatorEntry resolves a single Operator entry. Used by the manager
 // when a per-entry cache miss requires re-resolution.
 func (c *Collector) CollectOperatorEntry(ctx context.Context, op mirrorv1alpha1.Operator, target *mirrorv1alpha1.MirrorTarget) ([]TargetImage, error) {
-	pkgs := []string{}
+	pkgs := make([]string, 0, len(op.Packages))
 	for _, p := range op.Packages {
 		pkgs = append(pkgs, p.Name)
 	}
@@ -212,7 +218,7 @@ func (c *Collector) CollectOperatorEntry(ctx context.Context, op mirrorv1alpha1.
 // spec.Mirror.AdditionalImages. No upstream resolution is needed because the
 // user has already supplied the fully-qualified source reference.
 func (c *Collector) CollectAdditional(_ context.Context, spec *mirrorv1alpha1.ImageSetSpec, target *mirrorv1alpha1.MirrorTarget, meta *state.Metadata) ([]TargetImage, error) {
-	var results []TargetImage
+	results := make([]TargetImage, 0, len(spec.Mirror.AdditionalImages))
 	for _, img := range spec.Mirror.AdditionalImages {
 		dest := fmt.Sprintf("%s/%s", target.Spec.Registry, img.Name)
 		if img.TargetRepo != "" {

@@ -1,9 +1,10 @@
 package manager
 
 import (
+	"testing"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"testing"
 )
 
 func TestManager(t *testing.T) {

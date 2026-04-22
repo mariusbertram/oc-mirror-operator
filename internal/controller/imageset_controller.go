@@ -15,7 +15,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -148,7 +147,7 @@ func (r *ImageSetReconciler) findOwningMirrorTarget(ctx context.Context, is *mir
 // reconcileCatalogBuildJobs ensures a Kubernetes Job exists for each operator
 // catalog entry in the ImageSet spec and surfaces the aggregate status as a
 // CatalogReady condition.
-func (r *ImageSetReconciler) reconcileCatalogBuildJobs(
+func (r *ImageSetReconciler) reconcileCatalogBuildJobs( //nolint:gocyclo
 	ctx context.Context,
 	is *mirrorv1alpha1.ImageSet,
 	mt *mirrorv1alpha1.MirrorTarget,
@@ -430,140 +429,4 @@ func (r *ImageSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			}),
 		).
 		Complete(r)
-}
-
-// createPartialCleanupJob saves removed images to a temporary ConfigMap and
-// creates a cleanup Job that deletes them from the target registry.
-// The ConfigMap and Job are named deterministically per ImageSet generation
-// so that rapid spec changes produce distinct, immutable cleanup batches.
-func (r *ImageSetReconciler) createPartialCleanupJob(
-	ctx context.Context,
-	is *mirrorv1alpha1.ImageSet,
-	mt *mirrorv1alpha1.MirrorTarget,
-	removedImages imagestate.ImageState,
-) error {
-	l := log.FromContext(ctx)
-
-	cmName := fmt.Sprintf("cleanup-partial-%s-gen%d", is.Name, is.Generation)
-	jobName := cmName
-
-	// Save removed images to the temporary ConfigMap.
-	if err := imagestate.SaveRaw(ctx, r.Client, is.Namespace, cmName, removedImages); err != nil {
-		return fmt.Errorf("save partial cleanup state: %w", err)
-	}
-
-	// Set OwnerReference on the cleanup ConfigMap to the ImageSet so it is
-	// garbage-collected automatically when the ImageSet is deleted, even if
-	// the cleanup Job is removed earlier (e.g. by TTLSecondsAfterFinished).
-	cm := &corev1.ConfigMap{}
-	if err := r.Get(ctx, client.ObjectKey{Name: cmName, Namespace: is.Namespace}, cm); err == nil {
-		if err := controllerutil.SetControllerReference(is, cm, r.Scheme); err == nil {
-			if updErr := r.Update(ctx, cm); updErr != nil && !errors.IsConflict(updErr) {
-				l.Error(updErr, "failed to set OwnerReference on cleanup ConfigMap", "cm", cmName)
-			}
-		}
-	}
-
-	// Check if Job already exists.
-	existing := &batchv1.Job{}
-	if err := r.Get(ctx, client.ObjectKey{Name: jobName, Namespace: is.Namespace}, existing); err == nil {
-		l.Info("Partial cleanup job already exists", "job", jobName)
-		return nil
-	}
-
-	backoffLimit := int32(3)
-	ttlAfterFinished := int32(600)
-
-	labels := map[string]string{
-		"app.kubernetes.io/managed-by":     "oc-mirror-operator",
-		"mirror.openshift.io/cleanup-type": "partial",
-		"mirror.openshift.io/imageset":     is.Name,
-	}
-
-	insecureFlag := ""
-	if mt.Spec.Insecure {
-		insecureFlag = "--insecure"
-	}
-	args := []string{
-		"cleanup",
-		"--configmap", cmName,
-		"--namespace", is.Namespace,
-		"--registry", mt.Spec.Registry,
-	}
-	if insecureFlag != "" {
-		args = append(args, insecureFlag)
-	}
-
-	job := &batchv1.Job{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      jobName,
-			Namespace: is.Namespace,
-			Labels:    labels,
-		},
-		Spec: batchv1.JobSpec{
-			BackoffLimit:            &backoffLimit,
-			TTLSecondsAfterFinished: &ttlAfterFinished,
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: labels},
-				Spec: corev1.PodSpec{
-					ServiceAccountName: "oc-mirror-coordinator",
-					RestartPolicy:      corev1.RestartPolicyNever,
-					SecurityContext: &corev1.PodSecurityContext{
-						RunAsNonRoot: pointerTo(true),
-						SeccompProfile: &corev1.SeccompProfile{
-							Type: corev1.SeccompProfileTypeRuntimeDefault,
-						},
-					},
-					Containers: []corev1.Container{{
-						Name:  "cleanup",
-						Image: os.Getenv("OPERATOR_IMAGE"),
-						Args:  args,
-						SecurityContext: &corev1.SecurityContext{
-							AllowPrivilegeEscalation: pointerTo(false),
-							Capabilities: &corev1.Capabilities{
-								Drop: []corev1.Capability{"ALL"},
-							},
-						},
-						Env:          partialCleanupEnv(mt),
-						VolumeMounts: partialCleanupVolumeMounts(mt),
-					}},
-					Volumes: partialCleanupVolumes(mt),
-				},
-			},
-		},
-	}
-
-	l.Info("Creating partial cleanup job", "job", jobName, "images", len(removedImages))
-	return r.Create(ctx, job)
-}
-
-// partialCleanupEnv returns the env for the partial-cleanup container.
-// DOCKER_CONFIG is only exported when an AuthSecret is configured.
-func partialCleanupEnv(mt *mirrorv1alpha1.MirrorTarget) []corev1.EnvVar {
-	if mt.Spec.AuthSecret == "" {
-		return nil
-	}
-	return []corev1.EnvVar{{Name: "DOCKER_CONFIG", Value: "/docker-config"}}
-}
-
-func partialCleanupVolumeMounts(mt *mirrorv1alpha1.MirrorTarget) []corev1.VolumeMount {
-	if mt.Spec.AuthSecret == "" {
-		return nil
-	}
-	return []corev1.VolumeMount{{Name: "docker-config", MountPath: "/docker-config", ReadOnly: true}}
-}
-
-func partialCleanupVolumes(mt *mirrorv1alpha1.MirrorTarget) []corev1.Volume {
-	if mt.Spec.AuthSecret == "" {
-		return nil
-	}
-	return []corev1.Volume{{
-		Name: "docker-config",
-		VolumeSource: corev1.VolumeSource{
-			Secret: &corev1.SecretVolumeSource{
-				SecretName: mt.Spec.AuthSecret,
-				Items:      []corev1.KeyToPath{{Key: ".dockerconfigjson", Path: "config.json"}},
-			},
-		},
-	}}
 }

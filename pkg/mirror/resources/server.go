@@ -122,7 +122,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(idx)
+	_ = json.NewEncoder(w).Encode(idx)
 }
 
 func (s *Server) handleIDMS(w http.ResponseWriter, r *http.Request) {
@@ -143,7 +143,7 @@ func (s *Server) handleIDMS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/yaml")
-	w.Write(data)
+	_, _ = w.Write(data)
 }
 
 func (s *Server) handleITMS(w http.ResponseWriter, r *http.Request) {
@@ -164,7 +164,7 @@ func (s *Server) handleITMS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/yaml")
-	w.Write(data)
+	_, _ = w.Write(data)
 }
 
 func (s *Server) handleCatalogSource(w http.ResponseWriter, r *http.Request) {
@@ -197,7 +197,7 @@ func (s *Server) handleCatalogSource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/yaml")
-	w.Write(data)
+	_, _ = w.Write(data)
 }
 
 func (s *Server) handleClusterCatalog(w http.ResponseWriter, r *http.Request) {
@@ -230,7 +230,7 @@ func (s *Server) handleClusterCatalog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/yaml")
-	w.Write(data)
+	_, _ = w.Write(data)
 }
 
 func (s *Server) handleSignatures(w http.ResponseWriter, r *http.Request) {
@@ -241,7 +241,7 @@ func (s *Server) handleSignatures(w http.ResponseWriter, r *http.Request) {
 	key := client.ObjectKey{Name: fmt.Sprintf("%s-signatures", isName), Namespace: s.namespace}
 	if err := s.client.Get(r.Context(), key, sigCM); err != nil {
 		w.Header().Set("Content-Type", "text/yaml")
-		w.Write([]byte("# No release signatures available yet\n"))
+		_, _ = w.Write([]byte("# No release signatures available yet\n"))
 		return
 	}
 
@@ -258,7 +258,7 @@ func (s *Server) handleSignatures(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/yaml")
-	w.Write(data)
+	_, _ = w.Write(data)
 }
 
 func (s *Server) listImageSets(ctx context.Context) ([]mirrorv1alpha1.ImageSet, error) {

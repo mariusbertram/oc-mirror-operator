@@ -117,7 +117,7 @@ func extractBlobDigests(ctx context.Context, client *mirrorclient.MirrorClient, 
 	blobs := map[string]struct{}{}
 
 	if m.IsList() {
-		descs, err := m.GetManifestList()
+		descs, err := m.GetManifestList() //nolint:staticcheck
 		if err != nil {
 			return blobs, nil
 		}
@@ -144,12 +144,12 @@ func extractBlobDigests(ctx context.Context, client *mirrorclient.MirrorClient, 
 
 // collectBlobs extracts config and layer digests from a single-platform manifest.
 func collectBlobs(m manifest.Manifest, blobs map[string]struct{}) {
-	cd, err := m.GetConfig()
+	cd, err := m.GetConfig() //nolint:staticcheck
 	if err == nil && cd.Digest.String() != "" {
 		blobs[cd.Digest.String()] = struct{}{}
 	}
 
-	layers, err := m.GetLayers()
+	layers, err := m.GetLayers() //nolint:staticcheck
 	if err == nil {
 		for _, l := range layers {
 			if dig := l.Digest.String(); dig != "" {

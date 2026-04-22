@@ -1,9 +1,10 @@
 package e2e_flow
 
 import (
+	"testing"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"testing"
 )
 
 func TestE2EFlow(t *testing.T) {

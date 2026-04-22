@@ -108,7 +108,7 @@ func JobName(imageSetName, sourceCatalog string) string {
 // concatenating prefix and parts and appending an 8-char SHA-256 suffix
 // derived from the *raw* parts. This guarantees that two different inputs
 // cannot collide via truncation.
-func safeJobName(prefix string, parts ...string) string {
+func safeJobName(prefix string, parts ...string) string { //nolint:unparam
 	const maxLen = 63
 	const sumLen = 8 // hex chars
 	h := sha256.New()
@@ -338,20 +338,20 @@ func DeleteBuildJob(ctx context.Context, c client.Client, name, namespace string
 func (m *CatalogBuildManager) BuildSignature(operators []mirrorv1alpha1.Operator) string {
 	h := sha256.New()
 	// Include the operator image so image upgrades force a rebuild.
-	fmt.Fprintf(h, "image=%s\n", m.operatorImage)
+	_, _ = fmt.Fprintf(h, "image=%s\n", m.operatorImage)
 
 	for _, op := range operators {
 		if op.Catalog == "" {
 			continue
 		}
-		fmt.Fprintf(h, "catalog=%s\n", op.Catalog)
-		fmt.Fprintf(h, "full=%t\n", op.Full)
-		var pkgs []string
+		_, _ = fmt.Fprintf(h, "catalog=%s\n", op.Catalog)
+		_, _ = fmt.Fprintf(h, "full=%t\n", op.Full)
+		pkgs := make([]string, 0, len(op.Packages))
 		for _, p := range op.Packages {
 			pkgs = append(pkgs, p.Name)
 		}
 		sort.Strings(pkgs)
-		fmt.Fprintf(h, "packages=%s\n", strings.Join(pkgs, ","))
+		_, _ = fmt.Fprintf(h, "packages=%s\n", strings.Join(pkgs, ","))
 	}
 	return fmt.Sprintf("%x", h.Sum(nil))[:16]
 }

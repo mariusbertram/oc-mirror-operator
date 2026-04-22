@@ -55,7 +55,7 @@ func classifyLayer(r io.Reader) (skippable bool, totalSize int64, firstReject st
 	if err != nil {
 		return false, 0, "", fmt.Errorf("gzip: %w", err)
 	}
-	defer gz.Close()
+	defer func() { _ = gz.Close() }()
 
 	tr := tar.NewReader(gz)
 	sawAny := false
@@ -189,7 +189,7 @@ func (r *CatalogResolver) loadFBCFromImage(ctx context.Context, catalogImage str
 		}
 	}
 
-	layers, err := m.GetLayers()
+	layers, err := m.GetLayers() //nolint:staticcheck
 	if err != nil {
 		return nil, fmt.Errorf("failed to get layers: %w", err)
 	}
@@ -239,7 +239,7 @@ func extractFBCLayer(r io.Reader, fsMap fstest.MapFS) int {
 	if err != nil {
 		return 0
 	}
-	defer gz.Close()
+	defer func() { _ = gz.Close() }()
 
 	count := 0
 	tr := tar.NewReader(gz)
@@ -302,7 +302,7 @@ func (g gvkValue) gvkKey() string {
 // FilterFBC implements the in-memory filtering of a declarative configuration.
 // It includes transitive dependencies by resolving both olm.package.required
 // and olm.gvk.required properties from bundles of selected packages.
-func (r *CatalogResolver) FilterFBC(ctx context.Context, cfg *declcfg.DeclarativeConfig, packages []string) (*declcfg.DeclarativeConfig, error) {
+func (r *CatalogResolver) FilterFBC(ctx context.Context, cfg *declcfg.DeclarativeConfig, packages []string) (*declcfg.DeclarativeConfig, error) { //nolint:gocyclo
 	if len(packages) == 0 {
 		return cfg, nil
 	}
@@ -554,7 +554,7 @@ func (r *CatalogResolver) BuildFilteredCatalogImage(ctx context.Context, sourceC
 	}
 
 	// 4. Get all source layers.
-	srcLayers, err := srcManifest.GetLayers()
+	srcLayers, err := srcManifest.GetLayers() //nolint:staticcheck
 	if err != nil {
 		return "", fmt.Errorf("failed to get source layers: %w", err)
 	}

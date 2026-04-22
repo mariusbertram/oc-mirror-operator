@@ -22,6 +22,9 @@ linters:
     - unparam
     - unused
   settings:
+    lll:
+      # Increased to accommodate long Go function signatures with multiple parameters.
+      line-length: 220
     revive:
       rules:
         - name: comment-spacings
@@ -36,6 +39,10 @@ linters:
           - dupl
           - lll
         path: internal/*
+      # Duplicate code in resource helpers is intentional (manager vs worker variants).
+      - linters:
+          - dupl
+        path: pkg/mirror/resources/resources\.go
     paths:
       - third_party$
       - builtin$

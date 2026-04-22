@@ -85,7 +85,7 @@ func NewMirrorClient(insecureHosts []string, authConfigPath string, destHosts ..
 	}
 
 	if len(hostConfigs) > 0 {
-		opts = append(opts, regclient.WithConfigHosts(hostConfigs))
+		opts = append(opts, regclient.WithConfigHost(hostConfigs...))
 	}
 
 	return &MirrorClient{
@@ -251,7 +251,7 @@ type tempFileReader struct {
 
 func (r *tempFileReader) Close() error {
 	err := r.File.Close()
-	_ = os.Remove(r.File.Name())
+	_ = os.Remove(r.Name())
 	return err
 }
 

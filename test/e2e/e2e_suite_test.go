@@ -71,7 +71,7 @@ var _ = BeforeSuite(func() {
 	By("loading the manager(Operator) image on Kind")
 	// Pass the podman provider env var through if the Makefile set it.
 	if p := os.Getenv("KIND_EXPERIMENTAL_PROVIDER"); p != "" {
-		os.Setenv("KIND_EXPERIMENTAL_PROVIDER", p)
+		Expect(os.Setenv("KIND_EXPERIMENTAL_PROVIDER", p)).To(Succeed())
 	}
 	err = utils.LoadImageToKindClusterWithName(projectImage)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the manager(Operator) image into Kind")

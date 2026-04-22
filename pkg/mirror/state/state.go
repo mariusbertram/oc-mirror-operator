@@ -75,7 +75,7 @@ func (s *StateManager) ReadMetadata(ctx context.Context, repository string, tag 
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to get blob: %w", err)
 	}
-	defer blobReader.Close()
+	defer func() { _ = blobReader.Close() }()
 
 	data, err := io.ReadAll(blobReader)
 	if err != nil {

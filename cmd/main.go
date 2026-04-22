@@ -95,7 +95,10 @@ func runManager() {
 	fs := flag.NewFlagSet("manager", flag.ExitOnError)
 	fs.StringVar(&targetName, "mirrortarget", "", "Name of the MirrorTarget")
 	fs.StringVar(&namespace, "namespace", "", "Namespace of the MirrorTarget")
-	fs.Parse(os.Args[2:])
+	if err := fs.Parse(os.Args[2:]); err != nil {
+		fmt.Fprintln(os.Stderr, "flag parse error:", err)
+		os.Exit(1)
+	}
 
 	if namespace == "" {
 		namespace = os.Getenv("POD_NAMESPACE")
@@ -121,7 +124,10 @@ func runWorker() {
 	var src, dest string
 	fs.StringVar(&src, "src", "", "Source image (legacy single-image mode)")
 	fs.StringVar(&dest, "dest", "", "Destination image (legacy single-image mode)")
-	fs.Parse(os.Args[2:])
+	if err := fs.Parse(os.Args[2:]); err != nil {
+		fmt.Fprintln(os.Stderr, "flag parse error:", err)
+		os.Exit(1)
+	}
 
 	// Batch mode: process all images in the JSON-encoded MIRROR_BATCH env var.
 	if batchJSON := os.Getenv("MIRROR_BATCH"); batchJSON != "" {
@@ -222,7 +228,10 @@ func runCleanup() {
 	fs.StringVar(&registry, "registry", "", "Target registry URL")
 	fs.BoolVar(&insecure, "insecure", false, "Allow insecure registry")
 	fs.StringVar(&configMapName, "configmap", "", "Override ConfigMap name (default: derived from --imageset)")
-	fs.Parse(os.Args[2:])
+	if err := fs.Parse(os.Args[2:]); err != nil {
+		fmt.Fprintln(os.Stderr, "flag parse error:", err)
+		os.Exit(1)
+	}
 
 	if namespace == "" || registry == "" {
 		fmt.Fprintln(os.Stderr, "ERROR: --namespace and --registry are required")
@@ -402,7 +411,7 @@ func reportStatus(dest, digest, errMsg string) {
 		fmt.Printf("Failed to report status to manager: %v\n", err)
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 }
 
 // shouldMirror queries the manager whether `dest` is still required.
@@ -428,11 +437,8 @@ func shouldMirror(dest string) bool {
 		fmt.Printf("Failed to query /should-mirror for %s: %v (proceeding)\n", dest, err)
 		return true
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusGone {
-		return false
-	}
-	return true
+	defer func() { _ = resp.Body.Close() }()
+	return resp.StatusCode != http.StatusGone
 }
 
 func runController() {

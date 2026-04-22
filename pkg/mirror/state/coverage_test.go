@@ -2,8 +2,9 @@ package state
 
 import (
 	"context"
-	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
 	"testing"
+
+	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
 )
 
 func TestStateCoverage(t *testing.T) {

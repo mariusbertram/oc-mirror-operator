@@ -364,8 +364,9 @@ bundle: manifests kustomize operator-sdk ## Generate bundle manifests and metada
 	$(OPERATOR_SDK) bundle validate ./bundle
 
 .PHONY: bundle-build
-bundle-build: ## Build the bundle image.
-	$(CONTAINER_TOOL) build -f bundle.Dockerfile -t $(BUNDLE_IMG) .
+bundle-build: ## Build the bundle image (multi-arch manifest list via buildx).
+	$(CONTAINER_TOOL) buildx build --platform linux/amd64,linux/arm64 \
+		-f bundle.Dockerfile -t $(BUNDLE_IMG) --push .
 
 .PHONY: bundle-push
 bundle-push: ## Push the bundle image.

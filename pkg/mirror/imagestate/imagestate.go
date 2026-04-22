@@ -209,7 +209,7 @@ func decode(cm *corev1.ConfigMap) (ImageState, error) {
 		if err != nil {
 			return nil, fmt.Errorf("decode image state: gzip reader: %w", err)
 		}
-		defer r.Close()
+		defer func() { _ = r.Close() }()
 		if err := json.NewDecoder(r).Decode(&state); err != nil {
 			return nil, fmt.Errorf("decode image state: json decode: %w", err)
 		}

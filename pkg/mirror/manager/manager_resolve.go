@@ -145,7 +145,7 @@ func (m *MirrorManager) buildCollector(mt *mirrorv1alpha1.MirrorTarget) (*mirror
 	return mirror.NewCollector(mc), catalog.New(mc)
 }
 
-func (m *MirrorManager) resolveReleaseSection(
+func (m *MirrorManager) resolveReleaseSection( //nolint:unparam
 	ctx context.Context,
 	collector *mirror.Collector,
 	is *mirrorv1alpha1.ImageSet,
@@ -154,7 +154,7 @@ func (m *MirrorManager) resolveReleaseSection(
 	newState imagestate.ImageState,
 	annotations map[string]string,
 	recollect bool,
-) (bool, error) {
+) (bool, error) { //nolint:unparam
 	annoChanged := false
 	arch := is.Spec.Mirror.Platform.Architectures
 	if len(arch) == 0 {
@@ -195,7 +195,7 @@ func (m *MirrorManager) resolveReleaseSection(
 	return annoChanged, nil
 }
 
-func (m *MirrorManager) resolveOperatorSection(
+func (m *MirrorManager) resolveOperatorSection( //nolint:unparam
 	ctx context.Context,
 	collector *mirror.Collector,
 	resolver *catalog.CatalogResolver,
@@ -205,7 +205,7 @@ func (m *MirrorManager) resolveOperatorSection(
 	newState imagestate.ImageState,
 	annotations map[string]string,
 	recollect bool,
-) (bool, error) {
+) (bool, error) { //nolint:unparam
 	annoChanged := false
 
 	for _, op := range is.Spec.Mirror.Operators {
@@ -400,7 +400,14 @@ func equalState(a, b imagestate.ImageState) bool {
 			}
 			continue
 		}
-		if va.Source != vb.Source || va.State != vb.State || va.Origin != vb.Origin || va.EntrySig != vb.EntrySig || va.RetryCount != vb.RetryCount || va.LastError != vb.LastError || va.OriginRef != vb.OriginRef {
+		changed := va.Source != vb.Source ||
+			va.State != vb.State ||
+			va.Origin != vb.Origin ||
+			va.EntrySig != vb.EntrySig ||
+			va.RetryCount != vb.RetryCount ||
+			va.LastError != vb.LastError ||
+			va.OriginRef != vb.OriginRef
+		if changed {
 			return false
 		}
 	}

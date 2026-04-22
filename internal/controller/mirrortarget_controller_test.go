@@ -47,7 +47,7 @@ var _ = Describe("MirrorTarget Controller", func() {
 		childName := types.NamespacedName{Name: resourceName + "-manager", Namespace: "default"}
 
 		BeforeEach(func() {
-			os.Setenv("OPERATOR_IMAGE", "test-controller:latest")
+			Expect(os.Setenv("OPERATOR_IMAGE", "test-controller:latest")).To(Succeed())
 			By("creating the MirrorTarget resource")
 			mt := &mirrorv1alpha1.MirrorTarget{
 				ObjectMeta: metav1.ObjectMeta{
@@ -137,7 +137,7 @@ var _ = Describe("MirrorTarget Controller", func() {
 		namespacedName := types.NamespacedName{Name: resourceName, Namespace: "default"}
 
 		BeforeEach(func() {
-			os.Setenv("OPERATOR_IMAGE", "test-controller:latest")
+			Expect(os.Setenv("OPERATOR_IMAGE", "test-controller:latest")).To(Succeed())
 			By("creating the MirrorTarget resource")
 			mt := &mirrorv1alpha1.MirrorTarget{
 				ObjectMeta: metav1.ObjectMeta{
