@@ -400,7 +400,7 @@ func equalState(a, b imagestate.ImageState) bool {
 			}
 			continue
 		}
-		if va.Source != vb.Source || va.State != vb.State || va.Origin != vb.Origin || va.EntrySig != vb.EntrySig || va.RetryCount != vb.RetryCount || va.LastError != vb.LastError {
+		if va.Source != vb.Source || va.State != vb.State || va.Origin != vb.Origin || va.EntrySig != vb.EntrySig || va.RetryCount != vb.RetryCount || va.LastError != vb.LastError || va.OriginRef != vb.OriginRef {
 			return false
 		}
 	}
