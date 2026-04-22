@@ -269,7 +269,12 @@ func mergeIntoStateWithSig(dst imagestate.ImageState, images []mirror.TargetImag
 			OriginRef: originRef,
 		}
 		if existing, ok := prev[img.Destination]; ok && existing != nil && existing.Origin == origin {
-			if existing.State == "Mirrored" || existing.State == "Failed" {
+			// Only carry forward Mirrored state — work we've already done.
+			// Failed entries (including permanently-failed ones) are reset to
+			// Pending so they get a fresh attempt whenever the spec changes
+			// or recollect is triggered. Cache-hits bypass this function and
+			// go through carryOverByOriginAndSig which preserves all states.
+			if existing.State == "Mirrored" {
 				entry.State = existing.State
 				entry.RetryCount = existing.RetryCount
 				entry.LastError = existing.LastError
