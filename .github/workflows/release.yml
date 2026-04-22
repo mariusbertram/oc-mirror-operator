@@ -114,13 +114,15 @@ jobs:
           # Update spec.version field
           sed -i "s|^\(  version: \)[0-9.]*|\1${VERSION}|" "$CSV"
 
-          # Update containerImage annotation
+          # Update containerImage annotation (covers any registry)
           sed -i "s|containerImage: .*|containerImage: ${NEW_REF}|g" "$CSV"
 
-          # Replace every operator image digest reference
-          sed -i "s|${{ env.OPERATOR_IMAGE }}@sha256:[a-f0-9]*|${NEW_REF}|g" "$CSV"
-          # Also replace tag-based references (e.g. :v0.0.1 → @digest)
-          sed -i "s|${{ env.OPERATOR_IMAGE }}:v[0-9.]*|${NEW_REF}|g" "$CSV"
+          # Replace ALL image references that point to oc-mirror-operator,
+          # regardless of which registry they use (dev registry, ghcr.io, etc.).
+          # Pattern matches: <any-registry>/oc-mirror-operator@sha256:<hex>
+          #               or <any-registry>/oc-mirror-operator:v<semver>
+          sed -i "s|[^ '\"]*oc-mirror-operator@sha256:[a-f0-9]*|${NEW_REF}|g" "$CSV"
+          sed -i "s|[^ '\"]*oc-mirror-operator:v[0-9][0-9.]*|${NEW_REF}|g"   "$CSV"
 
           echo "CSV updated to version ${VERSION} with image: ${NEW_REF}"
           grep -E "name: oc-mirror|version:|containerImage:|image:" "$CSV" | head -10
