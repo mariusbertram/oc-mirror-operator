@@ -24,7 +24,9 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/imagestate"
@@ -306,6 +308,12 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		mt.Status.KnownImageSets = make([]string, len(mt.Spec.ImageSets))
 		copy(mt.Status.KnownImageSets, mt.Spec.ImageSets)
 		sort.Strings(mt.Status.KnownImageSets)
+	}
+	// Aggregate per-ImageSet progress so users see overall rollout state on
+	// the MirrorTarget itself (e.g. via `oc get mirrortarget`) without
+	// having to query each ImageSet individually.
+	if err := r.aggregateImageSetStatus(ctx, mt); err != nil {
+		l.Error(err, "Failed to aggregate ImageSet status; continuing with stale counters")
 	}
 	if err := r.Status().Update(ctx, mt); err != nil {
 		return ctrl.Result{}, err
@@ -792,10 +800,94 @@ func cleanupJobName(targetName, imageSetName string) string {
 }
 
 // SetupWithManager sets up the controller with the Manager.
+//
+// Watches:
+//   - MirrorTarget (primary)
+//   - ImageSet status changes → enqueue every MirrorTarget that lists the
+//     ImageSet in spec.imageSets so the MirrorTarget's aggregated counters
+//     stay in sync with per-ImageSet progress.
 func (r *MirrorTargetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mirrorv1alpha1.MirrorTarget{}).
+		Watches(
+			&mirrorv1alpha1.ImageSet{},
+			handler.EnqueueRequestsFromMapFunc(r.mirrorTargetsForImageSet),
+		).
 		Complete(r)
+}
+
+// mirrorTargetsForImageSet returns reconcile requests for every MirrorTarget
+// in the same namespace that references the given ImageSet in spec.imageSets.
+// Used to propagate per-ImageSet status changes (mirroring progress) onto
+// the aggregated MirrorTarget counters.
+func (r *MirrorTargetReconciler) mirrorTargetsForImageSet(ctx context.Context, obj client.Object) []reconcile.Request {
+	is, ok := obj.(*mirrorv1alpha1.ImageSet)
+	if !ok {
+		return nil
+	}
+	var mtList mirrorv1alpha1.MirrorTargetList
+	if err := r.List(ctx, &mtList, client.InNamespace(is.Namespace)); err != nil {
+		return nil
+	}
+	var requests []reconcile.Request
+	for _, mt := range mtList.Items {
+		for _, name := range mt.Spec.ImageSets {
+			if name == is.Name {
+				requests = append(requests, reconcile.Request{
+					NamespacedName: client.ObjectKey{Namespace: mt.Namespace, Name: mt.Name},
+				})
+				break
+			}
+		}
+	}
+	return requests
+}
+
+// aggregateImageSetStatus walks spec.imageSets and sums the per-ImageSet
+// counters into MirrorTarget.Status. ImageSets that don't exist (yet) appear
+// with Found=false and contribute zero. The per-ImageSet breakdown is sorted
+// alphabetically for deterministic diffs.
+func (r *MirrorTargetReconciler) aggregateImageSetStatus(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget) error {
+	names := make([]string, len(mt.Spec.ImageSets))
+	copy(names, mt.Spec.ImageSets)
+	sort.Strings(names)
+
+	summaries := make([]mirrorv1alpha1.ImageSetStatusSummary, 0, len(names))
+	var total, mirrored, pending, failed int
+
+	for _, name := range names {
+		var is mirrorv1alpha1.ImageSet
+		err := r.Get(ctx, client.ObjectKey{Namespace: mt.Namespace, Name: name}, &is)
+		if err != nil {
+			if errors.IsNotFound(err) {
+				summaries = append(summaries, mirrorv1alpha1.ImageSetStatusSummary{
+					Name:  name,
+					Found: false,
+				})
+				continue
+			}
+			return fmt.Errorf("get ImageSet %q: %w", name, err)
+		}
+		summaries = append(summaries, mirrorv1alpha1.ImageSetStatusSummary{
+			Name:     name,
+			Found:    true,
+			Total:    is.Status.TotalImages,
+			Mirrored: is.Status.MirroredImages,
+			Pending:  is.Status.PendingImages,
+			Failed:   is.Status.FailedImages,
+		})
+		total += is.Status.TotalImages
+		mirrored += is.Status.MirroredImages
+		pending += is.Status.PendingImages
+		failed += is.Status.FailedImages
+	}
+
+	mt.Status.ImageSetStatuses = summaries
+	mt.Status.TotalImages = total
+	mt.Status.MirroredImages = mirrored
+	mt.Status.PendingImages = pending
+	mt.Status.FailedImages = failed
+	return nil
 }
 
 // reconcileExposure creates/updates/cleans up Route, Ingress, or HTTPRoute

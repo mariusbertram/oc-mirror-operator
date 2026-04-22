@@ -143,10 +143,70 @@ type MirrorTargetStatus struct {
 	// deleted from the target registry by cleanup Jobs.
 	// +optional
 	PendingCleanup []string `json:"pendingCleanup,omitempty"`
+
+	// TotalImages is the cumulative number of images across all ImageSets
+	// referenced by this MirrorTarget. Aggregated from each ImageSet.Status.
+	// +optional
+	TotalImages int `json:"totalImages,omitempty"`
+
+	// MirroredImages is the cumulative number of successfully mirrored images
+	// across all ImageSets referenced by this MirrorTarget.
+	// +optional
+	MirroredImages int `json:"mirroredImages,omitempty"`
+
+	// PendingImages is the cumulative number of images waiting to be mirrored
+	// or currently in progress across all referenced ImageSets.
+	// +optional
+	PendingImages int `json:"pendingImages,omitempty"`
+
+	// FailedImages is the cumulative number of images that failed mirroring
+	// (exhausted retries) across all referenced ImageSets.
+	// +optional
+	FailedImages int `json:"failedImages,omitempty"`
+
+	// ImageSetStatuses is a per-ImageSet breakdown of mirroring progress for
+	// all ImageSets referenced by spec.imageSets. Entries appear in
+	// alphabetical order. Missing ImageSets are reported with Found=false.
+	// +optional
+	ImageSetStatuses []ImageSetStatusSummary `json:"imageSetStatuses,omitempty"`
+}
+
+// ImageSetStatusSummary is a per-ImageSet snapshot of mirroring progress
+// surfaced on the MirrorTarget so users can see overall rollout state at a
+// glance without listing the individual ImageSet objects.
+type ImageSetStatusSummary struct {
+	// Name is the ImageSet name (matches an entry in spec.imageSets).
+	Name string `json:"name"`
+
+	// Found is true if the referenced ImageSet exists in this namespace.
+	// When false the counters are zero and the entry indicates a missing
+	// reference (typo in spec.imageSets or ImageSet not yet created).
+	Found bool `json:"found"`
+
+	// Total is the number of images this ImageSet is responsible for.
+	// +optional
+	Total int `json:"total,omitempty"`
+
+	// Mirrored is the number of images successfully mirrored.
+	// +optional
+	Mirrored int `json:"mirrored,omitempty"`
+
+	// Pending is the number of images waiting to be mirrored or in progress.
+	// +optional
+	Pending int `json:"pending,omitempty"`
+
+	// Failed is the number of images that failed mirroring (exhausted retries).
+	// +optional
+	Failed int `json:"failed,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Total",type=integer,JSONPath=`.status.totalImages`
+// +kubebuilder:printcolumn:name="Mirrored",type=integer,JSONPath=`.status.mirroredImages`
+// +kubebuilder:printcolumn:name="Pending",type=integer,JSONPath=`.status.pendingImages`
+// +kubebuilder:printcolumn:name="Failed",type=integer,JSONPath=`.status.failedImages`
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // MirrorTarget is the Schema for the mirrortargets API
 type MirrorTarget struct {

@@ -407,6 +407,26 @@ spec:
 | `status.lastSuccessfulPollTime` | Zeitpunkt des letzten erfolgreichen Upstream-Polls |
 | `status.conditions[Ready]` | `True` wenn Collection erfolgreich |
 
+**MirrorTarget-Status (aggregiert über alle referenzierten ImageSets):**
+
+Das `MirrorTarget` exponiert die per-ImageSet-Counter zusätzlich kumuliert, sodass `oc get mirrortarget` direkt den Gesamtfortschritt zeigt:
+
+```bash
+$ oc get mirrortarget
+NAME            TOTAL   MIRRORED   PENDING   FAILED   AGE
+quay-internal   757     756        1         0        2d19h
+```
+
+| Feld | Beschreibung |
+|------|-------------|
+| `status.totalImages` | Summe aller `ImageSet.status.totalImages` |
+| `status.mirroredImages` | Summe aller `ImageSet.status.mirroredImages` |
+| `status.pendingImages` | Summe aller `ImageSet.status.pendingImages` |
+| `status.failedImages` | Summe aller `ImageSet.status.failedImages` |
+| `status.imageSetStatuses[]` | Pro-ImageSet-Breakdown (Name, Found, Total, Mirrored, Pending, Failed) — alphabetisch sortiert |
+
+Die Aggregation wird durch einen Watch auf `ImageSet`-Statusänderungen getriggert: Sobald ein ImageSet seine Counter aktualisiert, werden alle MirrorTargets, die diesen ImageSet in `spec.imageSets` referenzieren, automatisch reconciled.
+
 **Image-States (im ConfigMap-State):**
 
 | State | Bedeutung |

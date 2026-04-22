@@ -14,7 +14,23 @@ spec:
     singular: mirrortarget
   scope: Namespaced
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .status.totalImages
+      name: Total
+      type: integer
+    - jsonPath: .status.mirroredImages
+      name: Mirrored
+      type: integer
+    - jsonPath: .status.pendingImages
+      name: Pending
+      type: integer
+    - jsonPath: .status.failedImages
+      name: Failed
+      type: integer
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
     schema:
       openAPIV3Schema:
         description: MirrorTarget is the Schema for the mirrortargets API
@@ -411,6 +427,52 @@ spec:
                   - type
                   type: object
                 type: array
+              failedImages:
+                description: |-
+                  FailedImages is the cumulative number of images that failed mirroring
+                  (exhausted retries) across all referenced ImageSets.
+                type: integer
+              imageSetStatuses:
+                description: |-
+                  ImageSetStatuses is a per-ImageSet breakdown of mirroring progress for
+                  all ImageSets referenced by spec.imageSets. Entries appear in
+                  alphabetical order. Missing ImageSets are reported with Found=false.
+                items:
+                  description: |-
+                    ImageSetStatusSummary is a per-ImageSet snapshot of mirroring progress
+                    surfaced on the MirrorTarget so users can see overall rollout state at a
+                    glance without listing the individual ImageSet objects.
+                  properties:
+                    failed:
+                      description: Failed is the number of images that failed mirroring
+                        (exhausted retries).
+                      type: integer
+                    found:
+                      description: |-
+                        Found is true if the referenced ImageSet exists in this namespace.
+                        When false the counters are zero and the entry indicates a missing
+                        reference (typo in spec.imageSets or ImageSet not yet created).
+                      type: boolean
+                    mirrored:
+                      description: Mirrored is the number of images successfully mirrored.
+                      type: integer
+                    name:
+                      description: Name is the ImageSet name (matches an entry in
+                        spec.imageSets).
+                      type: string
+                    pending:
+                      description: Pending is the number of images waiting to be mirrored
+                        or in progress.
+                      type: integer
+                    total:
+                      description: Total is the number of images this ImageSet is
+                        responsible for.
+                      type: integer
+                  required:
+                  - found
+                  - name
+                  type: object
+                type: array
               knownImageSets:
                 description: |-
                   KnownImageSets is the last observed list of ImageSets from spec.imageSets.
@@ -418,6 +480,11 @@ spec:
                 items:
                   type: string
                 type: array
+              mirroredImages:
+                description: |-
+                  MirroredImages is the cumulative number of successfully mirrored images
+                  across all ImageSets referenced by this MirrorTarget.
+                type: integer
               pendingCleanup:
                 description: |-
                   PendingCleanup lists ImageSet names whose images are currently being
@@ -425,6 +492,16 @@ spec:
                 items:
                   type: string
                 type: array
+              pendingImages:
+                description: |-
+                  PendingImages is the cumulative number of images waiting to be mirrored
+                  or currently in progress across all referenced ImageSets.
+                type: integer
+              totalImages:
+                description: |-
+                  TotalImages is the cumulative number of images across all ImageSets
+                  referenced by this MirrorTarget. Aggregated from each ImageSet.Status.
+                type: integer
             type: object
         type: object
     served: true
