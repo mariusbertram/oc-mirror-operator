@@ -244,7 +244,7 @@ func (m *CatalogBuildManager) buildJobSpec(
 				Secret: &corev1.SecretVolumeSource{
 					SecretName: mt.Spec.AuthSecret,
 					Items: []corev1.KeyToPath{
-						{Key: "config.json", Path: "config.json"},
+						{Key: ".dockerconfigjson", Path: "config.json"},
 					},
 				},
 			},
