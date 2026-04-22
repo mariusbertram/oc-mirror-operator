@@ -2,6 +2,8 @@ package e2e_flow
 
 import (
 	"context"
+	"os"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -62,12 +64,15 @@ var _ = Describe("Operator Lifecycle", func() {
 
 		// 3. Run ImageSet Reconciler
 		mc := mirrorclient.NewMirrorClient(nil, "")
+		_ = os.Setenv(builder.OperatorImageEnvVar, "test-operator:latest")
+		bm, bmErr := builder.New()
+		Expect(bmErr).NotTo(HaveOccurred())
 		r := &controller.ImageSetReconciler{
 			Client:          cl,
 			Scheme:          scheme,
 			MirrorClient:    mc,
 			Collector:       mirror.NewCollector(mc),
-			CatalogBuildMgr: builder.New(),
+			CatalogBuildMgr: bm,
 		}
 
 		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: is.Name, Namespace: ns}})

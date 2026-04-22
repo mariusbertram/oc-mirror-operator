@@ -31,6 +31,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -73,30 +74,64 @@ type CatalogBuildManager struct {
 	operatorImage string
 }
 
-// New returns a CatalogBuildManager.  The operator image is taken from the
-// OPERATOR_IMAGE env var; if unset, "controller:latest" is used as a local
-// development fallback.
-func New() *CatalogBuildManager {
+// New returns a CatalogBuildManager. The operator image MUST be set via the
+// OPERATOR_IMAGE env var; otherwise an error is returned. The operator's main
+// entrypoint is expected to validate this at startup so that catalog builds
+// always reference a deterministic, content-addressable image.
+func New() (*CatalogBuildManager, error) {
 	img := os.Getenv(OperatorImageEnvVar)
 	if img == "" {
-		img = "controller:latest"
+		return nil, fmt.Errorf("environment variable %s is not set", OperatorImageEnvVar)
 	}
-	return &CatalogBuildManager{operatorImage: img}
+	return &CatalogBuildManager{operatorImage: img}, nil
+}
+
+// MustNew is the panicking variant of New, intended for use after the
+// operator's main entrypoint has already validated OPERATOR_IMAGE.
+func MustNew() *CatalogBuildManager {
+	m, err := New()
+	if err != nil {
+		panic(err)
+	}
+	return m
 }
 
 // JobName returns a deterministic, DNS-safe Job name for the given ImageSet
-// name and source catalog image reference.
+// name and source catalog image reference. To avoid collisions when long names
+// get truncated, the final 8 characters are derived from a SHA-256 of all
+// inputs.
 func JobName(imageSetName, sourceCatalog string) string {
-	slug := strings.ToLower(sourceCatalog)
-	slug = strings.NewReplacer(":", "-", "/", "-", ".", "-", "@", "-").Replace(slug)
-	if len(slug) > 40 {
-		slug = slug[len(slug)-40:]
+	return safeJobName("catalog-build", imageSetName, sourceCatalog)
+}
+
+// safeJobName builds a DNS-1123 compliant Job name (max 63 chars) by
+// concatenating prefix and parts and appending an 8-char SHA-256 suffix
+// derived from the *raw* parts. This guarantees that two different inputs
+// cannot collide via truncation.
+func safeJobName(prefix string, parts ...string) string {
+	const maxLen = 63
+	const sumLen = 8 // hex chars
+	h := sha256.New()
+	for _, p := range parts {
+		_, _ = h.Write([]byte(p))
+		_, _ = h.Write([]byte{0})
 	}
-	name := "catalog-build-" + imageSetName + "-" + slug
-	if len(name) > 63 {
-		name = name[:63]
+	suffix := fmt.Sprintf("%x", h.Sum(nil))[:sumLen]
+
+	slugParts := make([]string, 0, len(parts))
+	for _, p := range parts {
+		s := strings.ToLower(p)
+		s = strings.NewReplacer(":", "-", "/", "-", ".", "-", "@", "-", "_", "-").Replace(s)
+		slugParts = append(slugParts, s)
 	}
-	return strings.TrimRight(name, "-")
+	body := prefix + "-" + strings.Join(slugParts, "-")
+	// Reserve room for "-<suffix>"
+	budget := maxLen - 1 - sumLen
+	if len(body) > budget {
+		body = body[:budget]
+	}
+	body = strings.TrimRight(body, "-")
+	return body + "-" + suffix
 }
 
 // EnsureCatalogBuildJob creates a Job that builds the filtered catalog image
@@ -192,7 +227,9 @@ func (m *CatalogBuildManager) buildJobSpec(
 	volumes = append(volumes, corev1.Volume{
 		Name: "blob-buffer",
 		VolumeSource: corev1.VolumeSource{
-			EmptyDir: &corev1.EmptyDirVolumeSource{},
+			EmptyDir: &corev1.EmptyDirVolumeSource{
+				SizeLimit: resourcePtr("10Gi"),
+			},
 		},
 	})
 	volumeMounts = append(volumeMounts, corev1.VolumeMount{
@@ -206,6 +243,9 @@ func (m *CatalogBuildManager) buildJobSpec(
 			VolumeSource: corev1.VolumeSource{
 				Secret: &corev1.SecretVolumeSource{
 					SecretName: mt.Spec.AuthSecret,
+					Items: []corev1.KeyToPath{
+						{Key: "config.json", Path: "config.json"},
+					},
 				},
 			},
 		})
@@ -239,14 +279,27 @@ func (m *CatalogBuildManager) buildJobSpec(
 					RestartPolicy: corev1.RestartPolicyNever,
 					NodeSelector:  mt.Spec.Worker.NodeSelector,
 					Tolerations:   mt.Spec.Worker.Tolerations,
+					SecurityContext: &corev1.PodSecurityContext{
+						RunAsNonRoot: ptrBool(true),
+						SeccompProfile: &corev1.SeccompProfile{
+							Type: corev1.SeccompProfileTypeRuntimeDefault,
+						},
+					},
 					Containers: []corev1.Container{
 						{
-							Name:         "catalog-builder",
-							Image:        m.operatorImage,
-							Command:      []string{catalogBuilderBin},
-							Env:          env,
-							Resources:    mt.Spec.Worker.Resources,
-							VolumeMounts: volumeMounts,
+							Name:    "catalog-builder",
+							Image:   m.operatorImage,
+							Command: []string{catalogBuilderBin},
+							SecurityContext: &corev1.SecurityContext{
+								AllowPrivilegeEscalation: ptrBool(false),
+								Capabilities: &corev1.Capabilities{
+									Drop: []corev1.Capability{"ALL"},
+								},
+							},
+							ImagePullPolicy: corev1.PullIfNotPresent,
+							Env:             env,
+							Resources:       mt.Spec.Worker.Resources,
+							VolumeMounts:    volumeMounts,
 						},
 					},
 					Volumes: volumes,
@@ -254,6 +307,15 @@ func (m *CatalogBuildManager) buildJobSpec(
 			},
 		},
 	}
+}
+
+func ptrBool(b bool) *bool { return &b }
+
+// resourcePtr parses a resource quantity string and returns a pointer to it.
+// Used for EmptyDir size limits. Panics on invalid input (only invoked with constants).
+func resourcePtr(q string) *resource.Quantity {
+	v := resource.MustParse(q)
+	return &v
 }
 
 // DeleteBuildJob deletes a catalog build Job so it can be recreated.

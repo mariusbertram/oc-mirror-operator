@@ -1,5 +1,9 @@
-# Build the manager and catalog-builder binaries
-FROM --platform=$BUILDPLATFORM golang:1.25 AS builder
+# Build the manager and catalog-builder binaries.
+# Base images are pinned by digest so that builds are deterministic and
+# supply-chain auditable. To refresh, run:
+#   podman pull docker.io/library/golang:1.25 && podman inspect docker.io/library/golang:1.25 --format '{{.Digest}}'
+#   podman pull gcr.io/distroless/static:nonroot && podman inspect gcr.io/distroless/static:nonroot --format '{{.Digest}}'
+FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.25@sha256:4c22673170524e09a47a6e1a5f1ca99692f4796c9b4f2de25ec7137bcd897edd AS builder
 ARG TARGETOS
 ARG TARGETARCH
 
@@ -27,7 +31,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o ca
 
 # Use distroless as minimal base image to package the manager binary
 # Refer to https://github.com/GoogleContainerTools/distroless for more details
-FROM gcr.io/distroless/static:nonroot
+FROM gcr.io/distroless/static:nonroot@sha256:64c43684e6d2b581d1eb362ea47b6a4defee6a9cac5f7ebbda3daa67e8c9b8e6
 WORKDIR /
 COPY --from=builder /workspace/manager .
 COPY --from=builder /workspace/catalog-builder .

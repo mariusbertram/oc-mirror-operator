@@ -487,8 +487,8 @@ spec:
 | Aspekt | Details |
 |--------|---------|
 | **Default-Intervall** | 24 Stunden — prüft einmal täglich auf neue Upstream-Inhalte |
-| **Minimum** | 1 Stunde — kürzere Intervalle werden abgelehnt |
-| **Deaktivierung** | `pollInterval: 0` — kein automatisches Polling |
+| **Minimum** | 1 Stunde — kürzere Werte werden bereits vom API-Server (CRD-CEL-Validation) abgelehnt |
+| **Deaktivierung** | `pollInterval: 0s` — kein automatisches Polling |
 | **Was wird geprüft** | Cincinnati-Graph (neue Releases in Channels), Operator-Katalog-Images (neue Bundles/Versionen) |
 | **Bei neuen Inhalten** | Erneute Image-Collection, automatischer Catalog-Rebuild, neue Images werden als `Pending` eingefügt |
 | **Fehlgeschlagene Images** | Beim nächsten Poll werden `Failed`-Images automatisch auf `Pending` zurückgesetzt und erneut versucht |
@@ -526,6 +526,7 @@ Ohne diese Annotation werden entfernte Images **nicht** aus der Registry gelösc
 - **Vollständiges Cleanup** (ImageSet entfernt): Job liest den Image-State aus der existierenden ConfigMap, löscht jedes Manifest per `DELETE` API-Call, löscht anschließend die ConfigMap selbst.
 - **Partielles Cleanup** (Spec-Änderung): Entfernte Images werden in einer temporären ConfigMap `cleanup-partial-<imageset>-gen<N>` gespeichert (immutabel pro Generation). Job liest die Temp-ConfigMap, löscht die Images und entfernt die Temp-ConfigMap.
 - **Auth-Token-Refresh**: Cleanup-Jobs erstellen alle 20 Löschoperationen einen frischen Registry-Client (gleicher Quay-nginx-Workaround wie Drift-Detection und Worker).
+- **Direktes ImageSet-Löschen (`oc delete imageset <name>`)**: Triggert **keinen** Cleanup. Das ist Absicht — ImageSets haben keinen Finalizer, sodass Operatoren bewusst eine ImageSet aus einem MirrorTarget herausnehmen können (löst Cleanup aus), bevor sie das Objekt selbst löschen. Wer Images aktiv aus der Registry entfernen möchte, entfernt zuerst den Eintrag aus `MirrorTarget.spec.imageSets` und löscht erst nach Abschluss des Cleanup-Jobs die ImageSet-Resource.
 
 ### Status-Conditions auf MirrorTarget
 
@@ -597,8 +598,8 @@ Der Operator läuft mit einer **namespace-scoped `Role`** (nicht `ClusterRole`).
 
 | Service Account | Berechtigungen |
 |-----------------|----------------|
-| `oc-mirror-operator-controller-manager` | CRD-Verwaltung, Deployments, Services, ConfigMaps, Secrets (read), Routes, Ingresses |
-| `oc-mirror-coordinator` | ImageSet-Status schreiben, Pods erstellen/löschen, ConfigMaps lesen/schreiben, MirrorTargets lesen |
+| `oc-mirror-operator-controller-manager` | CRD-Verwaltung, Deployments, Services, ConfigMaps, Secrets (read), Routes, Ingresses, Roles/RoleBindings (`get;create;update` — keine `delete`/`patch`/`escalate`/`bind` Verbs zur Privilege-Escalation-Prevention) |
+| `oc-mirror-coordinator` | ImageSets/ImageSets-Status (`get;list;watch;update;patch`), MirrorTargets (nur `get;list;watch`), Pods (`get;list;watch;create;delete`), ConfigMaps (`get;list;watch;create;update;patch;delete`), Worker-Token-Secret (`get;list;watch;create;update`) |
 | `oc-mirror-worker` | Keine Cluster-Rechte |
 
 ### Pod Security
@@ -609,14 +610,54 @@ Alle dynamisch erstellten Pods (Manager und Worker) laufen mit **restricted Pod 
 - `seccompProfile: RuntimeDefault`
 
 ### Worker-Authentifizierung
-Worker-Pods authentifizieren sich am Manager-Status-Endpoint via **Bearer Token**. Der Token wird beim Manager-Start zufällig generiert und über eine Umgebungsvariable an Worker-Pods übergeben.
+Worker-Pods authentifizieren sich am Manager-Status-Endpoint via **Bearer Token**. Der Token wird vom Manager beim Start in einem Kubernetes-Secret namens `<mirrortarget>-worker-token` (Key `token`) persistiert (mit OwnerReference auf das `MirrorTarget`, sodass es bei Löschen automatisch entsorgt wird). Worker-Pods lesen den Token via `valueFrom.secretKeyRef` — er erscheint nicht im Pod-Manifest oder in Logs. Der serverseitige Vergleich nutzt `crypto/subtle.ConstantTimeCompare`, um Timing-Angriffe zu verhindern.
 
 ### Registry-Credentials
-Das `authSecret` wird als Volume (`/docker-config/config.json`) in Manager- und Worker-Pods gemountet. Der Manager benötigt Lesezugriff für Drift-Detection (CheckExist), Worker benötigen Lese-/Schreibzugriff für das eigentliche Mirroring.
+Das `authSecret` wird als Volume (`/docker-config/config.json`) in Manager- und Worker-Pods gemountet (nur der Key `config.json` wird projiziert, andere Schlüssel im Secret bleiben unsichtbar). Der Manager benötigt Lesezugriff für Drift-Detection (CheckExist), Worker benötigen Lese-/Schreibzugriff für das eigentliche Mirroring.
+
+### NetworkPolicies
+Pro `MirrorTarget` werden vom Operator drei `NetworkPolicy`-Objekte im User-Namespace erzeugt (mit OwnerReference auf das `MirrorTarget`, damit sie automatisch gelöscht werden):
+
+| Policy | Selektor | Effekt |
+|--------|----------|--------|
+| `<name>-manager-ingress` | `app=oc-mirror-manager,mirrortarget=<name>` | Ingress nur von Worker-Pods desselben `MirrorTarget` auf TCP 8080 (Status-API) und 8081 (Resource-Server) |
+| `<name>-worker-ingress-deny` | `app=oc-mirror-worker,mirrortarget=<name>` | Verweigert sämtlichen Ingress-Traffic zu Worker-Pods |
+| `<name>-worker-egress` | `app=oc-mirror-worker,mirrortarget=<name>` | Erlaubt DNS (UDP/TCP 53), Traffic zum Manager-Pod (8080/8081) und Egress ins Internet (`0.0.0.0/0` außer RFC1918 `10/8`, `172.16/12`, `192.168/16`) für Registry-Zugriff |
+
+> **Hinweis:** Die Egress-Policy geht davon aus, dass der Cluster RFC1918-Adressen verwendet. In Clustern mit anderen internen CIDRs muss die Allow-Range entsprechend angepasst werden.
+
+### Status-Conditions
+
+Conditions auf `MirrorTarget.status.conditions` und `ImageSet.status.conditions` enthalten ein `observedGeneration`-Feld, das die `metadata.generation` des CRs reflektiert, gegen die der jeweilige Reconcile-Lauf die Bedingung gesetzt hat. Konsumenten (z.B. `kubectl wait --for=condition=Ready=true --observed-generation=...`) können so erkennen, ob eine Condition zum aktuellen Spec-Stand gehört. `lastTransitionTime` wird nur aktualisiert, wenn sich `status` oder `reason` ändern (verhindert Time-Drift bei stabilen Conditions).
+
+### Image-Signaturen
+
+Cosign/Sigstore-Signaturen werden derzeit **nicht** propagiert oder verifiziert. Die `pkg/release/signature.go`-API gibt `ErrNotImplemented` zurück; Aufrufer behandeln dies als nicht-fataler Skip. Air-Gap-Use-Cases, die signierte Releases erfordern, müssen Signatur-Mirroring extern über `oc image mirror` oder `cosign copy` ergänzen.
+
+### Supply Chain
+
+Das Container-Image wird aus pinned Base-Images gebaut: `golang:1.25@sha256:...` (Build-Stage) und `gcr.io/distroless/static:nonroot@sha256:...` (Runtime). Digests werden bei jedem Refresh im `Dockerfile` aktualisiert. Worker- und Cleanup-Jobs verwenden ausschließlich das Operator-Image (referenziert über die `OPERATOR_IMAGE`-env-Var, siehe Tabelle oben) — es gibt kein zweites Container-Image im System.
+
+### Out-of-Scope (bewusst nicht implementiert)
+
+| Feature | Begründung |
+|---------|------------|
+| **Plattform-Auswahl pro ImageSet** | Aktuell hart auf `linux/amd64`. Multi-Arch-Mirroring würde Resolver-, Client- und API-Refactor erfordern (auf Roadmap). |
+| **Resource-Server Bearer-Token-Auth** | Resource-Server (Port 8081) ist via NetworkPolicy auf den Cluster begrenzt; ein Token würde Distributionslogik für externe Konsumenten erfordern. Nutzer mit Bedarf an stärkerer Absicherung sollten den Service zusätzlich mit einem Reverse-Proxy + mTLS ausstatten. |
+| **Direkter `oc delete imageset`-Cleanup** | ImageSets haben keinen Finalizer. Cleanup wird ausschließlich beim Entfernen aus `MirrorTarget.spec.imageSets` getriggert (siehe Sektion *Image-Cleanup*). |
 
 ---
 
 ## Entwicklung
+
+### Pflicht-Environment
+
+Der Controller verlangt zwingend folgende Variablen (die Standard-Deployment-Manifeste in `config/manager/manager.yaml` setzen sie automatisch):
+
+| Variable | Pflicht | Bedeutung |
+|----------|---------|-----------|
+| `OPERATOR_IMAGE` | ja | Image-Referenz für dynamisch erzeugte Catalog-Builder- und Cleanup-Jobs. Fehlt sie, exitet der Operator beim Start mit Fehlermeldung — frühere Builds nahmen `controller:latest` als Fallback, was zu kryptischen `ImagePullBackOff`-Fehlern führte. |
+| `POD_NAMESPACE` | nein (Downward-API empfohlen) | Namespace für leader-election und Resource-Server. |
 
 ### Voraussetzungen
 

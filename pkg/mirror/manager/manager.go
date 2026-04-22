@@ -3,6 +3,7 @@ package manager
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -12,8 +13,11 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
@@ -39,24 +43,24 @@ type BatchItem struct {
 }
 
 type MirrorManager struct {
-	Client       client.Client
-	Clientset    kubernetes.Interface
-	TargetName   string
-	Namespace    string
-	Scheme       *runtime.Scheme
-	Image        string
-	mirrorClient *mirrorclient.MirrorClient
+	Client         client.Client
+	Clientset      kubernetes.Interface
+	TargetName     string
+	Namespace      string
+	Scheme         *runtime.Scheme
+	Image          string
+	mirrorClient   *mirrorclient.MirrorClient
 	authConfigPath string // path to Docker config for creating fresh clients
 
 	workerToken string
 
 	// State in memory — protected by mu
-	mu              sync.RWMutex
-	inProgress      map[string]string                      // dest → podName
-	mirrored        map[string]bool                        // dest → true once successfully mirrored
-	imageStates     map[string]imagestate.ImageState       // imageSetName → ImageState
-	destToIS        map[string]string                      // dest → imageSetName (reverse lookup)
-	lastDriftCheck  time.Time                              // last time we verified all mirrored images
+	mu             sync.RWMutex
+	inProgress     map[string]string                // dest → podName
+	mirrored       map[string]bool                  // dest → true once successfully mirrored
+	imageStates    map[string]imagestate.ImageState // imageSetName → ImageState
+	destToIS       map[string]string                // dest → imageSetName (reverse lookup)
+	lastDriftCheck time.Time                        // last time we verified all mirrored images
 }
 
 func New(targetName, namespace string, scheme *runtime.Scheme) (*MirrorManager, error) {
@@ -87,19 +91,16 @@ func New(targetName, namespace string, scheme *runtime.Scheme) (*MirrorManager, 
 func NewWithClients(c client.Client, cs kubernetes.Interface, targetName, namespace, image, authConfigPath string, scheme *runtime.Scheme) *MirrorManager {
 	mc := mirrorclient.NewMirrorClient(nil, authConfigPath)
 
-	tokenBytes := make([]byte, 32)
-	rand.Read(tokenBytes)
-
 	return &MirrorManager{
-		Client:      c,
-		Clientset:   cs,
-		TargetName:  targetName,
-		Namespace:   namespace,
-		Scheme:      scheme,
-		Image:       image,
-		mirrorClient: mc,
+		Client:         c,
+		Clientset:      cs,
+		TargetName:     targetName,
+		Namespace:      namespace,
+		Scheme:         scheme,
+		Image:          image,
+		mirrorClient:   mc,
 		authConfigPath: authConfigPath,
-		workerToken: hex.EncodeToString(tokenBytes),
+		// workerToken is populated lazily by ensureWorkerTokenSecret() in Run().
 		inProgress:  make(map[string]string),
 		mirrored:    make(map[string]bool),
 		imageStates: make(map[string]imagestate.ImageState),
@@ -107,8 +108,76 @@ func NewWithClients(c client.Client, cs kubernetes.Interface, targetName, namesp
 	}
 }
 
+// workerTokenSecretName returns the Secret name used to persist the worker
+// bearer token across manager restarts.
+func (m *MirrorManager) workerTokenSecretName() string {
+	return m.TargetName + "-worker-token"
+}
+
+// ensureWorkerTokenSecret loads the worker bearer token from a dedicated Secret
+// or creates the Secret with a freshly generated 32-byte token if it does not
+// yet exist. Persisting the token in a Secret avoids leaking it via plain
+// `env.value` in worker pod specs (which any user with `pods/get` could read)
+// and lets worker pods that survive a manager restart keep authenticating with
+// the same token.
+func (m *MirrorManager) ensureWorkerTokenSecret(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget) error {
+	name := m.workerTokenSecretName()
+
+	existing := &corev1.Secret{}
+	getErr := m.Client.Get(ctx, types.NamespacedName{Namespace: m.Namespace, Name: name}, existing)
+	if getErr == nil {
+		tok, ok := existing.Data["token"]
+		if !ok || len(tok) == 0 {
+			return fmt.Errorf("worker token secret %s exists but has no 'token' key", name)
+		}
+		m.workerToken = string(tok)
+		return nil
+	}
+	if !errors.IsNotFound(getErr) {
+		return fmt.Errorf("get worker token secret: %w", getErr)
+	}
+
+	tokenBytes := make([]byte, 32)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		return fmt.Errorf("generate worker token: %w", err)
+	}
+	token := hex.EncodeToString(tokenBytes)
+
+	sec := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: m.Namespace,
+		},
+		Type: corev1.SecretTypeOpaque,
+		Data: map[string][]byte{
+			"token": []byte(token),
+		},
+	}
+	if mt != nil {
+		if err := controllerutil.SetControllerReference(mt, sec, m.Scheme); err != nil {
+			return fmt.Errorf("set owner on worker token secret: %w", err)
+		}
+	}
+	if err := m.Client.Create(ctx, sec); err != nil {
+		return fmt.Errorf("create worker token secret: %w", err)
+	}
+	m.workerToken = token
+	return nil
+}
+
 func (m *MirrorManager) Run(ctx context.Context) error {
 	fmt.Printf("Starting Mirror Manager for %s in namespace %s\n", m.TargetName, m.Namespace)
+
+	// Load (or create) the worker bearer token from its Secret. We need the
+	// MirrorTarget object as the OwnerReference so the Secret is GC'd when the
+	// MirrorTarget is deleted.
+	mt := &mirrorv1alpha1.MirrorTarget{}
+	if err := m.Client.Get(ctx, client.ObjectKey{Name: m.TargetName, Namespace: m.Namespace}, mt); err != nil {
+		return fmt.Errorf("load MirrorTarget for token bootstrap: %w", err)
+	}
+	if err := m.ensureWorkerTokenSecret(ctx, mt); err != nil {
+		return fmt.Errorf("worker token bootstrap: %w", err)
+	}
 
 	// Rebuild in-progress state from any worker pods that survived a manager restart.
 	if err := m.syncInProgressFromPods(ctx); err != nil {
@@ -184,8 +253,12 @@ func (m *MirrorManager) runStatusAPI(ctx context.Context) {
 	mux.HandleFunc("/status", m.handleStatusUpdate)
 
 	server := &http.Server{
-		Addr:    ":8080",
-		Handler: mux,
+		Addr:              ":8080",
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	go func() {
@@ -195,7 +268,9 @@ func (m *MirrorManager) runStatusAPI(ctx context.Context) {
 	}()
 
 	<-ctx.Done()
-	_ = server.Shutdown(context.Background())
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = server.Shutdown(shutdownCtx)
 }
 
 func (m *MirrorManager) handleStatusUpdate(w http.ResponseWriter, r *http.Request) {
@@ -205,7 +280,10 @@ func (m *MirrorManager) handleStatusUpdate(w http.ResponseWriter, r *http.Reques
 	}
 
 	authHeader := r.Header.Get("Authorization")
-	if authHeader != "Bearer "+m.workerToken {
+	expected := "Bearer " + m.workerToken
+	// Constant-time comparison prevents timing side-channels that could leak
+	// the token byte-by-byte to an attacker probing the status endpoint.
+	if subtle.ConstantTimeCompare([]byte(authHeader), []byte(expected)) != 1 {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -240,35 +318,69 @@ func (m *MirrorManager) handleStatusUpdate(w http.ResponseWriter, r *http.Reques
 // First it handles tracked pods in m.inProgress (resetting Failed images to
 // Pending), then it sweeps for any orphaned finished pods that fell out of
 // tracking (e.g. due to a manager restart).
+// API calls (Get/Delete/List) are intentionally performed *outside* m.mu so
+// network I/O does not block reconcile or status callbacks.
 // Caller must NOT hold m.mu.
 func (m *MirrorManager) cleanupFinishedWorkers(ctx context.Context) {
+	// 1. Snapshot tracked pods under the lock.
 	m.mu.Lock()
-
-	// 1. Tracked pods in m.inProgress.
-	deletedPods := map[string]struct{}{}
+	snapshot := make(map[string]string, len(m.inProgress))
 	for dest, podName := range m.inProgress {
+		snapshot[dest] = podName
+	}
+	m.mu.Unlock()
+
+	type finished struct {
+		dest, podName string
+		phase         corev1.PodPhase
+	}
+	var done []finished
+	deletedPods := map[string]struct{}{}
+
+	for dest, podName := range snapshot {
 		pod, err := m.Clientset.CoreV1().Pods(m.Namespace).Get(ctx, podName, metav1.GetOptions{})
 		if err != nil {
-			delete(m.inProgress, dest)
+			// Pod is gone (or unreachable) – drop from tracking.
+			done = append(done, finished{dest: dest, podName: podName, phase: corev1.PodFailed})
+			done[len(done)-1].phase = "" // signal "missing"
 			continue
 		}
 		if pod.Status.Phase != corev1.PodSucceeded && pod.Status.Phase != corev1.PodFailed {
 			continue
 		}
-		delete(m.inProgress, dest)
-		if pod.Status.Phase == corev1.PodFailed {
-			fmt.Printf("Worker pod %s for %s failed without reporting; resetting to Pending\n", podName, dest)
-			m.setImageStateLocked(dest, "Pending", "")
-		}
-		if _, already := deletedPods[podName]; !already {
-			_ = m.Clientset.CoreV1().Pods(m.Namespace).Delete(ctx, podName, metav1.DeleteOptions{})
-			deletedPods[podName] = struct{}{}
-		}
+		done = append(done, finished{dest: dest, podName: podName, phase: pod.Status.Phase})
 	}
 
-	m.mu.Unlock()
+	// 2. Mutate state under the lock.
+	if len(done) > 0 {
+		m.mu.Lock()
+		for _, f := range done {
+			// Only drop if the entry still maps to the same pod (avoid
+			// racing with a freshly scheduled worker that reused the dest).
+			if cur, ok := m.inProgress[f.dest]; ok && cur == f.podName {
+				delete(m.inProgress, f.dest)
+				if f.phase == corev1.PodFailed {
+					fmt.Printf("Worker pod %s for %s failed without reporting; resetting to Pending\n", f.podName, f.dest)
+					m.setImageStateLocked(f.dest, "Pending", "")
+				}
+			}
+		}
+		m.mu.Unlock()
+	}
 
-	// 2. Sweep for any orphaned finished worker pods not in m.inProgress.
+	// 3. Delete finished pods (deduplicated, no lock held).
+	for _, f := range done {
+		if f.phase == "" {
+			continue // already missing
+		}
+		if _, already := deletedPods[f.podName]; already {
+			continue
+		}
+		_ = m.Clientset.CoreV1().Pods(m.Namespace).Delete(ctx, f.podName, metav1.DeleteOptions{})
+		deletedPods[f.podName] = struct{}{}
+	}
+
+	// 4. Sweep for any orphaned finished worker pods not in m.inProgress.
 	pods, err := m.Clientset.CoreV1().Pods(m.Namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: fmt.Sprintf("app=oc-mirror-worker,mirrortarget=%s", m.TargetName),
 	})
@@ -365,7 +477,12 @@ func (m *MirrorManager) reconcile(ctx context.Context) error {
 				if checkCount%20 == 0 {
 					checkClient = mirrorclient.NewMirrorClient(nil, m.authConfigPath)
 				}
+				// Release the manager lock while making the HTTP call so
+				// status callbacks from worker pods are not blocked on
+				// remote registry latency.
+				m.mu.Unlock()
 				exists, checkErr := checkClient.CheckExist(ctx, dest)
+				m.mu.Lock()
 				if checkErr != nil {
 					fmt.Printf("CheckExist error for %s: %v – assuming present\n", dest, checkErr)
 					m.mirrored[dest] = true
@@ -521,8 +638,15 @@ func (m *MirrorManager) startWorkerBatch(ctx context.Context, mt *mirrorv1alpha1
 			Value: fmt.Sprintf("http://%s:8080", managerHost),
 		},
 		{
-			Name:  "WORKER_TOKEN",
-			Value: m.workerToken,
+			Name: "WORKER_TOKEN",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: m.workerTokenSecretName(),
+					},
+					Key: "token",
+				},
+			},
 		},
 		{
 			Name: "POD_NAME",
@@ -554,7 +678,9 @@ func (m *MirrorManager) startWorkerBatch(ctx context.Context, mt *mirrorv1alpha1
 	volumes = append(volumes, corev1.Volume{
 		Name: "blob-buffer",
 		VolumeSource: corev1.VolumeSource{
-			EmptyDir: &corev1.EmptyDirVolumeSource{},
+			EmptyDir: &corev1.EmptyDirVolumeSource{
+				SizeLimit: resourcePtr("10Gi"),
+			},
 		},
 	})
 
@@ -637,6 +763,13 @@ func (m *MirrorManager) startWorkerBatch(ctx context.Context, mt *mirrorv1alpha1
 }
 
 func pointerTo[T any](v T) *T {
+	return &v
+}
+
+// resourcePtr parses a resource quantity string and returns a pointer to it.
+// Used for EmptyDir size limits.
+func resourcePtr(q string) *resource.Quantity {
+	v := resource.MustParse(q)
 	return &v
 }
 

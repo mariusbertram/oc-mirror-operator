@@ -24,7 +24,7 @@ var _ = Describe("WorkerPool", func() {
 				Source:      "src",
 				Destination: "dest",
 			}
-			pool.Submit(task)
+			Expect(pool.Submit(context.TODO(), task)).To(Succeed())
 
 			// We expect a result (likely an error because no real registry)
 			var result TaskResult

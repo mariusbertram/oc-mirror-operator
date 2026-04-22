@@ -227,8 +227,11 @@ spec:
                   PollInterval defines how often the operator re-checks upstream sources
                   (release channels, operator catalogs) for new content.
                   New images are added as Pending; already-mirrored images are preserved.
-                  Minimum: 1h.  Default: 24h.  Set to "0" to disable periodic polling.
+                  Minimum: 1h. Default: 24h. Set to "0" to disable periodic polling.
                 type: string
+                x-kubernetes-validations:
+                - message: pollInterval must be 0s (disabled) or at least 1h
+                  rule: duration(self) == duration('0s') || duration(self) >= duration('1h')
               registry:
                 description: Registry is the URL of the target registry (e.g. registry.example.com/mirror)
                 type: string

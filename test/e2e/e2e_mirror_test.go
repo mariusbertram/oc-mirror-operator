@@ -30,10 +30,10 @@ import (
 
 var _ = Describe("ocp-mirror Operator E2E", Ordered, Label("cluster"), func() {
 	const (
-		mirrorNamespace    = "default"
-		operatorNamespace  = "ocp-mirror-system"
-		targetName         = "internal-registry"
-		imageSetName       = "test-sync-e2e"
+		mirrorNamespace   = "default"
+		operatorNamespace = "ocp-mirror-system"
+		targetName        = "internal-registry"
+		imageSetName      = "test-sync-e2e"
 	)
 
 	BeforeAll(func() {

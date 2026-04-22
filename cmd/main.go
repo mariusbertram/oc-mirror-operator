@@ -373,8 +373,12 @@ func reportStatus(dest, digest, errMsg string) {
 		Error:       errMsg,
 	}
 
-	body, _ := json.Marshal(req)
-	httpReq, err := http.NewRequest("POST", managerURL+"/status", bytes.NewBuffer(body))
+	body, err := json.Marshal(req)
+	if err != nil {
+		fmt.Printf("Failed to marshal status request: %v\n", err)
+		return
+	}
+	httpReq, err := http.NewRequestWithContext(context.Background(), "POST", managerURL+"/status", bytes.NewBuffer(body))
 	if err != nil {
 		fmt.Printf("Failed to build status request: %v\n", err)
 		return
@@ -423,6 +427,14 @@ func runController() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	// Fail fast if the OPERATOR_IMAGE env var is unset. The catalog build
+	// reconciler launches Jobs running this image, so a missing value would
+	// surface as cryptic ImagePullBackOff failures at runtime.
+	if os.Getenv("OPERATOR_IMAGE") == "" {
+		setupLog.Error(nil, "OPERATOR_IMAGE environment variable is required but not set")
+		os.Exit(1)
+	}
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will

@@ -184,7 +184,7 @@ var _ = Describe("MirrorTarget Controller", func() {
 			By("deleting the MirrorTarget (sets DeletionTimestamp)")
 			Expect(k8sClient.Delete(ctx, mt)).To(Succeed())
 
-			By("reconciling to process deletion")
+			By("first reconcile: deletes the worker pod and requeues")
 			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -194,8 +194,12 @@ var _ = Describe("MirrorTarget Controller", func() {
 				return errors.IsNotFound(k8sClient.Get(ctx, podName, p))
 			}, timeout, interval).Should(BeTrue())
 
-			By("verifying the finalizer was removed and the MirrorTarget is gone")
+			By("second reconcile (after pods are gone): removes the finalizer")
 			Eventually(func() bool {
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+				if err != nil {
+					return false
+				}
 				current := &mirrorv1alpha1.MirrorTarget{}
 				if err := k8sClient.Get(ctx, namespacedName, current); errors.IsNotFound(err) {
 					return true

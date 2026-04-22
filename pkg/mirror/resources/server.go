@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 
@@ -41,7 +42,14 @@ func (s *Server) Run(ctx context.Context) {
 	mux.HandleFunc("/resources/{imageset}/catalogs/{catalog}/clustercatalog.yaml", s.handleClusterCatalog)
 	mux.HandleFunc("/resources/{imageset}/signature-configmaps.yaml", s.handleSignatures)
 
-	server := &http.Server{Addr: ":8081", Handler: mux}
+	server := &http.Server{
+		Addr:              ":8081",
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 
 	go func() {
 		fmt.Println("Resource server listening on :8081")
@@ -51,7 +59,9 @@ func (s *Server) Run(ctx context.Context) {
 	}()
 
 	<-ctx.Done()
-	_ = server.Shutdown(context.Background())
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = server.Shutdown(shutdownCtx)
 }
 
 // --- handlers ---

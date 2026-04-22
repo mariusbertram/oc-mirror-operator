@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"sort"
 	"strings"
 	"testing/fstest"
@@ -111,16 +112,27 @@ func (r *CatalogResolver) loadFBCFromImage(ctx context.Context, catalogImage str
 	// Build an in-memory overlay FS from all layers.
 	// Later layers override earlier ones (standard OCI overlay semantics).
 	configFS := make(fstest.MapFS)
+	var blobErrs int
 	for _, layer := range layers {
 		blobRdr, blobErr := r.client.BlobGet(ctx, imgRef, layer)
 		if blobErr != nil {
-			continue // non-fatal: skip unreadable layers
+			blobErrs++
+			slog.WarnContext(ctx, "skipping unreadable catalog layer",
+				"image", catalogImage, "digest", layer.Digest.String(), "error", blobErr)
+			continue
 		}
-		_ = extractFBCLayer(blobRdr, configFS)
+		if extractedFiles := extractFBCLayer(blobRdr, configFS); extractedFiles == 0 {
+			slog.DebugContext(ctx, "no FBC files in layer",
+				"image", catalogImage, "digest", layer.Digest.String())
+		}
 		_ = blobRdr.Close()
 	}
 
 	if len(configFS) == 0 {
+		if blobErrs > 0 {
+			return nil, fmt.Errorf("no FBC config files found under %s in %s (failed to read %d/%d layers)",
+				configsPath, catalogImage, blobErrs, len(layers))
+		}
 		return nil, fmt.Errorf("no FBC config files found under %s in %s", configsPath, catalogImage)
 	}
 
@@ -165,7 +177,9 @@ func extractFBCLayer(r io.Reader, fsMap fstest.MapFS) int {
 			continue
 		}
 
-		data, readErr := io.ReadAll(tr)
+		// Cap individual file reads to 64 MiB to prevent OOM when a malicious
+		// or corrupt catalog layer claims an enormous file size.
+		data, readErr := io.ReadAll(io.LimitReader(tr, 64*1024*1024))
 		if readErr != nil {
 			continue
 		}
@@ -644,5 +658,3 @@ func buildFBCLayer(cfg *declcfg.DeclarativeConfig) ([]byte, godigest.Digest, err
 
 	return gzBuf.Bytes(), diffID, nil
 }
-
-

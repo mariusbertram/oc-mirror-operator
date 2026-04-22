@@ -45,8 +45,9 @@ func NewMirrorClient(insecureHosts []string, authConfigPath string, destHosts ..
 	hostMap := make(map[string]config.Host)
 
 	// Add destination hosts with BlobMax=-1 (monolithic PUT for all blob sizes).
-	// Large blobs are pre-buffered into memory by the ImageWithBlobReaderHook so
-	// the PUT streams fast from RAM, avoiding Quay upload-session expiry.
+	// Large blobs are pre-buffered to disk (the worker pod mounts an emptyDir at
+	// /tmp/blob-buffer) by the ImageWithBlobReaderHook so the PUT streams fast
+	// from local disk, avoiding Quay upload-session expiry.
 	for _, h := range destHosts {
 		if h == "" {
 			continue

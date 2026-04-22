@@ -27,7 +27,7 @@ import (
 // The destination image reference is the map key in ImageState.
 type ImageEntry struct {
 	Source     string `json:"source"`
-	State      string `json:"state"`              // Pending | Mirrored | Failed
+	State      string `json:"state"` // Pending | Mirrored | Failed
 	LastError  string `json:"lastError,omitempty"`
 	RetryCount int    `json:"retryCount,omitempty"`
 }
@@ -164,18 +164,18 @@ func decode(cm *corev1.ConfigMap) (ImageState, error) {
 	if gz, ok := cm.BinaryData["images.json.gz"]; ok {
 		r, err := gzip.NewReader(bytes.NewReader(gz))
 		if err != nil {
-			return state, nil
+			return nil, fmt.Errorf("decode image state: gzip reader: %w", err)
 		}
 		defer r.Close()
 		if err := json.NewDecoder(r).Decode(&state); err != nil {
-			return state, nil
+			return nil, fmt.Errorf("decode image state: json decode: %w", err)
 		}
 		return state, nil
 	}
 	// Fallback: plain JSON (written by older versions or for debugging)
 	if data, ok := cm.Data["images.json"]; ok {
 		if err := json.Unmarshal([]byte(data), &state); err != nil {
-			return state, nil
+			return nil, fmt.Errorf("decode image state: json unmarshal: %w", err)
 		}
 	}
 	return state, nil

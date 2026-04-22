@@ -15,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -57,7 +58,7 @@ func (r *ImageSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	mt, err := r.findOwningMirrorTarget(ctx, is)
 	if err != nil {
 		l.Info("No MirrorTarget references this ImageSet", "imageSet", is.Name, "reason", err.Error())
-		setCondition(&is.Status.Conditions, "Ready", metav1.ConditionFalse, "Unbound", err.Error())
+		setCondition(&is.Status.Conditions, "Ready", metav1.ConditionFalse, "Unbound", err.Error(), is.Generation)
 		_ = r.Status().Update(ctx, is)
 		return ctrl.Result{RequeueAfter: 1 * time.Minute}, nil
 	}
@@ -81,7 +82,7 @@ func (r *ImageSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// builds start immediately without waiting for release image traversal.
 	if err := r.reconcileCatalogBuildJobs(ctx, is, mt, pollExpired); err != nil {
 		l.Error(err, "Failed to reconcile catalog build jobs")
-		setCondition(&is.Status.Conditions, "CatalogReady", metav1.ConditionFalse, "CatalogBuildFailed", err.Error())
+		setCondition(&is.Status.Conditions, "CatalogReady", metav1.ConditionFalse, "CatalogBuildFailed", err.Error(), is.Generation)
 		_ = r.Status().Update(ctx, is)
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
@@ -131,7 +132,7 @@ func (r *ImageSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 		images, err := collector.CollectTargetImages(ctx, &is.Spec, mt, nil)
 		if err != nil {
-			setCondition(&is.Status.Conditions, "Ready", metav1.ConditionFalse, "CollectionFailed", err.Error())
+			setCondition(&is.Status.Conditions, "Ready", metav1.ConditionFalse, "CollectionFailed", err.Error(), is.Generation)
 			_ = r.Status().Update(ctx, is)
 			return ctrl.Result{}, err
 		}
@@ -173,6 +174,13 @@ func (r *ImageSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 		if err := imagestate.Save(ctx, r.Client, is.Namespace, is, newState); err != nil {
 			l.Error(err, "Failed to save image state ConfigMap")
+			// Surface the failure on the CR and propagate the error to retry.
+			// CRITICAL: do NOT update ObservedGeneration / LastSuccessfulPollTime
+			// when persistence failed, otherwise the next reconcile would treat
+			// this generation as fully processed and never re-collect.
+			setCondition(&is.Status.Conditions, "Ready", metav1.ConditionFalse, "PersistFailed", err.Error(), is.Generation)
+			_ = r.Status().Update(ctx, is)
+			return ctrl.Result{}, err
 		}
 		existingState = newState
 		is.Status.ObservedGeneration = is.Generation
@@ -192,7 +200,7 @@ func (r *ImageSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	is.Status.MirroredImages = mirrored
 	is.Status.PendingImages = pending
 	is.Status.FailedImages = failed
-	setCondition(&is.Status.Conditions, "Ready", metav1.ConditionTrue, "Collected", fmt.Sprintf("Collected %d images", total))
+	setCondition(&is.Status.Conditions, "Ready", metav1.ConditionTrue, "Collected", fmt.Sprintf("Collected %d images", total), is.Generation)
 	if err := r.Status().Update(ctx, is); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -361,11 +369,11 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs(
 
 	switch {
 	case anyFailed:
-		setCondition(&is.Status.Conditions, "CatalogReady", metav1.ConditionFalse, "CatalogBuildFailed", "one or more catalog build jobs failed")
+		setCondition(&is.Status.Conditions, "CatalogReady", metav1.ConditionFalse, "CatalogBuildFailed", "one or more catalog build jobs failed", is.Generation)
 	case allSucceeded:
-		setCondition(&is.Status.Conditions, "CatalogReady", metav1.ConditionTrue, "CatalogBuildSucceeded", "all catalog images built successfully")
+		setCondition(&is.Status.Conditions, "CatalogReady", metav1.ConditionTrue, "CatalogBuildSucceeded", "all catalog images built successfully", is.Generation)
 	default:
-		setCondition(&is.Status.Conditions, "CatalogReady", metav1.ConditionFalse, "CatalogBuildRunning", "catalog build jobs are still running")
+		setCondition(&is.Status.Conditions, "CatalogReady", metav1.ConditionFalse, "CatalogBuildRunning", "catalog build jobs are still running", is.Generation)
 	}
 
 	return r.Status().Update(ctx, is)
@@ -409,7 +417,11 @@ func (r *ImageSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	authDir := os.Getenv("DOCKER_CONFIG")
 	r.MirrorClient = mirrorclient.NewMirrorClient(nil, authDir)
 	r.Collector = mirror.NewCollector(r.MirrorClient)
-	r.CatalogBuildMgr = builder.New()
+	bm, err := builder.New()
+	if err != nil {
+		return fmt.Errorf("init catalog build manager: %w", err)
+	}
+	r.CatalogBuildMgr = bm
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mirrorv1alpha1.ImageSet{}).
@@ -455,6 +467,18 @@ func (r *ImageSetReconciler) createPartialCleanupJob(
 	// Save removed images to the temporary ConfigMap.
 	if err := imagestate.SaveRaw(ctx, r.Client, is.Namespace, cmName, removedImages); err != nil {
 		return fmt.Errorf("save partial cleanup state: %w", err)
+	}
+
+	// Set OwnerReference on the cleanup ConfigMap to the ImageSet so it is
+	// garbage-collected automatically when the ImageSet is deleted, even if
+	// the cleanup Job is removed earlier (e.g. by TTLSecondsAfterFinished).
+	cm := &corev1.ConfigMap{}
+	if err := r.Get(ctx, client.ObjectKey{Name: cmName, Namespace: is.Namespace}, cm); err == nil {
+		if err := controllerutil.SetControllerReference(is, cm, r.Scheme); err == nil {
+			if updErr := r.Update(ctx, cm); updErr != nil && !errors.IsConflict(updErr) {
+				l.Error(updErr, "failed to set OwnerReference on cleanup ConfigMap", "cm", cmName)
+			}
+		}
 	}
 
 	// Check if Job already exists.
@@ -517,21 +541,10 @@ func (r *ImageSetReconciler) createPartialCleanupJob(
 								Drop: []corev1.Capability{"ALL"},
 							},
 						},
-						Env: []corev1.EnvVar{
-							{Name: "DOCKER_CONFIG", Value: "/docker-config"},
-						},
-						VolumeMounts: []corev1.VolumeMount{
-							{Name: "docker-config", MountPath: "/docker-config", ReadOnly: true},
-						},
+						Env:          partialCleanupEnv(mt),
+						VolumeMounts: partialCleanupVolumeMounts(mt),
 					}},
-					Volumes: []corev1.Volume{{
-						Name: "docker-config",
-						VolumeSource: corev1.VolumeSource{
-							Secret: &corev1.SecretVolumeSource{
-								SecretName: mt.Spec.AuthSecret,
-							},
-						},
-					}},
+					Volumes: partialCleanupVolumes(mt),
 				},
 			},
 		},
@@ -539,4 +552,35 @@ func (r *ImageSetReconciler) createPartialCleanupJob(
 
 	l.Info("Creating partial cleanup job", "job", jobName, "images", len(removedImages))
 	return r.Create(ctx, job)
+}
+
+// partialCleanupEnv returns the env for the partial-cleanup container.
+// DOCKER_CONFIG is only exported when an AuthSecret is configured.
+func partialCleanupEnv(mt *mirrorv1alpha1.MirrorTarget) []corev1.EnvVar {
+if mt.Spec.AuthSecret == "" {
+return nil
+}
+return []corev1.EnvVar{{Name: "DOCKER_CONFIG", Value: "/docker-config"}}
+}
+
+func partialCleanupVolumeMounts(mt *mirrorv1alpha1.MirrorTarget) []corev1.VolumeMount {
+if mt.Spec.AuthSecret == "" {
+return nil
+}
+return []corev1.VolumeMount{{Name: "docker-config", MountPath: "/docker-config", ReadOnly: true}}
+}
+
+func partialCleanupVolumes(mt *mirrorv1alpha1.MirrorTarget) []corev1.Volume {
+if mt.Spec.AuthSecret == "" {
+return nil
+}
+return []corev1.Volume{{
+Name: "docker-config",
+VolumeSource: corev1.VolumeSource{
+Secret: &corev1.SecretVolumeSource{
+SecretName: mt.Spec.AuthSecret,
+Items:      []corev1.KeyToPath{{Key: "config.json", Path: "config.json"}},
+},
+},
+}}
 }

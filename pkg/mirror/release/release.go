@@ -79,7 +79,7 @@ func (r *ReleaseResolver) FetchGraph(ctx context.Context, channel string, arch [
 		return nil, fmt.Errorf("unexpected status code %d from %s", resp.StatusCode, u.String())
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
@@ -528,6 +528,12 @@ func (r *ReleaseResolver) shortestPath(graph *Graph, fromVersion, toVersion stri
 		if len(edge) != 2 {
 			continue
 		}
+		// Skip edges that reference nodes outside the declared node array;
+		// otherwise visited[next]/prev[next] would panic on a malformed graph.
+		if edge[0] < 0 || edge[0] >= len(graph.Nodes) ||
+			edge[1] < 0 || edge[1] >= len(graph.Nodes) {
+			continue
+		}
 		adj[edge[0]] = append(adj[edge[0]], edge[1])
 	}
 
@@ -548,6 +554,9 @@ func (r *ReleaseResolver) shortestPath(graph *Graph, fromVersion, toVersion stri
 			break
 		}
 		for _, next := range adj[curr] {
+			if next < 0 || next >= len(visited) {
+				continue
+			}
 			if !visited[next] {
 				visited[next] = true
 				prev[next] = curr

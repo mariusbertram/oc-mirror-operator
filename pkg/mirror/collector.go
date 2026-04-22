@@ -57,9 +57,12 @@ func (c *Collector) CollectTargetImages(ctx context.Context, spec *mirrorv1alpha
 			}
 		}
 
-		payloadImages, err := c.releaseResolver.ResolveRelease(ctx, rel.Name, rel.MinVersion, rel.MaxVersion, arch, rel.Full, rel.ShortestPath)
+		// Use the resolved effectiveMaxVersion (not the original spec value)
+		// so that ResolveRelease and our destination paths agree on the same
+		// upper bound when the user did not explicitly pin a version.
+		payloadImages, err := c.releaseResolver.ResolveRelease(ctx, rel.Name, rel.MinVersion, effectiveMaxVersion, arch, rel.Full, rel.ShortestPath)
 		if err != nil {
-			fmt.Printf("Warning: failed to resolve release %s/%s: %v\n", rel.Name, rel.MaxVersion, err)
+			fmt.Printf("Warning: failed to resolve release %s/%s: %v\n", rel.Name, effectiveMaxVersion, err)
 			continue
 		}
 
@@ -155,7 +158,8 @@ func imageNamePath(img string) string {
 
 // releasePayloadDestination builds the destination for a release payload image.
 // The release version is used as the tag so the image is addressable by version.
-//   e.g. quay.io/openshift-release-dev/ocp-release@sha256:abc → registry/openshift-release-dev/ocp-release:4.21.9
+//
+//	e.g. quay.io/openshift-release-dev/ocp-release@sha256:abc → registry/openshift-release-dev/ocp-release:4.21.9
 func releasePayloadDestination(registry, releaseVersion, img string) string {
 	tag := releaseVersion
 	if tag == "" {
@@ -167,8 +171,9 @@ func releasePayloadDestination(registry, releaseVersion, img string) string {
 // componentDestination builds the destination for a component image (release or
 // operator bundle). The source digest is encoded as the tag so each distinct
 // image gets a unique, deterministic destination.
-//   e.g. quay.io/openshift-release-dev/ocp-v4.0-art-dev@sha256:184844… →
-//        registry/openshift-release-dev/ocp-v4.0-art-dev:sha256-184844…
+//
+//	e.g. quay.io/openshift-release-dev/ocp-v4.0-art-dev@sha256:184844… →
+//	     registry/openshift-release-dev/ocp-v4.0-art-dev:sha256-184844…
 func componentDestination(registry, img string) string {
 	namePath := imageNamePath(img)
 	// Derive a stable tag from the digest so each component gets a unique destination.
@@ -178,4 +183,3 @@ func componentDestination(registry, img string) string {
 	}
 	return fmt.Sprintf("%s/%s", registry, namePath)
 }
-
