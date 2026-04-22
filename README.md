@@ -1,88 +1,88 @@
 # oc-mirror-operator
 
-Der `oc-mirror-operator` ist ein Kubernetes-Operator zur Automatisierung und kontinuierlichen Spiegelung von OpenShift Releases, Operator-Katalogen und zusätzlichen Container-Images in eine private Registry.
+The `oc-mirror-operator` is a Kubernetes operator for automating and continuously mirroring OpenShift Releases, operator catalogs, and additional container images into a private registry.
 
-Im Gegensatz zum statischen `oc-mirror` CLI-Tool arbeitet dieser Operator cloud-nativ und deklarativ. Er orchestriert Mirroring-Workflows direkt im Cluster — ohne persistenten Storage, ohne externe Abhängigkeiten und mit voller Kubernetes-Integration über Custom Resources.
+Unlike the static `oc-mirror` CLI tool, this operator works cloud-natively and declaratively. It orchestrates mirroring workflows directly in the cluster — without persistent storage, without external dependencies, and with full Kubernetes integration via Custom Resources.
 
 ---
 
-## Feature-Vergleich: oc-mirror-operator vs. oc-mirror CLI
+## Feature Comparison: oc-mirror-operator vs. oc-mirror CLI
 
-### ✅ Implementierte Features
+### ✅ Implemented Features
 
-| Feature | oc-mirror CLI | oc-mirror-operator | Anmerkungen |
+| Feature | oc-mirror CLI | oc-mirror-operator | Notes |
 |---------|:---:|:---:|-------------|
-| **OpenShift Release Mirroring** | ✅ | ✅ | Cincinnati-Graph-Auflösung, Versions-Ranges, BFS Shortest-Path, Full-Channel-Modus |
-| **Release Component-Images** | ✅ | ✅ | Automatische Extraktion aller ~190 Component-Images aus dem Release-Payload |
-| **Multi-Architektur Support** | ✅ | ✅ | `architectures: [amd64, arm64, ...]` — Multi-Arch-Manifest-Auflösung |
-| **OCP und OKD** | ✅ | ✅ | `type: ocp` (Default) oder `type: okd` |
-| **Operator-Katalog Mirroring** | ✅ | ✅ | FBC-Parsing, Package-Filterung, Bundle-Image-Extraktion mit automatischer Dependency-Resolution |
-| **Operator Dependency Resolution** | ✅ | ✅ | Transitive BFS-Auflösung von `olm.package.required`, `olm.gvk.required` und Companion-Packages (z.B. `odf-operator` → `odf-dependencies`) |
-| **Gefiltertes Katalog-Image (OLM v0+v1)** | ✅ | ✅ | Source-Image als Basis + FBC-Overlay-Layer mit Opaque Whiteouts — kompatibel mit CatalogSource (gRPC) und ClusterCatalog |
-| **Package/Channel-Filterung** | ✅ | ✅ | Einzelne Packages und Channels selektierbar |
-| **Version-Ranges (Operators)** | ✅ | ✅ | `minVersion` / `maxVersion` pro Package oder Channel |
-| **Additional Images** | ✅ | ✅ | Einzelne Images mit optionalem `targetRepo` / `targetTag` |
-| **Cosign-Signaturen** | ✅ | ✅ | Tag-basierte `.sig` Signaturen werden automatisch mit kopiert |
-| **OCI Referrers** | ✅ | ✅ | Attestations, SBOMs über `regclient.ImageWithReferrers()` |
-| **Release-Signaturen** | ✅ | ✅ | Download von mirror.openshift.com/pub/openshift-v4/signatures |
-| **IDMS/ITMS-Generierung** | ✅ | ✅ | ImageDigestMirrorSet und ImageTagMirrorSet — bereitgestellt via Resource Server HTTP-API |
-| **Inkrementelles Mirroring** | ✅ | ✅ | Bereits gespiegelte Images werden übersprungen (ConfigMap-State) |
-| **Registry-Drift-Detection** | ✗ | ✅ | Manager verifiziert alle 5 Min. ob gespiegelte Images noch in der Registry existieren; fehlende werden automatisch neu gespiegelt. Auth-Token-Refresh alle 20 Checks verhindert Quay-nginx-8KB-Header-Limit |
-| **Per-Image Timeout** | ✗ | ✅ | 20 Min. Timeout pro Image-Mirror verhindert, dass steckengebliebene Uploads den Worker blockieren |
-| **Automatische Retries** | ✗ | ✅ | Bis zu 10 Wiederholungen pro Image bei Fehlern |
-| **Kontinuierliches Mirroring** | ✗ | ✅ | Reconcile-Loop alle 30s — neue Images werden automatisch erkannt und gespiegelt |
-| **Periodisches Upstream-Polling** | ✗ | ✅ | Konfigurierbares `pollInterval` (Default: 24h) prüft periodisch ob neue Releases oder Operator-Versionen verfügbar sind. Fehlgeschlagene Images werden beim nächsten Poll automatisch erneut versucht |
-| **Image-Cleanup bei Entfernung** | ✗ | ✅ | Annotation-gesteuertes Löschen: beim Entfernen eines ImageSets oder bei Spec-Änderungen (Operator entfernt, Version-Range eingeschränkt) werden nicht mehr benötigte Images via Cleanup-Job aus der Registry gelöscht |
-| **Deklarativ via CRDs** | ✗ | ✅ | `MirrorTarget` (Ziel + ImageSet-Liste) + `ImageSet` (Inhalts-Definition) Custom Resources |
-| **Skalierbare Worker-Pods** | ✗ | ✅ | Konfigurierbare Concurrency (bis 100 Pods) und BatchSize (bis 100 Images/Pod) |
-| **Ephemeral-Volume Blob-Buffering** | ✗ | ✅ | Große Blobs (>100 MiB) werden auf emptyDir gepuffert — kein OOM bei Multi-GB Layern |
-| **Blob-Replikationsplanung** | ✗ | ✅ | Greedy-Set-Cover-Algorithmus optimiert die Mirror-Reihenfolge für maximale Blob-Wiederverwendung |
-| **Automatischer Catalog-Rebuild** | ✗ | ✅ | Build-Signatur erkennt Änderungen an Packages/Katalogen und triggert automatischen Rebuild |
-| **Resource Server (HTTP-API)** | ✗ | ✅ | IDMS, ITMS, CatalogSource, ClusterCatalog und Signatur-ConfigMaps per HTTP abrufbar — mit OpenShift Route, Ingress oder Service |
-| **Worker-Pod-Lifecycle** | ✗ | ✅ | Automatische Bereinigung abgeschlossener/fehlgeschlagener Worker- und Orphan-Pods |
-| **KubeVirt Container-Disk** | ✅ | ✅ | `platform.kubeVirtContainer: true` extrahiert KubeVirt-Disk-Images aus dem Release-Payload (RHCOS pro Architektur) |
+| **OpenShift Release Mirroring** | ✅ | ✅ | Cincinnati graph resolution, version ranges, BFS shortest path, full-channel mode |
+| **Release Component Images** | ✅ | ✅ | Automatic extraction of all ~190 component images from the release payload |
+| **Multi-Architecture Support** | ✅ | ✅ | `architectures: [amd64, arm64, ...]` — multi-arch manifest resolution |
+| **OCP and OKD** | ✅ | ✅ | `type: ocp` (default) or `type: okd` |
+| **Operator Catalog Mirroring** | ✅ | ✅ | FBC parsing, package filtering, bundle image extraction with automatic dependency resolution |
+| **Operator Dependency Resolution** | ✅ | ✅ | Transitive BFS resolution of `olm.package.required`, `olm.gvk.required` and companion packages (e.g. `odf-operator` → `odf-dependencies`) |
+| **Filtered Catalog Image (OLM v0+v1)** | ✅ | ✅ | Source image as base + FBC overlay layer with opaque whiteouts — compatible with CatalogSource (gRPC) and ClusterCatalog |
+| **Package/Channel Filtering** | ✅ | ✅ | Individual packages and channels selectable |
+| **Version Ranges (Operators)** | ✅ | ✅ | `minVersion` / `maxVersion` per package or channel |
+| **Additional Images** | ✅ | ✅ | Individual images with optional `targetRepo` / `targetTag` |
+| **Cosign Signatures** | ✅ | ✅ | Tag-based `.sig` signatures are automatically copied along |
+| **OCI Referrers** | ✅ | ✅ | Attestations, SBOMs via `regclient.ImageWithReferrers()` |
+| **Release Signatures** | ✅ | ✅ | Download from mirror.openshift.com/pub/openshift-v4/signatures |
+| **IDMS/ITMS Generation** | ✅ | ✅ | ImageDigestMirrorSet and ImageTagMirrorSet — provided via Resource Server HTTP API |
+| **Incremental Mirroring** | ✅ | ✅ | Already mirrored images are skipped (ConfigMap state) |
+| **Registry Drift Detection** | ✗ | ✅ | Manager verifies every 5 min whether mirrored images still exist in the registry; missing ones are automatically re-mirrored. Auth token refresh every 20 checks prevents Quay nginx 8KB header limit |
+| **Per-Image Timeout** | ✗ | ✅ | 20 min timeout per image mirror prevents stalled uploads from blocking the worker |
+| **Automatic Retries** | ✗ | ✅ | Up to 10 retries per image on failure |
+| **Continuous Mirroring** | ✗ | ✅ | Reconcile loop every 30s — new images are automatically detected and mirrored |
+| **Periodic Upstream Polling** | ✗ | ✅ | Configurable `pollInterval` (default: 24h) periodically checks whether new releases or operator versions are available. Failed images are automatically retried on the next poll |
+| **Image Cleanup on Removal** | ✗ | ✅ | Annotation-controlled deletion: when removing an ImageSet or on spec changes (operator removed, version range restricted), images no longer needed are deleted from the registry via a cleanup job |
+| **Declarative via CRDs** | ✗ | ✅ | `MirrorTarget` (target + ImageSet list) + `ImageSet` (content definition) custom resources |
+| **Scalable Worker Pods** | ✗ | ✅ | Configurable concurrency (up to 100 pods) and batch size (up to 100 images/pod) |
+| **Ephemeral Volume Blob Buffering** | ✗ | ✅ | Large blobs (>100 MiB) are buffered on emptyDir — no OOM with multi-GB layers |
+| **Blob Replication Planning** | ✗ | ✅ | Greedy set cover algorithm optimizes mirror order for maximum blob reuse |
+| **Automatic Catalog Rebuild** | ✗ | ✅ | Build signature detects changes to packages/catalogs and triggers automatic rebuild |
+| **Resource Server (HTTP API)** | ✗ | ✅ | IDMS, ITMS, CatalogSource, ClusterCatalog and signature ConfigMaps retrievable via HTTP — with OpenShift Route, Ingress or Service |
+| **Worker Pod Lifecycle** | ✗ | ✅ | Automatic cleanup of completed/failed worker and orphan pods |
+| **KubeVirt Container Disk** | ✅ | ✅ | `platform.kubeVirtContainer: true` extracts KubeVirt disk images from the release payload (RHCOS per architecture) |
 
-### ⚠️ Teilweise implementiert
+### ⚠️ Partially Implemented
 
 | Feature | oc-mirror CLI | oc-mirror-operator | Status |
 |---------|:---:|:---:|--------|
-| **GatewayAPI-Exposure** | ✗ | ⚠️ | API-Feld definiert (`spec.expose.type: GatewayAPI`), HTTPRoute-Erstellung noch nicht implementiert |
+| **GatewayAPI Exposure** | ✗ | ⚠️ | API field defined (`spec.expose.type: GatewayAPI`), HTTPRoute creation not yet implemented |
 
-### ❌ Nicht implementierte Features
+### ❌ Not Implemented Features
 
-| Feature | oc-mirror CLI | oc-mirror-operator | Bemerkung |
+| Feature | oc-mirror CLI | oc-mirror-operator | Note |
 |---------|:---:|:---:|-----------|
-| **Blocked Images** | ✅ | ❌ | API-Feld `blockedImages` existiert, wird aber nirgends ausgewertet |
-| **Helm Chart Mirroring** | ✅ | ❌ | Vollständige API-Typen definiert (`Helm`, `Repository`, `Chart`), aber Collector ignoriert `spec.mirror.helm` |
-| **Mirror-to-Disk** | ✅ | ❌ | `oc-mirror` kann in ein lokales Archiv spiegeln — kein Äquivalent im Operator (nicht sinnvoll im Cluster-Kontext) |
-| **Disk-to-Mirror** | ✅ | ❌ | `oc-mirror` kann von einem lokalen Archiv in eine Registry spiegeln — `platform.release` Feld existiert, wird aber nicht verwendet |
-| **Enclave Support** | ✅ | ❌ | Kein Konzept für Air-Gap-Transfer über Datenträger — der Operator benötigt Netzwerkzugang zu Quell- und Ziel-Registry |
-| **UpdateService CR** | ✅ | ❌ | `oc-mirror` generiert ein UpdateService CR für OSUS — nicht implementiert |
-| **Cincinnati Graph Data** | ✅ | ❌ | `platform.graph: true` Feld existiert, Graph-Daten werden aber nicht in die Ziel-Registry gepusht |
-| **Samples** | ✅ | ❌ | API-Feld existiert, explizit als "not implemented" markiert |
+| **Blocked Images** | ✅ | ❌ | API field `blockedImages` exists but is not evaluated anywhere |
+| **Helm Chart Mirroring** | ✅ | ❌ | Complete API types defined (`Helm`, `Repository`, `Chart`), but collector ignores `spec.mirror.helm` |
+| **Mirror-to-Disk** | ✅ | ❌ | `oc-mirror` can mirror to a local archive — no equivalent in the operator (not meaningful in cluster context) |
+| **Disk-to-Mirror** | ✅ | ❌ | `oc-mirror` can mirror from a local archive to a registry — `platform.release` field exists but is not used |
+| **Enclave Support** | ✅ | ❌ | No concept for air-gap transfer via media — the operator requires network access to both source and target registry |
+| **UpdateService CR** | ✅ | ❌ | `oc-mirror` generates an UpdateService CR for OSUS — not implemented |
+| **Cincinnati Graph Data** | ✅ | ❌ | `platform.graph: true` field exists, but graph data is not pushed to the target registry |
+| **Samples** | ✅ | ❌ | API field exists, explicitly marked as "not implemented" |
 
-### Operator-spezifische Features (kein Äquivalent in oc-mirror CLI)
+### Operator-Specific Features (no equivalent in oc-mirror CLI)
 
-| Feature | Beschreibung |
+| Feature | Description |
 |---------|-------------|
-| **Cloud-native Orchestrierung** | Läuft als Kubernetes-Operator im Cluster — kein manuelles CLI-Aufrufen nötig |
-| **Worker-Pod-Architektur** | Parallele Worker-Pods mit konfigurierbarer Concurrency und Batch-Größe |
-| **Authentifizierte Status-API** | Worker melden Ergebnisse via Bearer-Token-geschütztem HTTP-Endpoint |
-| **ConfigMap-basierter State** | Gzip-komprimierter Image-State in ConfigMaps (~30 Bytes/Image) — kein PV nötig |
-| **Restricted Pod Security** | Alle Pods laufen mit `runAsNonRoot`, Drop-All-Capabilities, Seccomp |
-| **Namespace-scoped RBAC** | Keine ClusterRole — alle Rechte auf den Operator-Namespace begrenzt |
-| **Registry-Existenz-Check** | Periodische Prüfung ob Images in der Ziel-Registry noch vorhanden sind |
-| **Quay-Kompatibilität** | Spezielles Blob-Buffering für Quay-Registries (Upload-Session-Timeout-Workaround) |
-| **Auth-Token-Refresh** | Automatischer Registry-Client-Reset alle 20 Operationen in Drift-Detection, Worker-Batches und Cleanup-Jobs — verhindert Quay-nginx 8KB-Header-Overflow |
-| **Blob-Replikationsplanung** | Greedy-Set-Cover optimiert Mirror-Reihenfolge: Shared-Layer werden zuerst gepusht → Folge-Images nutzen Blob-Mount (Zero-Copy) |
-| **Catalog-Build-Signatur** | SHA256-Hash über Operator-Image + Katalog + Package-Liste erkennt automatisch wann ein Rebuild nötig ist |
-| **Resource Server (HTTP-API)** | Stellt IDMS/ITMS, CatalogSource, ClusterCatalog und Signatur-ConfigMaps per REST bereit — Route (OpenShift), Ingress oder Service |
+| **Cloud-Native Orchestration** | Runs as a Kubernetes operator in the cluster — no manual CLI invocation needed |
+| **Worker Pod Architecture** | Parallel worker pods with configurable concurrency and batch size |
+| **Authenticated Status API** | Workers report results via a Bearer-token-protected HTTP endpoint |
+| **ConfigMap-Based State** | Gzip-compressed image state in ConfigMaps (~30 bytes/image) — no PV needed |
+| **Restricted Pod Security** | All pods run with `runAsNonRoot`, drop-all-capabilities, Seccomp |
+| **Namespace-Scoped RBAC** | No ClusterRole — all permissions scoped to the operator namespace |
+| **Registry Existence Check** | Periodic check whether images still exist in the target registry |
+| **Quay Compatibility** | Special blob buffering for Quay registries (upload session timeout workaround) |
+| **Auth Token Refresh** | Automatic registry client reset every 20 operations in drift detection, worker batches and cleanup jobs — prevents Quay nginx 8KB header overflow |
+| **Blob Replication Planning** | Greedy set cover optimizes mirror order: shared layers are pushed first → subsequent images use blob mount (zero-copy) |
+| **Catalog Build Signature** | SHA256 hash over operator image + catalog + package list automatically detects when a rebuild is needed |
+| **Resource Server (HTTP API)** | Provides IDMS/ITMS, CatalogSource, ClusterCatalog and signature ConfigMaps via REST — Route (OpenShift), Ingress or Service |
 
 ---
 
-## Architektur
+## Architecture
 
-Die Architektur folgt einem skalierbaren **Drei-Schichten-Modell** mit **Catalog-Build-System** und **Resource Server**:
+The architecture follows a scalable **three-layer model** with a **Catalog Build System** and **Resource Server**:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -103,12 +103,12 @@ Die Architektur folgt einem skalierbaren **Drei-Schichten-Modell** mit **Catalog
 │                  │ Manager Pod            │  │ Catalog-Builder /  │ │
 │                  │ pkg/mirror/manager/    │  │ Cleanup Job        │ │
 │                  │                        │  │ cmd/catalog-builder│ │
-│                  │ • Lädt Image-State     │  │ cmd/main.go        │ │
-│                  │ • Verwaltet Worker-Q   │  │ • Filtert FBC      │ │
-│                  │ • HTTP Status-API :8080│  │ • Löst Deps auf    │ │
-│                  │ • Resource Server :8081│  │ • Baut OCI-Image   │ │
-│                  │ • Registry-Verifikation│  │ • Pusht Catalog    │ │
-│                  │ • Worker-Pod-Cleanup   │  │ • Löscht Images    │ │
+│                  │ • Loads image state    │  │ cmd/main.go        │ │
+│                  │ • Manages worker queue │  │ • Filters FBC      │ │
+│                  │ • HTTP Status-API :8080│  │ • Resolves deps    │ │
+│                  │ • Resource Server :8081│  │ • Builds OCI image │ │
+│                  │ • Registry verification│  │ • Pushes catalog   │ │
+│                  │ • Worker pod cleanup   │  │ • Deletes images   │ │
 │                  └──────┬────────┬───┬────┘  └────────────────────┘ │
 │                         │creates │   │ :8081                        │
 │                         │Pods    │   ▼                              │
@@ -127,61 +127,61 @@ Die Architektur folgt einem skalierbaren **Drei-Schichten-Modell** mit **Catalog
 │                         │ regclient + emptyDir                      │
 │                         ▼                                           │
 │                  ┌──────────────────────────────┐                   │
-│                  │   Ziel-Registry              │                   │
+│                  │   Target Registry              │                   │
 │                  └──────────────────────────────┘                   │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-### Komponenten
+### Components
 
-| Schicht | Komponente | Beschreibung |
+| Layer | Component | Description |
 |---------|------------|-------------|
-| **Control Plane** | `Operator` (`internal/controller/`) | Überwacht CRs, berechnet Image-Soll-Listen via Cincinnati-API und FBC-Parsing, erstellt Catalog-Build-Jobs und Cleanup-Jobs, periodisches Upstream-Polling, setzt Status-Conditions |
-| **Orchestration** | `Manager` (`pkg/mirror/manager/`) | Ein Deployment pro `MirrorTarget`. Lädt Image-State, plant Mirror-Reihenfolge (Blob-Planner), startet Worker-Pods, empfängt Ergebnisse via authentifizierter HTTP-API (:8080), verifiziert Registry-Zustand, bereinigt abgeschlossene Pods |
-| **Resource Server** | `Resource Server` (`pkg/mirror/resources/`) | Integriert im Manager-Pod auf Port :8081. Stellt IDMS, ITMS, CatalogSource, ClusterCatalog und Signatur-ConfigMaps per HTTP-REST bereit. Exponiert via Route (OpenShift), Ingress oder Service |
-| **Execution** | `Worker` (kurzlebige Pods) | Kopiert Image-Batches mit `regclient`, puffert große Blobs auf emptyDir, kopiert Signaturen, fragt vor jedem Image den Manager via `GET /should-mirror` ob das Ziel noch benötigt wird, meldet Status via `POST /status` |
-| **Catalog Build** | `Catalog-Builder` (K8s Job) | Pro Quell-Katalog ein Job: filtert FBC, löst Dependencies auf, baut OCI-Image mit Source-Layers + FBC-Overlay, pusht in Ziel-Registry |
-| **State** | ConfigMap (gzip-JSON) | Per-Image Mirroring-Status in Kubernetes ConfigMaps — kein PV/PVC nötig, ~30 Bytes pro Image |
+| **Control Plane** | `Operator` (`internal/controller/`) | Monitors CRs, computes target image lists via Cincinnati API and FBC parsing, creates catalog build jobs and cleanup jobs, periodic upstream polling, sets status conditions |
+| **Orchestration** | `Manager` (`pkg/mirror/manager/`) | One Deployment per `MirrorTarget`. Loads image state, plans mirror order (blob planner), starts worker pods, receives results via authenticated HTTP API (:8080), verifies registry state, cleans up completed pods |
+| **Resource Server** | `Resource Server` (`pkg/mirror/resources/`) | Integrated in the manager pod on port :8081. Provides IDMS, ITMS, CatalogSource, ClusterCatalog and signature ConfigMaps via HTTP REST. Exposed via Route (OpenShift), Ingress or Service |
+| **Execution** | `Worker` (short-lived pods) | Copies image batches with `regclient`, buffers large blobs on emptyDir, copies signatures, asks the manager via `GET /should-mirror` before each image whether the target is still needed, reports status via `POST /status` |
+| **Catalog Build** | `Catalog-Builder` (K8s Job) | One job per source catalog: filters FBC, resolves dependencies, builds OCI image with source layers + FBC overlay, pushes to target registry |
+| **State** | ConfigMap (gzip-JSON) | Per-image mirroring status in Kubernetes ConfigMaps — no PV/PVC needed, ~30 bytes per image |
 
-### Datenfluss
+### Data Flow
 
-1. Nutzer erstellt `MirrorTarget` (Ziel-Registry + ImageSet-Liste) und `ImageSet` (Inhalts-Definition) CRs
-2. **Operator** löst via Cincinnati-API (Releases) und Catalog-Image (Operators) die vollständige Image-Liste auf und speichert sie als gzip-komprimierte ConfigMap
-3. **Operator** erstellt Catalog-Builder-Jobs für jeden konfigurierten Operator-Katalog (mit Build-Signatur zur Änderungserkennung)
-4. **Catalog-Builder** filtert FBC, löst Dependencies auf, baut OCI-Image und pusht es in die Ziel-Registry
-5. **Manager** lädt den Image-State, plant die Mirror-Reihenfolge via Blob-Planner, prüft ob gespiegelte Images noch in der Ziel-Registry vorhanden sind und startet Worker-Pods
-6. **Worker** kopiert Images (inkl. Signaturen und Referrers), puffert große Blobs auf Ephemeral Volume und meldet Ergebnisse via `POST /status` an den Manager
-7. Manager bereinigt abgeschlossene/fehlgeschlagene Worker-Pods und aktualisiert Image-State und `ImageSet.Status`
-8. **Resource Server** (Port 8081 im Manager-Pod) stellt Cluster-Ressourcen per HTTP bereit — IDMS, ITMS, CatalogSource, ClusterCatalog und Signatur-ConfigMaps werden erst ausgeliefert wenn das jeweilige ImageSet den Status `Ready` hat
-9. **Periodisches Polling**: Operator prüft in konfigurierbarem Intervall (`pollInterval`, Default: 24h) ob Upstream-Quellen (Cincinnati, Kataloge) neue Images enthalten und triggert bei Bedarf erneute Collection + Catalog-Rebuild
-10. **Image-Cleanup**: Beim Entfernen eines ImageSets aus dem MirrorTarget oder bei Spec-Änderungen (z.B. Operator entfernt) erstellt der Operator Cleanup-Jobs, die nicht mehr benötigte Images aus der Ziel-Registry löschen (Annotation-gesteuert)
-11. **Live-Skip obsoleter Images**: Reduziert der Nutzer ein ImageSet (Operator entfernt, Versions-Range eingeschränkt) während Worker bereits laufen, fragt jeder Worker vor dem Kopieren via `GET /should-mirror?dest=...` beim Manager nach. Antwortet der Manager mit `410 Gone` (Image nicht mehr im aktuellen State oder bereits Mirrored), überspringt der Worker das Image. Damit werden Bandbreite und Registry-Storage nicht für inzwischen obsolete Images verbraucht. Worst-case Latenz bis zum Skip: ein Manager-Reconcile-Zyklus (~30 s).
+1. User creates `MirrorTarget` (target registry + ImageSet list) and `ImageSet` (content definition) CRs
+2. **Operator** resolves the full image list via Cincinnati API (Releases) and catalog image (Operators) and stores it as a gzip-compressed ConfigMap
+3. **Operator** creates catalog builder jobs for each configured operator catalog (with build signature for change detection)
+4. **Catalog-Builder** filters FBC, resolves dependencies, builds OCI image and pushes it to the target registry
+5. **Manager** loads the image state, plans the mirror order via blob planner, checks whether mirrored images still exist in the target registry and starts worker pods
+6. **Worker** copies images (incl. signatures and referrers), buffers large blobs on ephemeral volume and reports results to the manager via `POST /status`
+7. Manager cleans up completed/failed worker pods and updates image state and `ImageSet.Status`
+8. **Resource Server** (port 8081 in the manager pod) provides cluster resources via HTTP — IDMS, ITMS, CatalogSource, ClusterCatalog and signature ConfigMaps are only served once the respective ImageSet has reached `Ready` status
+9. **Periodic Polling**: Operator checks at a configurable interval (`pollInterval`, default: 24h) whether upstream sources (Cincinnati, catalogs) contain new images and triggers re-collection + catalog rebuild as needed
+10. **Image Cleanup**: When removing an ImageSet from the MirrorTarget or on spec changes (e.g. operator removed), the operator creates cleanup jobs that delete images no longer needed from the target registry (annotation-controlled)
+11. **Live-Skip of Obsolete Images**: If the user reduces an ImageSet (operator removed, version range restricted) while workers are already running, each worker queries the manager via `GET /should-mirror?dest=...` before copying. If the manager responds with `410 Gone` (image no longer in current state or already mirrored), the worker skips the image. This avoids consuming bandwidth and registry storage for now-obsolete images. Worst-case latency until skip: one manager reconcile cycle (~30 s).
 
 ---
 
-## Operator-Katalog-System
+## Operator Catalog System
 
-Der Operator baut gefilterte OCI-Katalog-Images, die mit **OLM v0** (CatalogSource/gRPC) und **OLM v1** (ClusterCatalog) kompatibel sind.
+The operator builds filtered OCI catalog images compatible with **OLM v0** (CatalogSource/gRPC) and **OLM v1** (ClusterCatalog).
 
 ### Dependency Resolution
 
-Beim Filtern eines Operator-Katalogs werden automatisch alle transitiven Dependencies via **BFS-Traversierung** aufgelöst:
+When filtering an operator catalog, all transitive dependencies are automatically resolved via **BFS traversal**:
 
-| Dependency-Typ | Beschreibung | Beispiel |
+| Dependency Type | Description | Example |
 |----------------|-------------|---------|
-| `olm.package.required` | Direkte Package-Dependencies aus Bundle-Properties | `odf-dependencies` requires `cephcsi-operator` |
-| `olm.gvk.required` | GVK-Dependencies (Group/Version/Kind), aufgelöst zum Provider-Package | Bundle benötigt `StorageCluster` API → `ocs-operator` |
-| Companion-Packages | Red-Hat-Namenskonvention: `<name>-dependencies`, `<name>-deps` | `odf-operator` → `odf-dependencies` |
+| `olm.package.required` | Direct package dependencies from bundle properties | `odf-dependencies` requires `cephcsi-operator` |
+| `olm.gvk.required` | GVK dependencies (Group/Version/Kind), resolved to the provider package | Bundle requires `StorageCluster` API → `ocs-operator` |
+| Companion packages | Red Hat naming convention: `<name>-dependencies`, `<name>-deps` | `odf-operator` → `odf-dependencies` |
 
-### Gefiltertes Katalog-Image (OCI Layer-Architektur)
+### Filtered Catalog Image (OCI Layer Architecture)
 
 ```
 ┌──────────────────────────────────────────┐
-│  Layer 6: Filtered FBC Overlay (neu)     │  ← configs/<pkg>/catalog.yaml
+│  Layer 6: Filtered FBC Overlay (new)     │  ← configs/<pkg>/catalog.yaml
 │           + Opaque Whiteouts             │  ← configs/.wh..wh..opq
-│           + Cache-Invalidierung          │  ← tmp/cache/.wh..wh..opq
+│           + Cache Invalidation           │  ← tmp/cache/.wh..wh..opq
 ├──────────────────────────────────────────┤
-│  Layer 5: Original FBC (full catalog)    │  ← durch Whiteout überdeckt
+│  Layer 5: Original FBC (full catalog)    │  ← covered by whiteout
 │  Layer 4: opm Binary + Tools             │
 │  Layer 3: OS Dependencies                │
 │  Layer 2: Base OS (RHEL UBI)             │
@@ -189,107 +189,107 @@ Beim Filtern eines Operator-Katalogs werden automatisch alle transitiven Depende
 └──────────────────────────────────────────┘
 ```
 
-- **Source-Image als Basis**: Alle Original-Layers werden per Blob-Copy übernommen (behält `opm` Binary, Entrypoint, OS)
-- **FBC-Overlay**: Neuer Layer mit gefiltertem FBC + OCI Opaque Whiteout (`configs/.wh..wh..opq`) überdeckt den vollen Katalog
-- **Cache-Invalidierung**: Opaque Whiteout für `/tmp/cache/` entfernt den vorgebauten `opm`-Cache; `--cache-enforce-integrity=false` im Image-Cmd erlaubt Neuaufbau
-- **OLM-Label**: `operators.operatorframework.io.index.configs.v1=/configs` für Kompatibilität mit beiden OLM-Versionen
+- **Source image as base**: All original layers are taken over via blob copy (retains `opm` binary, entrypoint, OS)
+- **FBC overlay**: New layer with filtered FBC + OCI Opaque Whiteout (`configs/.wh..wh..opq`) covers the full catalog
+- **Cache invalidation**: Opaque whiteout for `/tmp/cache/` removes the pre-built `opm` cache; `--cache-enforce-integrity=false` in the image command allows rebuilding
+- **OLM label**: `operators.operatorframework.io.index.configs.v1=/configs` for compatibility with both OLM versions
 
-### Build-Signatur und Automatischer Rebuild
+### Build Signature and Automatic Rebuild
 
-Katalog-Builds werden über eine **Build-Signatur** (SHA256-Hash) verwaltet:
-- Eingabe: Operator-Image + Katalog-URLs + Full-Flag + sortierte Package-Namen
-- Gespeichert als Annotation: `mirror.openshift.io/catalog-build-sig`
-- Bei Signatur-Änderung (neues Package, geänderter Katalog): alter Job wird gelöscht, neuer Build gestartet
+Catalog builds are managed via a **build signature** (SHA256 hash):
+- Input: Operator image + catalog URLs + full flag + sorted package names
+- Stored as annotation: `mirror.openshift.io/catalog-build-sig`
+- On signature change (new package, changed catalog): old job is deleted, new build started
 
 ### Catalog-Builder Job
 
-Pro Quell-Katalog wird ein Kubernetes Job erstellt:
-- Container: Gleich Operator-Image, Entrypoint `/catalog-builder`
-- Konfiguration über Umgebungsvariablen: `SOURCE_CATALOG`, `TARGET_REF`, `CATALOG_PACKAGES`
-- emptyDir-Volume `/tmp/blob-buffer` für große Layer-Blobs
-- Max 3 Retries, 10 Minuten TTL nach Abschluss
+One Kubernetes Job is created per source catalog:
+- Container: Same operator image, entrypoint `/catalog-builder`
+- Configuration via environment variables: `SOURCE_CATALOG`, `TARGET_REF`, `CATALOG_PACKAGES`
+- emptyDir volume `/tmp/blob-buffer` for large layer blobs
+- Max 3 retries, 10 minute TTL after completion
 
 ---
 
-## Blob-Replikationsplanung
+## Blob Replication Planning
 
-Der Manager optimiert die Mirror-Reihenfolge mittels eines **Greedy-Set-Cover-Algorithmus** (`PlanMirrorOrder`):
+The manager optimizes the mirror order using a **Greedy Set Cover algorithm** (`PlanMirrorOrder`):
 
-1. **Phase 1**: Manifeste aller Images abrufen, Blob-Digests pro Image sammeln
-2. **Phase 2**: Blob-Häufigkeit zählen (wie viele Images referenzieren jeden Blob)
-3. **Phase 3**: Greedy-Sortierung:
-   - **Erstes Image**: Dasjenige dessen Blobs in den meisten anderen Images vorkommen (Shared-Layer werden zuerst gepusht)
-   - **Folge-Images**: Bevorzugt Images mit den meisten bereits hochgeladenen Blobs (maximiert Blob-Mount-Treffer)
+1. **Phase 1**: Fetch manifests of all images, collect blob digests per image
+2. **Phase 2**: Count blob frequency (how many images reference each blob)
+3. **Phase 3**: Greedy sorting:
+   - **First image**: The one whose blobs appear in the most other images (shared layers are pushed first)
+   - **Subsequent images**: Prefer images with the most already-uploaded blobs (maximizes blob mount hits)
 
-**Effekt**: Blobs die von einem früheren Image gepusht wurden, werden von `regclient` via Anonymous-Blob-Mount (Zero-Copy) verlinkt — kein erneuter Daten-Transfer nötig.
+**Effect**: Blobs pushed by an earlier image are linked by `regclient` via anonymous blob mount (zero-copy) — no additional data transfer needed.
 
 ---
 
 ## KubeVirt Container-Disk-Images
 
-Wenn `platform.kubeVirtContainer: true` gesetzt ist, extrahiert der Operator die **KubeVirt Container-Disk-Images** (RHCOS-basiert) aus dem Release-Payload und spiegelt sie automatisch mit.
+When `platform.kubeVirtContainer: true` is set, the operator extracts the **KubeVirt Container-Disk-Images** (RHCOS-based) from the release payload and mirrors them automatically.
 
-### Funktionsweise
+### How It Works
 
-1. Der Collector liest den `0000_50_installer_coreos-bootimages` ConfigMap aus dem Release-Payload
-2. Aus dem eingebetteten CoreOS-Stream-JSON werden die `kubevirt.digest-ref` Einträge pro Architektur extrahiert
-3. Die Images werden wie reguläre Component-Images in die Ziel-Registry gespiegelt
+1. The collector reads the `0000_50_installer_coreos-bootimages` ConfigMap from the release payload
+2. The `kubevirt.digest-ref` entries per architecture are extracted from the embedded CoreOS stream JSON
+3. The images are mirrored into the target registry like regular component images
 
-### Architektur-Mapping
+### Architecture Mapping
 
-| ImageSet `architectures` | CoreOS Stream Architektur | KubeVirt verfügbar |
+| ImageSet `architectures` | CoreOS Stream Architecture | KubeVirt available |
 |--------------------------|--------------------------|-------------------|
 | `amd64` | `x86_64` | ✅ |
 | `s390x` | `s390x` | ✅ |
-| `arm64` | `aarch64` | ❌ (nicht in allen Releases) |
-| `ppc64le` | `ppc64le` | ❌ (nicht in allen Releases) |
+| `arm64` | `aarch64` | ❌ (not in all releases) |
+| `ppc64le` | `ppc64le` | ❌ (not in all releases) |
 
-> **Hinweis**: Nicht alle Architekturen haben KubeVirt-Images. Fehlende Architekturen werden übersprungen, nicht als Fehler gemeldet.
+> **Note**: Not all architectures have KubeVirt images. Missing architectures are skipped, not reported as errors.
 
 ---
 
 ## Resource Server (HTTP-API)
 
-Der Manager-Pod hostet auf Port **8081** einen HTTP-Server, der Cluster-Ressourcen im YAML-Format bereitstellt. Diese Ressourcen können direkt mit `kubectl apply` oder via GitOps auf den Cluster angewendet werden.
+The manager pod hosts an HTTP server on port **8081** that provides cluster resources in YAML format. These resources can be applied directly to the cluster with `kubectl apply` or via GitOps.
 
 ### Endpoints
 
-| Endpoint | Ressource | Beschreibung |
+| Endpoint | Resource | Description |
 |----------|-----------|-------------|
-| `GET /resources/` | JSON-Index | Übersicht aller ImageSets mit ihren verfügbaren Ressourcen und Katalogen |
-| `GET /resources/{imageset}/idms.yaml` | `ImageDigestMirrorSet` | Digest-basierte Mirror-Regeln für alle gespiegelten Images |
-| `GET /resources/{imageset}/itms.yaml` | `ImageTagMirrorSet` | Tag-basierte Mirror-Regeln (falls tag-basierte Images vorhanden) |
-| `GET /resources/{imageset}/catalogs/{name}/catalogsource.yaml` | `CatalogSource` | OLM v0-kompatible CatalogSource (gRPC) für den gefilterten Katalog |
-| `GET /resources/{imageset}/catalogs/{name}/clustercatalog.yaml` | `ClusterCatalog` | OLM v1-kompatible ClusterCatalog-Ressource |
-| `GET /resources/{imageset}/signature-configmaps.yaml` | ConfigMaps | Release-Signatur-ConfigMaps im OpenShift-Verifikationsformat |
+| `GET /resources/` | JSON index | Overview of all ImageSets with their available resources and catalogs |
+| `GET /resources/{imageset}/idms.yaml` | `ImageDigestMirrorSet` | Digest-based mirror rules for all mirrored images |
+| `GET /resources/{imageset}/itms.yaml` | `ImageTagMirrorSet` | Tag-based mirror rules (if tag-based images are present) |
+| `GET /resources/{imageset}/catalogs/{name}/catalogsource.yaml` | `CatalogSource` | OLM v0-compatible CatalogSource (gRPC) for the filtered catalog |
+| `GET /resources/{imageset}/catalogs/{name}/clustercatalog.yaml` | `ClusterCatalog` | OLM v1-compatible ClusterCatalog resource |
+| `GET /resources/{imageset}/signature-configmaps.yaml` | ConfigMaps | Release signature ConfigMaps in OpenShift verification format |
 
 ### Ready-Gating
 
-Ressourcen werden erst ausgeliefert, wenn das zugehörige ImageSet den Status `Ready` hat. Anfragen vor Abschluss des Mirrorings erhalten HTTP `409 Conflict`. Der JSON-Index (`/resources/`) zeigt für jedes ImageSet den `ready`-Status an.
+Resources are only served once the associated ImageSet has reached `Ready` status. Requests before mirroring completes receive HTTP `409 Conflict`. The JSON index (`/resources/`) shows the `ready` status for each ImageSet.
 
-### Exposure-Optionen
+### Exposure Options
 
-Die externe Erreichbarkeit wird über `MirrorTarget.spec.expose` konfiguriert:
+External accessibility is configured via `MirrorTarget.spec.expose`:
 
-| Typ | Beschreibung | Automatik |
+| Type | Description | Automation |
 |-----|-------------|-----------|
-| **Route** (default auf OpenShift) | OpenShift Route mit Edge-TLS-Terminierung | Auto-Erkennung via Route-API-Discovery |
-| **Ingress** | `networking.k8s.io/v1` Ingress | Erfordert `host` und optional `ingressClassName` |
-| **GatewayAPI** | Gateway-API HTTPRoute | API-Feld definiert, Implementation ausstehend |
-| **Service** (default auf K8s) | Nur ClusterIP-Service, keine externe Exposition | Fallback wenn keine Route-API verfügbar |
+| **Route** (default on OpenShift) | OpenShift Route with edge TLS termination | Auto-detection via Route API discovery |
+| **Ingress** | `networking.k8s.io/v1` Ingress | Requires `host` and optionally `ingressClassName` |
+| **GatewayAPI** | Gateway API HTTPRoute | API field defined, implementation pending |
+| **Service** (default on K8s) | ClusterIP service only, no external exposure | Fallback when no Route API is available |
 
-Beim Wechsel des Exposure-Typs (z.B. Route → Ingress) werden veraltete Objekte automatisch bereinigt.
+When switching the exposure type (e.g. Route → Ingress), stale objects are automatically cleaned up.
 
-### Beispiel-Nutzung
+### Example Usage
 
 ```bash
-# Index abrufen
+# Fetch index
 curl -sk https://<route-host>/resources/ | jq .
 
-# IDMS direkt anwenden
+# Apply IDMS directly
 curl -sk https://<route-host>/resources/ocp-release-4-21/idms.yaml | kubectl apply -f -
 
-# CatalogSource für gefilterten Operator-Katalog
+# CatalogSource for filtered operator catalog
 curl -sk https://<route-host>/resources/ocp-release-4-21/catalogs/redhat-operator-index/catalogsource.yaml | kubectl apply -f -
 ```
 
@@ -299,7 +299,7 @@ curl -sk https://<route-host>/resources/ocp-release-4-21/catalogs/redhat-operato
 
 ### MirrorTarget
 
-Definiert das Spiegelungsziel und die Pod-Konfiguration.
+Defines the mirror target and pod configuration.
 
 ```yaml
 apiVersion: mirror.openshift.io/v1alpha1
@@ -308,45 +308,45 @@ metadata:
   name: internal-registry
   namespace: oc-mirror-system
   annotations:
-    # Opt-in: Images automatisch löschen bei Entfernung (Default: kein Cleanup)
+    # Opt-in: automatically delete images on removal (default: no cleanup)
     mirror.openshift.io/cleanup-policy: Delete
 spec:
-  # Ziel-Registry inkl. Basis-Pfad (Pflicht)
+  # Target registry incl. base path (required)
   registry: "registry.example.com/mirror"
 
-  # Liste der ImageSets, die in dieses Target gespiegelt werden (Pflicht)
-  # Jedes ImageSet darf nur in einem MirrorTarget referenziert werden.
+  # List of ImageSets to mirror into this target (required)
+  # Each ImageSet may only be referenced in one MirrorTarget.
   imageSets:
     - ocp-4-21-sync
     - additional-tools
 
-  # Referenz auf ein Secret mit Registry-Credentials (empfohlen)
+  # Reference to a secret with registry credentials (recommended)
   authSecret: "target-registry-creds"
 
-  # Für Registries mit self-signed Zertifikaten
+  # For registries with self-signed certificates
   insecure: false
 
-  # Upstream-Polling-Intervall (Default: 24h, Min: 1h, 0 = deaktiviert)
-  # Prüft periodisch ob neue Releases oder Operator-Versionen verfügbar sind
+  # Upstream polling interval (default: 24h, min: 1h, 0 = disabled)
+  # Periodically checks whether new releases or operator versions are available
   pollInterval: 24h
 
-  # Parallelität: max. gleichzeitige Worker-Pods (default: 1, max: 100)
-  # Default 1 optimiert für Quay: sequentielles Mirroring ermöglicht
-  # Blob-Mount (Zero-Copy) von zuvor gepushten Blobs.
+  # Concurrency: max. concurrent worker pods (default: 1, max: 100)
+  # Default 1 optimized for Quay: sequential mirroring enables
+  # blob mount (zero-copy) of previously pushed blobs.
   concurrency: 1
 
-  # Images pro Worker-Pod (default: 50, max: 100)
+  # Images per worker pod (default: 50, max: 100)
   batchSize: 50
 
-  # Resource-Server-Exposure (optional)
-  # Auf OpenShift wird automatisch eine Route erstellt, wenn nicht konfiguriert.
+  # Resource server exposure (optional)
+  # On OpenShift a Route is automatically created if not configured.
   expose:
-    # Optionen: Route (default auf OpenShift), Ingress, GatewayAPI, Service
+    # Options: Route (default on OpenShift), Ingress, GatewayAPI, Service
     type: Route
-    # Externer Hostname (optional — bei Route wird automatisch generiert)
+    # External hostname (optional — auto-generated for Route)
     # host: "mirror-resources.example.com"
 
-  # Ressourcen für Worker-Pods (optional)
+  # Resources for worker pods (optional)
   worker:
     resources:
       requests: { cpu: "200m", memory: "256Mi" }
@@ -357,9 +357,9 @@ spec:
 
 ### ImageSet
 
-Definiert welche Inhalte gespiegelt werden sollen. Ein ImageSet wird über das
-`imageSets`-Feld des MirrorTargets zugeordnet — es enthält selbst keinen
-Verweis auf ein Ziel.
+Defines which content should be mirrored. An ImageSet is assigned via the
+`imageSets` field of the MirrorTarget — it does not itself contain a
+reference to a target.
 
 ```yaml
 apiVersion: mirror.openshift.io/v1alpha1
@@ -372,7 +372,7 @@ spec:
     # OpenShift / OKD Platform Releases
     platform:
       architectures: ["amd64"]
-      kubeVirtContainer: true  # KubeVirt Container-Disk-Images mit spiegeln
+      kubeVirtContainer: true  # also mirror KubeVirt Container-Disk-Images
       channels:
         - name: stable-4.21
           type: ocp
@@ -380,15 +380,15 @@ spec:
           maxVersion: "4.21.9"
           shortestPath: true
 
-    # OLM Operator-Kataloge (mit automatischer Dependency-Resolution)
+    # OLM Operator catalogs (with automatic dependency resolution)
     operators:
       - catalog: "registry.redhat.io/redhat/redhat-operator-index:v4.21"
         packages:
           - name: odf-operator
             # Dependencies (odf-dependencies, cephcsi-operator, etc.)
-            # werden automatisch aufgelöst und mit gespiegelt
+            # are automatically resolved and mirrored
 
-    # Einzelne zusätzliche Images
+    # Individual additional images
     additionalImages:
       - name: "registry.redhat.io/ubi9/ubi:latest"
       - name: "quay.io/prometheus/prometheus:v2.45.0"
@@ -396,20 +396,20 @@ spec:
         targetTag: "v2.45.0"
 ```
 
-**Status-Felder:**
+**Status Fields:**
 
-| Feld | Beschreibung |
+| Field | Description |
 |------|-------------|
-| `status.totalImages` | Gesamtanzahl zu spiegelnder Images |
-| `status.mirroredImages` | Erfolgreich gespiegelte Images |
-| `status.pendingImages` | Ausstehende Images |
-| `status.failedImages` | Fehlgeschlagene Images |
-| `status.lastSuccessfulPollTime` | Zeitpunkt des letzten erfolgreichen Upstream-Polls |
-| `status.conditions[Ready]` | `True` wenn Collection erfolgreich |
+| `status.totalImages` | Total number of images to mirror |
+| `status.mirroredImages` | Successfully mirrored images |
+| `status.pendingImages` | Pending images |
+| `status.failedImages` | Failed images |
+| `status.lastSuccessfulPollTime` | Timestamp of the last successful upstream poll |
+| `status.conditions[Ready]` | `True` when collection is successful |
 
-**MirrorTarget-Status (aggregiert über alle referenzierten ImageSets):**
+**MirrorTarget Status (aggregated over all referenced ImageSets):**
 
-Das `MirrorTarget` exponiert die per-ImageSet-Counter zusätzlich kumuliert, sodass `oc get mirrortarget` direkt den Gesamtfortschritt zeigt:
+The `MirrorTarget` additionally exposes the per-ImageSet counters cumulatively, so `oc get mirrortarget` directly shows the overall progress:
 
 ```bash
 $ oc get mirrortarget
@@ -417,31 +417,31 @@ NAME            TOTAL   MIRRORED   PENDING   FAILED   AGE
 quay-internal   757     756        1         0        2d19h
 ```
 
-| Feld | Beschreibung |
+| Field | Description |
 |------|-------------|
-| `status.totalImages` | Summe aller `ImageSet.status.totalImages` |
-| `status.mirroredImages` | Summe aller `ImageSet.status.mirroredImages` |
-| `status.pendingImages` | Summe aller `ImageSet.status.pendingImages` |
-| `status.failedImages` | Summe aller `ImageSet.status.failedImages` |
-| `status.imageSetStatuses[]` | Pro-ImageSet-Breakdown (Name, Found, Total, Mirrored, Pending, Failed) — alphabetisch sortiert |
+| `status.totalImages` | Sum of all `ImageSet.status.totalImages` |
+| `status.mirroredImages` | Sum of all `ImageSet.status.mirroredImages` |
+| `status.pendingImages` | Sum of all `ImageSet.status.pendingImages` |
+| `status.failedImages` | Sum of all `ImageSet.status.failedImages` |
+| `status.imageSetStatuses[]` | Per-ImageSet breakdown (Name, Found, Total, Mirrored, Pending, Failed) — sorted alphabetically |
 
-Die Aggregation wird durch einen Watch auf `ImageSet`-Statusänderungen getriggert: Sobald ein ImageSet seine Counter aktualisiert, werden alle MirrorTargets, die diesen ImageSet in `spec.imageSets` referenzieren, automatisch reconciled.
+Aggregation is triggered by a watch on `ImageSet` status changes: as soon as an ImageSet updates its counters, all MirrorTargets that reference this ImageSet in `spec.imageSets` are automatically reconciled.
 
-**Image-States (im ConfigMap-State):**
+**Image States (in ConfigMap state):**
 
-| State | Bedeutung |
+| State | Meaning |
 |-------|-----------|
-| `Pending` | Warte auf Worker-Pod |
-| `Mirrored` | Erfolgreich gespiegelt (Digest verifiziert) |
-| `Failed` | Fehler — wird bis zu 10× automatisch wiederholt |
+| `Pending` | Waiting for worker pod |
+| `Mirrored` | Successfully mirrored (digest verified) |
+| `Failed` | Error — automatically retried up to 10× |
 
 ---
 
-## Zielpfad-Mapping
+## Target Path Mapping
 
-Der Operator bildet Quell-Images wie folgt auf Ziel-Pfade ab:
+The operator maps source images to target paths as follows:
 
-| Typ | Quelle | Ziel |
+| Type | Source | Target |
 |-----|--------|------|
 | **Release-Payload** | `quay.io/openshift-release-dev/ocp-release:4.21.9-x86_64` | `registry/openshift-release-dev/ocp-release:4.21.9` |
 | **Release-Component** | `quay.io/openshift-release-dev/ocp-v4.0-art-dev@sha256:abc123...` | `registry/openshift-release-dev/ocp-v4.0-art-dev:sha256-abc123...` |
@@ -449,80 +449,80 @@ Der Operator bildet Quell-Images wie folgt auf Ziel-Pfade ab:
 | **Operator-Bundle** | `registry.redhat.io/openshift-gitops-1/argocd-rhel8@sha256:def456...` | `registry/openshift-gitops-1/argocd-rhel8:sha256-def456...` |
 | **Additional Image** | `quay.io/prometheus/prometheus:v2.45.0` | `registry/prometheus/prometheus:v2.45.0` |
 
-Dabei wird `registry` durch den Wert aus `MirrorTarget.spec.registry` ersetzt. Der Upstream-Repository-Pfad bleibt erhalten.
+Here `registry` is replaced by the value from `MirrorTarget.spec.registry`. The upstream repository path is preserved.
 
 ---
 
-## Blob-Buffering für große Images
+## Blob Buffering for Large Images
 
-Worker-Pods verwenden ein **emptyDir Ephemeral Volume** (`/tmp/blob-buffer`) um große Blobs (>100 MiB) vor dem Upload zwischenzuspeichern. Damit wird ein Quay-spezifisches Problem umgangen, bei dem Upload-Sessions während langsamer Cross-Registry-Transfers ablaufen.
+Worker pods use an **emptyDir Ephemeral Volume** (`/tmp/blob-buffer`) to buffer large blobs (>100 MiB) before upload. This works around a Quay-specific issue where upload sessions expire during slow cross-registry transfers.
 
-Der Ablauf für große Blobs:
-1. Blob wird von der Quell-Registry heruntergeladen und in eine Temp-Datei geschrieben
-2. Monolithischer PUT von der lokalen Datei zur Ziel-Registry (schnell)
-3. Temp-Datei wird nach dem Upload gelöscht
+The process for large blobs:
+1. Blob is downloaded from the source registry and written to a temp file
+2. Monolithic PUT from the local file to the target registry (fast)
+3. Temp file is deleted after upload
 
-Vorteile gegenüber RAM-Buffering: Kein OOM-Risiko bei Multi-GB Layern.
+Advantages over RAM buffering: No OOM risk with multi-GB layers.
 
 ---
 
 ## Drift Detection
 
-Der Manager überprüft alle **5 Minuten**, ob alle als `Mirrored` markierten Images noch in der Ziel-Registry existieren (HEAD-Request auf das Manifest). Fehlende Images werden automatisch wieder in die Queue gestellt und neu gespiegelt.
+The manager checks every **5 minutes** whether all images marked as `Mirrored` still exist in the target registry (HEAD request on the manifest). Missing images are automatically re-queued and re-mirrored.
 
 ### Auth-Token-Refresh
 
-Registry-Clients (regclient) akkumulieren OAuth-Scopes pro Repository in einem einzigen Bearer-Token. Nach ~40 Repositories überschreitet der Token das **nginx-Header-Limit** (8 KB) von Quay-Proxies, was zu `HTTP 400`-Fehlern führt.
+Registry clients (regclient) accumulate OAuth scopes per repository in a single Bearer token. After ~40 repositories the token exceeds the **nginx header limit** (8 KB) of Quay proxies, causing `HTTP 400` errors.
 
-**Lösung**: Alle **20 Operationen** wird ein frischer Registry-Client mit leerem Token-Cache erstellt. Dieses Pattern wird in drei Komponenten angewandt:
-- **Drift-Detection** (Manager): Alle 20 CheckExist-Aufrufe + zu Beginn jedes Drift-Cycles
-- **Worker-Batches**: Alle 20 Images wird der `MirrorClient` im Worker-Pod erneuert
-- **Cleanup-Jobs**: Alle 20 Manifest-Löschungen im Cleanup-Job
+**Solution**: Every **20 operations** a fresh registry client with an empty token cache is created. This pattern is applied in three components:
+- **Drift Detection** (Manager): Every 20 CheckExist calls + at the start of each drift cycle
+- **Worker batches**: The `MirrorClient` in the worker pod is renewed every 20 images
+- **Cleanup jobs**: Every 20 manifest deletions in the cleanup job
 
-### Fehlerbehandlung
+### Error Handling
 
-| Szenario | Verhalten |
+| Scenario | Behavior |
 |----------|----------|
-| Image nicht gefunden (404) | Als `Pending` markiert → wird neu gespiegelt |
-| Auth-/Netzwerk-Fehler | Image als **vorhanden** angenommen (konservativ) |
-| Registry unreachbar | Drift-Check wird übersprungen, nächster Cycle in 5 Min. |
+| Image not found (404) | Marked as `Pending` → will be re-mirrored |
+| Auth/network error | Image assumed **present** (conservative) |
+| Registry unreachable | Drift check is skipped, next cycle in 5 min. |
 
 ---
 
-## Periodisches Upstream-Polling
+## Periodic Upstream Polling
 
-Der Operator prüft periodisch, ob Upstream-Quellen (Cincinnati-API für Releases, Katalog-Images für Operatoren) neue Inhalte enthalten. So werden neue OCP-Releases und Operator-Versionen automatisch erkannt und gespiegelt.
+The operator periodically checks whether upstream sources (Cincinnati API for releases, catalog images for operators) contain new content. This way new OCP releases and operator versions are automatically detected and mirrored.
 
-### Konfiguration
+### Configuration
 
 ```yaml
 apiVersion: mirror.openshift.io/v1alpha1
 kind: MirrorTarget
 spec:
-  # Polling-Intervall (Default: 24h, Minimum: 1h, 0 = deaktiviert)
+  # Polling interval (default: 24h, minimum: 1h, 0 = disabled)
   pollInterval: 24h
 ```
 
-### Verhalten
+### Behavior
 
-| Aspekt | Details |
+| Aspect | Details |
 |--------|---------|
-| **Default-Intervall** | 24 Stunden — prüft einmal täglich auf neue Upstream-Inhalte |
-| **Minimum** | 1 Stunde — kürzere Werte werden bereits vom API-Server (CRD-CEL-Validation) abgelehnt |
-| **Deaktivierung** | `pollInterval: 0s` — kein automatisches Polling |
-| **Was wird geprüft** | Cincinnati-Graph (neue Releases in Channels), Operator-Katalog-Images (neue Bundles/Versionen) |
-| **Bei neuen Inhalten** | Erneute Image-Collection, automatischer Catalog-Rebuild, neue Images werden als `Pending` eingefügt |
-| **Fehlgeschlagene Images** | Beim nächsten Poll werden `Failed`-Images automatisch auf `Pending` zurückgesetzt und erneut versucht |
-| **Status-Tracking** | `ImageSet.status.lastSuccessfulPollTime` zeigt den Zeitpunkt des letzten erfolgreichen Polls |
-| **Restart-Persistenz** | Controller-Manager nutzt `SyncPeriod: 1h` + `RequeueAfter` — Polling überlebt Pod-Restarts und wird zum nächsten geplanten Zeitpunkt fortgesetzt |
+| **Default interval** | 24 hours — checks once daily for new upstream content |
+| **Minimum** | 1 hour — shorter values are already rejected by the API server (CRD CEL validation) |
+| **Disable** | `pollInterval: 0s` — no automatic polling |
+| **What is checked** | Cincinnati graph (new releases in channels), operator catalog images (new bundles/versions) |
+| **On new content** | Re-collection of images, automatic catalog rebuild, new images are inserted as `Pending` |
+| **Failed images** | On the next poll, `Failed` images are automatically reset to `Pending` and retried |
+| **Status tracking** | `ImageSet.status.lastSuccessfulPollTime` shows the timestamp of the last successful poll |
+| **Restart persistence** | Controller manager uses `SyncPeriod: 1h` + `RequeueAfter` — polling survives pod restarts and resumes at the next scheduled time |
 
 ---
 
-## Image-Cleanup
+## Image Cleanup
 
-Beim Entfernen von ImageSets oder Spec-Änderungen können nicht mehr benötigte Images automatisch aus der Ziel-Registry gelöscht werden. Das Cleanup ist Opt-in und wird über eine Annotation gesteuert.
+When removing ImageSets or on spec changes, images that are no longer needed can be automatically deleted from the target registry. Cleanup is opt-in and controlled via an annotation.
 
-### Aktivierung
+### Activation
 
 ```yaml
 apiVersion: mirror.openshift.io/v1alpha1
@@ -532,44 +532,44 @@ metadata:
     mirror.openshift.io/cleanup-policy: Delete
 ```
 
-Ohne diese Annotation werden entfernte Images **nicht** aus der Registry gelöscht — sie bleiben als Orphans erhalten (sicherer Default).
+Without this annotation, removed images are **not** deleted from the registry — they remain as orphans (safer default).
 
-### Cleanup-Szenarien
+### Cleanup Scenarios
 
-| Szenario | Auslöser | Verhalten |
+| Scenario | Trigger | Behavior |
 |----------|----------|----------|
-| **ImageSet entfernt** | ImageSet-Name aus `spec.imageSets` entfernt | MirrorTarget-Controller erstellt Cleanup-Job → löscht alle Images des ImageSets → löscht State-ConfigMap |
-| **Spec-Änderung** (Intra-ImageSet) | Operator entfernt, Version-Range eingeschränkt, Channel entfernt | ImageSet-Controller erkennt Diff (vorher - nachher) → erstellt partiellen Cleanup-Job → löscht nur die entfernten Images |
+| **ImageSet removed** | ImageSet name removed from `spec.imageSets` | MirrorTarget controller creates cleanup job → deletes all images of the ImageSet → deletes state ConfigMap |
+| **Spec change** (intra-ImageSet) | Operator removed, version range restricted, channel removed | ImageSet controller detects diff (before - after) → creates partial cleanup job → deletes only the removed images |
 
-### Technische Details
+### Technical Details
 
-- **Cleanup-Jobs**: Kubernetes Jobs mit dem Operator-Image im `cleanup`-Modus. Gleiche Auth-Konfiguration wie Worker-Pods.
-- **Vollständiges Cleanup** (ImageSet entfernt): Job liest den Image-State aus der existierenden ConfigMap, löscht jedes Manifest per `DELETE` API-Call, löscht anschließend die ConfigMap selbst.
-- **Partielles Cleanup** (Spec-Änderung): Entfernte Images werden in einer temporären ConfigMap `cleanup-partial-<imageset>-gen<N>` gespeichert (immutabel pro Generation). Job liest die Temp-ConfigMap, löscht die Images und entfernt die Temp-ConfigMap.
-- **Auth-Token-Refresh**: Cleanup-Jobs erstellen alle 20 Löschoperationen einen frischen Registry-Client (gleicher Quay-nginx-Workaround wie Drift-Detection und Worker).
-- **Direktes ImageSet-Löschen (`oc delete imageset <name>`)**: Triggert **keinen** Cleanup. Das ist Absicht — ImageSets haben keinen Finalizer, sodass Operatoren bewusst eine ImageSet aus einem MirrorTarget herausnehmen können (löst Cleanup aus), bevor sie das Objekt selbst löschen. Wer Images aktiv aus der Registry entfernen möchte, entfernt zuerst den Eintrag aus `MirrorTarget.spec.imageSets` und löscht erst nach Abschluss des Cleanup-Jobs die ImageSet-Resource.
+- **Cleanup jobs**: Kubernetes Jobs using the operator image in `cleanup` mode. Same auth configuration as worker pods.
+- **Full cleanup** (ImageSet removed): Job reads the image state from the existing ConfigMap, deletes each manifest via `DELETE` API call, then deletes the ConfigMap itself.
+- **Partial cleanup** (spec change): Removed images are stored in a temporary ConfigMap `cleanup-partial-<imageset>-gen<N>` (immutable per generation). Job reads the temp ConfigMap, deletes the images and removes the temp ConfigMap.
+- **Auth token refresh**: Cleanup jobs create a fresh registry client every 20 delete operations (same Quay nginx workaround as drift detection and workers).
+- **Direct ImageSet deletion (`oc delete imageset <name>`)**: Triggers **no** cleanup. This is intentional — ImageSets have no finalizer, so operators can deliberately remove an ImageSet from a MirrorTarget (which triggers cleanup) before deleting the object itself. To actively remove images from the registry, first remove the entry from `MirrorTarget.spec.imageSets` and only delete the ImageSet resource after the cleanup job completes.
 
-### Status-Conditions auf MirrorTarget
+### Status Conditions on MirrorTarget
 
-| Condition | Status | Reason | Bedeutung |
+| Condition | Status | Reason | Meaning |
 |-----------|--------|--------|-----------|
-| `Cleanup` | `True` | `CleanupInProgress` | Cleanup-Job läuft |
-| `Cleanup` | `True` | `CleanupComplete` | Cleanup erfolgreich abgeschlossen |
-| `Cleanup` | `True` | `CleanupError` | Cleanup fehlgeschlagen (Details in Message) |
+| `Cleanup` | `True` | `CleanupInProgress` | Cleanup job is running |
+| `Cleanup` | `True` | `CleanupComplete` | Cleanup successfully completed |
+| `Cleanup` | `True` | `CleanupError` | Cleanup failed (details in message) |
 
 ---
 
-## Voraussetzungen
+## Prerequisites
 
-- Kubernetes ≥ 1.26 oder OpenShift ≥ 4.13
-- Zugriff auf Quell-Registries (ggf. Pull-Secret im Cluster)
-- Schreibzugriff auf die Ziel-Registry (via `authSecret`)
+- Kubernetes ≥ 1.26 or OpenShift ≥ 4.13
+- Access to source registries (pull secret in cluster if required)
+- Write access to the target registry (via `authSecret`)
 
 ---
 
 ## Installation
 
-### 1. CRDs und Operator deployen
+### 1. Deploy CRDs and Operator
 
 ```bash
 make install
@@ -577,7 +577,7 @@ export IMG=my-registry.example.com/oc-mirror-operator:v0.0.1
 make deploy IMG=$IMG
 ```
 
-### 2. Registry-Credentials erstellen
+### 2. Create Registry Credentials
 
 ```bash
 kubectl create secret docker-registry target-registry-creds \
@@ -587,103 +587,103 @@ kubectl create secret docker-registry target-registry-creds \
   -n oc-mirror-system
 ```
 
-### 3. MirrorTarget und ImageSet anwenden
+### 3. Apply MirrorTarget and ImageSet
 
 ```bash
 kubectl apply -f config/samples/mirror_target_sample.yaml
 kubectl apply -f config/samples/imageset_full_sample.yaml
 ```
 
-### 4. Status überwachen
+### 4. Monitor Status
 
 ```bash
-# Überblick
+# Overview
 kubectl get mirrortarget,imageset -n oc-mirror-system
 
-# Fortschritt
+# Progress
 kubectl describe imageset ocp-4-21-sync -n oc-mirror-system
 
-# Manager-Logs
+# Manager logs
 kubectl logs deployment/internal-registry-manager -n oc-mirror-system -f
 
-# Worker-Pods beobachten
+# Watch worker pods
 kubectl get pods -l app=oc-mirror-worker -n oc-mirror-system -w
 ```
 
 ---
 
-## Sicherheitsmodell
+## Security Model
 
 ### RBAC
-Der Operator läuft mit einer **namespace-scoped `Role`** (nicht `ClusterRole`). Jede Schicht hat einen dedizierten Service Account mit minimalen Rechten:
+The operator runs with a **namespace-scoped `Role`** (not `ClusterRole`). Each layer has a dedicated service account with minimal permissions:
 
-| Service Account | Berechtigungen |
+| Service Account | Permissions |
 |-----------------|----------------|
-| `oc-mirror-operator-controller-manager` | CRD-Verwaltung, Deployments, Services, ConfigMaps, Secrets (read), Routes, Ingresses, Roles/RoleBindings (`get;create;update` — keine `delete`/`patch`/`escalate`/`bind` Verbs zur Privilege-Escalation-Prevention) |
-| `oc-mirror-coordinator` | ImageSets/ImageSets-Status (`get;list;watch;update;patch`), MirrorTargets (nur `get;list;watch`), Pods (`get;list;watch;create;delete`), ConfigMaps (`get;list;watch;create;update;patch;delete`), Worker-Token-Secret (`get;list;watch;create;update`) |
-| `oc-mirror-worker` | Keine Cluster-Rechte |
+| `oc-mirror-operator-controller-manager` | CRD management, Deployments, Services, ConfigMaps, Secrets (read), Routes, Ingresses, Roles/RoleBindings (`get;create;update` — no `delete`/`patch`/`escalate`/`bind` verbs to prevent privilege escalation) |
+| `oc-mirror-coordinator` | ImageSets/ImageSets status (`get;list;watch;update;patch`), MirrorTargets (only `get;list;watch`), Pods (`get;list;watch;create;delete`), ConfigMaps (`get;list;watch;create;update;patch;delete`), worker token secret (`get;list;watch;create;update`) |
+| `oc-mirror-worker` | No cluster permissions |
 
 ### Pod Security
-Alle dynamisch erstellten Pods (Manager und Worker) laufen mit **restricted Pod Security Standards**:
+All dynamically created pods (manager and worker) run with **restricted Pod Security Standards**:
 - `runAsNonRoot: true`
 - `allowPrivilegeEscalation: false`
 - `capabilities: drop: ["ALL"]`
 - `seccompProfile: RuntimeDefault`
 
-### Worker-Authentifizierung
-Worker-Pods authentifizieren sich am Manager-Status-Endpoint via **Bearer Token**. Der Token wird vom Manager beim Start in einem Kubernetes-Secret namens `<mirrortarget>-worker-token` (Key `token`) persistiert (mit OwnerReference auf das `MirrorTarget`, sodass es bei Löschen automatisch entsorgt wird). Worker-Pods lesen den Token via `valueFrom.secretKeyRef` — er erscheint nicht im Pod-Manifest oder in Logs. Der serverseitige Vergleich nutzt `crypto/subtle.ConstantTimeCompare`, um Timing-Angriffe zu verhindern.
+### Worker Authentication
+Worker pods authenticate at the manager status endpoint via **Bearer Token**. The token is persisted by the manager at startup in a Kubernetes Secret named `<mirrortarget>-worker-token` (key `token`) (with an OwnerReference on the `MirrorTarget`, so it is automatically cleaned up on deletion). Worker pods read the token via `valueFrom.secretKeyRef` — it does not appear in the pod manifest or logs. The server-side comparison uses `crypto/subtle.ConstantTimeCompare` to prevent timing attacks.
 
 ### Registry-Credentials
-Das `authSecret` wird als Volume (`/docker-config/config.json`) in Manager- und Worker-Pods gemountet (nur der Key `config.json` wird projiziert, andere Schlüssel im Secret bleiben unsichtbar). Der Manager benötigt Lesezugriff für Drift-Detection (CheckExist), Worker benötigen Lese-/Schreibzugriff für das eigentliche Mirroring.
+The `authSecret` is mounted as a volume (`/docker-config/config.json`) in manager and worker pods (only the `config.json` key is projected, other keys in the secret remain invisible). The manager requires read access for drift detection (CheckExist), workers require read/write access for the actual mirroring.
 
 ### NetworkPolicies
-Pro `MirrorTarget` werden vom Operator zwei `NetworkPolicy`-Objekte im User-Namespace erzeugt (mit OwnerReference auf das `MirrorTarget`, damit sie automatisch gelöscht werden):
+The operator creates two `NetworkPolicy` objects per `MirrorTarget` in the user namespace (with OwnerReference on the `MirrorTarget`, so they are automatically deleted):
 
-| Policy | Selektor | Effekt |
+| Policy | Selector | Effect |
 |--------|----------|--------|
-| `<name>-manager-ingress` | `app=oc-mirror-manager,mirrortarget=<name>` | Ingress nur von Worker-Pods desselben `MirrorTarget` auf TCP 8080 (Status-API) und 8081 (Resource-Server) |
-| `<name>-worker-ingress-deny` | `app=oc-mirror-worker,mirrortarget=<name>` | Verweigert sämtlichen Ingress-Traffic zu Worker-Pods (Workers sind reine Clients) |
+| `<name>-manager-ingress` | `app=oc-mirror-manager,mirrortarget=<name>` | Ingress only from worker pods of the same `MirrorTarget` on TCP 8080 (status API) and 8081 (resource server) |
+| `<name>-worker-ingress-deny` | `app=oc-mirror-worker,mirrortarget=<name>` | Denies all ingress traffic to worker pods (workers are pure clients) |
 
-Beide Policies regeln nur **internen** Cluster-Traffic und sind damit unabhängig von der konkreten Cluster-Topologie (DNS-Service-CIDR, Pod-CIDR, Node-Local Resolver).
+Both policies only regulate **internal** cluster traffic and are therefore independent of the specific cluster topology (DNS service CIDR, pod CIDR, node-local resolver).
 
-> **Hinweis zum Worker-Egress:** Frühere Versionen des Operators erzeugten zusätzlich eine `<name>-worker-egress`-Policy mit "DNS + Manager + Internet (außer RFC1918)". Diese Policy wurde entfernt, weil sich nicht zuverlässig vorhersagen lässt, wo ein Cluster seine DNS-Auflösung hat (Service-CIDR, openshift-dns Pod-CIDR, Node-Local CoreDNS, externer Resolver) und ob die Ziel-Registry in einem RFC1918-Bereich liegt — die Policy verursachte DNS-Timeouts in vielen Cluster-Topologien. Eine alte Policy aus früheren Deployments wird vom Reconciler automatisch entfernt.
+> **Note on worker egress:** Earlier versions of the operator additionally created a `<name>-worker-egress` policy with "DNS + Manager + Internet (except RFC1918)". This policy was removed because it is not reliably predictable where a cluster resolves DNS (service CIDR, openshift-dns pod CIDR, node-local CoreDNS, external resolver) and whether the target registry is in an RFC1918 range — the policy caused DNS timeouts in many cluster topologies. An old policy from earlier deployments is automatically removed by the reconciler.
 >
-> Wer Worker-Egress dennoch einschränken möchte, kann eine eigene `NetworkPolicy` mit dem Selektor `app=oc-mirror-worker,mirrortarget=<name>` und dem für die jeweilige Infrastruktur passenden Egress-Allow-Set anlegen.
+> Users who still want to restrict worker egress can create a custom `NetworkPolicy` with the selector `app=oc-mirror-worker,mirrortarget=<name>` and an egress allow set appropriate for their infrastructure.
 
 ### Status-Conditions
 
-Conditions auf `MirrorTarget.status.conditions` und `ImageSet.status.conditions` enthalten ein `observedGeneration`-Feld, das die `metadata.generation` des CRs reflektiert, gegen die der jeweilige Reconcile-Lauf die Bedingung gesetzt hat. Konsumenten (z.B. `kubectl wait --for=condition=Ready=true --observed-generation=...`) können so erkennen, ob eine Condition zum aktuellen Spec-Stand gehört. `lastTransitionTime` wird nur aktualisiert, wenn sich `status` oder `reason` ändern (verhindert Time-Drift bei stabilen Conditions).
+Conditions on `MirrorTarget.status.conditions` and `ImageSet.status.conditions` contain an `observedGeneration` field that reflects the `metadata.generation` of the CR against which the respective reconcile run set the condition. Consumers (e.g. `kubectl wait --for=condition=Ready=true --observed-generation=...`) can thus determine whether a condition belongs to the current spec state. `lastTransitionTime` is only updated when `status` or `reason` change (prevents time drift for stable conditions).
 
-### Image-Signaturen
+### Image Signatures
 
-Cosign/Sigstore-Signaturen werden derzeit **nicht** propagiert oder verifiziert. Die `pkg/release/signature.go`-API gibt `ErrNotImplemented` zurück; Aufrufer behandeln dies als nicht-fataler Skip. Air-Gap-Use-Cases, die signierte Releases erfordern, müssen Signatur-Mirroring extern über `oc image mirror` oder `cosign copy` ergänzen.
+Cosign/Sigstore signatures are currently **not** propagated or verified. The `pkg/release/signature.go` API returns `ErrNotImplemented`; callers treat this as a non-fatal skip. Air-gap use cases that require signed releases must supplement signature mirroring externally via `oc image mirror` or `cosign copy`.
 
 ### Supply Chain
 
-Das Container-Image wird aus pinned Base-Images gebaut: `golang:1.25@sha256:...` (Build-Stage) und `gcr.io/distroless/static:nonroot@sha256:...` (Runtime). Digests werden bei jedem Refresh im `Dockerfile` aktualisiert. Worker- und Cleanup-Jobs verwenden ausschließlich das Operator-Image (referenziert über die `OPERATOR_IMAGE`-env-Var, siehe Tabelle oben) — es gibt kein zweites Container-Image im System.
+The container image is built from pinned base images: `golang:1.25@sha256:...` (build stage) and `gcr.io/distroless/static:nonroot@sha256:...` (runtime). Digests are updated in the `Dockerfile` on each refresh. Worker and cleanup jobs exclusively use the operator image (referenced via the `OPERATOR_IMAGE` env var, see table above) — there is no second container image in the system.
 
-### Out-of-Scope (bewusst nicht implementiert)
+### Out of Scope (intentionally not implemented)
 
-| Feature | Begründung |
+| Feature | Reason |
 |---------|------------|
-| **Plattform-Auswahl pro ImageSet** | Aktuell hart auf `linux/amd64`. Multi-Arch-Mirroring würde Resolver-, Client- und API-Refactor erfordern (auf Roadmap). |
-| **Resource-Server Bearer-Token-Auth** | Resource-Server (Port 8081) ist via NetworkPolicy auf den Cluster begrenzt; ein Token würde Distributionslogik für externe Konsumenten erfordern. Nutzer mit Bedarf an stärkerer Absicherung sollten den Service zusätzlich mit einem Reverse-Proxy + mTLS ausstatten. |
-| **Direkter `oc delete imageset`-Cleanup** | ImageSets haben keinen Finalizer. Cleanup wird ausschließlich beim Entfernen aus `MirrorTarget.spec.imageSets` getriggert (siehe Sektion *Image-Cleanup*). |
+| **Platform selection per ImageSet** | Currently hard-coded to `linux/amd64`. Multi-arch mirroring would require refactoring the resolver, client and API (on roadmap). |
+| **Resource server bearer token auth** | Resource server (port 8081) is limited to the cluster via NetworkPolicy; a token would require distribution logic for external consumers. Users requiring stronger security should additionally protect the service with a reverse proxy + mTLS. |
+| **Direct `oc delete imageset` cleanup** | ImageSets have no finalizer. Cleanup is only triggered on removal from `MirrorTarget.spec.imageSets` (see section *Image Cleanup*). |
 
 ---
 
-## Entwicklung
+## Development
 
-### Pflicht-Environment
+### Required Environment
 
-Der Controller verlangt zwingend folgende Variablen (die Standard-Deployment-Manifeste in `config/manager/manager.yaml` setzen sie automatisch):
+The controller requires the following variables (the default deployment manifests in `config/manager/manager.yaml` set them automatically):
 
-| Variable | Pflicht | Bedeutung |
+| Variable | Required | Description |
 |----------|---------|-----------|
-| `OPERATOR_IMAGE` | ja | Image-Referenz für dynamisch erzeugte Catalog-Builder- und Cleanup-Jobs. Fehlt sie, exitet der Operator beim Start mit Fehlermeldung — frühere Builds nahmen `controller:latest` als Fallback, was zu kryptischen `ImagePullBackOff`-Fehlern führte. |
-| `POD_NAMESPACE` | nein (Downward-API empfohlen) | Namespace für leader-election und Resource-Server. |
+| `OPERATOR_IMAGE` | yes | Image reference for dynamically created catalog builder and cleanup jobs. If missing, the operator exits at startup with an error message — earlier builds used `controller:latest` as a fallback, which led to cryptic `ImagePullBackOff` errors. |
+| `POD_NAMESPACE` | no (Downward API recommended) | Namespace for leader election and resource server. |
 
-### Voraussetzungen
+### Prerequisites
 
 ```bash
 go version     # >= 1.25
@@ -691,11 +691,11 @@ make --version
 kubectl / oc
 ```
 
-### Lokaler Build
+### Local Build
 
 ```bash
 make test      # Tests + Build
-make build     # Nur bauen
+make build     # Build only
 make lint      # Linter
 ```
 
@@ -710,66 +710,66 @@ make docker-buildx IMG=my-registry.io/oc-mirror-operator:latest
 ### Tests
 
 ```bash
-# Unit-Tests
+# Unit tests
 go test ./pkg/... -v
 
-# Controller-Tests (envtest)
-make setup-envtest   # einmalig
+# Controller tests (envtest)
+make setup-envtest   # once
 make test
 ```
 
-### CRD-Manifeste regenerieren
+### Regenerate CRD Manifests
 
 ```bash
 make manifests   # CRD YAMLs
-make generate    # DeepCopy-Methoden
+make generate    # DeepCopy methods
 ```
 
 ---
 
-## Bekannte Einschränkungen
+## Known Limitations
 
-| Einschränkung | Details |
+| Limitation | Details |
 |---------------|---------|
-| **Polling-basierter Manager** | 30s-Ticker statt event-driven Reconciliation |
-| **In-Memory Worker-Queue** | `inProgress`-Map nicht persistent; bei Manager-Restart werden laufende Worker per Pod-Sync wiederhergestellt |
-| **Blocked Images nicht implementiert** | `spec.mirror.blockedImages` wird akzeptiert aber ignoriert |
-| **Helm Charts nicht implementiert** | `spec.mirror.helm` API-Typen definiert, aber Collector wertet sie nicht aus |
-| **GatewayAPI nicht implementiert** | `spec.expose.type: GatewayAPI` API-Feld definiert, HTTPRoute-Erstellung noch ausstehend |
-| **Kein Mirror-to-Disk** | Air-Gap-Transfer über Datenträger ist nicht möglich — der Operator benötigt Netzwerkzugang zu beiden Registries |
-| **Kein HA-Modus** | Leader Election konfigurierbar (`--leader-elect`), aber standardmäßig deaktiviert |
-| **Kein Catalog-Cache Pre-Build** | Gefilterter Katalog invalidiert den Source-Cache via opaque whiteout und nutzt `--cache-enforce-integrity=false` — Cache wird beim ersten `opm serve` neu gebaut (einige Sekunden Startup-Delay) |
+| **Polling-based manager** | 30s ticker instead of event-driven reconciliation |
+| **In-memory worker queue** | `inProgress` map is not persistent; on manager restart, running workers are restored via pod sync |
+| **Blocked images not implemented** | `spec.mirror.blockedImages` is accepted but ignored |
+| **Helm Charts not implemented** | `spec.mirror.helm` API types defined, but collector does not evaluate them |
+| **GatewayAPI not implemented** | `spec.expose.type: GatewayAPI` API field defined, HTTPRoute creation still pending |
+| **No mirror-to-disk** | Air-gap transfer via media is not possible — the operator requires network access to both registries |
+| **No HA mode** | Leader election configurable (`--leader-elect`), but disabled by default |
+| **No catalog cache pre-build** | Filtered catalog invalidates the source cache via opaque whiteout and uses `--cache-enforce-integrity=false` — cache is rebuilt on first `opm serve` (a few seconds startup delay) |
 
 ---
 
-## Projektstruktur
+## Project Structure
 
 ```
 oc-mirror-operator/
-├── api/v1alpha1/              # CRD-Typen (MirrorTarget, ImageSet)
+├── api/v1alpha1/              # CRD types (MirrorTarget, ImageSet)
 ├── cmd/
-│   ├── main.go                # Einsprungpunkt: controller | manager | worker | cleanup
-│   └── catalog-builder/       # Catalog-Builder Binary (läuft in K8s Jobs)
+│   ├── main.go                # Entry point: controller | manager | worker | cleanup
+│   └── catalog-builder/       # Catalog-Builder binary (runs in K8s jobs)
 ├── config/
-│   ├── crd/                   # Generierte CRD-Manifeste
+│   ├── crd/                   # Generated CRD manifests
 │   ├── rbac/                  # Role, RoleBinding, ServiceAccounts
 │   ├── manager/               # Operator-Deployment
-│   └── samples/               # Beispiel-CRs
-├── internal/controller/       # Kubebuilder-Reconciler
+│   └── samples/               # Example CRs
+├── internal/controller/       # Kubebuilder reconcilers
 │   ├── mirrortarget_controller.go
 │   ├── imageset_controller.go
 │   └── conditions.go
 └── pkg/mirror/
-    ├── client/                # MirrorClient (regclient-Wrapper, Blob-Buffering, BlobCopy)
-    ├── collector.go           # Image-Liste aus ImageSet-Spec aufbauen
-    ├── planner.go             # Blob-Replikationsplanung (Greedy Set-Cover)
-    ├── manager/               # Manager-Logik (Worker-Orchestrierung, State, Pod-Cleanup)
-    ├── resources/             # Resource Server (HTTP-API) und IDMS/ITMS/Catalog-Generierung
-    │   ├── resources.go       # IDMS, ITMS, CatalogSource, ClusterCatalog, Signatur-Generation
-    │   └── server.go          # HTTP-Server (:8081), per-ImageSet Endpoints, Ready-Gating
-    ├── release/               # Cincinnati-API-Client (Graph, BFS, Signatures)
+    ├── client/                # MirrorClient (regclient wrapper, blob buffering, BlobCopy)
+    ├── collector.go           # Build image list from ImageSet spec
+    ├── planner.go             # Blob replication planning (greedy set cover)
+    ├── manager/               # Manager logic (worker orchestration, state, pod cleanup)
+    ├── resources/             # Resource server (HTTP API) and IDMS/ITMS/catalog generation
+    │   ├── resources.go       # IDMS, ITMS, CatalogSource, ClusterCatalog, signature generation
+    │   └── server.go          # HTTP server (:8081), per-ImageSet endpoints, ready-gating
+    ├── release/               # Cincinnati API client (graph, BFS, signatures)
     ├── catalog/
-    │   ├── resolver.go        # FBC-Resolver: FilterFBC, Dependency-Resolution, Image-Build
-    │   └── builder/           # Catalog-Builder Job-Management, Build-Signatur
-    └── imagestate/            # ConfigMap-basierte State-Persistenz (gzip-JSON)
+    │   ├── resolver.go        # FBC resolver: FilterFBC, dependency resolution, image build
+    │   └── builder/           # Catalog-Builder job management, build signature
+    └── imagestate/            # ConfigMap-based state persistence (gzip JSON)
 ```
