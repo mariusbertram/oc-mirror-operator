@@ -439,6 +439,20 @@ func (m *MirrorManager) reconcile(ctx context.Context) error {
 
 		// Flush state changes to ConfigMap and update ImageSet status counts.
 		if stateChanged {
+			// Re-read the ConfigMap before saving to avoid overwriting changes
+			// made by the ImageSet controller (e.g., entries removed by partial
+			// cleanup). Only apply in-memory state transitions to entries that
+			// still exist in the current ConfigMap.
+			currentState, reloadErr := imagestate.Load(ctx, m.Client, m.Namespace, is.Name)
+			if reloadErr == nil && len(currentState) > 0 {
+				for dest, entry := range isState {
+					if _, exists := currentState[dest]; exists {
+						currentState[dest] = entry
+					}
+				}
+				isState = currentState
+				m.imageStates[is.Name] = isState
+			}
 			if err := imagestate.Save(ctx, m.Client, m.Namespace, &is, isState); err != nil {
 				fmt.Printf("Warning: failed to save image state for %s: %v\n", is.Name, err)
 			}
