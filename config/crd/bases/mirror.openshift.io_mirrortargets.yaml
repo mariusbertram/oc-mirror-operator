@@ -401,6 +401,20 @@ spec:
                   - type
                   type: object
                 type: array
+              knownImageSets:
+                description: |-
+                  KnownImageSets is the last observed list of ImageSets from spec.imageSets.
+                  Used internally to detect removals between reconcile cycles.
+                items:
+                  type: string
+                type: array
+              pendingCleanup:
+                description: |-
+                  PendingCleanup lists ImageSet names whose images are currently being
+                  deleted from the target registry by cleanup Jobs.
+                items:
+                  type: string
+                type: array
             type: object
         type: object
     served: true

@@ -4,8 +4,12 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
+	"strings"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -21,6 +25,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
+	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/imagestate"
 )
 
 const mirrorTargetFinalizer = "mirror.openshift.io/cleanup"
@@ -42,6 +47,7 @@ type MirrorTargetReconciler struct {
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=route.openshift.io,resources=routes,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 
 func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	l := log.FromContext(ctx)
@@ -82,6 +88,14 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{Requeue: true}, nil
+	}
+
+	// Detect removed ImageSets and create cleanup Jobs if cleanup policy is set.
+	if err := r.reconcileCleanup(ctx, mt); err != nil {
+		l.Error(err, "Failed to reconcile cleanup")
+		setCondition(&mt.Status.Conditions, "Cleanup", metav1.ConditionFalse, "CleanupError", err.Error())
+		_ = r.Status().Update(ctx, mt)
+		// Continue with the rest of reconciliation — cleanup failures are not blocking.
 	}
 
 	// Ensure the coordinator ServiceAccount, Role, and RoleBinding exist in the target namespace.
@@ -282,8 +296,21 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	setCondition(&mt.Status.Conditions, "Ready", metav1.ConditionTrue, "DeploymentReady", "Manager deployment is active")
+	// Only advance KnownImageSets when no pending cleanups remain.
+	// This ensures that if a cleanup Job fails, the removal is re-detected
+	// and a new cleanup Job is created on the next reconcile cycle.
+	if len(mt.Status.PendingCleanup) == 0 {
+		mt.Status.KnownImageSets = make([]string, len(mt.Spec.ImageSets))
+		copy(mt.Status.KnownImageSets, mt.Spec.ImageSets)
+		sort.Strings(mt.Status.KnownImageSets)
+	}
 	if err := r.Status().Update(ctx, mt); err != nil {
 		return ctrl.Result{}, err
+	}
+
+	// Requeue periodically while cleanups are in progress to detect completion.
+	if len(mt.Status.PendingCleanup) > 0 {
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
 	return ctrl.Result{}, nil
@@ -397,6 +424,237 @@ func (r *MirrorTargetReconciler) ensureCoordinatorRBAC(ctx context.Context, mt *
 	}
 
 	return nil
+}
+
+// reconcileCleanup detects ImageSets that were removed from spec.imageSets,
+// creates cleanup Jobs for them (if cleanup-policy annotation is "Delete"),
+// and tracks cleanup progress.
+func (r *MirrorTargetReconciler) reconcileCleanup(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget) error {
+	l := log.FromContext(ctx)
+
+	// Determine which ImageSets were removed since last reconcile.
+	currentSet := make(map[string]bool, len(mt.Spec.ImageSets))
+	for _, name := range mt.Spec.ImageSets {
+		currentSet[name] = true
+	}
+
+	var removed []string
+	for _, name := range mt.Status.KnownImageSets {
+		if !currentSet[name] {
+			removed = append(removed, name)
+		}
+	}
+
+	// Check pending cleanups — remove entries whose Jobs completed successfully.
+	var stillPending []string
+	for _, name := range mt.Status.PendingCleanup {
+		jobName := cleanupJobName(mt.Name, name)
+		job := &batchv1.Job{}
+		err := r.Get(ctx, client.ObjectKey{Name: jobName, Namespace: mt.Namespace}, job)
+		if errors.IsNotFound(err) {
+			// Job is gone. Check if images ConfigMap still exists to decide
+			// whether cleanup actually completed or the job was deleted prematurely.
+			state, loadErr := imagestate.Load(ctx, r.Client, mt.Namespace, name)
+			if loadErr == nil && len(state) > 0 {
+				l.Info("Cleanup job gone but image state remains — will re-create job", "imageset", name)
+				stillPending = append(stillPending, name)
+			} else {
+				l.Info("Cleanup job gone and no image state — considering done", "imageset", name)
+			}
+			continue
+		}
+		if err != nil {
+			stillPending = append(stillPending, name)
+			continue
+		}
+		if job.Status.Succeeded > 0 {
+			l.Info("Cleanup completed successfully", "imageset", name, "job", jobName)
+			continue
+		}
+		if job.Status.Failed > 0 {
+			l.Error(nil, "Cleanup job failed — will retry", "imageset", name, "job", jobName)
+			// Delete the failed job so it can be re-created.
+			propagation := metav1.DeletePropagationBackground
+			_ = r.Delete(ctx, job, &client.DeleteOptions{PropagationPolicy: &propagation})
+		}
+		stillPending = append(stillPending, name)
+	}
+	mt.Status.PendingCleanup = stillPending
+
+	if len(removed) == 0 {
+		// No new removals — update condition if pending cleanups just finished.
+		if len(mt.Status.PendingCleanup) == 0 {
+			for _, c := range mt.Status.Conditions {
+				if c.Type == "Cleanup" && c.Reason == "CleanupInProgress" {
+					setCondition(&mt.Status.Conditions, "Cleanup", metav1.ConditionTrue, "CleanupComplete", "No pending cleanups")
+					break
+				}
+			}
+		}
+		return nil
+	}
+
+	// Check if cleanup-policy annotation is set.
+	cleanupPolicy := mt.Annotations[mirrorv1alpha1.CleanupPolicyAnnotation]
+	if cleanupPolicy != mirrorv1alpha1.CleanupPolicyDelete {
+		l.Info("ImageSets removed but cleanup-policy not set to Delete — skipping registry cleanup",
+			"removed", removed, "annotation", cleanupPolicy)
+		return nil
+	}
+
+	// Create cleanup Jobs for each removed ImageSet.
+	for _, isName := range removed {
+		// Skip if already pending cleanup.
+		alreadyPending := false
+		for _, p := range mt.Status.PendingCleanup {
+			if p == isName {
+				alreadyPending = true
+				break
+			}
+		}
+		if alreadyPending {
+			continue
+		}
+
+		// Verify the image state ConfigMap exists (otherwise nothing to clean).
+		state, err := imagestate.Load(ctx, r.Client, mt.Namespace, isName)
+		if err != nil {
+			l.Error(err, "Failed to load image state for cleanup", "imageset", isName)
+			continue
+		}
+		if len(state) == 0 {
+			l.Info("No image state found for removed ImageSet — nothing to clean", "imageset", isName)
+			continue
+		}
+
+		l.Info("Creating cleanup job for removed ImageSet", "imageset", isName, "images", len(state))
+		if err := r.createCleanupJob(ctx, mt, isName); err != nil {
+			l.Error(err, "Failed to create cleanup job", "imageset", isName)
+			continue
+		}
+		mt.Status.PendingCleanup = append(mt.Status.PendingCleanup, isName)
+	}
+
+	if len(mt.Status.PendingCleanup) > 0 {
+		setCondition(&mt.Status.Conditions, "Cleanup", metav1.ConditionFalse, "CleanupInProgress",
+			fmt.Sprintf("Cleaning up images for: %s", strings.Join(mt.Status.PendingCleanup, ", ")))
+	} else {
+		setCondition(&mt.Status.Conditions, "Cleanup", metav1.ConditionTrue, "CleanupComplete", "No pending cleanups")
+	}
+
+	return nil
+}
+
+// createCleanupJob creates a Kubernetes Job that deletes all images for the
+// given ImageSet from the target registry and removes the state ConfigMap.
+func (r *MirrorTargetReconciler) createCleanupJob(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget, imageSetName string) error {
+	jobName := cleanupJobName(mt.Name, imageSetName)
+
+	// Check if job already exists.
+	existing := &batchv1.Job{}
+	if err := r.Get(ctx, client.ObjectKey{Name: jobName, Namespace: mt.Namespace}, existing); err == nil {
+		return nil // already exists
+	}
+
+	backoffLimit := int32(3)
+	ttlAfterFinished := int32(600) // 10 min
+
+	labels := map[string]string{
+		"app.kubernetes.io/managed-by": "oc-mirror-operator",
+		"mirror.openshift.io/cleanup":  imageSetName,
+		"mirrortarget":                 mt.Name,
+	}
+
+	args := []string{
+		"cleanup",
+		"--imageset", imageSetName,
+		"--namespace", mt.Namespace,
+		"--registry", mt.Spec.Registry,
+	}
+	if mt.Spec.Insecure {
+		args = append(args, "--insecure")
+	}
+
+	env := []corev1.EnvVar{}
+	var volumes []corev1.Volume
+	var volumeMounts []corev1.VolumeMount
+
+	if mt.Spec.AuthSecret != "" {
+		volumes = append(volumes, corev1.Volume{
+			Name: "registry-auth",
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: mt.Spec.AuthSecret,
+				},
+			},
+		})
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      "registry-auth",
+			MountPath: "/docker-config",
+			ReadOnly:  true,
+		})
+		env = append(env, corev1.EnvVar{
+			Name:  "DOCKER_CONFIG",
+			Value: "/docker-config",
+		})
+	}
+
+	job := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      jobName,
+			Namespace: mt.Namespace,
+			Labels:    labels,
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(mt, mirrorv1alpha1.GroupVersion.WithKind("MirrorTarget")),
+			},
+		},
+		Spec: batchv1.JobSpec{
+			BackoffLimit:            &backoffLimit,
+			TTLSecondsAfterFinished: &ttlAfterFinished,
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: labels},
+				Spec: corev1.PodSpec{
+					ServiceAccountName: "oc-mirror-coordinator",
+					RestartPolicy:      corev1.RestartPolicyNever,
+					SecurityContext: &corev1.PodSecurityContext{
+						RunAsNonRoot: pointerTo(true),
+						SeccompProfile: &corev1.SeccompProfile{
+							Type: corev1.SeccompProfileTypeRuntimeDefault,
+						},
+					},
+					Containers: []corev1.Container{
+						{
+							Name:  "cleanup",
+							Image: os.Getenv("OPERATOR_IMAGE"),
+							Args:  args,
+							Env:   env,
+							SecurityContext: &corev1.SecurityContext{
+								AllowPrivilegeEscalation: pointerTo(false),
+								Capabilities: &corev1.Capabilities{
+									Drop: []corev1.Capability{"ALL"},
+								},
+							},
+							VolumeMounts: volumeMounts,
+						},
+					},
+					Volumes:      volumes,
+					NodeSelector: mt.Spec.Worker.NodeSelector,
+					Tolerations:  mt.Spec.Worker.Tolerations,
+				},
+			},
+		},
+	}
+
+	return r.Create(ctx, job)
+}
+
+// cleanupJobName returns a deterministic, DNS-safe name for cleanup Jobs.
+func cleanupJobName(targetName, imageSetName string) string {
+	name := "cleanup-" + targetName + "-" + imageSetName
+	if len(name) > 63 {
+		name = name[:63]
+	}
+	return strings.TrimRight(name, "-")
 }
 
 // SetupWithManager sets up the controller with the Manager.

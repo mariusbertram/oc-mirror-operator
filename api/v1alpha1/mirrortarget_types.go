@@ -112,11 +112,29 @@ type MirrorTargetSpec struct {
 	BatchSize int `json:"batchSize,omitempty"`
 }
 
+const (
+	// CleanupPolicyAnnotation controls whether images are deleted from the target
+	// registry when an ImageSet is removed from spec.imageSets.
+	CleanupPolicyAnnotation = "mirror.openshift.io/cleanup-policy"
+	// CleanupPolicyDelete triggers registry image deletion on ImageSet removal.
+	CleanupPolicyDelete = "Delete"
+)
+
 // MirrorTargetStatus defines the observed state of MirrorTarget
 type MirrorTargetStatus struct {
 	// Conditions represent the latest available observations of an object's state
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// KnownImageSets is the last observed list of ImageSets from spec.imageSets.
+	// Used internally to detect removals between reconcile cycles.
+	// +optional
+	KnownImageSets []string `json:"knownImageSets,omitempty"`
+
+	// PendingCleanup lists ImageSet names whose images are currently being
+	// deleted from the target registry by cleanup Jobs.
+	// +optional
+	PendingCleanup []string `json:"pendingCleanup,omitempty"`
 }
 
 // +kubebuilder:object:root=true

@@ -33,11 +33,14 @@ import (
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	corev1 "k8s.io/api/core/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
@@ -48,6 +51,7 @@ import (
 	"github.com/mariusbertram/oc-mirror-operator/internal/controller"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror"
 	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
+	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/imagestate"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/manager"
 	// +kubebuilder:scaffold:imports
 )
@@ -74,6 +78,10 @@ func main() {
 		case "worker":
 			ctrl.SetLogger(zap.New(zap.UseFlagOptions(&zap.Options{Development: true})))
 			runWorker()
+			return
+		case "cleanup":
+			ctrl.SetLogger(zap.New(zap.UseFlagOptions(&zap.Options{Development: true})))
+			runCleanup()
 			return
 		}
 	}
@@ -184,6 +192,102 @@ func buildMirrorClient(insecure bool, firstDest string) *mirrorclient.MirrorClie
 		}
 	}
 	return mirrorclient.NewMirrorClient(insecureHosts, os.Getenv("DOCKER_CONFIG"), destHost)
+}
+
+// runCleanup deletes all images for a removed ImageSet from the target registry
+// and removes the associated image state ConfigMap.
+func runCleanup() {
+	var imageSetName, namespace, registry string
+	var insecure bool
+	fs := flag.NewFlagSet("cleanup", flag.ExitOnError)
+	fs.StringVar(&imageSetName, "imageset", "", "Name of the ImageSet to clean up")
+	fs.StringVar(&namespace, "namespace", "", "Namespace of the ImageSet")
+	fs.StringVar(&registry, "registry", "", "Target registry URL")
+	fs.BoolVar(&insecure, "insecure", false, "Allow insecure registry")
+	fs.Parse(os.Args[2:])
+
+	if imageSetName == "" || namespace == "" || registry == "" {
+		fmt.Fprintln(os.Stderr, "ERROR: --imageset, --namespace, and --registry are required")
+		os.Exit(1)
+	}
+
+	cfg := ctrl.GetConfigOrDie()
+	c, err := client.New(cfg, client.Options{Scheme: scheme})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ERROR: failed to create Kubernetes client: %v\n", err)
+		os.Exit(1)
+	}
+
+	ctx := context.Background()
+
+	// Load the image state for this ImageSet.
+	state, err := imagestate.Load(ctx, c, namespace, imageSetName)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ERROR: failed to load image state for %s: %v\n", imageSetName, err)
+		os.Exit(1)
+	}
+
+	if len(state) == 0 {
+		fmt.Printf("No images found for ImageSet %s — nothing to clean up\n", imageSetName)
+		deleteConfigMap(ctx, c, namespace, imageSetName)
+		os.Exit(0)
+	}
+
+	fmt.Printf("Cleaning up %d images for ImageSet %s from %s\n", len(state), imageSetName, registry)
+
+	// Build a registry client for deletion.
+	mc := buildMirrorClient(insecure, registry)
+
+	var deleted, skipped, failed int
+	// Fresh client every 20 deletes to avoid auth token overflow.
+	const refreshInterval = 20
+	count := 0
+
+	for dest, entry := range state {
+		if entry.State != "Mirrored" {
+			skipped++
+			continue
+		}
+
+		if count > 0 && count%refreshInterval == 0 {
+			mc = buildMirrorClient(insecure, registry)
+		}
+		count++
+
+		delCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		if err := mc.DeleteManifest(delCtx, dest); err != nil {
+			fmt.Fprintf(os.Stderr, "WARN: failed to delete %s: %v\n", dest, err)
+			failed++
+		} else {
+			fmt.Printf("Deleted: %s\n", dest)
+			deleted++
+		}
+		cancel()
+	}
+
+	fmt.Printf("Cleanup complete: %d deleted, %d skipped (not mirrored), %d failed\n", deleted, skipped, failed)
+
+	if failed > 0 {
+		fmt.Fprintf(os.Stderr, "ERROR: %d images could not be deleted\n", failed)
+		os.Exit(1)
+	}
+
+	// All images deleted successfully — remove the ConfigMap.
+	deleteConfigMap(ctx, c, namespace, imageSetName)
+}
+
+func deleteConfigMap(ctx context.Context, c client.Client, namespace, imageSetName string) {
+	cmName := imagestate.ConfigMapName(imageSetName)
+	cm := &corev1.ConfigMap{}
+	cm.Name = cmName
+	cm.Namespace = namespace
+	if err := c.Delete(ctx, cm); err != nil {
+		if !k8serrors.IsNotFound(err) {
+			fmt.Fprintf(os.Stderr, "WARN: failed to delete ConfigMap %s: %v\n", cmName, err)
+		}
+	} else {
+		fmt.Printf("Deleted ConfigMap %s\n", cmName)
+	}
 }
 
 // mirrorOneImage mirrors src→dest with a single retry for transient errors and

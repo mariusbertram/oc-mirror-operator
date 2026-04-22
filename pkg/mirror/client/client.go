@@ -212,6 +212,37 @@ func (c *MirrorClient) ImageConfig(ctx context.Context, r ref.Ref) (*blob.BOCICo
 	return c.rc.ImageConfig(ctx, r, regclient.ImageWithPlatform("linux/amd64"))
 }
 
+// DeleteManifest deletes a manifest (image) from the registry by reference.
+// Tag references are resolved to digests before deletion. Returns nil if the
+// image was already gone (404).
+func (c *MirrorClient) DeleteManifest(ctx context.Context, image string) error {
+	r, err := ref.New(image)
+	if err != nil {
+		return fmt.Errorf("failed to parse reference %s: %w", image, err)
+	}
+
+	// regclient requires a digest to delete; resolve tag→digest via HEAD.
+	if r.Digest == "" {
+		m, err := c.rc.ManifestHead(ctx, r)
+		if err != nil {
+			if errors.Is(err, errs.ErrNotFound) {
+				return nil // already gone
+			}
+			return fmt.Errorf("failed to resolve digest for %s: %w", image, err)
+		}
+		r.Digest = m.GetDescriptor().Digest.String()
+	}
+
+	err = c.rc.ManifestDelete(ctx, r)
+	if err != nil {
+		if errors.Is(err, errs.ErrNotFound) {
+			return nil // already gone
+		}
+		return fmt.Errorf("failed to delete manifest %s: %w", image, err)
+	}
+	return nil
+}
+
 // tempFileReader wraps an os.File and removes the file on Close.
 type tempFileReader struct {
 	*os.File
