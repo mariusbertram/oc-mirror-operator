@@ -252,13 +252,25 @@ func (s *Server) handleSignatures(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listImageSets(ctx context.Context) ([]mirrorv1alpha1.ImageSet, error) {
+	// Find the MirrorTarget to get its imageSets list.
+	mt := &mirrorv1alpha1.MirrorTarget{}
+	if err := s.client.Get(ctx, client.ObjectKey{Name: s.target, Namespace: s.namespace}, mt); err != nil {
+		return nil, fmt.Errorf("failed to get MirrorTarget %s: %w", s.target, err)
+	}
+
 	list := &mirrorv1alpha1.ImageSetList{}
 	if err := s.client.List(ctx, list, client.InNamespace(s.namespace)); err != nil {
 		return nil, err
 	}
+
+	allowed := make(map[string]struct{}, len(mt.Spec.ImageSets))
+	for _, name := range mt.Spec.ImageSets {
+		allowed[name] = struct{}{}
+	}
+
 	var result []mirrorv1alpha1.ImageSet
 	for _, is := range list.Items {
-		if is.Spec.TargetRef == s.target {
+		if _, ok := allowed[is.Name]; ok {
 			result = append(result, is)
 		}
 	}
@@ -267,12 +279,26 @@ func (s *Server) listImageSets(ctx context.Context) ([]mirrorv1alpha1.ImageSet, 
 }
 
 func (s *Server) getImageSet(ctx context.Context, name string) (*mirrorv1alpha1.ImageSet, error) {
+	// Verify the ImageSet is in the MirrorTarget's list.
+	mt := &mirrorv1alpha1.MirrorTarget{}
+	if err := s.client.Get(ctx, client.ObjectKey{Name: s.target, Namespace: s.namespace}, mt); err != nil {
+		return nil, fmt.Errorf("failed to get MirrorTarget %s: %w", s.target, err)
+	}
+
+	found := false
+	for _, isName := range mt.Spec.ImageSets {
+		if isName == name {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil, fmt.Errorf("ImageSet %s is not listed in MirrorTarget %s", name, s.target)
+	}
+
 	is := &mirrorv1alpha1.ImageSet{}
 	if err := s.client.Get(ctx, client.ObjectKey{Name: name, Namespace: s.namespace}, is); err != nil {
 		return nil, err
-	}
-	if is.Spec.TargetRef != s.target {
-		return nil, fmt.Errorf("ImageSet %s does not reference MirrorTarget %s", name, s.target)
 	}
 	return is, nil
 }

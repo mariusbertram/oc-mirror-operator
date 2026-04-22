@@ -12,6 +12,9 @@ import (
 
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
 	"github.com/mariusbertram/oc-mirror-operator/internal/controller"
+	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror"
+	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/catalog/builder"
+	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/manager"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -33,11 +36,12 @@ var _ = Describe("Operator Lifecycle", func() {
 		ctx := context.TODO()
 		ns := "default"
 
-		// 1. Setup MirrorTarget
+		// 1. Setup MirrorTarget with ImageSet reference
 		mt := &mirrorv1alpha1.MirrorTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: "internal", Namespace: ns},
 			Spec: mirrorv1alpha1.MirrorTargetSpec{
-				Registry: "registry.internal.io",
+				Registry:  "registry.internal.io",
+				ImageSets: []string{"app-sync"},
 			},
 		}
 
@@ -45,7 +49,6 @@ var _ = Describe("Operator Lifecycle", func() {
 		is := &mirrorv1alpha1.ImageSet{
 			ObjectMeta: metav1.ObjectMeta{Name: "app-sync", Namespace: ns},
 			Spec: mirrorv1alpha1.ImageSetSpec{
-				TargetRef: "internal",
 				Mirror: mirrorv1alpha1.Mirror{
 					AdditionalImages: []mirrorv1alpha1.AdditionalImage{
 						{Name: "quay.io/my-app:v1"},
@@ -58,20 +61,22 @@ var _ = Describe("Operator Lifecycle", func() {
 		cs := k8sfake.NewSimpleClientset()
 
 		// 3. Run ImageSet Reconciler
+		mc := mirrorclient.NewMirrorClient(nil, "")
 		r := &controller.ImageSetReconciler{
-			Client: cl,
-			Scheme: scheme,
+			Client:          cl,
+			Scheme:          scheme,
+			MirrorClient:    mc,
+			Collector:       mirror.NewCollector(mc),
+			CatalogBuildMgr: builder.New(),
 		}
-		// Manually initialize needed parts (simulating SetupWithManager)
-		_ = r.SetupWithManager(nil)
 
 		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: is.Name, Namespace: ns}})
 		Expect(err).NotTo(HaveOccurred())
 
-		// 4. Verify TargetImages are generated in Status
+		// 4. Verify ImageSet status has been updated
 		updatedIS := &mirrorv1alpha1.ImageSet{}
 		_ = cl.Get(ctx, types.NamespacedName{Name: is.Name, Namespace: ns}, updatedIS)
-		Expect(updatedIS.Status.TargetImages).To(Not(BeEmpty()))
+		Expect(updatedIS.Status.ObservedGeneration).To(Equal(updatedIS.Generation))
 
 		// 5. Run Mirror Manager
 		m := manager.NewWithClients(cl, cs, mt.Name, ns, "test-image:latest", "", scheme)

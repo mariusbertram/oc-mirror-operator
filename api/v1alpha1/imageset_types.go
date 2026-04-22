@@ -6,11 +6,10 @@ import (
 
 // ImageSetSpec defines the desired state of ImageSet
 type ImageSetSpec struct {
-	// TargetRef is a reference to a MirrorTarget CR.
-	TargetRef string `json:"targetRef"`
-
 	// Mirror defines the configuration for content types within the imageset.
 	// This matches the ImageSetConfiguration of oc-mirror.
+	// The ImageSet is associated with a MirrorTarget via the MirrorTarget's
+	// spec.imageSets list — the ImageSet itself does not reference a target.
 	Mirror Mirror `json:"mirror"`
 }
 

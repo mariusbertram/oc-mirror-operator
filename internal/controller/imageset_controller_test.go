@@ -29,17 +29,16 @@ import (
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror"
 	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
-	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/state"
 )
 
 func newImageSetReconciler() *ImageSetReconciler {
 	mc := mirrorclient.NewMirrorClient(nil, "")
 	return &ImageSetReconciler{
-		Client:       k8sClient,
-		Scheme:       k8sClient.Scheme(),
-		MirrorClient: mc,
-		Collector:    mirror.NewCollector(mc),
-		StateManager: state.New(mc),
+		Client:          k8sClient,
+		Scheme:          k8sClient.Scheme(),
+		MirrorClient:    mc,
+		Collector:       mirror.NewCollector(mc),
+		CatalogBuildMgr: nil,
 	}
 }
 
@@ -49,21 +48,20 @@ var _ = Describe("ImageSet Controller", func() {
 		isInterval = 250 * time.Millisecond
 	)
 
-	Context("When MirrorTarget does not exist", func() {
+	Context("When no MirrorTarget references the ImageSet", func() {
 		const resourceName = "is-notarget"
 		ctx := context.Background()
 		namespacedName := types.NamespacedName{Name: resourceName, Namespace: "default"}
 
 		BeforeEach(func() {
-			By("creating an ImageSet referencing a nonexistent MirrorTarget")
+			By("creating an ImageSet that is not referenced by any MirrorTarget")
 			is := &mirrorv1alpha1.ImageSet{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
 					Namespace: "default",
 				},
 				Spec: mirrorv1alpha1.ImageSetSpec{
-					TargetRef: "nonexistent",
-					Mirror:    mirrorv1alpha1.Mirror{},
+					Mirror: mirrorv1alpha1.Mirror{},
 				},
 			}
 			Expect(k8sClient.Create(ctx, is)).To(Succeed())
@@ -76,7 +74,7 @@ var _ = Describe("ImageSet Controller", func() {
 			}
 		})
 
-		It("should return no error and set Ready=False with MirrorTargetNotFound", func() {
+		It("should return no error and set Ready=False with Unbound", func() {
 			reconciler := newImageSetReconciler()
 
 			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
@@ -89,7 +87,7 @@ var _ = Describe("ImageSet Controller", func() {
 					return false
 				}
 				for _, c := range is.Status.Conditions {
-					if c.Type == "Ready" && c.Status == metav1.ConditionFalse && c.Reason == "MirrorTargetNotFound" {
+					if c.Type == "Ready" && c.Status == metav1.ConditionFalse && c.Reason == "Unbound" {
 						return true
 					}
 				}
@@ -108,27 +106,27 @@ var _ = Describe("ImageSet Controller", func() {
 		isNamespacedName := types.NamespacedName{Name: isName, Namespace: "default"}
 
 		BeforeEach(func() {
-			By("creating the MirrorTarget")
+			By("creating the MirrorTarget with the ImageSet in its list")
 			mt := &mirrorv1alpha1.MirrorTarget{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      mtName,
 					Namespace: "default",
 				},
 				Spec: mirrorv1alpha1.MirrorTargetSpec{
-					Registry: "registry.example.com/mirror",
+					Registry:  "registry.example.com/mirror",
+					ImageSets: []string{isName},
 				},
 			}
 			Expect(k8sClient.Create(ctx, mt)).To(Succeed())
 
-			By("creating the ImageSet referencing the MirrorTarget")
+			By("creating the ImageSet")
 			is := &mirrorv1alpha1.ImageSet{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      isName,
 					Namespace: "default",
 				},
 				Spec: mirrorv1alpha1.ImageSetSpec{
-					TargetRef: mtName,
-					Mirror:    mirrorv1alpha1.Mirror{},
+					Mirror: mirrorv1alpha1.Mirror{},
 				},
 			}
 			Expect(k8sClient.Create(ctx, is)).To(Succeed())
@@ -179,7 +177,8 @@ var _ = Describe("ImageSet Controller", func() {
 					Namespace: "default",
 				},
 				Spec: mirrorv1alpha1.MirrorTargetSpec{
-					Registry: "registry.example.com/mirror",
+					Registry:  "registry.example.com/mirror",
+					ImageSets: []string{isName},
 				},
 			}
 			Expect(k8sClient.Create(ctx, mt)).To(Succeed())
@@ -190,8 +189,7 @@ var _ = Describe("ImageSet Controller", func() {
 					Namespace: "default",
 				},
 				Spec: mirrorv1alpha1.ImageSetSpec{
-					TargetRef: mtName,
-					Mirror:    mirrorv1alpha1.Mirror{},
+					Mirror: mirrorv1alpha1.Mirror{},
 				},
 			}
 			Expect(k8sClient.Create(ctx, is)).To(Succeed())

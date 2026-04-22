@@ -43,6 +43,8 @@ spec:
                 description: |-
                   Mirror defines the configuration for content types within the imageset.
                   This matches the ImageSetConfiguration of oc-mirror.
+                  The ImageSet is associated with a MirrorTarget via the MirrorTarget's
+                  spec.imageSets list — the ImageSet itself does not reference a target.
                 properties:
                   additionalImages:
                     description: |-
@@ -317,12 +319,8 @@ spec:
                       type: object
                     type: array
                 type: object
-              targetRef:
-                description: TargetRef is a reference to a MirrorTarget CR.
-                type: string
             required:
             - mirror
-            - targetRef
             type: object
           status:
             description: ImageSetStatus defines the observed state of ImageSet

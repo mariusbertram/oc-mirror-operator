@@ -6,6 +6,11 @@ spec:
   # The URL of your internal registry mirror
   registry: registry.default.svc.cluster.local:5000/mirror
   
+  # List of ImageSet names to mirror to this target
+  imageSets:
+    - ocp-4-15-sync
+    - test-sync-small
+  
   # Optional: reference to a secret with credentials
   # authSecret: internal-registry-credentials
   

@@ -320,7 +320,8 @@ func (m *MirrorManager) reconcile(ctx context.Context) error {
 	}
 
 	for _, is := range imageSets.Items {
-		if is.Spec.TargetRef != m.TargetName {
+		// Only process ImageSets listed in this MirrorTarget's spec.imageSets.
+		if !containsString(mt.Spec.ImageSets, is.Name) {
 			continue
 		}
 
@@ -623,4 +624,13 @@ func (m *MirrorManager) startWorkerBatch(ctx context.Context, mt *mirrorv1alpha1
 
 func pointerTo[T any](v T) *T {
 	return &v
+}
+
+func containsString(slice []string, s string) bool {
+	for _, item := range slice {
+		if item == s {
+			return true
+		}
+	}
+	return false
 }

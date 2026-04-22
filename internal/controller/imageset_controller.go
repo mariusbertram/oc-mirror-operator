@@ -52,16 +52,13 @@ func (r *ImageSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, err
 	}
 
-	// 1. Get MirrorTarget
-	mt := &mirrorv1alpha1.MirrorTarget{}
-	if err := r.Get(ctx, types.NamespacedName{Name: is.Spec.TargetRef, Namespace: is.Namespace}, mt); err != nil {
-		if errors.IsNotFound(err) {
-			l.Error(err, "MirrorTarget not found", "targetRef", is.Spec.TargetRef)
-			setCondition(&is.Status.Conditions, "Ready", metav1.ConditionFalse, "MirrorTargetNotFound", "MirrorTarget "+is.Spec.TargetRef+" not found")
-			_ = r.Status().Update(ctx, is)
-			return ctrl.Result{RequeueAfter: 1 * time.Minute}, nil
-		}
-		return ctrl.Result{}, err
+	// 1. Find the MirrorTarget(s) that reference this ImageSet via spec.imageSets.
+	mt, err := r.findOwningMirrorTarget(ctx, is)
+	if err != nil {
+		l.Info("No MirrorTarget references this ImageSet", "imageSet", is.Name, "reason", err.Error())
+		setCondition(&is.Status.Conditions, "Ready", metav1.ConditionFalse, "Unbound", err.Error())
+		_ = r.Status().Update(ctx, is)
+		return ctrl.Result{RequeueAfter: 1 * time.Minute}, nil
 	}
 
 	// 2. Ensure a CatalogBuildJob exists for each configured operator catalog.
@@ -136,6 +133,39 @@ func (r *ImageSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// findOwningMirrorTarget returns the single MirrorTarget that references this
+// ImageSet in its spec.imageSets list. Returns an error when zero or more than
+// one MirrorTarget references the ImageSet (ambiguous ownership).
+func (r *ImageSetReconciler) findOwningMirrorTarget(ctx context.Context, is *mirrorv1alpha1.ImageSet) (*mirrorv1alpha1.MirrorTarget, error) {
+	mtList := &mirrorv1alpha1.MirrorTargetList{}
+	if err := r.List(ctx, mtList, client.InNamespace(is.Namespace)); err != nil {
+		return nil, fmt.Errorf("failed to list MirrorTargets: %w", err)
+	}
+
+	var matches []*mirrorv1alpha1.MirrorTarget
+	for i := range mtList.Items {
+		for _, name := range mtList.Items[i].Spec.ImageSets {
+			if name == is.Name {
+				matches = append(matches, &mtList.Items[i])
+				break
+			}
+		}
+	}
+
+	switch len(matches) {
+	case 0:
+		return nil, fmt.Errorf("no MirrorTarget references ImageSet %s", is.Name)
+	case 1:
+		return matches[0], nil
+	default:
+		names := make([]string, len(matches))
+		for i, m := range matches {
+			names[i] = m.Name
+		}
+		return nil, fmt.Errorf("ImageSet %s is referenced by multiple MirrorTargets (%s); each ImageSet may only be in one MirrorTarget", is.Name, strings.Join(names, ", "))
+	}
 }
 
 // reconcileCatalogBuildJobs ensures a Kubernetes Job exists for each operator
@@ -311,21 +341,19 @@ func (r *ImageSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(
 			&mirrorv1alpha1.MirrorTarget{},
 			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
-				// Requeue all ImageSets that reference this MirrorTarget
-				imageSets := &mirrorv1alpha1.ImageSetList{}
-				if err := mgr.GetClient().List(ctx, imageSets, client.InNamespace(obj.GetNamespace())); err != nil {
+				mt, ok := obj.(*mirrorv1alpha1.MirrorTarget)
+				if !ok {
 					return nil
 				}
+				// Requeue all ImageSets listed in this MirrorTarget's spec.imageSets.
 				var requests []reconcile.Request
-				for _, is := range imageSets.Items {
-					if is.Spec.TargetRef == obj.GetName() {
-						requests = append(requests, reconcile.Request{
-							NamespacedName: types.NamespacedName{
-								Name:      is.Name,
-								Namespace: is.Namespace,
-							},
-						})
-					}
+				for _, isName := range mt.Spec.ImageSets {
+					requests = append(requests, reconcile.Request{
+						NamespacedName: types.NamespacedName{
+							Name:      isName,
+							Namespace: mt.Namespace,
+						},
+					})
 				}
 				return requests
 			}),

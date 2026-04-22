@@ -87,7 +87,9 @@ metadata:
 spec:
   registry: registry.default.svc.cluster.local:5000/mirror
   insecure: true
-`, targetName)
+  imageSets:
+    - %s
+`, targetName, imageSetName)
 			cmd := exec.Command("kubectl", "apply", "-f", "-")
 			cmd.Stdin = strings.NewReader(mirrorTargetYaml)
 			_, err := utils.Run(cmd)
@@ -100,11 +102,10 @@ kind: ImageSet
 metadata:
   name: %s
 spec:
-  targetRef: %s
   mirror:
     additionalImages:
       - name: docker.io/library/alpine:latest
-`, imageSetName, targetName)
+`, imageSetName)
 			cmd = exec.Command("kubectl", "apply", "-f", "-")
 			cmd.Stdin = strings.NewReader(imageSetYaml)
 			_, err = utils.Run(cmd)

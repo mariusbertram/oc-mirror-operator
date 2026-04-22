@@ -305,6 +305,12 @@ spec:
   # Ziel-Registry inkl. Basis-Pfad (Pflicht)
   registry: "registry.example.com/mirror"
 
+  # Liste der ImageSets, die in dieses Target gespiegelt werden (Pflicht)
+  # Jedes ImageSet darf nur in einem MirrorTarget referenziert werden.
+  imageSets:
+    - ocp-4-21-sync
+    - additional-tools
+
   # Referenz auf ein Secret mit Registry-Credentials (empfohlen)
   authSecret: "target-registry-creds"
 
@@ -336,7 +342,9 @@ spec:
 
 ### ImageSet
 
-Definiert welche Inhalte gespiegelt werden sollen.
+Definiert welche Inhalte gespiegelt werden sollen. Ein ImageSet wird über das
+`imageSets`-Feld des MirrorTargets zugeordnet — es enthält selbst keinen
+Verweis auf ein Ziel.
 
 ```yaml
 apiVersion: mirror.openshift.io/v1alpha1
@@ -345,8 +353,6 @@ metadata:
   name: ocp-4-21-sync
   namespace: oc-mirror-system
 spec:
-  targetRef: "internal-registry"
-
   mirror:
     # OpenShift / OKD Platform Releases
     platform:

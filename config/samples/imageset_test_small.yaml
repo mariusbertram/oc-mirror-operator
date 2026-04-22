@@ -3,7 +3,6 @@ kind: ImageSet
 metadata:
   name: test-sync-small
 spec:
-  targetRef: internal-registry
   mirror:
     additionalImages:
       - name: docker.io/library/alpine:latest

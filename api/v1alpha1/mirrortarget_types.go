@@ -67,6 +67,12 @@ type MirrorTargetSpec struct {
 	// Registry is the URL of the target registry (e.g. registry.example.com/mirror)
 	Registry string `json:"registry"`
 
+	// ImageSets is the list of ImageSet names that should be mirrored to this target.
+	// Each ImageSet must be in the same namespace as the MirrorTarget.
+	// An ImageSet may only be referenced by a single MirrorTarget.
+	// +optional
+	ImageSets []string `json:"imageSets,omitempty"`
+
 	// Insecure allows connecting to the registry without TLS or with self-signed certs
 	// +optional
 	Insecure bool `json:"insecure,omitempty"`

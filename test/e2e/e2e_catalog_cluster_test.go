@@ -99,7 +99,7 @@ var _ = Describe("Catalog Build Job E2E", Ordered, Label("cluster"), func() {
 
 	Context("CatalogBuildJob lifecycle", func() {
 		It("should create a CatalogBuildJob when an ImageSet specifies an operator catalog", func() {
-			By("creating the MirrorTarget")
+			By("creating the MirrorTarget with the ImageSet in its list")
 			mtYAML := fmt.Sprintf(`
 apiVersion: mirror.openshift.io/v1alpha1
 kind: MirrorTarget
@@ -109,7 +109,9 @@ metadata:
 spec:
   registry: %s/mirror
   insecure: true
-`, targetName, ns, registryHost)
+  imageSets:
+    - %s
+`, targetName, ns, registryHost, imageSetName)
 			cmd := exec.Command("kubectl", "apply", "-f", "-")
 			cmd.Stdin = strings.NewReader(mtYAML)
 			_, err := utils.Run(cmd)
@@ -123,13 +125,12 @@ metadata:
   name: %s
   namespace: %s
 spec:
-  targetRef: %s
   mirror:
     operators:
       - catalog: %s
         packages:
           - name: %s
-`, imageSetName, ns, targetName, sourceCatalog, catalogPackage)
+`, imageSetName, ns, sourceCatalog, catalogPackage)
 			cmd = exec.Command("kubectl", "apply", "-f", "-")
 			cmd.Stdin = strings.NewReader(isYAML)
 			_, err = utils.Run(cmd)

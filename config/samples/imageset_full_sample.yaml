@@ -3,9 +3,6 @@ kind: ImageSet
 metadata:
   name: ocp-4-15-sync
 spec:
-  # Reference to the MirrorTarget defined above
-  targetRef: internal-registry
-  
   mirror:
     # OpenShift Platform Release
     platform:

@@ -99,6 +99,14 @@ spec:
                     - Service
                     type: string
                 type: object
+              imageSets:
+                description: |-
+                  ImageSets is the list of ImageSet names that should be mirrored to this target.
+                  Each ImageSet must be in the same namespace as the MirrorTarget.
+                  An ImageSet may only be referenced by a single MirrorTarget.
+                items:
+                  type: string
+                type: array
               insecure:
                 description: Insecure allows connecting to the registry without TLS
                   or with self-signed certs
