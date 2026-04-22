@@ -616,15 +616,18 @@ Worker-Pods authentifizieren sich am Manager-Status-Endpoint via **Bearer Token*
 Das `authSecret` wird als Volume (`/docker-config/config.json`) in Manager- und Worker-Pods gemountet (nur der Key `config.json` wird projiziert, andere Schlüssel im Secret bleiben unsichtbar). Der Manager benötigt Lesezugriff für Drift-Detection (CheckExist), Worker benötigen Lese-/Schreibzugriff für das eigentliche Mirroring.
 
 ### NetworkPolicies
-Pro `MirrorTarget` werden vom Operator drei `NetworkPolicy`-Objekte im User-Namespace erzeugt (mit OwnerReference auf das `MirrorTarget`, damit sie automatisch gelöscht werden):
+Pro `MirrorTarget` werden vom Operator zwei `NetworkPolicy`-Objekte im User-Namespace erzeugt (mit OwnerReference auf das `MirrorTarget`, damit sie automatisch gelöscht werden):
 
 | Policy | Selektor | Effekt |
 |--------|----------|--------|
 | `<name>-manager-ingress` | `app=oc-mirror-manager,mirrortarget=<name>` | Ingress nur von Worker-Pods desselben `MirrorTarget` auf TCP 8080 (Status-API) und 8081 (Resource-Server) |
-| `<name>-worker-ingress-deny` | `app=oc-mirror-worker,mirrortarget=<name>` | Verweigert sämtlichen Ingress-Traffic zu Worker-Pods |
-| `<name>-worker-egress` | `app=oc-mirror-worker,mirrortarget=<name>` | Erlaubt DNS (UDP/TCP 53), Traffic zum Manager-Pod (8080/8081) und Egress ins Internet (`0.0.0.0/0` außer RFC1918 `10/8`, `172.16/12`, `192.168/16`) für Registry-Zugriff |
+| `<name>-worker-ingress-deny` | `app=oc-mirror-worker,mirrortarget=<name>` | Verweigert sämtlichen Ingress-Traffic zu Worker-Pods (Workers sind reine Clients) |
 
-> **Hinweis:** Die Egress-Policy geht davon aus, dass der Cluster RFC1918-Adressen verwendet. In Clustern mit anderen internen CIDRs muss die Allow-Range entsprechend angepasst werden.
+Beide Policies regeln nur **internen** Cluster-Traffic und sind damit unabhängig von der konkreten Cluster-Topologie (DNS-Service-CIDR, Pod-CIDR, Node-Local Resolver).
+
+> **Hinweis zum Worker-Egress:** Frühere Versionen des Operators erzeugten zusätzlich eine `<name>-worker-egress`-Policy mit "DNS + Manager + Internet (außer RFC1918)". Diese Policy wurde entfernt, weil sich nicht zuverlässig vorhersagen lässt, wo ein Cluster seine DNS-Auflösung hat (Service-CIDR, openshift-dns Pod-CIDR, Node-Local CoreDNS, externer Resolver) und ob die Ziel-Registry in einem RFC1918-Bereich liegt — die Policy verursachte DNS-Timeouts in vielen Cluster-Topologien. Eine alte Policy aus früheren Deployments wird vom Reconciler automatisch entfernt.
+>
+> Wer Worker-Egress dennoch einschränken möchte, kann eine eigene `NetworkPolicy` mit dem Selektor `app=oc-mirror-worker,mirrortarget=<name>` und dem für die jeweilige Infrastruktur passenden Egress-Allow-Set anlegen.
 
 ### Status-Conditions
 

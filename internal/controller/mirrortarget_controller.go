@@ -461,10 +461,8 @@ func (r *MirrorTargetReconciler) ensureNetworkPolicies(ctx context.Context, mt *
 	}
 
 	tcp := corev1.ProtocolTCP
-	udp := corev1.ProtocolUDP
 	statusPort := intstr.FromInt(8080)
 	resourcesPort := intstr.FromInt(8081)
-	dnsPort := intstr.FromInt(53)
 
 	policies := []*networkingv1.NetworkPolicy{
 		// 1. Default-deny ingress for the manager pods. Only worker pods of the
@@ -509,61 +507,14 @@ func (r *MirrorTargetReconciler) ensureNetworkPolicies(ctx context.Context, mt *
 				// Empty ingress slice = deny all.
 			},
 		},
-		// 3. Egress allow-list for worker pods: DNS + manager pods. All other
-		// egress (e.g. external registries) is implicitly allowed because we
-		// also include "to: {}" for non-cluster traffic via 0.0.0.0/0 with
-		// kube-apiserver excluded. Note: worker still needs to reach the
-		// kube-apiserver for status updates? No — workers only talk to the
-		// manager via HTTP, not the API server. So we *only* allow DNS, the
-		// manager pods, and the public Internet. Cluster-internal traffic
-		// (other than DNS + manager) is denied.
-		{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:            mt.Name + "-worker-egress",
-				Namespace:       mt.Namespace,
-				OwnerReferences: owner,
-				Labels:          map[string]string{"app.kubernetes.io/managed-by": "oc-mirror-operator"},
-			},
-			Spec: networkingv1.NetworkPolicySpec{
-				PodSelector: workerSelector,
-				PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress},
-				Egress: []networkingv1.NetworkPolicyEgressRule{
-					// DNS to kube-system (works on most distros, incl. OpenShift
-					// where dns-default also lives in openshift-dns; users can
-					// add their own NetPol if needed).
-					{
-						To: []networkingv1.NetworkPolicyPeer{
-							{NamespaceSelector: &metav1.LabelSelector{}},
-						},
-						Ports: []networkingv1.NetworkPolicyPort{
-							{Protocol: &udp, Port: &dnsPort},
-							{Protocol: &tcp, Port: &dnsPort},
-						},
-					},
-					// Manager pods inside this namespace.
-					{
-						To: []networkingv1.NetworkPolicyPeer{
-							{PodSelector: &managerSelector},
-						},
-						Ports: []networkingv1.NetworkPolicyPort{
-							{Protocol: &tcp, Port: &statusPort},
-							{Protocol: &tcp, Port: &resourcesPort},
-						},
-					},
-					// Anything outside the cluster pod CIDR (registries).
-					// We use IPBlock 0.0.0.0/0 minus typical pod CIDRs as a
-					// conservative default; users can override.
-					{
-						To: []networkingv1.NetworkPolicyPeer{
-							{IPBlock: &networkingv1.IPBlock{
-								CIDR:   "0.0.0.0/0",
-								Except: []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"},
-							}},
-						},
-					},
-				},
-			},
-		},
+		// NOTE: A worker-egress policy was previously generated here that
+		// restricted worker egress to "DNS + manager + 0.0.0.0/0 except
+		// RFC1918". It was removed because it is impossible to know in
+		// advance how a target cluster routes DNS (Service-CIDR vs Pod-CIDR
+		// vs node-local resolver) and which non-RFC1918 ranges hold the
+		// upstream registries. Operators that want to lock down worker egress
+		// should author their own NetworkPolicy tailored to their cluster
+		// topology — see README.md for an example.
 	}
 
 	for _, np := range policies {
@@ -578,6 +529,20 @@ func (r *MirrorTargetReconciler) ensureNetworkPolicies(ctx context.Context, mt *
 			return nil
 		}); err != nil {
 			return fmt.Errorf("failed to ensure NetworkPolicy %s: %w", desired.Name, err)
+		}
+	}
+
+	// Clean up obsolete NetworkPolicies that earlier versions of the operator
+	// created. The worker-egress policy was removed because it cannot make
+	// safe assumptions about a cluster's DNS topology; if it still exists
+	// from a previous deployment, delete it now.
+	obsolete := []string{mt.Name + "-worker-egress"}
+	for _, name := range obsolete {
+		stale := &networkingv1.NetworkPolicy{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: mt.Namespace},
+		}
+		if err := r.Client.Delete(ctx, stale); err != nil && !errors.IsNotFound(err) {
+			return fmt.Errorf("failed to delete obsolete NetworkPolicy %s: %w", name, err)
 		}
 	}
 	return nil

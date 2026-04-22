@@ -31,6 +31,68 @@ import (
 // configsPath is the standard FBC directory inside a catalog image.
 const configsPath = "configs/"
 
+// cachePath is the path opm uses for its pre-built pogreb cache. Source
+// catalog images ship a pre-built cache here that is keyed to the unfiltered
+// catalog content; once we replace /configs the cache is stale, so any layer
+// that contains it must be either skipped or whited out.
+const cachePath = "tmp/cache/"
+
+// classifyLayer streams a gzipped tar layer and returns true when *every*
+// regular-file entry in the layer lies under either configsPath or cachePath.
+// Such layers can be safely skipped when building a filtered catalog overlay,
+// because the new overlay layer fully replaces both directories. Directory
+// entries are ignored (a layer that only ships directories has no payload to
+// preserve). Hardlinks/symlinks targeting outside paths are treated as
+// non-skippable to stay on the safe side.
+//
+// totalSize is the sum of regular-file sizes inside configs/ + tmp/cache/
+// (used only for logging).
+//
+// firstReject (when non-empty) is the first tar entry name that disqualified
+// the layer from being skippable — useful for diagnostic logging.
+func classifyLayer(r io.Reader) (skippable bool, totalSize int64, firstReject string, err error) {
+	gz, err := gzip.NewReader(r)
+	if err != nil {
+		return false, 0, "", fmt.Errorf("gzip: %w", err)
+	}
+	defer gz.Close()
+
+	tr := tar.NewReader(gz)
+	sawAny := false
+	for {
+		hdr, nextErr := tr.Next()
+		if nextErr == io.EOF {
+			break
+		}
+		if nextErr != nil {
+			return false, 0, "", fmt.Errorf("tar: %w", nextErr)
+		}
+
+		name := strings.TrimPrefix(hdr.Name, "./")
+
+		// Pure directory entries carry no payload — ignore for classification.
+		if hdr.Typeflag == tar.TypeDir {
+			continue
+		}
+
+		// Anything outside the two known FBC paths disqualifies the layer.
+		if !strings.HasPrefix(name, configsPath) && !strings.HasPrefix(name, cachePath) {
+			return false, 0, name, nil
+		}
+
+		// Refuse to skip layers that contain hardlinks/symlinks (their targets
+		// could escape configs/) or other non-regular file types.
+		if hdr.Typeflag != tar.TypeReg {
+			return false, 0, name + " (non-regular file)", nil
+		}
+
+		sawAny = true
+		totalSize += hdr.Size
+	}
+
+	return sawAny, totalSize, "", nil
+}
+
 type CatalogResolver struct {
 	client *mirrorclient.MirrorClient
 }
@@ -417,11 +479,71 @@ func (r *CatalogResolver) BuildFilteredCatalogImage(ctx context.Context, sourceC
 	if err != nil {
 		return "", fmt.Errorf("failed to get source layers: %w", err)
 	}
+	srcDiffIDs := srcConfig.GetConfig().RootFS.DiffIDs
+	if len(srcDiffIDs) != len(srcLayers) {
+		return "", fmt.Errorf("manifest/config mismatch: %d layers vs %d diff_ids in %s",
+			len(srcLayers), len(srcDiffIDs), sourceCatalogImage)
+	}
 	fmt.Printf("Source catalog %s: %d layers\n", sourceCatalogImage, len(srcLayers))
 
-	// 5. Copy ALL source layers to target (cross-repo mount if same registry).
+	// 4a. Classify each source layer. Layers whose entire payload lives under
+	// configs/ or tmp/cache/ are wholly replaced by our new filtered overlay
+	// and can be skipped both at copy time (saves bandwidth & storage in the
+	// target registry) and in the resulting manifest. The corresponding
+	// diff_id is dropped from the new image config so manifest and config stay
+	// in sync.
+	keptLayers := make([]descriptor.Descriptor, 0, len(srcLayers))
+	keptDiffIDs := make([]godigest.Digest, 0, len(srcDiffIDs))
+	var skippedCount int
+	var skippedBytes int64
 	for i, layer := range srcLayers {
-		fmt.Printf("Copying source layer %d/%d (%s, %d bytes)\n", i+1, len(srcLayers), layer.Digest.String()[:16], layer.Size)
+		blobRdr, blobErr := r.client.BlobGet(ctx, srcRef, layer)
+		if blobErr != nil {
+			// If we cannot inspect the layer, fall back to copying it (safe
+			// default — the original whiteout-overlay still works).
+			slog.WarnContext(ctx, "cannot classify source layer, will copy",
+				"image", sourceCatalogImage, "digest", layer.Digest.String(), "error", blobErr)
+			keptLayers = append(keptLayers, layer)
+			keptDiffIDs = append(keptDiffIDs, srcDiffIDs[i])
+			continue
+		}
+		skip, sz, firstReject, classifyErr := classifyLayer(blobRdr)
+		_ = blobRdr.Close()
+		if classifyErr != nil {
+			slog.WarnContext(ctx, "layer classification failed, will copy",
+				"image", sourceCatalogImage, "digest", layer.Digest.String(), "error", classifyErr)
+			keptLayers = append(keptLayers, layer)
+			keptDiffIDs = append(keptDiffIDs, srcDiffIDs[i])
+			continue
+		}
+		if skip {
+			skippedCount++
+			skippedBytes += layer.Size
+			slog.InfoContext(ctx, "skipping source FBC/cache-only layer",
+				"image", sourceCatalogImage,
+				"digest", layer.Digest.String(),
+				"compressed_bytes", layer.Size,
+				"uncompressed_bytes", sz)
+			continue
+		}
+		slog.InfoContext(ctx, "keeping source layer (non-FBC content)",
+			"image", sourceCatalogImage,
+			"digest", layer.Digest.String(),
+			"compressed_bytes", layer.Size,
+			"first_non_fbc_entry", firstReject)
+		keptLayers = append(keptLayers, layer)
+		keptDiffIDs = append(keptDiffIDs, srcDiffIDs[i])
+	}
+	if skippedCount > 0 {
+		slog.InfoContext(ctx, "filtered catalog: dropped fully-replaced source layers",
+			"skipped_layers", skippedCount,
+			"kept_layers", len(keptLayers),
+			"saved_compressed_bytes", skippedBytes)
+	}
+
+	// 5. Copy the kept source layers to target (cross-repo mount when same registry).
+	for i, layer := range keptLayers {
+		fmt.Printf("Copying source layer %d/%d (%s, %d bytes)\n", i+1, len(keptLayers), layer.Digest.String()[:16], layer.Size)
 		if err := r.client.BlobCopy(ctx, srcRef, destRef, layer); err != nil {
 			return "", fmt.Errorf("failed to copy source layer %d (%s): %w", i, layer.Digest, err)
 		}
@@ -458,9 +580,10 @@ func (r *CatalogResolver) BuildFilteredCatalogImage(ctx context.Context, sourceC
 		return "", fmt.Errorf("failed to push FBC layer blob: %w", err)
 	}
 
-	// 9. Build new image config: keep source config, append our diff_id.
+	// 9. Build new image config: keep source config, replace RootFS.DiffIDs
+	// with the kept ones plus our new layer's diff_id.
 	imgCfg := srcConfig.GetConfig()
-	imgCfg.RootFS.DiffIDs = append(imgCfg.RootFS.DiffIDs, uncompressedDigest)
+	imgCfg.RootFS.DiffIDs = append(append([]godigest.Digest{}, keptDiffIDs...), uncompressedDigest)
 	// Ensure the OLM catalog label is set.
 	if imgCfg.Config.Labels == nil {
 		imgCfg.Config.Labels = make(map[string]string)
@@ -489,10 +612,10 @@ func (r *CatalogResolver) BuildFilteredCatalogImage(ctx context.Context, sourceC
 		return "", fmt.Errorf("failed to push image config blob: %w", err)
 	}
 
-	// 11. Build manifest: all source layers + our FBC layer, new config.
-	allLayers := make([]descriptor.Descriptor, len(srcLayers)+1)
-	copy(allLayers, srcLayers)
-	allLayers[len(srcLayers)] = layerDesc
+	// 11. Build manifest: kept source layers + our FBC layer, new config.
+	allLayers := make([]descriptor.Descriptor, len(keptLayers)+1)
+	copy(allLayers, keptLayers)
+	allLayers[len(keptLayers)] = layerDesc
 
 	ociM := v1.Manifest{
 		Versioned: v1.ManifestSchemaVersion,
@@ -511,8 +634,8 @@ func (r *CatalogResolver) BuildFilteredCatalogImage(ctx context.Context, sourceC
 		return "", fmt.Errorf("failed to push catalog manifest to %s: %w", targetRef, err)
 	}
 
-	fmt.Printf("Catalog image pushed: %s (source layers: %d, filtered packages: %d)\n",
-		targetRef, len(srcLayers), len(filtered.Packages))
+	fmt.Printf("Catalog image pushed: %s (source layers kept: %d/%d, filtered packages: %d)\n",
+		targetRef, len(keptLayers), len(srcLayers), len(filtered.Packages))
 	return m.GetDescriptor().Digest.String(), nil
 }
 
