@@ -31,6 +31,8 @@ Im Gegensatz zum statischen `oc-mirror` CLI-Tool arbeitet dieser Operator cloud-
 | **Per-Image Timeout** | ✗ | ✅ | 20 Min. Timeout pro Image-Mirror verhindert, dass steckengebliebene Uploads den Worker blockieren |
 | **Automatische Retries** | ✗ | ✅ | Bis zu 10 Wiederholungen pro Image bei Fehlern |
 | **Kontinuierliches Mirroring** | ✗ | ✅ | Reconcile-Loop alle 30s — neue Images werden automatisch erkannt und gespiegelt |
+| **Periodisches Upstream-Polling** | ✗ | ✅ | Konfigurierbares `pollInterval` (Default: 24h) prüft periodisch ob neue Releases oder Operator-Versionen verfügbar sind. Fehlgeschlagene Images werden beim nächsten Poll automatisch erneut versucht |
+| **Image-Cleanup bei Entfernung** | ✗ | ✅ | Annotation-gesteuertes Löschen: beim Entfernen eines ImageSets oder bei Spec-Änderungen (Operator entfernt, Version-Range eingeschränkt) werden nicht mehr benötigte Images via Cleanup-Job aus der Registry gelöscht |
 | **Deklarativ via CRDs** | ✗ | ✅ | `MirrorTarget` (Ziel + ImageSet-Liste) + `ImageSet` (Inhalts-Definition) Custom Resources |
 | **Skalierbare Worker-Pods** | ✗ | ✅ | Konfigurierbare Concurrency (bis 100 Pods) und BatchSize (bis 100 Images/Pod) |
 | **Ephemeral-Volume Blob-Buffering** | ✗ | ✅ | Große Blobs (>100 MiB) werden auf emptyDir gepuffert — kein OOM bei Multi-GB Layern |
@@ -57,7 +59,6 @@ Im Gegensatz zum statischen `oc-mirror` CLI-Tool arbeitet dieser Operator cloud-
 | **Enclave Support** | ✅ | ❌ | Kein Konzept für Air-Gap-Transfer über Datenträger — der Operator benötigt Netzwerkzugang zu Quell- und Ziel-Registry |
 | **UpdateService CR** | ✅ | ❌ | `oc-mirror` generiert ein UpdateService CR für OSUS — nicht implementiert |
 | **Cincinnati Graph Data** | ✅ | ❌ | `platform.graph: true` Feld existiert, Graph-Daten werden aber nicht in die Ziel-Registry gepusht |
-| **Pruning / Image-Bereinigung** | ✅ | ❌ | Kein automatisches Löschen veralteter Images aus der Ziel-Registry |
 | **Samples** | ✅ | ❌ | API-Feld existiert, explizit als "not implemented" markiert |
 
 ### Operator-spezifische Features (kein Äquivalent in oc-mirror CLI)
@@ -72,6 +73,7 @@ Im Gegensatz zum statischen `oc-mirror` CLI-Tool arbeitet dieser Operator cloud-
 | **Namespace-scoped RBAC** | Keine ClusterRole — alle Rechte auf den Operator-Namespace begrenzt |
 | **Registry-Existenz-Check** | Periodische Prüfung ob Images in der Ziel-Registry noch vorhanden sind |
 | **Quay-Kompatibilität** | Spezielles Blob-Buffering für Quay-Registries (Upload-Session-Timeout-Workaround) |
+| **Auth-Token-Refresh** | Automatischer Registry-Client-Reset alle 20 Operationen in Drift-Detection, Worker-Batches und Cleanup-Jobs — verhindert Quay-nginx 8KB-Header-Overflow |
 | **Blob-Replikationsplanung** | Greedy-Set-Cover optimiert Mirror-Reihenfolge: Shared-Layer werden zuerst gepusht → Folge-Images nutzen Blob-Mount (Zero-Copy) |
 | **Catalog-Build-Signatur** | SHA256-Hash über Operator-Image + Katalog + Package-Liste erkennt automatisch wann ein Rebuild nötig ist |
 | **Resource Server (HTTP-API)** | Stellt IDMS/ITMS, CatalogSource, ClusterCatalog und Signatur-ConfigMaps per REST bereit — Route (OpenShift), Ingress oder Service |
@@ -94,19 +96,19 @@ Die Architektur folgt einem skalierbaren **Drei-Schichten-Modell** mit **Catalog
 │                                 └──────┬──────────────┬────────┘    │
 │                                        │ creates      │ creates     │
 │                                        │ Deployment   │ Job         │
-│                                        │ Service ×2   │             │
-│                                        │ Route/Ingress│             │
+│                                        │ Service ×2   │ (Catalog/   │
+│                                        │ Route/Ingress│  Cleanup)   │
 │                                        ▼              ▼             │
 │                  ┌────────────────────────┐  ┌────────────────────┐ │
-│                  │ Manager Pod            │  │ Catalog-Builder    │ │
-│                  │ pkg/mirror/manager/    │  │ Job                │ │
+│                  │ Manager Pod            │  │ Catalog-Builder /  │ │
+│                  │ pkg/mirror/manager/    │  │ Cleanup Job        │ │
 │                  │                        │  │ cmd/catalog-builder│ │
-│                  │ • Lädt Image-State     │  │                    │ │
+│                  │ • Lädt Image-State     │  │ cmd/main.go        │ │
 │                  │ • Verwaltet Worker-Q   │  │ • Filtert FBC      │ │
 │                  │ • HTTP Status-API :8080│  │ • Löst Deps auf    │ │
 │                  │ • Resource Server :8081│  │ • Baut OCI-Image   │ │
 │                  │ • Registry-Verifikation│  │ • Pusht Catalog    │ │
-│                  │ • Worker-Pod-Cleanup   │  │                    │ │
+│                  │ • Worker-Pod-Cleanup   │  │ • Löscht Images    │ │
 │                  └──────┬────────┬───┬────┘  └────────────────────┘ │
 │                         │creates │   │ :8081                        │
 │                         │Pods    │   ▼                              │
@@ -134,7 +136,7 @@ Die Architektur folgt einem skalierbaren **Drei-Schichten-Modell** mit **Catalog
 
 | Schicht | Komponente | Beschreibung |
 |---------|------------|-------------|
-| **Control Plane** | `Operator` (`internal/controller/`) | Überwacht CRs, berechnet Image-Soll-Listen via Cincinnati-API und FBC-Parsing, erstellt Catalog-Build-Jobs, setzt Status-Conditions |
+| **Control Plane** | `Operator` (`internal/controller/`) | Überwacht CRs, berechnet Image-Soll-Listen via Cincinnati-API und FBC-Parsing, erstellt Catalog-Build-Jobs und Cleanup-Jobs, periodisches Upstream-Polling, setzt Status-Conditions |
 | **Orchestration** | `Manager` (`pkg/mirror/manager/`) | Ein Deployment pro `MirrorTarget`. Lädt Image-State, plant Mirror-Reihenfolge (Blob-Planner), startet Worker-Pods, empfängt Ergebnisse via authentifizierter HTTP-API (:8080), verifiziert Registry-Zustand, bereinigt abgeschlossene Pods |
 | **Resource Server** | `Resource Server` (`pkg/mirror/resources/`) | Integriert im Manager-Pod auf Port :8081. Stellt IDMS, ITMS, CatalogSource, ClusterCatalog und Signatur-ConfigMaps per HTTP-REST bereit. Exponiert via Route (OpenShift), Ingress oder Service |
 | **Execution** | `Worker` (kurzlebige Pods) | Kopiert Image-Batches mit `regclient`, puffert große Blobs auf emptyDir, kopiert Signaturen, meldet Status via `POST /status` |
@@ -151,6 +153,8 @@ Die Architektur folgt einem skalierbaren **Drei-Schichten-Modell** mit **Catalog
 6. **Worker** kopiert Images (inkl. Signaturen und Referrers), puffert große Blobs auf Ephemeral Volume und meldet Ergebnisse via `POST /status` an den Manager
 7. Manager bereinigt abgeschlossene/fehlgeschlagene Worker-Pods und aktualisiert Image-State und `ImageSet.Status`
 8. **Resource Server** (Port 8081 im Manager-Pod) stellt Cluster-Ressourcen per HTTP bereit — IDMS, ITMS, CatalogSource, ClusterCatalog und Signatur-ConfigMaps werden erst ausgeliefert wenn das jeweilige ImageSet den Status `Ready` hat
+9. **Periodisches Polling**: Operator prüft in konfigurierbarem Intervall (`pollInterval`, Default: 24h) ob Upstream-Quellen (Cincinnati, Kataloge) neue Images enthalten und triggert bei Bedarf erneute Collection + Catalog-Rebuild
+10. **Image-Cleanup**: Beim Entfernen eines ImageSets aus dem MirrorTarget oder bei Spec-Änderungen (z.B. Operator entfernt) erstellt der Operator Cleanup-Jobs, die nicht mehr benötigte Images aus der Ziel-Registry löschen (Annotation-gesteuert)
 
 ---
 
@@ -302,6 +306,9 @@ kind: MirrorTarget
 metadata:
   name: internal-registry
   namespace: oc-mirror-system
+  annotations:
+    # Opt-in: Images automatisch löschen bei Entfernung (Default: kein Cleanup)
+    mirror.openshift.io/cleanup-policy: Delete
 spec:
   # Ziel-Registry inkl. Basis-Pfad (Pflicht)
   registry: "registry.example.com/mirror"
@@ -317,6 +324,10 @@ spec:
 
   # Für Registries mit self-signed Zertifikaten
   insecure: false
+
+  # Upstream-Polling-Intervall (Default: 24h, Min: 1h, 0 = deaktiviert)
+  # Prüft periodisch ob neue Releases oder Operator-Versionen verfügbar sind
+  pollInterval: 24h
 
   # Parallelität: max. gleichzeitige Worker-Pods (default: 1, max: 100)
   # Default 1 optimiert für Quay: sequentielles Mirroring ermöglicht
@@ -392,6 +403,7 @@ spec:
 | `status.mirroredImages` | Erfolgreich gespiegelte Images |
 | `status.pendingImages` | Ausstehende Images |
 | `status.failedImages` | Fehlgeschlagene Images |
+| `status.lastSuccessfulPollTime` | Zeitpunkt des letzten erfolgreichen Upstream-Polls |
 | `status.conditions[Ready]` | `True` wenn Collection erfolgreich |
 
 **Image-States (im ConfigMap-State):**
@@ -441,7 +453,10 @@ Der Manager überprüft alle **5 Minuten**, ob alle als `Mirrored` markierten Im
 
 Registry-Clients (regclient) akkumulieren OAuth-Scopes pro Repository in einem einzigen Bearer-Token. Nach ~40 Repositories überschreitet der Token das **nginx-Header-Limit** (8 KB) von Quay-Proxies, was zu `HTTP 400`-Fehlern führt.
 
-**Lösung**: Der Manager erstellt alle **20 CheckExist-Aufrufe** einen frischen Registry-Client mit leerem Token-Cache. Zusätzlich wird zu Beginn jedes Drift-Cycles der Mirror-Client erneuert.
+**Lösung**: Alle **20 Operationen** wird ein frischer Registry-Client mit leerem Token-Cache erstellt. Dieses Pattern wird in drei Komponenten angewandt:
+- **Drift-Detection** (Manager): Alle 20 CheckExist-Aufrufe + zu Beginn jedes Drift-Cycles
+- **Worker-Batches**: Alle 20 Images wird der `MirrorClient` im Worker-Pod erneuert
+- **Cleanup-Jobs**: Alle 20 Manifest-Löschungen im Cleanup-Job
 
 ### Fehlerbehandlung
 
@@ -450,6 +465,75 @@ Registry-Clients (regclient) akkumulieren OAuth-Scopes pro Repository in einem e
 | Image nicht gefunden (404) | Als `Pending` markiert → wird neu gespiegelt |
 | Auth-/Netzwerk-Fehler | Image als **vorhanden** angenommen (konservativ) |
 | Registry unreachbar | Drift-Check wird übersprungen, nächster Cycle in 5 Min. |
+
+---
+
+## Periodisches Upstream-Polling
+
+Der Operator prüft periodisch, ob Upstream-Quellen (Cincinnati-API für Releases, Katalog-Images für Operatoren) neue Inhalte enthalten. So werden neue OCP-Releases und Operator-Versionen automatisch erkannt und gespiegelt.
+
+### Konfiguration
+
+```yaml
+apiVersion: mirror.openshift.io/v1alpha1
+kind: MirrorTarget
+spec:
+  # Polling-Intervall (Default: 24h, Minimum: 1h, 0 = deaktiviert)
+  pollInterval: 24h
+```
+
+### Verhalten
+
+| Aspekt | Details |
+|--------|---------|
+| **Default-Intervall** | 24 Stunden — prüft einmal täglich auf neue Upstream-Inhalte |
+| **Minimum** | 1 Stunde — kürzere Intervalle werden abgelehnt |
+| **Deaktivierung** | `pollInterval: 0` — kein automatisches Polling |
+| **Was wird geprüft** | Cincinnati-Graph (neue Releases in Channels), Operator-Katalog-Images (neue Bundles/Versionen) |
+| **Bei neuen Inhalten** | Erneute Image-Collection, automatischer Catalog-Rebuild, neue Images werden als `Pending` eingefügt |
+| **Fehlgeschlagene Images** | Beim nächsten Poll werden `Failed`-Images automatisch auf `Pending` zurückgesetzt und erneut versucht |
+| **Status-Tracking** | `ImageSet.status.lastSuccessfulPollTime` zeigt den Zeitpunkt des letzten erfolgreichen Polls |
+| **Restart-Persistenz** | Controller-Manager nutzt `SyncPeriod: 1h` + `RequeueAfter` — Polling überlebt Pod-Restarts und wird zum nächsten geplanten Zeitpunkt fortgesetzt |
+
+---
+
+## Image-Cleanup
+
+Beim Entfernen von ImageSets oder Spec-Änderungen können nicht mehr benötigte Images automatisch aus der Ziel-Registry gelöscht werden. Das Cleanup ist Opt-in und wird über eine Annotation gesteuert.
+
+### Aktivierung
+
+```yaml
+apiVersion: mirror.openshift.io/v1alpha1
+kind: MirrorTarget
+metadata:
+  annotations:
+    mirror.openshift.io/cleanup-policy: Delete
+```
+
+Ohne diese Annotation werden entfernte Images **nicht** aus der Registry gelöscht — sie bleiben als Orphans erhalten (sicherer Default).
+
+### Cleanup-Szenarien
+
+| Szenario | Auslöser | Verhalten |
+|----------|----------|----------|
+| **ImageSet entfernt** | ImageSet-Name aus `spec.imageSets` entfernt | MirrorTarget-Controller erstellt Cleanup-Job → löscht alle Images des ImageSets → löscht State-ConfigMap |
+| **Spec-Änderung** (Intra-ImageSet) | Operator entfernt, Version-Range eingeschränkt, Channel entfernt | ImageSet-Controller erkennt Diff (vorher - nachher) → erstellt partiellen Cleanup-Job → löscht nur die entfernten Images |
+
+### Technische Details
+
+- **Cleanup-Jobs**: Kubernetes Jobs mit dem Operator-Image im `cleanup`-Modus. Gleiche Auth-Konfiguration wie Worker-Pods.
+- **Vollständiges Cleanup** (ImageSet entfernt): Job liest den Image-State aus der existierenden ConfigMap, löscht jedes Manifest per `DELETE` API-Call, löscht anschließend die ConfigMap selbst.
+- **Partielles Cleanup** (Spec-Änderung): Entfernte Images werden in einer temporären ConfigMap `cleanup-partial-<imageset>-gen<N>` gespeichert (immutabel pro Generation). Job liest die Temp-ConfigMap, löscht die Images und entfernt die Temp-ConfigMap.
+- **Auth-Token-Refresh**: Cleanup-Jobs erstellen alle 20 Löschoperationen einen frischen Registry-Client (gleicher Quay-nginx-Workaround wie Drift-Detection und Worker).
+
+### Status-Conditions auf MirrorTarget
+
+| Condition | Status | Reason | Bedeutung |
+|-----------|--------|--------|-----------|
+| `Cleanup` | `True` | `CleanupInProgress` | Cleanup-Job läuft |
+| `Cleanup` | `True` | `CleanupComplete` | Cleanup erfolgreich abgeschlossen |
+| `Cleanup` | `True` | `CleanupError` | Cleanup fehlgeschlagen (Details in Message) |
 
 ---
 
@@ -587,7 +671,6 @@ make generate    # DeepCopy-Methoden
 | **Blocked Images nicht implementiert** | `spec.mirror.blockedImages` wird akzeptiert aber ignoriert |
 | **Helm Charts nicht implementiert** | `spec.mirror.helm` API-Typen definiert, aber Collector wertet sie nicht aus |
 | **GatewayAPI nicht implementiert** | `spec.expose.type: GatewayAPI` API-Feld definiert, HTTPRoute-Erstellung noch ausstehend |
-| **Kein Pruning** | Veraltete Images werden nicht automatisch aus der Ziel-Registry gelöscht |
 | **Kein Mirror-to-Disk** | Air-Gap-Transfer über Datenträger ist nicht möglich — der Operator benötigt Netzwerkzugang zu beiden Registries |
 | **Kein HA-Modus** | Leader Election konfigurierbar (`--leader-elect`), aber standardmäßig deaktiviert |
 | **Kein Catalog-Cache Pre-Build** | Gefilterter Katalog invalidiert den Source-Cache via opaque whiteout und nutzt `--cache-enforce-integrity=false` — Cache wird beim ersten `opm serve` neu gebaut (einige Sekunden Startup-Delay) |
@@ -600,7 +683,7 @@ make generate    # DeepCopy-Methoden
 oc-mirror-operator/
 ├── api/v1alpha1/              # CRD-Typen (MirrorTarget, ImageSet)
 ├── cmd/
-│   ├── main.go                # Einsprungpunkt: controller | manager | worker
+│   ├── main.go                # Einsprungpunkt: controller | manager | worker | cleanup
 │   └── catalog-builder/       # Catalog-Builder Binary (läuft in K8s Jobs)
 ├── config/
 │   ├── crd/                   # Generierte CRD-Manifeste
