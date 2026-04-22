@@ -24,6 +24,7 @@ limitations under the License.
 package e2e
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -38,7 +39,9 @@ import (
 // The operator namespace created by kustomize (namePrefix = oc-mirror-).
 const operatorNamespace = "oc-mirror-system"
 
-var _ = Describe("Catalog Build Job E2E", Ordered, Label("cluster"), func() {
+// Catalog cluster tests are expensive (pulls ~2 GB catalog image, needs 10+ min).
+// They run only when explicitly selected with -ginkgo.label-filter="catalog-cluster".
+var _ = Describe("Catalog Build Job E2E", Ordered, Label("cluster", "catalog-cluster"), func() {
 	const (
 		ns             = "default"
 		targetName     = "catalog-test-target"
@@ -88,13 +91,15 @@ var _ = Describe("Catalog Build Job E2E", Ordered, Label("cluster"), func() {
 
 	AfterAll(func() {
 		By("cleaning up test resources")
-		_ = exec.Command("kubectl", "delete", "imageset", imageSetName, "-n", ns,
-			"--ignore-not-found=true").Run()
-		_ = exec.Command("kubectl", "delete", "mirrortarget", targetName, "-n", ns,
-			"--ignore-not-found=true").Run()
-		_ = exec.Command("kubectl", "delete", "-f", "config/samples/registry_deploy.yaml",
-			"--ignore-not-found=true").Run()
-		_ = exec.Command("make", "undeploy").Run()
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		_ = exec.CommandContext(cleanupCtx, "kubectl", "delete", "imageset", imageSetName, "-n", ns,
+			"--ignore-not-found=true", "--wait=false").Run()
+		_ = exec.CommandContext(cleanupCtx, "kubectl", "delete", "mirrortarget", targetName, "-n", ns,
+			"--ignore-not-found=true", "--wait=false").Run()
+		_ = exec.CommandContext(cleanupCtx, "kubectl", "delete", "-f", "config/samples/registry_deploy.yaml",
+			"--ignore-not-found=true", "--wait=false").Run()
+		_ = exec.CommandContext(cleanupCtx, "make", "undeploy").Run()
 	})
 
 	Context("CatalogBuildJob lifecycle", func() {

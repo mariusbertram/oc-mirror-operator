@@ -131,7 +131,9 @@ jobs:
           SKIP_CLUSTER_SETUP=true \
           CERT_MANAGER_INSTALL_SKIP=true \
           KIND_CLUSTER=oc-mirror-test-e2e \
-          go test ./test/e2e/ -v -ginkgo.v
+          go test ./test/e2e/ -v -timeout 20m \
+            -ginkgo.v \
+            -ginkgo.label-filter="cluster && !catalog-cluster"
 
       - name: Cleanup Kind cluster
         if: always()

@@ -17,6 +17,7 @@ limitations under the License.
 package e2e
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -70,10 +71,12 @@ var _ = Describe("oc-mirror Operator E2E", Ordered, Label("cluster"), func() {
 
 	AfterAll(func() {
 		By("cleaning up resources")
-		_ = exec.Command("kubectl", "delete", "imageset", imageSetName, "-n", mirrorNamespace).Run()
-		_ = exec.Command("kubectl", "delete", "mirrortarget", targetName, "-n", mirrorNamespace).Run()
-		_ = exec.Command("kubectl", "delete", "-f", "config/samples/registry_deploy.yaml").Run()
-		_ = exec.Command("make", "undeploy").Run()
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		_ = exec.CommandContext(cleanupCtx, "kubectl", "delete", "imageset", imageSetName, "-n", mirrorNamespace, "--wait=false").Run()
+		_ = exec.CommandContext(cleanupCtx, "kubectl", "delete", "mirrortarget", targetName, "-n", mirrorNamespace, "--wait=false").Run()
+		_ = exec.CommandContext(cleanupCtx, "kubectl", "delete", "-f", "config/samples/registry_deploy.yaml", "--wait=false").Run()
+		_ = exec.CommandContext(cleanupCtx, "make", "undeploy").Run()
 	})
 
 	Context("Mirroring Scenario", func() {
