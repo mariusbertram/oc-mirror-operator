@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"github.com/regclient/regclient/config"
 	"github.com/regclient/regclient/types/blob"
 	"github.com/regclient/regclient/types/descriptor"
+	"github.com/regclient/regclient/types/errs"
 	"github.com/regclient/regclient/types/manifest"
 	"github.com/regclient/regclient/types/ref"
 )
@@ -144,7 +146,9 @@ func (c *MirrorClient) CopyImage(ctx context.Context, src, dest string) (string,
 	return effectiveDest, nil
 }
 
-// CheckExist checks if an image exists at the destination registry
+// CheckExist checks if an image exists at the destination registry.
+// Returns (true, nil) if the image exists, (false, nil) if it does not exist
+// (404/MANIFEST_UNKNOWN), or (false, err) for other errors (auth, network).
 func (c *MirrorClient) CheckExist(ctx context.Context, image string) (bool, error) {
 	r, err := ref.New(image)
 	if err != nil {
@@ -153,7 +157,10 @@ func (c *MirrorClient) CheckExist(ctx context.Context, image string) (bool, erro
 
 	_, err = c.rc.ManifestHead(ctx, r)
 	if err != nil {
-		return false, nil
+		if errors.Is(err, errs.ErrNotFound) {
+			return false, nil
+		}
+		return false, fmt.Errorf("manifest head for %s: %w", image, err)
 	}
 
 	return true, nil

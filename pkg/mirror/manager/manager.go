@@ -46,15 +46,17 @@ type MirrorManager struct {
 	Scheme       *runtime.Scheme
 	Image        string
 	mirrorClient *mirrorclient.MirrorClient
+	authConfigPath string // path to Docker config for creating fresh clients
 
 	workerToken string
 
 	// State in memory — protected by mu
-	mu          sync.RWMutex
-	inProgress  map[string]string                      // dest → podName
-	mirrored    map[string]bool                        // dest → true once successfully mirrored
-	imageStates map[string]imagestate.ImageState       // imageSetName → ImageState
-	destToIS    map[string]string                      // dest → imageSetName (reverse lookup)
+	mu              sync.RWMutex
+	inProgress      map[string]string                      // dest → podName
+	mirrored        map[string]bool                        // dest → true once successfully mirrored
+	imageStates     map[string]imagestate.ImageState       // imageSetName → ImageState
+	destToIS        map[string]string                      // dest → imageSetName (reverse lookup)
+	lastDriftCheck  time.Time                              // last time we verified all mirrored images
 }
 
 func New(targetName, namespace string, scheme *runtime.Scheme) (*MirrorManager, error) {
@@ -96,6 +98,7 @@ func NewWithClients(c client.Client, cs kubernetes.Interface, targetName, namesp
 		Scheme:      scheme,
 		Image:       image,
 		mirrorClient: mc,
+		authConfigPath: authConfigPath,
 		workerToken: hex.EncodeToString(tokenBytes),
 		inProgress:  make(map[string]string),
 		mirrored:    make(map[string]bool),
@@ -330,23 +333,42 @@ func (m *MirrorManager) reconcile(ctx context.Context) error {
 		}
 		m.imageStates[is.Name] = isState
 
+		// Periodic drift detection: clear the in-memory mirrored cache every 5
+		// minutes so the loop below re-verifies that mirrored images still exist
+		// in the target registry. This catches manual deletions or registry wipes.
+		const driftCheckInterval = 5 * time.Minute
+		if time.Since(m.lastDriftCheck) > driftCheckInterval {
+			m.mirrored = make(map[string]bool)
+			m.lastDriftCheck = time.Now()
+			// Create a fresh regclient for drift checks to avoid auth scope
+			// accumulation. Quay's nginx proxy returns 400 when the Bearer
+			// token (which grows with each new repository scope) exceeds ~8 KB.
+			m.mirrorClient = mirrorclient.NewMirrorClient(nil, m.authConfigPath)
+			fmt.Println("Drift detection: clearing mirrored cache for re-verification")
+		}
+
 		stateChanged := false
 		var pendingImages []BatchItem
+		checkClient := mirrorclient.NewMirrorClient(nil, m.authConfigPath)
+		checkCount := 0
 
 		for dest, entry := range isState {
 			m.destToIS[dest] = is.Name
 
-			// Sync in-memory mirrored set from persisted ConfigMap state.
-			if entry.State == "Mirrored" {
-				m.mirrored[dest] = true
-			}
-
-			// For images already Mirrored: verify they still exist in the registry
-			// (catches cases where the registry was wiped after a successful mirror).
+			// For images marked Mirrored in the ConfigMap but not yet verified
+			// in memory: check the registry to confirm they still exist.
 			if entry.State == "Mirrored" && !m.mirrored[dest] {
-				exists, checkErr := m.mirrorClient.CheckExist(ctx, dest)
+				// Refresh the client every 20 checks to prevent auth token
+				// scope accumulation (Quay's nginx rejects tokens > ~8 KB).
+				checkCount++
+				if checkCount%20 == 0 {
+					checkClient = mirrorclient.NewMirrorClient(nil, m.authConfigPath)
+				}
+				exists, checkErr := checkClient.CheckExist(ctx, dest)
 				if checkErr != nil {
-					fmt.Printf("CheckExist error for %s: %v – will retry mirror\n", dest, checkErr)
+					fmt.Printf("CheckExist error for %s: %v – assuming present\n", dest, checkErr)
+					m.mirrored[dest] = true
+					continue
 				}
 				if exists {
 					m.mirrored[dest] = true
