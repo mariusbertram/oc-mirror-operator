@@ -103,13 +103,23 @@ func ReleaseChannelSignature(rc ReleaseChannel, architectures []string, kubeVirt
 
 // CatalogDigestAnnotationKey returns the full annotation key for a given
 // operator-entry signature. Use OperatorEntrySignature() to produce sig.
+// Kubernetes annotation name parts must be ≤63 chars; since the prefix
+// "catalog-digest-" is 15 chars, the sig is truncated to 48 chars.
 func CatalogDigestAnnotationKey(sig string) string {
+	if len(sig) > 48 {
+		sig = sig[:48]
+	}
 	return CatalogDigestAnnotationPrefix + sig
 }
 
 // ReleaseDigestAnnotationKey returns the full annotation key for a given
 // release-channel signature. Use ReleaseChannelSignature() to produce sig.
+// Kubernetes annotation name parts must be ≤63 chars; since the prefix
+// "release-digest-" is 15 chars, the sig is truncated to 48 chars.
 func ReleaseDigestAnnotationKey(sig string) string {
+	if len(sig) > 48 {
+		sig = sig[:48]
+	}
 	return ReleaseDigestAnnotationPrefix + sig
 }
 

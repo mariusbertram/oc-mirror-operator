@@ -127,7 +127,7 @@ func Save(ctx context.Context, c client.Client, namespace string, is *mirrorv1al
 				Name:               is.Name,
 				UID:                is.UID,
 				Controller:         ptr(true),
-				BlockOwnerDeletion: ptr(true),
+				BlockOwnerDeletion: ptr(false),
 			}},
 		},
 		BinaryData: map[string][]byte{
