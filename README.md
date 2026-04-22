@@ -27,16 +27,18 @@ Im Gegensatz zum statischen `oc-mirror` CLI-Tool arbeitet dieser Operator cloud-
 | **Release-Signaturen** | ✅ | ✅ | Download von mirror.openshift.com/pub/openshift-v4/signatures |
 | **IDMS/ITMS-Generierung** | ✅ | ✅ | ImageDigestMirrorSet und ImageTagMirrorSet — bereitgestellt via Resource Server HTTP-API |
 | **Inkrementelles Mirroring** | ✅ | ✅ | Bereits gespiegelte Images werden übersprungen (ConfigMap-State) |
-| **Registry-Verifikation** | ✗ | ✅ | Manager prüft regelmäßig ob Images in der Ziel-Registry existieren und queued fehlende neu |
+| **Registry-Drift-Detection** | ✗ | ✅ | Manager verifiziert alle 5 Min. ob gespiegelte Images noch in der Registry existieren; fehlende werden automatisch neu gespiegelt. Auth-Token-Refresh alle 20 Checks verhindert Quay-nginx-8KB-Header-Limit |
+| **Per-Image Timeout** | ✗ | ✅ | 20 Min. Timeout pro Image-Mirror verhindert, dass steckengebliebene Uploads den Worker blockieren |
 | **Automatische Retries** | ✗ | ✅ | Bis zu 10 Wiederholungen pro Image bei Fehlern |
 | **Kontinuierliches Mirroring** | ✗ | ✅ | Reconcile-Loop alle 30s — neue Images werden automatisch erkannt und gespiegelt |
-| **Deklarativ via CRDs** | ✗ | ✅ | `MirrorTarget` + `ImageSet` Custom Resources |
+| **Deklarativ via CRDs** | ✗ | ✅ | `MirrorTarget` (Ziel + ImageSet-Liste) + `ImageSet` (Inhalts-Definition) Custom Resources |
 | **Skalierbare Worker-Pods** | ✗ | ✅ | Konfigurierbare Concurrency (bis 100 Pods) und BatchSize (bis 100 Images/Pod) |
 | **Ephemeral-Volume Blob-Buffering** | ✗ | ✅ | Große Blobs (>100 MiB) werden auf emptyDir gepuffert — kein OOM bei Multi-GB Layern |
 | **Blob-Replikationsplanung** | ✗ | ✅ | Greedy-Set-Cover-Algorithmus optimiert die Mirror-Reihenfolge für maximale Blob-Wiederverwendung |
 | **Automatischer Catalog-Rebuild** | ✗ | ✅ | Build-Signatur erkennt Änderungen an Packages/Katalogen und triggert automatischen Rebuild |
 | **Resource Server (HTTP-API)** | ✗ | ✅ | IDMS, ITMS, CatalogSource, ClusterCatalog und Signatur-ConfigMaps per HTTP abrufbar — mit OpenShift Route, Ingress oder Service |
 | **Worker-Pod-Lifecycle** | ✗ | ✅ | Automatische Bereinigung abgeschlossener/fehlgeschlagener Worker- und Orphan-Pods |
+| **KubeVirt Container-Disk** | ✅ | ✅ | `platform.kubeVirtContainer: true` extrahiert KubeVirt-Disk-Images aus dem Release-Payload (RHCOS pro Architektur) |
 
 ### ⚠️ Teilweise implementiert
 
@@ -57,7 +59,6 @@ Im Gegensatz zum statischen `oc-mirror` CLI-Tool arbeitet dieser Operator cloud-
 | **Cincinnati Graph Data** | ✅ | ❌ | `platform.graph: true` Feld existiert, Graph-Daten werden aber nicht in die Ziel-Registry gepusht |
 | **Pruning / Image-Bereinigung** | ✅ | ❌ | Kein automatisches Löschen veralteter Images aus der Ziel-Registry |
 | **Samples** | ✅ | ❌ | API-Feld existiert, explizit als "not implemented" markiert |
-| **KubeVirt Container** | ✅ | ✅ | `platform.kubeVirtContainer: true` extrahiert KubeVirt-Disk-Images aus dem Release-Payload |
 
 ### Operator-spezifische Features (kein Äquivalent in oc-mirror CLI)
 
@@ -142,7 +143,7 @@ Die Architektur folgt einem skalierbaren **Drei-Schichten-Modell** mit **Catalog
 
 ### Datenfluss
 
-1. Nutzer erstellt `MirrorTarget` + `ImageSet` CRs
+1. Nutzer erstellt `MirrorTarget` (Ziel-Registry + ImageSet-Liste) und `ImageSet` (Inhalts-Definition) CRs
 2. **Operator** löst via Cincinnati-API (Releases) und Catalog-Image (Operators) die vollständige Image-Liste auf und speichert sie als gzip-komprimierte ConfigMap
 3. **Operator** erstellt Catalog-Builder-Jobs für jeden konfigurierten Operator-Katalog (mit Build-Signatur zur Änderungserkennung)
 4. **Catalog-Builder** filtert FBC, löst Dependencies auf, baut OCI-Image und pusht es in die Ziel-Registry
@@ -317,11 +318,13 @@ spec:
   # Für Registries mit self-signed Zertifikaten
   insecure: false
 
-  # Parallelität: max. gleichzeitige Worker-Pods (default: 20, max: 100)
-  concurrency: 20
+  # Parallelität: max. gleichzeitige Worker-Pods (default: 1, max: 100)
+  # Default 1 optimiert für Quay: sequentielles Mirroring ermöglicht
+  # Blob-Mount (Zero-Copy) von zuvor gepushten Blobs.
+  concurrency: 1
 
-  # Images pro Worker-Pod (default: 10, max: 100)
-  batchSize: 10
+  # Images pro Worker-Pod (default: 50, max: 100)
+  batchSize: 50
 
   # Resource-Server-Exposure (optional)
   # Auf OpenShift wird automatisch eine Route erstellt, wenn nicht konfiguriert.
@@ -430,6 +433,26 @@ Vorteile gegenüber RAM-Buffering: Kein OOM-Risiko bei Multi-GB Layern.
 
 ---
 
+## Drift Detection
+
+Der Manager überprüft alle **5 Minuten**, ob alle als `Mirrored` markierten Images noch in der Ziel-Registry existieren (HEAD-Request auf das Manifest). Fehlende Images werden automatisch wieder in die Queue gestellt und neu gespiegelt.
+
+### Auth-Token-Refresh
+
+Registry-Clients (regclient) akkumulieren OAuth-Scopes pro Repository in einem einzigen Bearer-Token. Nach ~40 Repositories überschreitet der Token das **nginx-Header-Limit** (8 KB) von Quay-Proxies, was zu `HTTP 400`-Fehlern führt.
+
+**Lösung**: Der Manager erstellt alle **20 CheckExist-Aufrufe** einen frischen Registry-Client mit leerem Token-Cache. Zusätzlich wird zu Beginn jedes Drift-Cycles der Mirror-Client erneuert.
+
+### Fehlerbehandlung
+
+| Szenario | Verhalten |
+|----------|----------|
+| Image nicht gefunden (404) | Als `Pending` markiert → wird neu gespiegelt |
+| Auth-/Netzwerk-Fehler | Image als **vorhanden** angenommen (konservativ) |
+| Registry unreachbar | Drift-Check wird übersprungen, nächster Cycle in 5 Min. |
+
+---
+
 ## Voraussetzungen
 
 - Kubernetes ≥ 1.26 oder OpenShift ≥ 4.13
@@ -505,7 +528,7 @@ Alle dynamisch erstellten Pods (Manager und Worker) laufen mit **restricted Pod 
 Worker-Pods authentifizieren sich am Manager-Status-Endpoint via **Bearer Token**. Der Token wird beim Manager-Start zufällig generiert und über eine Umgebungsvariable an Worker-Pods übergeben.
 
 ### Registry-Credentials
-Das `authSecret` wird als Volume (`/run/secrets/dockerconfig/config.json`) in Worker-Pods gemountet. Der Manager-Pod hat keinen direkten Registry-Zugriff.
+Das `authSecret` wird als Volume (`/docker-config/config.json`) in Manager- und Worker-Pods gemountet. Der Manager benötigt Lesezugriff für Drift-Detection (CheckExist), Worker benötigen Lese-/Schreibzugriff für das eigentliche Mirroring.
 
 ---
 
@@ -514,7 +537,7 @@ Das `authSecret` wird als Volume (`/run/secrets/dockerconfig/config.json`) in Wo
 ### Voraussetzungen
 
 ```bash
-go version     # >= 1.23
+go version     # >= 1.25
 make --version
 kubectl / oc
 ```
@@ -567,7 +590,7 @@ make generate    # DeepCopy-Methoden
 | **Kein Pruning** | Veraltete Images werden nicht automatisch aus der Ziel-Registry gelöscht |
 | **Kein Mirror-to-Disk** | Air-Gap-Transfer über Datenträger ist nicht möglich — der Operator benötigt Netzwerkzugang zu beiden Registries |
 | **Kein HA-Modus** | Leader Election konfigurierbar (`--leader-elect`), aber standardmäßig deaktiviert |
-| **Kein Catalog-Cache Pre-Build** | Gefilterter Katalog nutzt `--cache-enforce-integrity=false` — Cache wird beim ersten `opm serve` gebaut (einige Sekunden Startup-Delay) |
+| **Kein Catalog-Cache Pre-Build** | Gefilterter Katalog invalidiert den Source-Cache via opaque whiteout und nutzt `--cache-enforce-integrity=false` — Cache wird beim ersten `opm serve` neu gebaut (einige Sekunden Startup-Delay) |
 
 ---
 
