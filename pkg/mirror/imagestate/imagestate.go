@@ -59,8 +59,14 @@ func Counts(state ImageState) (total, mirrored, pending, failed int) {
 // Load reads the ImageState from the ConfigMap for the given ImageSet.
 // Returns an empty ImageState (not nil) if the ConfigMap does not exist.
 func Load(ctx context.Context, c client.Client, namespace, imageSetName string) (ImageState, error) {
+	return LoadByConfigMapName(ctx, c, namespace, ConfigMapName(imageSetName))
+}
+
+// LoadByConfigMapName reads the ImageState from a ConfigMap with the given name.
+// Returns an empty ImageState (not nil) if the ConfigMap does not exist.
+func LoadByConfigMapName(ctx context.Context, c client.Client, namespace, cmName string) (ImageState, error) {
 	cm := &corev1.ConfigMap{}
-	err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: ConfigMapName(imageSetName)}, cm)
+	err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: cmName}, cm)
 	if err != nil {
 		if errors.IsNotFound(err) {
 			return make(ImageState), nil
@@ -94,6 +100,37 @@ func Save(ctx context.Context, c client.Client, namespace string, is *mirrorv1al
 				Controller:         ptr(true),
 				BlockOwnerDeletion: ptr(true),
 			}},
+		},
+		BinaryData: map[string][]byte{
+			"images.json.gz": data,
+		},
+	}
+
+	if errors.IsNotFound(getErr) {
+		return c.Create(ctx, cm)
+	}
+	if getErr != nil {
+		return getErr
+	}
+	cm.ResourceVersion = existing.ResourceVersion
+	return c.Update(ctx, cm)
+}
+
+// SaveRaw writes the ImageState to a ConfigMap with the given name.
+// Used for temporary cleanup state that is not owned by an ImageSet.
+func SaveRaw(ctx context.Context, c client.Client, namespace, cmName string, state ImageState) error {
+	data, err := encode(state)
+	if err != nil {
+		return fmt.Errorf("encode image state: %w", err)
+	}
+
+	existing := &corev1.ConfigMap{}
+	getErr := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: cmName}, existing)
+
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      cmName,
+			Namespace: namespace,
 		},
 		BinaryData: map[string][]byte{
 			"images.json.gz": data,

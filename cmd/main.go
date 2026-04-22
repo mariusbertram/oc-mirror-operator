@@ -203,18 +203,27 @@ func buildMirrorClient(insecure bool, firstDest string) *mirrorclient.MirrorClie
 // runCleanup deletes all images for a removed ImageSet from the target registry
 // and removes the associated image state ConfigMap.
 func runCleanup() {
-	var imageSetName, namespace, registry string
+	var imageSetName, namespace, registry, configMapName string
 	var insecure bool
 	fs := flag.NewFlagSet("cleanup", flag.ExitOnError)
 	fs.StringVar(&imageSetName, "imageset", "", "Name of the ImageSet to clean up")
 	fs.StringVar(&namespace, "namespace", "", "Namespace of the ImageSet")
 	fs.StringVar(&registry, "registry", "", "Target registry URL")
 	fs.BoolVar(&insecure, "insecure", false, "Allow insecure registry")
+	fs.StringVar(&configMapName, "configmap", "", "Override ConfigMap name (default: derived from --imageset)")
 	fs.Parse(os.Args[2:])
 
-	if imageSetName == "" || namespace == "" || registry == "" {
-		fmt.Fprintln(os.Stderr, "ERROR: --imageset, --namespace, and --registry are required")
+	if namespace == "" || registry == "" {
+		fmt.Fprintln(os.Stderr, "ERROR: --namespace and --registry are required")
 		os.Exit(1)
+	}
+	if imageSetName == "" && configMapName == "" {
+		fmt.Fprintln(os.Stderr, "ERROR: --imageset or --configmap is required")
+		os.Exit(1)
+	}
+	// Derive ConfigMap name from imageset if not explicitly set.
+	if configMapName == "" {
+		configMapName = imagestate.ConfigMapName(imageSetName)
 	}
 
 	cfg := ctrl.GetConfigOrDie()
@@ -226,20 +235,20 @@ func runCleanup() {
 
 	ctx := context.Background()
 
-	// Load the image state for this ImageSet.
-	state, err := imagestate.Load(ctx, c, namespace, imageSetName)
+	// Load the image state from the specified ConfigMap.
+	state, err := imagestate.LoadByConfigMapName(ctx, c, namespace, configMapName)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "ERROR: failed to load image state for %s: %v\n", imageSetName, err)
+		fmt.Fprintf(os.Stderr, "ERROR: failed to load image state from %s: %v\n", configMapName, err)
 		os.Exit(1)
 	}
 
 	if len(state) == 0 {
-		fmt.Printf("No images found for ImageSet %s — nothing to clean up\n", imageSetName)
-		deleteConfigMap(ctx, c, namespace, imageSetName)
+		fmt.Printf("No images found in %s — nothing to clean up\n", configMapName)
+		deleteConfigMapByName(ctx, c, namespace, configMapName)
 		os.Exit(0)
 	}
 
-	fmt.Printf("Cleaning up %d images for ImageSet %s from %s\n", len(state), imageSetName, registry)
+	fmt.Printf("Cleaning up %d images from %s (registry: %s)\n", len(state), configMapName, registry)
 
 	// Build a registry client for deletion.
 	mc := buildMirrorClient(insecure, registry)
@@ -279,11 +288,10 @@ func runCleanup() {
 	}
 
 	// All images deleted successfully — remove the ConfigMap.
-	deleteConfigMap(ctx, c, namespace, imageSetName)
+	deleteConfigMapByName(ctx, c, namespace, configMapName)
 }
 
-func deleteConfigMap(ctx context.Context, c client.Client, namespace, imageSetName string) {
-	cmName := imagestate.ConfigMapName(imageSetName)
+func deleteConfigMapByName(ctx context.Context, c client.Client, namespace, cmName string) {
 	cm := &corev1.ConfigMap{}
 	cm.Name = cmName
 	cm.Namespace = namespace

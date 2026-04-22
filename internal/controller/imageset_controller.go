@@ -8,6 +8,7 @@ import (
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -146,6 +147,27 @@ func (r *ImageSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 					Source: img.Source,
 					State:  img.State,
 				}
+			}
+		}
+
+		// Detect images that were removed from the spec (in old state but not in new).
+		// If the cleanup annotation is set, create a cleanup Job for these images.
+		removedImages := make(imagestate.ImageState)
+		for dest, entry := range existingState {
+			if _, ok := newState[dest]; !ok && entry.State == "Mirrored" {
+				removedImages[dest] = entry
+			}
+		}
+		if len(removedImages) > 0 {
+			cleanupPolicy := mt.Annotations[mirrorv1alpha1.CleanupPolicyAnnotation]
+			if cleanupPolicy == mirrorv1alpha1.CleanupPolicyDelete {
+				l.Info("Images removed from spec, scheduling cleanup", "count", len(removedImages))
+				if err := r.createPartialCleanupJob(ctx, is, mt, removedImages); err != nil {
+					l.Error(err, "Failed to create partial cleanup job")
+				}
+			} else {
+				l.Info("Images removed from spec but cleanup-policy not set to Delete",
+					"count", len(removedImages))
 			}
 		}
 
@@ -412,4 +434,108 @@ func (r *ImageSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			}),
 		).
 		Complete(r)
+}
+
+// createPartialCleanupJob saves removed images to a temporary ConfigMap and
+// creates a cleanup Job that deletes them from the target registry.
+// The ConfigMap and Job are named deterministically per ImageSet generation
+// so that rapid spec changes produce distinct, immutable cleanup batches.
+func (r *ImageSetReconciler) createPartialCleanupJob(
+	ctx context.Context,
+	is *mirrorv1alpha1.ImageSet,
+	mt *mirrorv1alpha1.MirrorTarget,
+	removedImages imagestate.ImageState,
+) error {
+	l := log.FromContext(ctx)
+
+	cmName := fmt.Sprintf("cleanup-partial-%s-gen%d", is.Name, is.Generation)
+	jobName := cmName
+
+	// Save removed images to the temporary ConfigMap.
+	if err := imagestate.SaveRaw(ctx, r.Client, is.Namespace, cmName, removedImages); err != nil {
+		return fmt.Errorf("save partial cleanup state: %w", err)
+	}
+
+	// Check if Job already exists.
+	existing := &batchv1.Job{}
+	if err := r.Get(ctx, client.ObjectKey{Name: jobName, Namespace: is.Namespace}, existing); err == nil {
+		l.Info("Partial cleanup job already exists", "job", jobName)
+		return nil
+	}
+
+	backoffLimit := int32(3)
+	ttlAfterFinished := int32(600)
+
+	labels := map[string]string{
+		"app.kubernetes.io/managed-by":     "oc-mirror-operator",
+		"mirror.openshift.io/cleanup-type": "partial",
+		"mirror.openshift.io/imageset":     is.Name,
+	}
+
+	insecureFlag := ""
+	if mt.Spec.Insecure {
+		insecureFlag = "--insecure"
+	}
+	args := []string{
+		"cleanup",
+		"--configmap", cmName,
+		"--namespace", is.Namespace,
+		"--registry", mt.Spec.Registry,
+	}
+	if insecureFlag != "" {
+		args = append(args, insecureFlag)
+	}
+
+	job := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      jobName,
+			Namespace: is.Namespace,
+			Labels:    labels,
+		},
+		Spec: batchv1.JobSpec{
+			BackoffLimit:            &backoffLimit,
+			TTLSecondsAfterFinished: &ttlAfterFinished,
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: labels},
+				Spec: corev1.PodSpec{
+					ServiceAccountName: "oc-mirror-coordinator",
+					RestartPolicy:      corev1.RestartPolicyNever,
+					SecurityContext: &corev1.PodSecurityContext{
+						RunAsNonRoot: pointerTo(true),
+						SeccompProfile: &corev1.SeccompProfile{
+							Type: corev1.SeccompProfileTypeRuntimeDefault,
+						},
+					},
+					Containers: []corev1.Container{{
+						Name:  "cleanup",
+						Image: os.Getenv("OPERATOR_IMAGE"),
+						Args:  args,
+						SecurityContext: &corev1.SecurityContext{
+							AllowPrivilegeEscalation: pointerTo(false),
+							Capabilities: &corev1.Capabilities{
+								Drop: []corev1.Capability{"ALL"},
+							},
+						},
+						Env: []corev1.EnvVar{
+							{Name: "DOCKER_CONFIG", Value: "/docker-config"},
+						},
+						VolumeMounts: []corev1.VolumeMount{
+							{Name: "docker-config", MountPath: "/docker-config", ReadOnly: true},
+						},
+					}},
+					Volumes: []corev1.Volume{{
+						Name: "docker-config",
+						VolumeSource: corev1.VolumeSource{
+							Secret: &corev1.SecretVolumeSource{
+								SecretName: mt.Spec.AuthSecret,
+							},
+						},
+					}},
+				},
+			},
+		},
+	}
+
+	l.Info("Creating partial cleanup job", "job", jobName, "images", len(removedImages))
+	return r.Create(ctx, job)
 }
