@@ -1,7 +1,8 @@
 name: CI
 
-# Runs on every push and pull request. Validates that the code builds,
-# tests pass, and the bundle is well-formed — without pushing any images.
+# Runs on every push and pull request.
+# Jobs: test → build (image artifact) → e2e (reuses artifact)
+# Also verifies that multi-arch and bundle builds succeed.
 
 on:
   push:
@@ -12,8 +13,9 @@ on:
   pull_request:
 
 jobs:
+  # ── 1. Unit tests ──────────────────────────────────────────────────────────
   test:
-    name: Test
+    name: Unit tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,27 +24,40 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Tidy and test
+      - name: Run tests
         run: |
           go mod tidy
           make test
 
-  build-check:
-    name: Build check (multi-arch)
+  # ── 2. Build operator image and export as artifact ─────────────────────────
+  build:
+    name: Build operator image
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - uses: docker/setup-qemu-action@v3
+      # Build a single-arch (amd64) image tagged with the name the e2e
+      # test suite expects and save it as a tar archive for downstream jobs.
+      - name: Build image
+        run: CONTAINER_TOOL=docker make docker-build IMG=example.com/oc-mirror:v0.0.1
+
+      - name: Export image to tar
+        run: docker save example.com/oc-mirror:v0.0.1 -o /tmp/operator-image.tar
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: operator-image
+          path: /tmp/operator-image.tar
+          retention-days: 1
+
+  # ── 3. Bundle image build check ────────────────────────────────────────────
+  build-bundle-check:
+    name: Build bundle image check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
       - uses: docker/setup-buildx-action@v3
-
-      - name: Build operator image (no push)
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: false
 
       - name: Build bundle image (no push)
         uses: docker/build-push-action@v6
@@ -51,3 +66,73 @@ jobs:
           file: bundle.Dockerfile
           platforms: linux/amd64
           push: false
+
+  # ── 4. Multi-arch operator build check ────────────────────────────────────
+  build-multiarch-check:
+    name: Multi-arch build check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build operator image (linux/amd64 + linux/arm64, no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false
+
+  # ── 5. E2E tests (reuses image from build job) ─────────────────────────────
+  e2e:
+    name: E2E tests
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Download operator image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: operator-image
+          path: /tmp
+
+      - name: Install Kind
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/latest/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+
+      - name: Create Kind cluster
+        run: kind create cluster --name oc-mirror-test-e2e
+
+      - name: Load operator image into Kind
+        run: |
+          docker load -i /tmp/operator-image.tar
+          kind load docker-image example.com/oc-mirror:v0.0.1 --name oc-mirror-test-e2e
+
+      - name: Install cert-manager v1.16.3
+        run: |
+          kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.16.3/cert-manager.yaml
+          kubectl wait deployment/cert-manager-webhook \
+            --namespace cert-manager \
+            --for=condition=Available \
+            --timeout=120s
+
+      - name: Run E2E tests
+        run: |
+          go mod tidy
+          SKIP_CLUSTER_SETUP=true \
+          CERT_MANAGER_INSTALL_SKIP=true \
+          KIND_CLUSTER=oc-mirror-test-e2e \
+          go test ./test/e2e/ -v -ginkgo.v
+
+      - name: Cleanup Kind cluster
+        if: always()
+        run: kind delete cluster --name oc-mirror-test-e2e
