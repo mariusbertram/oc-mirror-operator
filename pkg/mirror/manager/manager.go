@@ -56,12 +56,13 @@ type MirrorManager struct {
 	workerToken string
 
 	// State in memory — protected by mu
-	mu             sync.RWMutex
-	inProgress     map[string]string                // dest → podName
-	mirrored       map[string]bool                  // dest → true once successfully mirrored
-	imageStates    map[string]imagestate.ImageState // imageSetName → ImageState
-	destToIS       map[string]string                // dest → imageSetName (reverse lookup)
-	lastDriftCheck time.Time                        // last time we verified all mirrored images
+	mu               sync.RWMutex
+	inProgress       map[string]string                // dest → podName
+	mirrored         map[string]bool                  // dest → true once successfully mirrored
+	imageStates      map[string]imagestate.ImageState // imageSetName → ImageState
+	destToIS         map[string]string                // dest → imageSetName (reverse lookup)
+	lastDriftCheck   time.Time                        // last time we verified all mirrored images
+	dirtyStateNames  map[string]bool                  // isNames that need a ConfigMap save (PermanentlyFailed newly set)
 }
 
 func New(targetName, namespace string, scheme *runtime.Scheme) (*MirrorManager, error) {
@@ -102,10 +103,11 @@ func NewWithClients(c client.Client, cs kubernetes.Interface, targetName, namesp
 		mirrorClient:   mc,
 		authConfigPath: authConfigPath,
 		// workerToken is populated lazily by ensureWorkerTokenSecret() in Run().
-		inProgress:  make(map[string]string),
-		mirrored:    make(map[string]bool),
-		imageStates: make(map[string]imagestate.ImageState),
-		destToIS:    make(map[string]string),
+		inProgress:      make(map[string]string),
+		mirrored:        make(map[string]bool),
+		imageStates:     make(map[string]imagestate.ImageState),
+		destToIS:        make(map[string]string),
+		dirtyStateNames: make(map[string]bool),
 	}
 }
 
@@ -573,6 +575,12 @@ func (m *MirrorManager) reconcile(ctx context.Context) error {
 		}
 
 		stateChanged := false
+		// If setImageStateLocked just set PermanentlyFailed for this ImageSet,
+		// force a ConfigMap flush so the catalog-build gate sees the new flag.
+		if m.dirtyStateNames[is.Name] {
+			stateChanged = true
+			delete(m.dirtyStateNames, is.Name)
+		}
 		var pendingImages []BatchItem
 		checkClient := mirrorclient.NewMirrorClient(nil, m.authConfigPath)
 		checkCount := 0
@@ -630,33 +638,41 @@ func (m *MirrorManager) reconcile(ctx context.Context) error {
 					// Transient failure: schedule immediate retry.
 					entry.State = "Pending"
 					stateChanged = true
-				} else if driftCheckActive {
-					// Permanently failed: during CheckExist windows, verify the
-					// target registry. If not found, reset for a fresh retry
-					// cycle (handles transient upstream unavailability). A fresh
-					// RetryCount gives 10 new attempts before the image is
-					// flagged as permanently failed again. PermanentlyFailed
-					// stays true so the catalog-build gate remains open.
-					checkCount++
-					if checkCount%20 == 0 {
-						checkClient = mirrorclient.NewMirrorClient(nil, m.authConfigPath)
+				} else {
+					// Permanently failed. Ensure the flag is persisted: it may
+					// be missing from the ConfigMap if the manager restarted
+					// before the dirty-flag flush ran (retryCount reached 10
+					// but permanentlyFailed=true was not yet written).
+					if !entry.PermanentlyFailed {
+						entry.PermanentlyFailed = true
+						stateChanged = true
 					}
-					m.mu.Unlock()
-					exists, checkErr := checkClient.CheckExist(ctx, dest)
-					m.mu.Lock()
-					if checkErr != nil {
-						fmt.Printf("CheckExist error for permanently-failed image %s: %v – keeping Failed\n", dest, checkErr)
-					} else if exists {
-						fmt.Printf("Permanently-failed image %s found in target; marking Mirrored\n", dest)
-						m.mirrored[dest] = true
-						entry.State = "Mirrored"
-						entry.LastError = ""
-						stateChanged = true
-					} else {
-						fmt.Printf("Permanently-failed image %s not in target; resetting for retry\n", dest)
-						entry.State = "Pending"
-						entry.RetryCount = 0 // fresh 10-attempt window; PermanentlyFailed stays true
-						stateChanged = true
+					if driftCheckActive {
+						// During CheckExist windows, verify the target registry.
+						// If not found, reset for a fresh retry cycle (handles
+						// transient upstream unavailability). PermanentlyFailed
+						// stays true so the catalog-build gate remains open.
+						checkCount++
+						if checkCount%20 == 0 {
+							checkClient = mirrorclient.NewMirrorClient(nil, m.authConfigPath)
+						}
+						m.mu.Unlock()
+						exists, checkErr := checkClient.CheckExist(ctx, dest)
+						m.mu.Lock()
+						if checkErr != nil {
+							fmt.Printf("CheckExist error for permanently-failed image %s: %v – keeping Failed\n", dest, checkErr)
+						} else if exists {
+							fmt.Printf("Permanently-failed image %s found in target; marking Mirrored\n", dest)
+							m.mirrored[dest] = true
+							entry.State = "Mirrored"
+							entry.LastError = ""
+							stateChanged = true
+						} else {
+							fmt.Printf("Permanently-failed image %s not in target; resetting for retry\n", dest)
+							entry.State = "Pending"
+							entry.RetryCount = 0 // fresh 10-attempt window; PermanentlyFailed stays true
+							stateChanged = true
+						}
 					}
 				}
 				continue
@@ -746,8 +762,12 @@ func (m *MirrorManager) setImageStateLocked(dest, st, lastError string) {
 	entry.LastError = lastError
 	if st == "Failed" {
 		entry.RetryCount++
-		if entry.RetryCount >= 10 {
+		if entry.RetryCount >= 10 && !entry.PermanentlyFailed {
 			entry.PermanentlyFailed = true
+			// Flag the ImageSet so the next reconcile flushes PermanentlyFailed
+			// to the ConfigMap. Without this the catalog-build gate (which reads
+			// the ConfigMap) would never see the flag and block indefinitely.
+			m.dirtyStateNames[isName] = true
 		}
 	}
 }
