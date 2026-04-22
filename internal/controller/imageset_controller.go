@@ -559,7 +559,7 @@ Name: "docker-config",
 VolumeSource: corev1.VolumeSource{
 Secret: &corev1.SecretVolumeSource{
 SecretName: mt.Spec.AuthSecret,
-Items:      []corev1.KeyToPath{{Key: "config.json", Path: "config.json"}},
+Items:      []corev1.KeyToPath{{Key: ".dockerconfigjson", Path: "config.json"}},
 },
 },
 }}

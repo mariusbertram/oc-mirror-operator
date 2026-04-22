@@ -714,7 +714,7 @@ func (r *MirrorTargetReconciler) createCleanupJob(ctx context.Context, mt *mirro
 				Secret: &corev1.SecretVolumeSource{
 					SecretName: mt.Spec.AuthSecret,
 					Items: []corev1.KeyToPath{
-						{Key: "config.json", Path: "config.json"},
+						{Key: ".dockerconfigjson", Path: "config.json"},
 					},
 				},
 			},
@@ -1154,7 +1154,7 @@ func managerPodVolumes(mt *mirrorv1alpha1.MirrorTarget) []corev1.Volume {
 				Secret: &corev1.SecretVolumeSource{
 					SecretName: mt.Spec.AuthSecret,
 					Items: []corev1.KeyToPath{
-						{Key: "config.json", Path: "config.json"},
+						{Key: ".dockerconfigjson", Path: "config.json"},
 					},
 				},
 			},
