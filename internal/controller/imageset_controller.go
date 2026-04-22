@@ -317,10 +317,10 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs(
 
 // operatorImagesMirrored returns (complete, knowState).
 // complete = true when every operator-origin entry in the imagestate ConfigMap
-// is either "Mirrored" or permanently failed (RetryCount >= 10), AND there is
-// at least one such entry. Permanently-failed images are treated as done so
-// that a single unavailable upstream image does not block the catalog build
-// indefinitely; the failure is surfaced via ImageSet.status.failedImageDetails.
+// is either "Mirrored" or has PermanentlyFailed=true. PermanentlyFailed images
+// are treated as done so that a single unavailable upstream image does not
+// block the catalog build indefinitely, even while the manager periodically
+// retries them. The failure is surfaced via ImageSet.status.failedImageDetails.
 // knowState = false when no imagestate ConfigMap exists yet (manager hasn't
 // performed initial resolution); the gate is closed in that case so we don't
 // kick off a build with zero source data.
@@ -335,7 +335,7 @@ func operatorImagesMirrored(ctx context.Context, c client.Client, is *mirrorv1al
 			continue
 		}
 		hasOperator = true
-		if e.State != "Mirrored" && !(e.State == "Failed" && e.RetryCount >= 10) {
+		if e.State != "Mirrored" && !e.PermanentlyFailed {
 			return false, true
 		}
 	}

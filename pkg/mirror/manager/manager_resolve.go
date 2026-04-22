@@ -443,6 +443,7 @@ func mergeWorkerUpdates(resolved, live imagestate.ImageState) imagestate.ImageSt
 			rEntry.State = lEntry.State
 			rEntry.RetryCount = lEntry.RetryCount
 			rEntry.LastError = lEntry.LastError
+			rEntry.PermanentlyFailed = lEntry.PermanentlyFailed
 		}
 	}
 	return resolved

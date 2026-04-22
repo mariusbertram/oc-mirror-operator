@@ -68,6 +68,18 @@ spec:
                 maximum: 100
                 minimum: 1
                 type: integer
+              checkExistInterval:
+                description: |-
+                  CheckExistInterval defines how often the manager verifies that images
+                  exist in the target registry. On manager startup the check always runs
+                  immediately. For Mirrored images this detects drift (manual deletions).
+                  For permanently-failed images (PermanentlyFailed=true) this triggers a
+                  retry attempt in case the upstream error was transient.
+                  Minimum: 1h. Default: 6h.
+                type: string
+                x-kubernetes-validations:
+                - message: checkExistInterval must be at least 1h
+                  rule: duration(self) >= duration('1h')
               concurrency:
                 description: |-
                   Concurrency controls how many worker pods may run in parallel.

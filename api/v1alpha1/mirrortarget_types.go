@@ -118,6 +118,16 @@ type MirrorTargetSpec struct {
 	// +optional
 	// +kubebuilder:validation:XValidation:rule="duration(self) == duration('0s') || duration(self) >= duration('1h')",message="pollInterval must be 0s (disabled) or at least 1h"
 	PollInterval *metav1.Duration `json:"pollInterval,omitempty"`
+
+	// CheckExistInterval defines how often the manager verifies that images
+	// exist in the target registry. On manager startup the check always runs
+	// immediately. For Mirrored images this detects drift (manual deletions).
+	// For permanently-failed images (PermanentlyFailed=true) this triggers a
+	// retry attempt in case the upstream error was transient.
+	// Minimum: 1h. Default: 6h.
+	// +optional
+	// +kubebuilder:validation:XValidation:rule="duration(self) >= duration('1h')",message="checkExistInterval must be at least 1h"
+	CheckExistInterval *metav1.Duration `json:"checkExistInterval,omitempty"`
 }
 
 const (

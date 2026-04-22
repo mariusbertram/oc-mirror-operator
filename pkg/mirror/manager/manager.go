@@ -546,18 +546,20 @@ func (m *MirrorManager) reconcile(ctx context.Context) error {
 			}
 		}
 
-		// Periodic drift detection: clear the in-memory mirrored cache every 5
-		// minutes so the loop below re-verifies that mirrored images still exist
-		// in the target registry. This catches manual deletions or registry wipes.
-		const driftCheckInterval = 5 * time.Minute
-		if time.Since(m.lastDriftCheck) > driftCheckInterval {
+		// CheckExist interval: run immediately on startup (lastDriftCheck is zero),
+		// then every CheckExistInterval (default 6h, configurable per MirrorTarget).
+		checkExistInterval := 6 * time.Hour
+		if mt.Spec.CheckExistInterval != nil && mt.Spec.CheckExistInterval.Duration >= time.Hour {
+			checkExistInterval = mt.Spec.CheckExistInterval.Duration
+		}
+		driftCheckActive := time.Since(m.lastDriftCheck) > checkExistInterval
+		if driftCheckActive {
 			m.mirrored = make(map[string]bool)
 			m.lastDriftCheck = time.Now()
-			// Create a fresh regclient for drift checks to avoid auth scope
-			// accumulation. Quay's nginx proxy returns 400 when the Bearer
-			// token (which grows with each new repository scope) exceeds ~8 KB.
+			// Create a fresh regclient to avoid auth token scope accumulation.
+			// Quay's nginx proxy returns 400 when the Bearer token exceeds ~8 KB.
 			m.mirrorClient = mirrorclient.NewMirrorClient(nil, m.authConfigPath)
-			fmt.Println("Drift detection: clearing mirrored cache for re-verification")
+			fmt.Println("CheckExist: verifying images in target registry")
 		}
 
 		stateChanged := false
@@ -569,8 +571,14 @@ func (m *MirrorManager) reconcile(ctx context.Context) error {
 			m.destToIS[dest] = is.Name
 
 			// For images marked Mirrored in the ConfigMap but not yet verified
-			// in memory: check the registry to confirm they still exist.
+			// in memory: check the registry during CheckExist windows to confirm
+			// they still exist (drift detection).
 			if entry.State == "Mirrored" && !m.mirrored[dest] {
+				if !driftCheckActive {
+					// Outside check window: trust the ConfigMap state.
+					m.mirrored[dest] = true
+					continue
+				}
 				// Refresh the client every 20 checks to prevent auth token
 				// scope accumulation (Quay's nginx rejects tokens > ~8 KB).
 				checkCount++
@@ -609,10 +617,37 @@ func (m *MirrorManager) reconcile(ctx context.Context) error {
 
 			if entry.State == "Failed" {
 				if entry.RetryCount < 10 {
+					// Transient failure: schedule immediate retry.
 					entry.State = "Pending"
-					// Don't increment here; retryCount was already incremented
-					// when the failure was recorded in setImageStateLocked.
 					stateChanged = true
+				} else if driftCheckActive {
+					// Permanently failed: during CheckExist windows, verify the
+					// target registry. If not found, reset for a fresh retry
+					// cycle (handles transient upstream unavailability). A fresh
+					// RetryCount gives 10 new attempts before the image is
+					// flagged as permanently failed again. PermanentlyFailed
+					// stays true so the catalog-build gate remains open.
+					checkCount++
+					if checkCount%20 == 0 {
+						checkClient = mirrorclient.NewMirrorClient(nil, m.authConfigPath)
+					}
+					m.mu.Unlock()
+					exists, checkErr := checkClient.CheckExist(ctx, dest)
+					m.mu.Lock()
+					if checkErr != nil {
+						fmt.Printf("CheckExist error for permanently-failed image %s: %v – keeping Failed\n", dest, checkErr)
+					} else if exists {
+						fmt.Printf("Permanently-failed image %s found in target; marking Mirrored\n", dest)
+						m.mirrored[dest] = true
+						entry.State = "Mirrored"
+						entry.LastError = ""
+						stateChanged = true
+					} else {
+						fmt.Printf("Permanently-failed image %s not in target; resetting for retry\n", dest)
+						entry.State = "Pending"
+						entry.RetryCount = 0 // fresh 10-attempt window; PermanentlyFailed stays true
+						stateChanged = true
+					}
 				}
 				continue
 			}
@@ -701,6 +736,9 @@ func (m *MirrorManager) setImageStateLocked(dest, st, lastError string) {
 	entry.LastError = lastError
 	if st == "Failed" {
 		entry.RetryCount++
+		if entry.RetryCount >= 10 {
+			entry.PermanentlyFailed = true
+		}
 	}
 }
 
@@ -726,12 +764,13 @@ func (m *MirrorManager) updateImageSetStatusLocked(ctx context.Context, is *mirr
 		is.Status.LastSuccessfulPollTime = &now
 	}
 
-	// Collect permanently-failed image details (retryCount >= 10, capped at 20
-	// to bound status size). Transient failures (still being retried) are
-	// excluded — they show up as pending until retries are exhausted.
+	// Collect permanently-failed image details (capped at 20 to bound status
+	// size). Shows images where PermanentlyFailed=true regardless of current
+	// retry state (Failed at rest or Pending while being retried). Mirrored
+	// images are excluded — they recovered successfully.
 	details := make([]mirrorv1alpha1.FailedImageDetail, 0)
 	for dest, entry := range state {
-		if entry == nil || entry.State != "Failed" || entry.RetryCount < 10 {
+		if entry == nil || !entry.PermanentlyFailed || entry.State == "Mirrored" {
 			continue
 		}
 		details = append(details, mirrorv1alpha1.FailedImageDetail{

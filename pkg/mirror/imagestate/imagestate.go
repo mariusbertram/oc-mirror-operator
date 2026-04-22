@@ -63,6 +63,12 @@ type ImageEntry struct {
 	// this entry, e.g. "registry.../redhat-operator-index:v4.21 [web-terminal]"
 	// or "stable-4.14 [amd64]". Used to surface failed-image details in status.
 	OriginRef string `json:"originRef,omitempty"`
+	// PermanentlyFailed is set to true when the image has exhausted its initial
+	// retry budget (RetryCount >= 10). Once set it is never cleared — even when
+	// the image is reset to Pending for a drift-check retry attempt. This flag
+	// is used to keep the catalog-build gate open and to surface the image in
+	// failedImageDetails regardless of the current retry state.
+	PermanentlyFailed bool `json:"permanentlyFailed,omitempty"`
 }
 
 // ImageState maps destination image reference → ImageEntry.
@@ -74,13 +80,17 @@ func ConfigMapName(imageSetName string) string {
 }
 
 // Counts returns aggregate counts across the ImageState.
+//   - mirrored: State == "Mirrored"
+//   - failed:   PermanentlyFailed == true AND State != "Mirrored"
+//     (covers both "Failed" at rest and "Pending" while being retried)
+//   - pending:  everything else (State == "Pending", not permanently failed)
 func Counts(state ImageState) (total, mirrored, pending, failed int) {
 	total = len(state)
 	for _, e := range state {
-		switch e.State {
-		case "Mirrored":
+		switch {
+		case e.State == "Mirrored":
 			mirrored++
-		case "Failed":
+		case e.PermanentlyFailed:
 			failed++
 		default:
 			pending++
