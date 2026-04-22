@@ -171,6 +171,11 @@ func runWorkerBatch(insecure bool, batchJSON string) {
 
 	anyFailed := false
 	for i := range sources {
+		// Refresh the mirror client every 20 images to prevent auth token
+		// accumulation that causes "Request Header Too Large" (nginx 8KB limit).
+		if i > 0 && i%20 == 0 {
+			c = buildMirrorClient(insecure, dests[i])
+		}
 		if !mirrorOneImage(c, sources[i], dests[i]) {
 			anyFailed = true
 		}
