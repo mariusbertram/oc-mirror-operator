@@ -222,6 +222,13 @@ spec:
                       type: object
                     type: array
                 type: object
+              pollInterval:
+                description: |-
+                  PollInterval defines how often the operator re-checks upstream sources
+                  (release channels, operator catalogs) for new content.
+                  New images are added as Pending; already-mirrored images are preserved.
+                  Minimum: 1h.  Default: 24h.  Set to "0" to disable periodic polling.
+                type: string
               registry:
                 description: Registry is the URL of the target registry (e.g. registry.example.com/mirror)
                 type: string

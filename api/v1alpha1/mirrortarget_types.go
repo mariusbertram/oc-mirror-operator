@@ -110,6 +110,13 @@ type MirrorTargetSpec struct {
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=100
 	BatchSize int `json:"batchSize,omitempty"`
+
+	// PollInterval defines how often the operator re-checks upstream sources
+	// (release channels, operator catalogs) for new content.
+	// New images are added as Pending; already-mirrored images are preserved.
+	// Minimum: 1h.  Default: 24h.  Set to "0" to disable periodic polling.
+	// +optional
+	PollInterval *metav1.Duration `json:"pollInterval,omitempty"`
 }
 
 const (

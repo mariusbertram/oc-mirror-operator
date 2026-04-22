@@ -61,10 +61,24 @@ func (r *ImageSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{RequeueAfter: 1 * time.Minute}, nil
 	}
 
-	// 2. Ensure a CatalogBuildJob exists for each configured operator catalog.
+	// 2. Compute poll state. Determines whether a periodic upstream re-check is due.
+	pollInterval := 24 * time.Hour
+	if mt.Spec.PollInterval != nil && mt.Spec.PollInterval.Duration > 0 {
+		pollInterval = mt.Spec.PollInterval.Duration
+		if pollInterval < 1*time.Hour {
+			pollInterval = 1 * time.Hour
+		}
+	}
+	pollingEnabled := mt.Spec.PollInterval == nil || mt.Spec.PollInterval.Duration > 0
+	pollExpired := false
+	if pollingEnabled && is.Status.LastSuccessfulPollTime != nil {
+		pollExpired = time.Since(is.Status.LastSuccessfulPollTime.Time) >= pollInterval
+	}
+
+	// 3. Ensure a CatalogBuildJob exists for each configured operator catalog.
 	// This is done before the expensive image-list collection so that catalog
 	// builds start immediately without waiting for release image traversal.
-	if err := r.reconcileCatalogBuildJobs(ctx, is, mt); err != nil {
+	if err := r.reconcileCatalogBuildJobs(ctx, is, mt, pollExpired); err != nil {
 		l.Error(err, "Failed to reconcile catalog build jobs")
 		setCondition(&is.Status.Conditions, "CatalogReady", metav1.ConditionFalse, "CatalogBuildFailed", err.Error())
 		_ = r.Status().Update(ctx, is)
@@ -83,8 +97,8 @@ func (r *ImageSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		collector = mirror.NewCollector(mc)
 	}
 
-	// 3. Generate target image list for releases and additional images.
-	// Operator catalog images are handled by CatalogBuildJobs (step 2) and are
+	// 4. Generate target image list for releases and additional images.
+	// Operator catalog images are handled by CatalogBuildJobs (step 3) and are
 	// NOT resolved in-memory here to avoid downloading multi-GB catalog layers
 	// inside the controller pod.
 	existingState, loadErr := imagestate.Load(ctx, r.Client, is.Namespace, is.Name)
@@ -92,8 +106,28 @@ func (r *ImageSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		l.Error(loadErr, "Failed to load image state ConfigMap")
 	}
 
-	if len(existingState) == 0 || is.Status.ObservedGeneration != is.Generation {
-		l.Info("Generating image list for ImageSet")
+	needsCollection := len(existingState) == 0 ||
+		is.Status.ObservedGeneration != is.Generation ||
+		pollExpired
+
+	if needsCollection {
+		if pollExpired {
+			l.Info("Poll interval expired, re-collecting upstream content",
+				"lastPoll", is.Status.LastSuccessfulPollTime.Time,
+				"interval", pollInterval)
+			// Reset Failed entries to Pending so they get retried.
+			for dest, entry := range existingState {
+				if entry.State == "Failed" {
+					existingState[dest] = &imagestate.ImageEntry{
+						Source: entry.Source,
+						State:  "Pending",
+					}
+				}
+			}
+		} else {
+			l.Info("Generating image list for ImageSet")
+		}
+
 		images, err := collector.CollectTargetImages(ctx, &is.Spec, mt, nil)
 		if err != nil {
 			setCondition(&is.Status.Conditions, "Ready", metav1.ConditionFalse, "CollectionFailed", err.Error())
@@ -101,7 +135,7 @@ func (r *ImageSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			return ctrl.Result{}, err
 		}
 
-		// Build new state, preserving Mirrored/Failed entries from the existing
+		// Build new state, preserving Mirrored entries from the existing
 		// ConfigMap so already-mirrored images are not re-queued.
 		newState := make(imagestate.ImageState, len(images))
 		for _, img := range images {
@@ -120,6 +154,15 @@ func (r *ImageSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		}
 		existingState = newState
 		is.Status.ObservedGeneration = is.Generation
+		now := metav1.Now()
+		is.Status.LastSuccessfulPollTime = &now
+	}
+
+	// Seed LastSuccessfulPollTime for existing ImageSets that were reconciled
+	// before the polling feature was added.
+	if is.Status.LastSuccessfulPollTime == nil && len(existingState) > 0 {
+		now := metav1.Now()
+		is.Status.LastSuccessfulPollTime = &now
 	}
 
 	total, mirrored, pending, failed := imagestate.Counts(existingState)
@@ -132,6 +175,9 @@ func (r *ImageSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, err
 	}
 
+	if pollingEnabled {
+		return ctrl.Result{RequeueAfter: pollInterval}, nil
+	}
 	return ctrl.Result{}, nil
 }
 
@@ -175,6 +221,7 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs(
 	ctx context.Context,
 	is *mirrorv1alpha1.ImageSet,
 	mt *mirrorv1alpha1.MirrorTarget,
+	pollExpired bool,
 ) error {
 	l := log.FromContext(ctx)
 
@@ -194,6 +241,12 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs(
 	catalogNeedsRebuild := lastSig != "" && lastSig != buildSig
 	if catalogNeedsRebuild {
 		l.Info("Catalog build signature changed, forcing rebuild", "old", lastSig, "new", buildSig)
+	}
+	// Force catalog rebuild when poll interval expired — upstream catalog images
+	// (e.g. redhat-operator-index:v4.21) may have been updated in-place.
+	if pollExpired && !catalogNeedsRebuild {
+		l.Info("Poll interval expired, forcing catalog rebuild")
+		catalogNeedsRebuild = true
 	}
 
 	// If the CatalogReady condition is already True AND the signature hasn't

@@ -387,6 +387,12 @@ spec:
                 description: FailedImages is the number of images that failed mirroring
                   (exhausted retries).
                 type: integer
+              lastSuccessfulPollTime:
+                description: |-
+                  LastSuccessfulPollTime is the timestamp of the last successful upstream poll.
+                  Used together with MirrorTarget.spec.pollInterval to schedule periodic re-collection.
+                format: date-time
+                type: string
               mirroredImages:
                 description: MirroredImages is the number of images successfully mirrored.
                 type: integer

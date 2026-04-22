@@ -38,6 +38,11 @@ type ImageSetStatus struct {
 	// ObservedGeneration is the generation of the ImageSet that was last reconciled.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// LastSuccessfulPollTime is the timestamp of the last successful upstream poll.
+	// Used together with MirrorTarget.spec.pollInterval to schedule periodic re-collection.
+	// +optional
+	LastSuccessfulPollTime *metav1.Time `json:"lastSuccessfulPollTime,omitempty"`
 }
 
 // +kubebuilder:object:root=true
