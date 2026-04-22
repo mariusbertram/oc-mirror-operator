@@ -31,7 +31,7 @@ metadata:
       ]
     capabilities: Basic Install
     categories: OpenShift Optional, Integration & Delivery
-    containerImage: quay.lab.brtrm.dev/marius/oc-mirror-operator@sha256:6a6c2d22bb66a9b4c9d338f0e201cbd8018a7d306f9d16953a161ee20a8ce6eb
+    containerImage: quay.lab.brtrm.dev/marius/oc-mirror-operator@sha256:1ba9d91cb296f627aee3c0ee3f04c8ab7b337ffec94afa17596e4624c8bad483
     createdAt: "2026-04-22T19:28:47Z"
     operators.operatorframework.io/builder: operator-sdk-v1.42.0
     operators.operatorframework.io/project_layout: go.kubebuilder.io/v4
@@ -253,8 +253,8 @@ spec:
                       - /manager
                     env:
                       - name: OPERATOR_IMAGE
-                        value: quay.lab.brtrm.dev/marius/oc-mirror-operator@sha256:0a532e5ff76a5b9e4983e8e10c2cbe6bc7fdd6c5f3a3d9069b982ea4530fed72
-                    image: quay.lab.brtrm.dev/marius/oc-mirror-operator@sha256:0a532e5ff76a5b9e4983e8e10c2cbe6bc7fdd6c5f3a3d9069b982ea4530fed72
+                        value: quay.lab.brtrm.dev/marius/oc-mirror-operator@sha256:1ba9d91cb296f627aee3c0ee3f04c8ab7b337ffec94afa17596e4624c8bad483
+                    image: quay.lab.brtrm.dev/marius/oc-mirror-operator@sha256:1ba9d91cb296f627aee3c0ee3f04c8ab7b337ffec94afa17596e4624c8bad483
                     livenessProbe:
                       httpGet:
                         path: /healthz
@@ -351,8 +351,8 @@ spec:
     name: Marius Bertram
     url: github.com/mariusbertram/oc-mirror-operator
   relatedImages:
-    - image: quay.lab.brtrm.dev/marius/oc-mirror-operator@sha256:0a532e5ff76a5b9e4983e8e10c2cbe6bc7fdd6c5f3a3d9069b982ea4530fed72
+    - image: quay.lab.brtrm.dev/marius/oc-mirror-operator@sha256:1ba9d91cb296f627aee3c0ee3f04c8ab7b337ffec94afa17596e4624c8bad483
       name: manager
-    - image: quay.lab.brtrm.dev/marius/oc-mirror-operator@sha256:6a6c2d22bb66a9b4c9d338f0e201cbd8018a7d306f9d16953a161ee20a8ce6eb
+    - image: quay.lab.brtrm.dev/marius/oc-mirror-operator@sha256:1ba9d91cb296f627aee3c0ee3f04c8ab7b337ffec94afa17596e4624c8bad483
       name: oc-mirror-operator-6a6c2d22bb66a9b4c9d338f0e201cbd8018a7d306f9d16953a161ee20a8ce6eb-annotation
   version: 0.0.2
