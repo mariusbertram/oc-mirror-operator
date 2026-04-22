@@ -100,18 +100,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Inject operator image digest into CSV
+      - name: Inject version and operator image digest into CSV
         run: |
           VERSION="${{ needs.build-operator.outputs.version }}"
+          TAG="${{ needs.build-operator.outputs.tag }}"
           DIGEST="${{ needs.build-operator.outputs.digest }}"
           NEW_REF="${{ env.OPERATOR_IMAGE }}@${DIGEST}"
+          CSV="bundle/manifests/oc-mirror.clusterserviceversion.yaml"
 
-          # Replace every digest reference in the bundle CSV
-          sed -i "s|${{ env.OPERATOR_IMAGE }}@sha256:[a-f0-9]*|${NEW_REF}|g" \
-            bundle/manifests/oc-mirror.clusterserviceversion.yaml
+          # Update CSV name: oc-mirror.v<old> → oc-mirror.v<VERSION>
+          sed -i "s|name: oc-mirror\.v[0-9.]*|name: oc-mirror.v${VERSION}|g" "$CSV"
 
-          echo "CSV updated to use: ${NEW_REF}"
-          grep "image:" bundle/manifests/oc-mirror.clusterserviceversion.yaml | head -5
+          # Update spec.version field
+          sed -i "s|^\(  version: \)[0-9.]*|\1${VERSION}|" "$CSV"
+
+          # Update containerImage annotation
+          sed -i "s|containerImage: .*|containerImage: ${NEW_REF}|g" "$CSV"
+
+          # Replace every operator image digest reference
+          sed -i "s|${{ env.OPERATOR_IMAGE }}@sha256:[a-f0-9]*|${NEW_REF}|g" "$CSV"
+          # Also replace tag-based references (e.g. :v0.0.1 → @digest)
+          sed -i "s|${{ env.OPERATOR_IMAGE }}:v[0-9.]*|${NEW_REF}|g" "$CSV"
+
+          echo "CSV updated to version ${VERSION} with image: ${NEW_REF}"
+          grep -E "name: oc-mirror|version:|containerImage:|image:" "$CSV" | head -10
 
       - uses: docker/setup-buildx-action@v3
 
