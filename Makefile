@@ -28,7 +28,7 @@ BUNDLE_METADATA_OPTS ?= $(BUNDLE_CHANNELS) $(BUNDLE_DEFAULT_CHANNEL)
 # This variable is used to construct full image tags for bundle and catalog images.
 #
 # For example, running 'make bundle-build bundle-push catalog-build catalog-push' will build and push both
-# mirror.openshift.io/ocp-mirror-bundle:$VERSION and mirror.openshift.io/ocp-mirror-catalog:$VERSION.
+# mirror.openshift.io/oc-mirror-bundle:$VERSION and mirror.openshift.io/oc-mirror-catalog:$VERSION.
 IMAGE_TAG_BASE ?= quay.lab.brtrm.dev/oc-mirror-operator
 
 # BUNDLE_IMG defines the image:tag used for the bundle.
@@ -116,7 +116,7 @@ test: manifests generate fmt vet setup-envtest ## Run tests.
 # The default setup assumes Kind is pre-installed and builds/loads the Manager Docker image locally.
 # CertManager is installed by default; skip with:
 # - CERT_MANAGER_INSTALL_SKIP=true
-KIND_CLUSTER ?= ocp-mirror-test-e2e
+KIND_CLUSTER ?= oc-mirror-test-e2e
 
 # KIND_PROVIDER allows using podman instead of docker as the kind node provider.
 # It is auto-detected from CONTAINER_TOOL; override explicitly if needed.
@@ -148,9 +148,9 @@ test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expect
 .PHONY: test-e2e-cluster
 test-e2e-cluster: setup-test-e2e docker-build ## Build operator image, load into Kind, and run full cluster e2e tests.
 ifeq ($(CONTAINER_TOOL),podman)
-	$(CONTAINER_TOOL) save $(IMG) -o /tmp/ocp-mirror-e2e.tar
-	$(KIND_PROVIDER_ENV) $(KIND) load image-archive /tmp/ocp-mirror-e2e.tar --name $(KIND_CLUSTER)
-	@rm -f /tmp/ocp-mirror-e2e.tar
+	$(CONTAINER_TOOL) save $(IMG) -o /tmp/oc-mirror-e2e.tar
+	$(KIND_PROVIDER_ENV) $(KIND) load image-archive /tmp/oc-mirror-e2e.tar --name $(KIND_CLUSTER)
+	@rm -f /tmp/oc-mirror-e2e.tar
 else
 	$(KIND) load docker-image $(IMG) --name $(KIND_CLUSTER)
 endif
@@ -210,10 +210,10 @@ docker-push: ## Push docker image with the manager.
 PLATFORMS ?= linux/arm64,linux/amd64,linux/s390x,linux/ppc64le
 .PHONY: docker-buildx
 docker-buildx: ## Build and push docker image for the manager for cross-platform support
-	- $(CONTAINER_TOOL) buildx create --name ocp-mirror-builder
-	$(CONTAINER_TOOL) buildx use ocp-mirror-builder
+	- $(CONTAINER_TOOL) buildx create --name oc-mirror-builder
+	$(CONTAINER_TOOL) buildx use oc-mirror-builder
 	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --tag ${IMG} -f Dockerfile .
-	- $(CONTAINER_TOOL) buildx rm ocp-mirror-builder
+	- $(CONTAINER_TOOL) buildx rm oc-mirror-builder
 
 .PHONY: podman-buildx
 podman-buildx: ## Build and push multi-arch image for the manager using podman for cross-platform support.

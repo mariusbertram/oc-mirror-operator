@@ -1,0 +1,114 @@
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersion
+metadata:
+  annotations:
+    alm-examples: |-
+      [
+        {
+          "apiVersion": "mirror.openshift.io/v1alpha1",
+          "kind": "MirrorTarget",
+          "metadata": {"name": "quay-internal", "namespace": "oc-mirror-system"},
+          "spec": {
+            "registry": "quay.example.com/mirror-target",
+            "imageSets": ["ocp-release-4-21"],
+            "concurrency": 20,
+            "batchSize": 10
+          }
+        },
+        {
+          "apiVersion": "mirror.openshift.io/v1alpha1",
+          "kind": "ImageSet",
+          "metadata": {"name": "ocp-release-4-21", "namespace": "oc-mirror-system"},
+          "spec": {
+            "mirror": {
+              "platform": {
+                "channels": [{"name": "stable-4.21", "type": "ocp", "minVersion": "4.21.0", "maxVersion": "4.21.0"}]
+              }
+            }
+          }
+        }
+      ]
+    capabilities: Basic Install
+    categories: OpenShift Optional, Integration & Delivery
+    containerImage: quay.lab.brtrm.dev/marius/oc-mirror-operator:latest
+    repository: https://github.com/mariusbertram/oc-mirror-operator
+    support: Marius Bertram
+  name: oc-mirror.v0.0.0
+  namespace: placeholder
+spec:
+  apiservicedefinitions: {}
+  customresourcedefinitions:
+    owned:
+    - description: |
+        A MirrorTarget defines a destination registry for one or more ImageSets.
+        It owns the manager Deployment that orchestrates per-image worker pods
+        and exposes aggregated mirroring progress (Total/Mirrored/Pending/Failed).
+      displayName: Mirror Target
+      kind: MirrorTarget
+      name: mirrortargets.mirror.openshift.io
+      version: v1alpha1
+    - description: |
+        An ImageSet describes the desired content (release channels, operator
+        catalogs, additional images) to mirror to one or more MirrorTargets.
+      displayName: Image Set
+      kind: ImageSet
+      name: imagesets.mirror.openshift.io
+      version: v1alpha1
+  description: |
+    The oc-mirror operator brings the functionality of the upstream `oc-mirror`
+    plugin to Kubernetes/OpenShift as a fully declarative, in-cluster operator.
+
+    ## Features
+
+    - **Declarative content selection** via `ImageSet` CRs (release channels,
+      operator catalogs, additional images, helm charts).
+    - **Per-target mirroring** via `MirrorTarget` CRs that aggregate one or
+      more ImageSets into a destination registry.
+    - **Live progress aggregation**: TOTAL/MIRRORED/PENDING/FAILED columns on
+      `oc get mirrortarget`.
+    - **Filtered FBC catalog images** built in-cluster from upstream operator
+      indexes.
+    - **Live skip of obsolete images** when ImageSets are reduced while a
+      mirror run is in flight.
+    - **Resource server** that publishes IDMS/ITMS/CatalogSource/ClusterCatalog
+      manifests once an ImageSet is Ready.
+
+    See https://github.com/mariusbertram/oc-mirror-operator for the full
+    architecture, security model, and deployment guide.
+  displayName: oc-mirror Operator
+  icon:
+  - base64data: ""
+    mediatype: ""
+  install:
+    spec:
+      deployments: null
+    strategy: ""
+  installModes:
+  - supported: false
+    type: OwnNamespace
+  - supported: false
+    type: SingleNamespace
+  - supported: false
+    type: MultiNamespace
+  - supported: true
+    type: AllNamespaces
+  keywords:
+  - mirror
+  - ocp
+  - images
+  - operator
+  - catalog
+  - disconnected
+  links:
+  - name: Source Code
+    url: https://github.com/mariusbertram/oc-mirror-operator
+  - name: Documentation
+    url: https://github.com/mariusbertram/oc-mirror-operator/blob/main/README.md
+  maintainers:
+  - email: marius@brtrm.de
+    name: Marius Bertram
+  maturity: alpha
+  provider:
+    name: Marius Bertram
+    url: github.com/mariusbertram/oc-mirror-operator
+  version: 0.0.0

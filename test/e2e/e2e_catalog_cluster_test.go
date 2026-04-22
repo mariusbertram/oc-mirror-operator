@@ -20,7 +20,7 @@ limitations under the License.
 //
 // Run with:
 //
-//	make test-e2e-cluster IMG=example.com/ocp-mirror:v0.0.1
+//	make test-e2e-cluster IMG=example.com/oc-mirror:v0.0.1
 package e2e
 
 import (
@@ -35,8 +35,8 @@ import (
 	"github.com/mariusbertram/oc-mirror-operator/test/utils"
 )
 
-// The operator namespace created by kustomize (namePrefix = ocp-mirror-).
-const operatorNamespace = "ocp-mirror-system"
+// The operator namespace created by kustomize (namePrefix = oc-mirror-).
+const operatorNamespace = "oc-mirror-system"
 
 var _ = Describe("Catalog Build Job E2E", Ordered, Label("cluster"), func() {
 	const (

@@ -1,4 +1,4 @@
-# This rule is not used by the project ocp-mirror itself.
+# This rule is not used by the project oc-mirror itself.
 # It is provided to allow the cluster admin to help manage permissions for users.
 #
 # Grants full permissions ('*') over mirror.openshift.io.
@@ -9,7 +9,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   labels:
-    app.kubernetes.io/name: ocp-mirror
+    app.kubernetes.io/name: oc-mirror
     app.kubernetes.io/managed-by: kustomize
   name: imageset-admin-role
 rules:

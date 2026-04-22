@@ -2,7 +2,7 @@ apiVersion: mirror.openshift.io/v1alpha1
 kind: MirrorTarget
 metadata:
   labels:
-    app.kubernetes.io/name: ocp-mirror
+    app.kubernetes.io/name: oc-mirror
     app.kubernetes.io/managed-by: kustomize
   name: mirrortarget-sample
 spec:

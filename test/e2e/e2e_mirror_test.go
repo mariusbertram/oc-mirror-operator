@@ -28,10 +28,10 @@ import (
 	"github.com/mariusbertram/oc-mirror-operator/test/utils"
 )
 
-var _ = Describe("ocp-mirror Operator E2E", Ordered, Label("cluster"), func() {
+var _ = Describe("oc-mirror Operator E2E", Ordered, Label("cluster"), func() {
 	const (
 		mirrorNamespace   = "default"
-		operatorNamespace = "ocp-mirror-system"
+		operatorNamespace = "oc-mirror-system"
 		targetName        = "internal-registry"
 		imageSetName      = "test-sync-e2e"
 	)

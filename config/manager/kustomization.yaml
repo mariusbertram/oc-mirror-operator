@@ -6,3 +6,19 @@ images:
 - name: controller
   newName: quay.lab.brtrm.dev/marius/oc-mirror-operator
   newTag: latest
+
+# Mirror the manager container image into OPERATOR_IMAGE so the env var
+# follows whatever `make bundle IMG=...` (or the OLM ClusterServiceVersion)
+# resolves the image to. Without this, OPERATOR_IMAGE would stay at the
+# placeholder "controller:latest" and the operator would fail-fast at boot.
+replacements:
+- source:
+    fieldPath: spec.template.spec.containers.[name=manager].image
+    kind: Deployment
+    name: controller-manager
+  targets:
+  - fieldPaths:
+    - spec.template.spec.containers.[name=manager].env.[name=OPERATOR_IMAGE].value
+    select:
+      kind: Deployment
+      name: controller-manager

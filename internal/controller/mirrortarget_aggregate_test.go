@@ -18,17 +18,17 @@ func TestAggregateImageSetStatus(t *testing.T) {
 	}
 
 	mt := &mirrorv1alpha1.MirrorTarget{
-		ObjectMeta: metav1.ObjectMeta{Name: "quay-internal", Namespace: "ocp-mirror-system"},
+		ObjectMeta: metav1.ObjectMeta{Name: "quay-internal", Namespace: "oc-mirror-system"},
 		Spec: mirrorv1alpha1.MirrorTargetSpec{
 			ImageSets: []string{"is-b", "is-a", "is-missing"},
 		},
 	}
 	isA := &mirrorv1alpha1.ImageSet{
-		ObjectMeta: metav1.ObjectMeta{Name: "is-a", Namespace: "ocp-mirror-system"},
+		ObjectMeta: metav1.ObjectMeta{Name: "is-a", Namespace: "oc-mirror-system"},
 		Status:     mirrorv1alpha1.ImageSetStatus{TotalImages: 100, MirroredImages: 60, PendingImages: 30, FailedImages: 10},
 	}
 	isB := &mirrorv1alpha1.ImageSet{
-		ObjectMeta: metav1.ObjectMeta{Name: "is-b", Namespace: "ocp-mirror-system"},
+		ObjectMeta: metav1.ObjectMeta{Name: "is-b", Namespace: "oc-mirror-system"},
 		Status:     mirrorv1alpha1.ImageSetStatus{TotalImages: 50, MirroredImages: 50, PendingImages: 0, FailedImages: 0},
 	}
 
