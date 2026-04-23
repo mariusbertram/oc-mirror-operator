@@ -83,12 +83,23 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// Handle deletion
 	if !mt.DeletionTimestamp.IsZero() {
 		if controllerutil.ContainsFinalizer(mt, mirrorTargetFinalizer) {
+			// Delete the manager Deployment first so it stops spawning new pods.
+			// Without this, the Deployment would keep recreating manager/worker pods
+			// faster than the pod-level cleanup loop can delete them.
+			dep := &appsv1.Deployment{}
+			depKey := client.ObjectKey{Name: mt.Name + "-manager", Namespace: mt.Namespace}
+			if err := r.Get(ctx, depKey, dep); err == nil {
+				if err := r.Delete(ctx, dep); err != nil && !errors.IsNotFound(err) {
+					return ctrl.Result{}, err
+				}
+			}
+
 			podList := &corev1.PodList{}
 			if err := r.List(ctx, podList, client.InNamespace(mt.Namespace),
 				client.MatchingLabels{"mirrortarget": mt.Name}); err != nil {
 				return ctrl.Result{}, err
 			}
-			// Issue deletes for any worker pods still around. We only remove
+			// Issue deletes for any worker/manager pods still around. We only remove
 			// the finalizer once all of them have actually disappeared, to
 			// give them a chance to flush in-flight state and avoid leaking
 			// pods that survive past MirrorTarget deletion.
@@ -99,7 +110,7 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 					continue
 				}
 				if err := r.Delete(ctx, &pod); err != nil && !errors.IsNotFound(err) {
-					l.Error(err, "Failed to delete worker pod", "pod", pod.Name)
+					l.Error(err, "Failed to delete pod", "pod", pod.Name)
 					return ctrl.Result{}, err
 				}
 				remaining++
