@@ -39,15 +39,15 @@ import (
 // The operator namespace created by kustomize (namePrefix = oc-mirror-).
 const operatorNamespace = "oc-mirror-system"
 
-// Catalog cluster tests are expensive (pulls ~2 GB catalog image, needs 10+ min).
-// They run only when explicitly selected with -ginkgo.label-filter="catalog-cluster".
+// Catalog cluster tests use the brtrm-dev-catalog (small, GHCR-hosted, no auth needed)
+// instead of the large quay.io/operatorhubio/catalog (~2 GB). They run in standard CI.
 var _ = Describe("Catalog Build Job E2E", Ordered, Label("cluster", "catalog-cluster"), func() {
 	const (
 		ns             = "default"
 		targetName     = "catalog-test-target"
 		imageSetName   = "catalog-test-imageset"
-		sourceCatalog  = "quay.io/operatorhubio/catalog:latest"
-		catalogPackage = "postgresql-operator"
+		sourceCatalog  = "ghcr.io/mariusbertram/brtrm-dev-catalog/catalog:latest"
+		catalogPackage = "ip-rule-operator"
 	)
 
 	// registryHost is the in-cluster registry service.
@@ -155,9 +155,9 @@ spec:
 		})
 
 		It("should complete the CatalogBuildJob successfully", func() {
-			By("waiting up to 10 minutes for the CatalogBuildJob to succeed")
-			// The job pulls quay.io/operatorhubio/catalog (large image) and filters it;
-			// a generous timeout is required on first run before the node has a warm cache.
+			By("waiting up to 3 minutes for the CatalogBuildJob to succeed")
+			// The job pulls ghcr.io/mariusbertram/brtrm-dev-catalog/catalog:latest (small,
+			// only 2 operators) and filters it — should complete well within 3 minutes.
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "jobs",
 					"-l", "mirror.openshift.io/imageset="+imageSetName,
@@ -167,7 +167,7 @@ spec:
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal("1"),
 					"CatalogBuildJob has not succeeded yet (succeeded=%s)", output)
-			}, 10*time.Minute, 15*time.Second).Should(Succeed())
+			}, 3*time.Minute, 10*time.Second).Should(Succeed())
 		})
 
 		It("should set the CatalogReady condition to True on the ImageSet", func() {

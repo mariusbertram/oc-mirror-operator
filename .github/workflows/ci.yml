@@ -133,13 +133,13 @@ jobs:
           KIND_CLUSTER=oc-mirror-test-e2e \
           go test ./test/e2e/ -v -timeout 20m \
             -ginkgo.v \
-            -ginkgo.label-filter="(cluster && !catalog-cluster) || catalog"
+            -ginkgo.label-filter="!catalog-live"
           # label map:
           #   cluster              – needs Kind + deployed operator (e2e_mirror_test.go)
+          #   catalog-cluster      – needs Kind + small brtrm-dev-catalog (GHCR, ip-rule-operator)
           #   catalog              – pure in-memory FBC filter tests, no cluster required
-          #   catalog-cluster      – needs 2 GB catalog image pull, manual only
-          #   catalog-live         – needs quay.io network, manual only
-          #   release / integration – needs Cincinnati API (api.openshift.com), manual only
+          #   release / integration – Cincinnati API (api.openshift.com), reachable in CI
+          #   catalog-live         – quay.io/operatorhubio/catalog (~2 GB), manual only
 
       - name: Cleanup Kind cluster
         if: always()
