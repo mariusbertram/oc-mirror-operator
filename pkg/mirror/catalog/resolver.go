@@ -141,12 +141,9 @@ func (r *CatalogResolver) ResolveCatalog(ctx context.Context, catalogImage strin
 		return nil, nil
 	}
 
-	// Always include the catalog index image itself so it gets mirrored.
-	images := []string{catalogImage}
-
-	// If no packages requested, return only the catalog image.
+	// If no packages requested, return only the catalog index image itself.
 	if len(packages) == 0 {
-		return images, nil
+		return []string{catalogImage}, nil
 	}
 
 	cfg, err := r.loadFBCFromImage(ctx, catalogImage)
@@ -167,7 +164,12 @@ func (r *CatalogResolver) ResolveCatalog(ctx context.Context, catalogImage strin
 	fmt.Printf("Catalog %s: filtered to %d packages, %d channels, %d bundles\n",
 		catalogImage, len(filtered.Packages), len(filtered.Channels), len(filtered.Bundles))
 
-	return append(images, r.ExtractImages(filtered)...), nil
+	// Always include the catalog index image itself so it gets mirrored.
+	extracted := r.ExtractImages(filtered)
+	result := make([]string, 0, 1+len(extracted))
+	result = append(result, catalogImage)
+	result = append(result, extracted...)
+	return result, nil
 }
 
 // loadFBCFromImage fetches all image layers, collects every file under configs/,
