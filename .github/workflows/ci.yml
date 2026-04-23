@@ -12,11 +12,16 @@ on:
       - 'fix/**'
   pull_request:
 
+# Deny all permissions by default; each job grants only what it needs.
+permissions: {}
+
 jobs:
   # ── 1. Unit tests ──────────────────────────────────────────────────────────
   test:
     name: Unit tests
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v6
 
@@ -33,6 +38,8 @@ jobs:
   build:
     name: Build operator image
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v6
 
@@ -54,6 +61,8 @@ jobs:
   build-bundle-check:
     name: Build bundle image check
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v6
 
@@ -71,6 +80,8 @@ jobs:
   build-multiarch-check:
     name: Multi-arch build check
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v6
 
@@ -90,6 +101,8 @@ jobs:
     name: E2E tests
     runs-on: ubuntu-latest
     needs: build
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v6
 

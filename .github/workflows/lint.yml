@@ -4,10 +4,15 @@ on:
   push:
   pull_request:
 
+# Deny all permissions by default; each job grants only what it needs.
+permissions: {}
+
 jobs:
   lint:
     name: Run on Ubuntu
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Clone the code
         uses: actions/checkout@v6
