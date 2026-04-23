@@ -193,4 +193,3 @@ var _ = Describe("Collector", func() {
 		)
 	})
 })
-
