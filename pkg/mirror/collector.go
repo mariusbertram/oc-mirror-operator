@@ -221,16 +221,29 @@ func (c *Collector) toTargetImage(src, dest string, meta *state.Metadata) Target
 	}
 }
 
-// imageNamePath strips the registry host from an image reference and returns only the
-// repository path (e.g. "quay.io/foo/bar@sha256:…" → "foo/bar").
+// imageNamePath strips the registry host, tag, and digest from an image
+// reference and returns only the repository path.
+//
+//	quay.io/foo/bar@sha256:…              → "foo/bar"
+//	quay.io/foo/bar:v1.2@sha256:…        → "foo/bar"
+//	localhost:5001/org/bundle:v1.2@sha256 → "org/bundle"
 func imageNamePath(img string) string {
-	imgNoTag := strings.Split(img, ":")[0]
-	imgNoDigest := strings.Split(imgNoTag, "@")[0]
-	parts := strings.SplitN(imgNoDigest, "/", 2)
+	// 1. Remove digest (everything from "@" onwards).
+	if i := strings.Index(img, "@"); i >= 0 {
+		img = img[:i]
+	}
+	// 2. Remove tag: strip the last ":" segment only when it is NOT followed by
+	//    a "/" (a "/" after the colon means it is part of a registry:port prefix,
+	//    not a tag).
+	if i := strings.LastIndex(img, ":"); i >= 0 && !strings.Contains(img[i+1:], "/") {
+		img = img[:i]
+	}
+	// 3. Strip registry host (first path segment containing "." or ":").
+	parts := strings.SplitN(img, "/", 2)
 	if len(parts) > 1 && (strings.Contains(parts[0], ".") || strings.Contains(parts[0], ":")) {
 		return parts[1]
 	}
-	return imgNoDigest
+	return img
 }
 
 // releasePayloadDestination builds the destination for a release payload image.

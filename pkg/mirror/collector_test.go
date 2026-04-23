@@ -144,4 +144,53 @@ var _ = Describe("Collector", func() {
 			Expect(results[0].Destination).To(Equal("internal.registry.io/openshift-release-dev/ocp-release:4.21.11"))
 		})
 	})
+
+	Describe("imageNamePath", func() {
+		DescribeTable("extracts the repository path",
+			func(input, expected string) {
+				Expect(imageNamePath(input)).To(Equal(expected))
+			},
+			Entry("digest-only",
+				"quay.io/foo/bar@sha256:abc123",
+				"foo/bar"),
+			Entry("tag-only",
+				"quay.io/foo/bar:v1.2",
+				"foo/bar"),
+			Entry("tag and digest",
+				"quay.io/foo/bar:v1.2@sha256:abc123",
+				"foo/bar"),
+			Entry("registry with port, tag only",
+				"localhost:5001/org/bundle:v1.2.3",
+				"org/bundle"),
+			Entry("registry with port, digest only",
+				"localhost:5001/org/bundle@sha256:abc123",
+				"org/bundle"),
+			Entry("registry with port, tag and digest",
+				"localhost:5001/org/bundle:v1.2.3@sha256:abc123",
+				"org/bundle"),
+			Entry("no registry prefix",
+				"my-image:v1.0",
+				"my-image"),
+		)
+	})
+
+	Describe("componentDestination", func() {
+		const reg = "mirror.example.com"
+
+		DescribeTable("builds deterministic destination from digest",
+			func(src, expected string) {
+				Expect(componentDestination(reg, src)).To(Equal(expected))
+			},
+			Entry("digest-only",
+				"quay.io/org/bundle@sha256:abc123",
+				"mirror.example.com/org/bundle:sha256-abc123"),
+			Entry("tag and digest",
+				"quay.io/org/bundle:v1.2.3@sha256:abc123",
+				"mirror.example.com/org/bundle:sha256-abc123"),
+			Entry("registry with port, tag and digest",
+				"localhost:5001/org/bundle:v1.2.3@sha256:abc123",
+				"mirror.example.com/org/bundle:sha256-abc123"),
+		)
+	})
 })
+

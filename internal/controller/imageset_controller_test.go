@@ -223,4 +223,34 @@ var _ = Describe("ImageSet Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 	})
+
+	Describe("catalogTargetRef", func() {
+		const reg = "mirror.example.com"
+
+		DescribeTable("derives the correct target catalog reference",
+			func(catalog, targetTag, targetCatalog, expected string) {
+				op := mirrorv1alpha1.Operator{
+					Catalog:       catalog,
+					TargetTag:     targetTag,
+					TargetCatalog: targetCatalog,
+				}
+				Expect(catalogTargetRef(reg, op)).To(Equal(expected))
+			},
+			// tag-only catalog
+			Entry("tag-only", "quay.io/redhat/catalog:v4.21", "", "",
+				"mirror.example.com/redhat/catalog:v4.21"),
+			// digest-only catalog → defaults to "latest"
+			Entry("digest-only", "quay.io/redhat/catalog@sha256:abc", "", "",
+				"mirror.example.com/redhat/catalog:latest"),
+			// tag AND digest → preserves the tag
+			Entry("tag and digest", "quay.io/redhat/catalog:v4.21@sha256:abc", "", "",
+				"mirror.example.com/redhat/catalog:v4.21"),
+			// explicit TargetTag overrides everything
+			Entry("explicit TargetTag", "quay.io/redhat/catalog:v4.21@sha256:abc", "custom", "",
+				"mirror.example.com/redhat/catalog:custom"),
+			// explicit TargetCatalog with tag@digest source
+			Entry("TargetCatalog with tag@digest", "quay.io/redhat/catalog:v4.21@sha256:abc", "", "my/catalog",
+				"mirror.example.com/my/catalog:v4.21"),
+		)
+	})
 })

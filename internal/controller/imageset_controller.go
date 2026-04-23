@@ -398,16 +398,19 @@ func operatorImagesMirrored(ctx context.Context, c client.Client, is *mirrorv1al
 
 // catalogTargetRef builds the target image reference for a filtered catalog image.
 // It prefers Operator.TargetCatalog if set; otherwise derives a path from the
-// source catalog name and appends the TargetTag (defaulting to "latest").
+// source catalog name and appends the TargetTag (defaulting to the source tag,
+// or "latest" when the source is digest-only).
 func catalogTargetRef(registry string, op mirrorv1alpha1.Operator) string {
 	tag := op.TargetTag
 	if tag == "" {
-		// Default to the source catalog's tag (e.g. "v4.21" from "index:v4.21").
-		// Skip digest references (contain "@").
-		if !strings.Contains(op.Catalog, "@") {
-			if i := strings.LastIndex(op.Catalog, ":"); i >= 0 && !strings.Contains(op.Catalog[i:], "/") {
-				tag = op.Catalog[i+1:]
-			}
+		// Extract tag from the source catalog, handling "image:tag",
+		// "image@sha256:..." and "image:tag@sha256:..." forms.
+		catalogForTag := op.Catalog
+		if i := strings.Index(catalogForTag, "@"); i >= 0 {
+			catalogForTag = catalogForTag[:i] // strip digest, keep tag part
+		}
+		if i := strings.LastIndex(catalogForTag, ":"); i >= 0 && !strings.Contains(catalogForTag[i:], "/") {
+			tag = catalogForTag[i+1:]
 		}
 	}
 	if tag == "" {
