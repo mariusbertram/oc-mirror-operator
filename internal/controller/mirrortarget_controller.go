@@ -82,48 +82,7 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	// Handle deletion
 	if !mt.DeletionTimestamp.IsZero() {
-		if controllerutil.ContainsFinalizer(mt, mirrorTargetFinalizer) {
-			// Delete the manager Deployment first so it stops spawning new pods.
-			// Without this, the Deployment would keep recreating manager/worker pods
-			// faster than the pod-level cleanup loop can delete them.
-			dep := &appsv1.Deployment{}
-			depKey := client.ObjectKey{Name: mt.Name + "-manager", Namespace: mt.Namespace}
-			if err := r.Get(ctx, depKey, dep); err == nil {
-				if err := r.Delete(ctx, dep); err != nil && !errors.IsNotFound(err) {
-					return ctrl.Result{}, err
-				}
-			}
-
-			podList := &corev1.PodList{}
-			if err := r.List(ctx, podList, client.InNamespace(mt.Namespace),
-				client.MatchingLabels{"mirrortarget": mt.Name}); err != nil {
-				return ctrl.Result{}, err
-			}
-			// Issue deletes for any worker/manager pods still around. We only remove
-			// the finalizer once all of them have actually disappeared, to
-			// give them a chance to flush in-flight state and avoid leaking
-			// pods that survive past MirrorTarget deletion.
-			remaining := 0
-			for _, pod := range podList.Items {
-				if !pod.DeletionTimestamp.IsZero() {
-					remaining++
-					continue
-				}
-				if err := r.Delete(ctx, &pod); err != nil && !errors.IsNotFound(err) {
-					l.Error(err, "Failed to delete pod", "pod", pod.Name)
-					return ctrl.Result{}, err
-				}
-				remaining++
-			}
-			if remaining > 0 {
-				return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
-			}
-			controllerutil.RemoveFinalizer(mt, mirrorTargetFinalizer)
-			if err := r.Update(ctx, mt); err != nil {
-				return ctrl.Result{}, err
-			}
-		}
-		return ctrl.Result{}, nil
+		return r.handleDeletion(ctx, mt)
 	}
 
 	// Add finalizer if not present
@@ -579,6 +538,56 @@ func (r *MirrorTargetReconciler) ensureNetworkPolicies(ctx context.Context, mt *
 	return nil
 }
 
+// handleDeletion runs the MirrorTarget finalizer logic: stops the manager
+// Deployment, waits for all pods to terminate, then removes the finalizer.
+func (r *MirrorTargetReconciler) handleDeletion(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget) (ctrl.Result, error) {
+	l := log.FromContext(ctx)
+	if !controllerutil.ContainsFinalizer(mt, mirrorTargetFinalizer) {
+		return ctrl.Result{}, nil
+	}
+
+	// Delete the manager Deployment first so it stops spawning new pods.
+	// Without this, the Deployment would keep recreating manager/worker pods
+	// faster than the pod-level cleanup loop can delete them.
+	dep := &appsv1.Deployment{}
+	depKey := client.ObjectKey{Name: mt.Name + "-manager", Namespace: mt.Namespace}
+	if err := r.Get(ctx, depKey, dep); err == nil {
+		if err := r.Delete(ctx, dep); err != nil && !errors.IsNotFound(err) {
+			return ctrl.Result{}, err
+		}
+	}
+
+	podList := &corev1.PodList{}
+	if err := r.List(ctx, podList, client.InNamespace(mt.Namespace),
+		client.MatchingLabels{"mirrortarget": mt.Name}); err != nil {
+		return ctrl.Result{}, err
+	}
+	// Issue deletes for any worker/manager pods still around. We only remove
+	// the finalizer once all of them have actually disappeared, to
+	// give them a chance to flush in-flight state and avoid leaking
+	// pods that survive past MirrorTarget deletion.
+	remaining := 0
+	for _, pod := range podList.Items {
+		if !pod.DeletionTimestamp.IsZero() {
+			remaining++
+			continue
+		}
+		if err := r.Delete(ctx, &pod); err != nil && !errors.IsNotFound(err) {
+			l.Error(err, "Failed to delete pod", "pod", pod.Name)
+			return ctrl.Result{}, err
+		}
+		remaining++
+	}
+	if remaining > 0 {
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	}
+	controllerutil.RemoveFinalizer(mt, mirrorTargetFinalizer)
+	if err := r.Update(ctx, mt); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{}, nil
+}
+
 // creates cleanup Jobs for them (if cleanup-policy annotation is "Delete"),
 // and tracks cleanup progress.
 func (r *MirrorTargetReconciler) reconcileCleanup(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget) error { //nolint:unparam
@@ -598,7 +607,7 @@ func (r *MirrorTargetReconciler) reconcileCleanup(ctx context.Context, mt *mirro
 	}
 
 	// Check pending cleanups — remove entries whose Jobs completed successfully.
-	var stillPending []string
+	stillPending := make([]string, 0, len(mt.Status.PendingCleanup))
 	for _, name := range mt.Status.PendingCleanup {
 		jobName := cleanupJobName(mt.Name, name)
 		job := &batchv1.Job{}

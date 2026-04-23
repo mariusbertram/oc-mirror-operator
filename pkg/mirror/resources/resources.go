@@ -277,7 +277,7 @@ func GenerateSignatureConfigMaps(signatures SignatureData) ([]byte, error) {
 	}
 	sort.Strings(digests)
 
-	var docs []string
+	docs := make([]string, 0, len(digests))
 	for _, digest := range digests {
 		sig := signatures[digest]
 		// ConfigMap name: sha256-<first 12 hex chars of hash>-1

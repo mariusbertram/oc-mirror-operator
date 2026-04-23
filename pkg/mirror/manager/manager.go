@@ -404,7 +404,7 @@ func (m *MirrorManager) cleanupFinishedWorkers(ctx context.Context) {
 		dest, podName string
 		phase         corev1.PodPhase
 	}
-	var done []finished
+	done := make([]finished, 0, len(snapshot))
 	deletedPods := map[string]struct{}{}
 
 	for dest, podName := range snapshot {

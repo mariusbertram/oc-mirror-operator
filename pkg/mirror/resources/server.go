@@ -343,7 +343,7 @@ func isImageSetReady(is *mirrorv1alpha1.ImageSet) bool {
 
 // extractCatalogs derives CatalogInfo from an ImageSet's operator spec and the target registry.
 func extractCatalogs(is *mirrorv1alpha1.ImageSet, registryPrefix string) []CatalogInfo {
-	var result []CatalogInfo
+	result := make([]CatalogInfo, 0, len(is.Spec.Mirror.Operators))
 	for _, op := range is.Spec.Mirror.Operators {
 		if op.Catalog == "" {
 			continue

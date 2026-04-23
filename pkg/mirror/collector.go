@@ -119,7 +119,7 @@ func (c *Collector) CollectReleasesForChannel(
 	rel mirrorv1alpha1.ReleaseChannel,
 	payloadImages []string,
 ) ([]TargetImage, error) {
-	var results []TargetImage
+	results := make([]TargetImage, 0, len(payloadImages))
 	arch := spec.Mirror.Platform.Architectures
 	if len(arch) == 0 {
 		arch = []string{"amd64"}
@@ -204,7 +204,7 @@ func (c *Collector) CollectOperatorEntry(ctx context.Context, op mirrorv1alpha1.
 	if err != nil {
 		return nil, err
 	}
-	var results []TargetImage
+	results := make([]TargetImage, 0, len(imagesWithBundles))
 	for img, bundleRef := range imagesWithBundles {
 		dest := componentDestination(target.Spec.Registry, img)
 		ti := c.toTargetImage(img, dest, nil)
