@@ -154,7 +154,7 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 					Labels: labels,
 				},
 				Spec: corev1.PodSpec{
-					ServiceAccountName: "oc-mirror-coordinator",
+					ServiceAccountName: mt.Name + "-coordinator",
 					SecurityContext: &corev1.PodSecurityContext{
 						RunAsNonRoot: pointerTo(true),
 						SeccompProfile: &corev1.SeccompProfile{
@@ -303,11 +303,16 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 }
 
 // ensureCoordinatorRBAC creates the ServiceAccount, Role, and RoleBinding needed by the manager pod.
+// All resources are named after the MirrorTarget so that multiple MirrorTargets can coexist in the
+// same namespace without ownership conflicts.
 func (r *MirrorTargetReconciler) ensureCoordinatorRBAC(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget) error {
+	coordinatorName := mt.Name + "-coordinator"
+	workerName := mt.Name + "-worker"
+
 	// ServiceAccount
 	sa := &corev1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "oc-mirror-coordinator",
+			Name:      coordinatorName,
 			Namespace: mt.Namespace,
 		},
 	}
@@ -320,7 +325,7 @@ func (r *MirrorTargetReconciler) ensureCoordinatorRBAC(ctx context.Context, mt *
 	// Worker ServiceAccount (used by mirror worker pods)
 	workerSA := &corev1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "oc-mirror-worker",
+			Name:      workerName,
 			Namespace: mt.Namespace,
 		},
 	}
@@ -333,7 +338,7 @@ func (r *MirrorTargetReconciler) ensureCoordinatorRBAC(ctx context.Context, mt *
 	// Role granting coordinator access to manage ImageSets, pods, and MirrorTargets in the namespace
 	role := &rbacv1.Role{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "oc-mirror-coordinator",
+			Name:      coordinatorName,
 			Namespace: mt.Namespace,
 		},
 	}
@@ -400,7 +405,7 @@ func (r *MirrorTargetReconciler) ensureCoordinatorRBAC(ctx context.Context, mt *
 	// RoleBinding
 	rb := &rbacv1.RoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "oc-mirror-coordinator",
+			Name:      coordinatorName,
 			Namespace: mt.Namespace,
 		},
 	}
@@ -411,12 +416,12 @@ func (r *MirrorTargetReconciler) ensureCoordinatorRBAC(ctx context.Context, mt *
 		rb.RoleRef = rbacv1.RoleRef{
 			APIGroup: "rbac.authorization.k8s.io",
 			Kind:     "Role",
-			Name:     "oc-mirror-coordinator",
+			Name:     coordinatorName,
 		}
 		rb.Subjects = []rbacv1.Subject{
 			{
 				Kind:      "ServiceAccount",
-				Name:      "oc-mirror-coordinator",
+				Name:      coordinatorName,
 				Namespace: mt.Namespace,
 			},
 		}
@@ -778,7 +783,7 @@ func (r *MirrorTargetReconciler) createCleanupJob(ctx context.Context, mt *mirro
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
-					ServiceAccountName: "oc-mirror-coordinator",
+					ServiceAccountName: mt.Name + "-coordinator",
 					RestartPolicy:      corev1.RestartPolicyNever,
 					SecurityContext: &corev1.PodSecurityContext{
 						RunAsNonRoot: pointerTo(true),
