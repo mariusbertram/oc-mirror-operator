@@ -16,6 +16,8 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/blang/semver/v4"
+	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
 	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
 	godigest "github.com/opencontainers/go-digest"
 	"github.com/operator-framework/operator-registry/alpha/declcfg"
@@ -144,7 +146,12 @@ func (r *CatalogResolver) ResolveCatalog(ctx context.Context, catalogImage strin
 		return nil, fmt.Errorf("failed to load FBC from %s: %w", catalogImage, err)
 	}
 
-	filtered, err := r.FilterFBC(ctx, cfg, packages)
+	includes := make([]mirrorv1alpha1.IncludePackage, 0, len(packages))
+	for _, p := range packages {
+		includes = append(includes, mirrorv1alpha1.IncludePackage{Name: p})
+	}
+
+	filtered, err := r.FilterFBC(ctx, cfg, includes)
 	if err != nil {
 		return nil, fmt.Errorf("failed to filter FBC: %w", err)
 	}
@@ -280,6 +287,7 @@ const (
 	olmPackageRequired = "olm.package.required"
 	olmGVKRequired     = "olm.gvk.required"
 	olmGVK             = "olm.gvk"
+	olmPackage         = "olm.package"
 )
 
 // packageRequiredValue is the JSON structure for an olm.package.required property.
@@ -299,11 +307,147 @@ func (g gvkValue) gvkKey() string {
 	return g.Group + "/" + g.Version + "/" + g.Kind
 }
 
+// bundleVersion extracts the version string from a bundle's olm.package property.
+// Returns "" if the version cannot be determined.
+func bundleVersion(b declcfg.Bundle) string {
+	for _, prop := range b.Properties {
+		if prop.Type != olmPackage {
+			continue
+		}
+		var v struct {
+			Version string `json:"version"`
+		}
+		if json.Unmarshal(prop.Value, &v) == nil && v.Version != "" {
+			return v.Version
+		}
+	}
+	return ""
+}
+
+// channelVersionFilter holds the effective semver range for bundles within a
+// specific channel (channel-level values override package-level values).
+type channelVersionFilter struct {
+	hasMinVer bool
+	hasMaxVer bool
+	minSV     semver.Version
+	maxSV     semver.Version
+}
+
+// pkgIncludeFilter holds the resolved filter constraints for one explicitly
+// requested operator package.
+type pkgIncludeFilter struct {
+	allowAllChannels bool
+	allowedChannels  map[string]bool
+	channelFilters   map[string]channelVersionFilter
+	pkgHasMinVer     bool
+	pkgHasMaxVer     bool
+	pkgMinSV         semver.Version
+	pkgMaxSV         semver.Version
+}
+
+// buildPkgIncludeFilter constructs a pkgIncludeFilter from an IncludePackage spec.
+func buildPkgIncludeFilter(inc mirrorv1alpha1.IncludePackage) pkgIncludeFilter {
+	f := pkgIncludeFilter{
+		allowedChannels: make(map[string]bool),
+		channelFilters:  make(map[string]channelVersionFilter),
+	}
+
+	if inc.MinVersion != "" {
+		if sv, err := semver.ParseTolerant(inc.MinVersion); err == nil {
+			f.pkgMinSV = sv
+			f.pkgHasMinVer = true
+		}
+	}
+	if inc.MaxVersion != "" {
+		if sv, err := semver.ParseTolerant(inc.MaxVersion); err == nil {
+			f.pkgMaxSV = sv
+			f.pkgHasMaxVer = true
+		}
+	}
+
+	if len(inc.Channels) == 0 {
+		f.allowAllChannels = true
+	} else {
+		for _, ch := range inc.Channels {
+			f.allowedChannels[ch.Name] = true
+			cf := channelVersionFilter{}
+			if ch.MinVersion != "" {
+				if sv, err := semver.ParseTolerant(ch.MinVersion); err == nil {
+					cf.minSV = sv
+					cf.hasMinVer = true
+				}
+			}
+			if ch.MaxVersion != "" {
+				if sv, err := semver.ParseTolerant(ch.MaxVersion); err == nil {
+					cf.maxSV = sv
+					cf.hasMaxVer = true
+				}
+			}
+			f.channelFilters[ch.Name] = cf
+		}
+	}
+	return f
+}
+
+// effectiveVersionFilter returns the version range that applies to a channel,
+// giving channel-level filters priority over package-level ones.
+func (f pkgIncludeFilter) effectiveVersionFilter(chName string) channelVersionFilter {
+	cf, hasCh := f.channelFilters[chName]
+	var result channelVersionFilter
+
+	// Min version: channel-level takes priority, then package-level.
+	if hasCh && cf.hasMinVer {
+		result.minSV = cf.minSV
+		result.hasMinVer = true
+	} else if f.pkgHasMinVer {
+		result.minSV = f.pkgMinSV
+		result.hasMinVer = true
+	}
+
+	// Max version: same priority.
+	if hasCh && cf.hasMaxVer {
+		result.maxSV = cf.maxSV
+		result.hasMaxVer = true
+	} else if f.pkgHasMaxVer {
+		result.maxSV = f.pkgMaxSV
+		result.hasMaxVer = true
+	}
+	return result
+}
+
+// bundleMatchesVersionFilter returns true if the bundle should be included
+// given the resolved version filter. If the bundle's version cannot be
+// determined, it is included (lenient behaviour to avoid breaking catalogs).
+func bundleMatchesVersionFilter(b declcfg.Bundle, vf channelVersionFilter) bool {
+	if !vf.hasMinVer && !vf.hasMaxVer {
+		return true // no filter
+	}
+	ver := bundleVersion(b)
+	if ver == "" {
+		return true // unknown version → include
+	}
+	sv, err := semver.ParseTolerant(ver)
+	if err != nil {
+		return true // unparseable → include
+	}
+	if vf.hasMinVer && sv.LT(vf.minSV) {
+		return false
+	}
+	if vf.hasMaxVer && sv.GT(vf.maxSV) {
+		return false
+	}
+	return true
+}
+
 // FilterFBC implements the in-memory filtering of a declarative configuration.
 // It includes transitive dependencies by resolving both olm.package.required
 // and olm.gvk.required properties from bundles of selected packages.
-func (r *CatalogResolver) FilterFBC(ctx context.Context, cfg *declcfg.DeclarativeConfig, packages []string) (*declcfg.DeclarativeConfig, error) { //nolint:gocyclo
-	if len(packages) == 0 {
+//
+// When packages specify Channels or version ranges (MinVersion/MaxVersion),
+// only the matching channels and bundles are retained. Transitively discovered
+// dependency packages are always included in full (no filtering applied).
+func (r *CatalogResolver) FilterFBC(ctx context.Context, cfg *declcfg.DeclarativeConfig, includes []mirrorv1alpha1.IncludePackage) (*declcfg.DeclarativeConfig, error) { //nolint:gocyclo
+	if len(includes) == 0 {
 		return cfg, nil
 	}
 
@@ -314,8 +458,15 @@ func (r *CatalogResolver) FilterFBC(ctx context.Context, cfg *declcfg.Declarativ
 	}
 
 	bundlesByPkg := make(map[string][]declcfg.Bundle)
+	bundlesByName := make(map[string]declcfg.Bundle, len(cfg.Bundles))
 	for _, b := range cfg.Bundles {
 		bundlesByPkg[b.Package] = append(bundlesByPkg[b.Package], b)
+		bundlesByName[b.Name] = b
+	}
+
+	channelsByPkg := make(map[string][]declcfg.Channel)
+	for _, c := range cfg.Channels {
+		channelsByPkg[c.Package] = append(channelsByPkg[c.Package], c)
 	}
 
 	// Build GVK provider index: GVK key → set of package names that provide it.
@@ -337,30 +488,31 @@ func (r *CatalogResolver) FilterFBC(ctx context.Context, cfg *declcfg.Declarativ
 		}
 	}
 
-	// Resolve transitive dependencies via BFS.
-	pkgSet := make(map[string]bool, len(packages))
-	for _, p := range packages {
-		pkgSet[p] = true
+	// Build per-package filter structs from user config.
+	explicitFilters := make(map[string]pkgIncludeFilter, len(includes))
+	pkgSet := make(map[string]bool, len(includes))
+	for _, inc := range includes {
+		pkgSet[inc.Name] = true
+		explicitFilters[inc.Name] = buildPkgIncludeFilter(inc)
 	}
 
 	// Auto-discover companion dependency packages (Red Hat convention).
-	// For "foo-operator" check "foo-dependencies"; also check
-	// "<name>-dependencies", "<name>-dependency", "<name>-deps".
-	for _, p := range packages {
-		candidates := []string{p + "-dependencies", p + "-dependency", p + "-deps"}
-		if strings.HasSuffix(p, "-operator") {
-			base := strings.TrimSuffix(p, "-operator")
+	for _, inc := range includes {
+		candidates := []string{inc.Name + "-dependencies", inc.Name + "-dependency", inc.Name + "-deps"}
+		if strings.HasSuffix(inc.Name, "-operator") {
+			base := strings.TrimSuffix(inc.Name, "-operator")
 			candidates = append(candidates, base+"-dependencies")
 		}
 		for _, c := range candidates {
 			if catalogPkgs[c] && !pkgSet[c] {
 				pkgSet[c] = true
-				fmt.Printf("Including companion dependency package: %s (for %s)\n", c, p)
-				break // one match is enough
+				fmt.Printf("Including companion dependency package: %s (for %s)\n", c, inc.Name)
+				break
 			}
 		}
 	}
 
+	// Resolve transitive dependencies via BFS.
 	queue := make([]string, 0, len(pkgSet))
 	for p := range pkgSet {
 		queue = append(queue, p)
@@ -399,6 +551,45 @@ func (r *CatalogResolver) FilterFBC(ctx context.Context, cfg *declcfg.Declarativ
 		}
 	}
 
+	// For each explicitly requested package, compute the set of allowed
+	// channel names and allowed bundle names (after version filtering).
+	// Transitively discovered packages always include all channels/bundles.
+	allowedChannels := make(map[string]map[string]bool) // pkgName → channelName set
+	allowedBundles := make(map[string]bool)             // bundleName → allowed
+
+	for pkgName, f := range explicitFilters {
+		if !catalogPkgs[pkgName] {
+			continue
+		}
+
+		// Short-circuit: no filtering at all for this package.
+		noFiltering := f.allowAllChannels && !f.pkgHasMinVer && !f.pkgHasMaxVer && len(f.channelFilters) == 0
+		if noFiltering {
+			continue // will be handled in the final loop by checking pkgSet only
+		}
+
+		for _, ch := range channelsByPkg[pkgName] {
+			if !f.allowAllChannels && !f.allowedChannels[ch.Name] {
+				continue // channel not in the allowed list
+			}
+			if allowedChannels[pkgName] == nil {
+				allowedChannels[pkgName] = make(map[string]bool)
+			}
+			allowedChannels[pkgName][ch.Name] = true
+
+			vf := f.effectiveVersionFilter(ch.Name)
+			for _, entry := range ch.Entries {
+				b, ok := bundlesByName[entry.Name]
+				if !ok {
+					continue
+				}
+				if bundleMatchesVersionFilter(b, vf) {
+					allowedBundles[entry.Name] = true
+				}
+			}
+		}
+	}
+
 	filtered := &declcfg.DeclarativeConfig{
 		Packages: make([]declcfg.Package, 0),
 		Channels: make([]declcfg.Channel, 0),
@@ -410,13 +601,45 @@ func (r *CatalogResolver) FilterFBC(ctx context.Context, cfg *declcfg.Declarativ
 			filtered.Packages = append(filtered.Packages, p)
 		}
 	}
-	for _, c := range cfg.Channels {
-		if pkgSet[c.Package] {
-			filtered.Channels = append(filtered.Channels, c)
+
+	for _, ch := range cfg.Channels {
+		if !pkgSet[ch.Package] {
+			continue
+		}
+		// Transitively discovered packages: include all channels.
+		if _, isExplicit := explicitFilters[ch.Package]; !isExplicit {
+			filtered.Channels = append(filtered.Channels, ch)
+			continue
+		}
+		// Explicit packages: if no channel filtering → include all.
+		f := explicitFilters[ch.Package]
+		if f.allowAllChannels && !f.pkgHasMinVer && !f.pkgHasMaxVer && len(f.channelFilters) == 0 {
+			filtered.Channels = append(filtered.Channels, ch)
+			continue
+		}
+		// Check allowed channels map.
+		if allowedChannels[ch.Package] != nil && allowedChannels[ch.Package][ch.Name] {
+			filtered.Channels = append(filtered.Channels, ch)
 		}
 	}
+
 	for _, b := range cfg.Bundles {
-		if pkgSet[b.Package] {
+		if !pkgSet[b.Package] {
+			continue
+		}
+		// Transitively discovered packages: include all bundles.
+		if _, isExplicit := explicitFilters[b.Package]; !isExplicit {
+			filtered.Bundles = append(filtered.Bundles, b)
+			continue
+		}
+		// Explicit packages: if no filtering → include all bundles.
+		f := explicitFilters[b.Package]
+		if f.allowAllChannels && !f.pkgHasMinVer && !f.pkgHasMaxVer && len(f.channelFilters) == 0 {
+			filtered.Bundles = append(filtered.Bundles, b)
+			continue
+		}
+		// Check allowed bundles set (populated per-channel above).
+		if allowedBundles[b.Name] {
 			filtered.Bundles = append(filtered.Bundles, b)
 		}
 	}
@@ -484,7 +707,7 @@ func renderBundleRefs(names []string) string {
 
 // ResolveCatalogWithBundles is like ResolveCatalog but returns a map of image
 // reference → bundle-name string for use as per-image origin labels.
-func (r *CatalogResolver) ResolveCatalogWithBundles(ctx context.Context, catalogImage string, packages []string) (map[string]string, error) {
+func (r *CatalogResolver) ResolveCatalogWithBundles(ctx context.Context, catalogImage string, includes []mirrorv1alpha1.IncludePackage) (map[string]string, error) {
 	if _, err := ref.New(catalogImage); err != nil {
 		return nil, fmt.Errorf("failed to parse catalog image reference: %w", err)
 	}
@@ -495,7 +718,7 @@ func (r *CatalogResolver) ResolveCatalogWithBundles(ctx context.Context, catalog
 	if err != nil {
 		return nil, fmt.Errorf("failed to load FBC from %s: %w", catalogImage, err)
 	}
-	filtered, err := r.FilterFBC(ctx, cfg, packages)
+	filtered, err := r.FilterFBC(ctx, cfg, includes)
 	if err != nil {
 		return nil, fmt.Errorf("failed to filter FBC: %w", err)
 	}
@@ -510,7 +733,7 @@ func (r *CatalogResolver) ResolveCatalogWithBundles(ctx context.Context, catalog
 //	operators.operatorframework.io.index.configs.v1=/configs
 //
 // so that OLM can serve it directly.  Returns the digest of the pushed manifest.
-func (r *CatalogResolver) BuildFilteredCatalogImage(ctx context.Context, sourceCatalogImage, targetRef string, packages []string) (string, error) {
+func (r *CatalogResolver) BuildFilteredCatalogImage(ctx context.Context, sourceCatalogImage, targetRef string, includes []mirrorv1alpha1.IncludePackage) (string, error) {
 	if r.client == nil {
 		return "", fmt.Errorf("registry client is required for BuildFilteredCatalogImage")
 	}
@@ -634,7 +857,7 @@ func (r *CatalogResolver) BuildFilteredCatalogImage(ctx context.Context, sourceC
 		return "", fmt.Errorf("failed to load FBC from %s: %w", sourceCatalogImage, err)
 	}
 
-	filtered, err := r.FilterFBC(ctx, cfg, packages)
+	filtered, err := r.FilterFBC(ctx, cfg, includes)
 	if err != nil {
 		return "", fmt.Errorf("failed to filter FBC: %w", err)
 	}

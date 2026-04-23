@@ -23,36 +23,50 @@ limitations under the License.
 //
 //	SOURCE_CATALOG           – fully-qualified source catalog image reference (required)
 //	TARGET_REF               – fully-qualified target image reference (required)
-//	CATALOG_PACKAGES         – comma-separated list of package names to include (empty = all)
+//	CATALOG_INCLUDE_CONFIG   – JSON-encoded []IncludePackage with channel/version filters (preferred)
+//	CATALOG_PACKAGES         – comma-separated list of package names (legacy fallback, ignored when CATALOG_INCLUDE_CONFIG is set)
 //	REGISTRY_INSECURE_HOSTS  – comma-separated list of insecure registry hosts
 //	DOCKER_CONFIG            – directory that contains a .dockerconfigjson for registry auth
 package main
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"os"
 	"strings"
 
+	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/catalog"
+	builderconst "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/catalog/builder"
 	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
 )
 
 func main() {
 	source := os.Getenv("SOURCE_CATALOG")
 	target := os.Getenv("TARGET_REF")
-	pkgsRaw := os.Getenv("CATALOG_PACKAGES")
-	insecureRaw := os.Getenv("REGISTRY_INSECURE_HOSTS")
+	includeConfigRaw := os.Getenv(builderconst.EnvCatalogIncludeConfig)
+	pkgsRaw := os.Getenv(builderconst.EnvCatalogPackages)
+	insecureRaw := os.Getenv(builderconst.EnvInsecureHosts)
 
 	if source == "" || target == "" {
 		slog.Error("SOURCE_CATALOG and TARGET_REF environment variables are required")
 		os.Exit(1)
 	}
 
-	var packages []string
-	for _, p := range strings.Split(pkgsRaw, ",") {
-		if p = strings.TrimSpace(p); p != "" {
-			packages = append(packages, p)
+	// Parse the full include config (channels + version filters) when available;
+	// fall back to the legacy comma-separated package list otherwise.
+	var packages []mirrorv1alpha1.IncludePackage
+	if includeConfigRaw != "" {
+		if err := json.Unmarshal([]byte(includeConfigRaw), &packages); err != nil {
+			slog.Error("failed to parse CATALOG_INCLUDE_CONFIG", "error", err)
+			os.Exit(1)
+		}
+	} else {
+		for _, p := range strings.Split(pkgsRaw, ",") {
+			if p = strings.TrimSpace(p); p != "" {
+				packages = append(packages, mirrorv1alpha1.IncludePackage{Name: p})
+			}
 		}
 	}
 
@@ -63,12 +77,16 @@ func main() {
 		}
 	}
 
-	authDir := os.Getenv("DOCKER_CONFIG")
+	authDir := os.Getenv(builderconst.EnvDockerConfig)
 
+	pkgNames := make([]string, 0, len(packages))
+	for _, p := range packages {
+		pkgNames = append(pkgNames, p.Name)
+	}
 	slog.Info("starting catalog-builder",
 		"source", source,
 		"target", target,
-		"packages", packages,
+		"packages", pkgNames,
 		"insecureHosts", insecureHosts,
 		"authDir", authDir,
 	)

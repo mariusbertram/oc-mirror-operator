@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
 	"github.com/operator-framework/operator-registry/alpha/declcfg"
 	"github.com/operator-framework/operator-registry/alpha/property"
 )
@@ -51,7 +52,7 @@ func TestFilterFBC_PackageRequired(t *testing.T) {
 	}
 
 	resolver := &CatalogResolver{}
-	filtered, err := resolver.FilterFBC(context.Background(), cfg, []string{"operator-a"})
+	filtered, err := resolver.FilterFBC(context.Background(), cfg, []mirrorv1alpha1.IncludePackage{{Name: "operator-a"}})
 	if err != nil {
 		t.Fatalf("FilterFBC: %v", err)
 	}
@@ -114,7 +115,7 @@ func TestFilterFBC_GVKRequired(t *testing.T) {
 	}
 
 	resolver := &CatalogResolver{}
-	filtered, err := resolver.FilterFBC(context.Background(), cfg, []string{"consumer-op"})
+	filtered, err := resolver.FilterFBC(context.Background(), cfg, []mirrorv1alpha1.IncludePackage{{Name: "consumer-op"}})
 	if err != nil {
 		t.Fatalf("FilterFBC: %v", err)
 	}
@@ -176,7 +177,7 @@ func TestFilterFBC_TransitiveChain(t *testing.T) {
 	}
 
 	resolver := &CatalogResolver{}
-	filtered, err := resolver.FilterFBC(context.Background(), cfg, []string{"op-a"})
+	filtered, err := resolver.FilterFBC(context.Background(), cfg, []mirrorv1alpha1.IncludePackage{{Name: "op-a"}})
 	if err != nil {
 		t.Fatalf("FilterFBC: %v", err)
 	}
@@ -192,7 +193,7 @@ func TestFilterFBC_EmptyPackages(t *testing.T) {
 	}
 
 	resolver := &CatalogResolver{}
-	filtered, err := resolver.FilterFBC(context.Background(), cfg, []string{})
+	filtered, err := resolver.FilterFBC(context.Background(), cfg, []mirrorv1alpha1.IncludePackage{})
 	if err != nil {
 		t.Fatalf("FilterFBC: %v", err)
 	}
@@ -259,7 +260,7 @@ func TestFilterFBC_CompanionDependencyPackage(t *testing.T) {
 	}
 
 	resolver := &CatalogResolver{}
-	filtered, err := resolver.FilterFBC(context.Background(), cfg, []string{"odf-operator"})
+	filtered, err := resolver.FilterFBC(context.Background(), cfg, []mirrorv1alpha1.IncludePackage{{Name: "odf-operator"}})
 	if err != nil {
 		t.Fatalf("FilterFBC: %v", err)
 	}
@@ -280,6 +281,251 @@ func TestFilterFBC_CompanionDependencyPackage(t *testing.T) {
 	}
 	if pkgNames["unrelated"] {
 		t.Error("unrelated should not be included")
+	}
+}
+
+// TestFilterFBC_ChannelFilter verifies that only the requested channel and its
+// bundles are included when Channels is specified.
+func TestFilterFBC_ChannelFilter(t *testing.T) {
+	cfg := &declcfg.DeclarativeConfig{
+		Packages: []declcfg.Package{{Name: "my-op"}},
+		Channels: []declcfg.Channel{
+			{
+				Name:    "stable",
+				Package: "my-op",
+				Entries: []declcfg.ChannelEntry{
+					{Name: "my-op.v1.0.0"},
+					{Name: "my-op.v2.0.0"},
+				},
+			},
+			{
+				Name:    "preview",
+				Package: "my-op",
+				Entries: []declcfg.ChannelEntry{
+					{Name: "my-op.v3.0.0"},
+				},
+			},
+		},
+		Bundles: []declcfg.Bundle{
+			{
+				Name: "my-op.v1.0.0", Package: "my-op",
+				Image: "reg/my-op-bundle@sha256:100",
+				Properties: []property.Property{
+					{Type: olmPackage, Value: json.RawMessage(`{"packageName":"my-op","version":"1.0.0"}`)},
+				},
+			},
+			{
+				Name: "my-op.v2.0.0", Package: "my-op",
+				Image: "reg/my-op-bundle@sha256:200",
+				Properties: []property.Property{
+					{Type: olmPackage, Value: json.RawMessage(`{"packageName":"my-op","version":"2.0.0"}`)},
+				},
+			},
+			{
+				Name: "my-op.v3.0.0", Package: "my-op",
+				Image: "reg/my-op-bundle@sha256:300",
+				Properties: []property.Property{
+					{Type: olmPackage, Value: json.RawMessage(`{"packageName":"my-op","version":"3.0.0"}`)},
+				},
+			},
+		},
+	}
+
+	resolver := &CatalogResolver{}
+	filtered, err := resolver.FilterFBC(context.Background(), cfg, []mirrorv1alpha1.IncludePackage{
+		{Name: "my-op", Channels: []mirrorv1alpha1.IncludeChannel{{Name: "stable"}}},
+	})
+	if err != nil {
+		t.Fatalf("FilterFBC: %v", err)
+	}
+
+	if len(filtered.Channels) != 1 {
+		t.Errorf("expected 1 channel (stable), got %d", len(filtered.Channels))
+	}
+	if len(filtered.Channels) > 0 && filtered.Channels[0].Name != "stable" {
+		t.Errorf("expected channel 'stable', got %q", filtered.Channels[0].Name)
+	}
+	// Only stable bundles: v1.0.0 and v2.0.0
+	bundleNames := map[string]bool{}
+	for _, b := range filtered.Bundles {
+		bundleNames[b.Name] = true
+	}
+	if len(filtered.Bundles) != 2 {
+		t.Errorf("expected 2 bundles (v1, v2 from stable), got %d: %v", len(filtered.Bundles), bundleNames)
+	}
+	if bundleNames["my-op.v3.0.0"] {
+		t.Error("preview channel bundle v3.0.0 should not be included")
+	}
+}
+
+// TestFilterFBC_MinVersionFilter verifies that bundles below minVersion are excluded.
+func TestFilterFBC_MinVersionFilter(t *testing.T) {
+	cfg := &declcfg.DeclarativeConfig{
+		Packages: []declcfg.Package{{Name: "my-op"}},
+		Channels: []declcfg.Channel{
+			{
+				Name:    "stable",
+				Package: "my-op",
+				Entries: []declcfg.ChannelEntry{
+					{Name: "my-op.v1.0.0"},
+					{Name: "my-op.v2.0.0"},
+					{Name: "my-op.v3.0.0"},
+				},
+			},
+		},
+		Bundles: []declcfg.Bundle{
+			{
+				Name: "my-op.v1.0.0", Package: "my-op",
+				Image: "reg/my-op-bundle@sha256:100",
+				Properties: []property.Property{
+					{Type: olmPackage, Value: json.RawMessage(`{"packageName":"my-op","version":"1.0.0"}`)},
+				},
+			},
+			{
+				Name: "my-op.v2.0.0", Package: "my-op",
+				Image: "reg/my-op-bundle@sha256:200",
+				Properties: []property.Property{
+					{Type: olmPackage, Value: json.RawMessage(`{"packageName":"my-op","version":"2.0.0"}`)},
+				},
+			},
+			{
+				Name: "my-op.v3.0.0", Package: "my-op",
+				Image: "reg/my-op-bundle@sha256:300",
+				Properties: []property.Property{
+					{Type: olmPackage, Value: json.RawMessage(`{"packageName":"my-op","version":"3.0.0"}`)},
+				},
+			},
+		},
+	}
+
+	resolver := &CatalogResolver{}
+	filtered, err := resolver.FilterFBC(context.Background(), cfg, []mirrorv1alpha1.IncludePackage{
+		{Name: "my-op", IncludeBundle: mirrorv1alpha1.IncludeBundle{MinVersion: "2.0.0"}},
+	})
+	if err != nil {
+		t.Fatalf("FilterFBC: %v", err)
+	}
+
+	bundleNames := map[string]bool{}
+	for _, b := range filtered.Bundles {
+		bundleNames[b.Name] = true
+	}
+	if bundleNames["my-op.v1.0.0"] {
+		t.Error("v1.0.0 is below minVersion 2.0.0 and should be excluded")
+	}
+	if !bundleNames["my-op.v2.0.0"] {
+		t.Error("v2.0.0 should be included (>= minVersion 2.0.0)")
+	}
+	if !bundleNames["my-op.v3.0.0"] {
+		t.Error("v3.0.0 should be included (>= minVersion 2.0.0)")
+	}
+}
+
+// TestFilterFBC_VersionRange verifies that only bundles within [min,max] are included.
+func TestFilterFBC_VersionRange(t *testing.T) {
+	cfg := &declcfg.DeclarativeConfig{
+		Packages: []declcfg.Package{{Name: "my-op"}},
+		Channels: []declcfg.Channel{
+			{
+				Name:    "stable",
+				Package: "my-op",
+				Entries: []declcfg.ChannelEntry{
+					{Name: "my-op.v1.0.0"},
+					{Name: "my-op.v2.0.0"},
+					{Name: "my-op.v3.0.0"},
+					{Name: "my-op.v4.0.0"},
+				},
+			},
+		},
+		Bundles: []declcfg.Bundle{
+			{Name: "my-op.v1.0.0", Package: "my-op", Image: "reg/b@sha256:100",
+				Properties: []property.Property{{Type: olmPackage, Value: json.RawMessage(`{"packageName":"my-op","version":"1.0.0"}`)}}},
+			{Name: "my-op.v2.0.0", Package: "my-op", Image: "reg/b@sha256:200",
+				Properties: []property.Property{{Type: olmPackage, Value: json.RawMessage(`{"packageName":"my-op","version":"2.0.0"}`)}}},
+			{Name: "my-op.v3.0.0", Package: "my-op", Image: "reg/b@sha256:300",
+				Properties: []property.Property{{Type: olmPackage, Value: json.RawMessage(`{"packageName":"my-op","version":"3.0.0"}`)}}},
+			{Name: "my-op.v4.0.0", Package: "my-op", Image: "reg/b@sha256:400",
+				Properties: []property.Property{{Type: olmPackage, Value: json.RawMessage(`{"packageName":"my-op","version":"4.0.0"}`)}}},
+		},
+	}
+
+	resolver := &CatalogResolver{}
+	filtered, err := resolver.FilterFBC(context.Background(), cfg, []mirrorv1alpha1.IncludePackage{
+		{Name: "my-op", IncludeBundle: mirrorv1alpha1.IncludeBundle{MinVersion: "2.0.0", MaxVersion: "3.0.0"}},
+	})
+	if err != nil {
+		t.Fatalf("FilterFBC: %v", err)
+	}
+
+	bundleNames := map[string]bool{}
+	for _, b := range filtered.Bundles {
+		bundleNames[b.Name] = true
+	}
+	if bundleNames["my-op.v1.0.0"] {
+		t.Error("v1.0.0 should be excluded (< 2.0.0)")
+	}
+	if !bundleNames["my-op.v2.0.0"] {
+		t.Error("v2.0.0 should be included")
+	}
+	if !bundleNames["my-op.v3.0.0"] {
+		t.Error("v3.0.0 should be included")
+	}
+	if bundleNames["my-op.v4.0.0"] {
+		t.Error("v4.0.0 should be excluded (> 3.0.0)")
+	}
+}
+
+// TestFilterFBC_TransitivePkgAllBundles verifies that transitive deps include
+// all bundles regardless of the explicit package's version filter.
+func TestFilterFBC_TransitivePkgAllBundles(t *testing.T) {
+	cfg := &declcfg.DeclarativeConfig{
+		Packages: []declcfg.Package{
+			{Name: "main-op"},
+			{Name: "dep-op"},
+		},
+		Channels: []declcfg.Channel{
+			{
+				Name: "stable", Package: "main-op",
+				Entries: []declcfg.ChannelEntry{{Name: "main-op.v2.0.0"}},
+			},
+			{
+				Name: "stable", Package: "dep-op",
+				Entries: []declcfg.ChannelEntry{{Name: "dep-op.v1.0.0"}, {Name: "dep-op.v2.0.0"}},
+			},
+		},
+		Bundles: []declcfg.Bundle{
+			{
+				Name: "main-op.v2.0.0", Package: "main-op", Image: "reg/main@sha256:200",
+				Properties: []property.Property{
+					{Type: olmPackage, Value: json.RawMessage(`{"packageName":"main-op","version":"2.0.0"}`)},
+					{Type: olmPackageRequired, Value: json.RawMessage(`{"packageName":"dep-op"}`)},
+				},
+			},
+			{Name: "dep-op.v1.0.0", Package: "dep-op", Image: "reg/dep@sha256:100",
+				Properties: []property.Property{{Type: olmPackage, Value: json.RawMessage(`{"packageName":"dep-op","version":"1.0.0"}`)}}},
+			{Name: "dep-op.v2.0.0", Package: "dep-op", Image: "reg/dep@sha256:200",
+				Properties: []property.Property{{Type: olmPackage, Value: json.RawMessage(`{"packageName":"dep-op","version":"2.0.0"}`)}}},
+		},
+	}
+
+	resolver := &CatalogResolver{}
+	// Only ask for main-op >= 2.0.0, but dep-op should still include all bundles.
+	filtered, err := resolver.FilterFBC(context.Background(), cfg, []mirrorv1alpha1.IncludePackage{
+		{Name: "main-op", IncludeBundle: mirrorv1alpha1.IncludeBundle{MinVersion: "2.0.0"}},
+	})
+	if err != nil {
+		t.Fatalf("FilterFBC: %v", err)
+	}
+
+	bundleNames := map[string]bool{}
+	for _, b := range filtered.Bundles {
+		bundleNames[b.Name] = true
+	}
+	if !bundleNames["dep-op.v1.0.0"] {
+		t.Error("dep-op.v1.0.0 should be included as transitive dep (no version filter)")
+	}
+	if !bundleNames["dep-op.v2.0.0"] {
+		t.Error("dep-op.v2.0.0 should be included as transitive dep (no version filter)")
 	}
 }
 

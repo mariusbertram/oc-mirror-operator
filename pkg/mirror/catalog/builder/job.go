@@ -23,6 +23,7 @@ package builder
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"os"
 	"sort"
@@ -43,8 +44,11 @@ const (
 	EnvSourceCatalog = "SOURCE_CATALOG"
 	// EnvTargetRef is the env var consumed by catalog-builder: the target OCI reference.
 	EnvTargetRef = "TARGET_REF"
-	// EnvCatalogPackages is the env var consumed by catalog-builder: comma-separated package names.
+	// EnvCatalogPackages is the env var consumed by catalog-builder: comma-separated package names (legacy/fallback).
 	EnvCatalogPackages = "CATALOG_PACKAGES"
+	// EnvCatalogIncludeConfig is the env var consumed by catalog-builder: JSON-encoded []IncludePackage
+	// with channel and version filter details. Takes priority over CATALOG_PACKAGES when present.
+	EnvCatalogIncludeConfig = "CATALOG_INCLUDE_CONFIG"
 	// EnvInsecureHosts is the env var consumed by catalog-builder: comma-separated insecure registry hosts.
 	EnvInsecureHosts = "REGISTRY_INSECURE_HOSTS"
 	// EnvDockerConfig is the env var that points to the directory containing .dockerconfigjson.
@@ -144,7 +148,7 @@ func (m *CatalogBuildManager) EnsureCatalogBuildJob(
 	mt *mirrorv1alpha1.MirrorTarget,
 	sourceCatalog string,
 	targetRef string,
-	packages []string,
+	packages []mirrorv1alpha1.IncludePackage,
 ) error {
 	name := JobName(is.Name, sourceCatalog)
 
@@ -192,7 +196,7 @@ func (m *CatalogBuildManager) buildJobSpec(
 	is *mirrorv1alpha1.ImageSet,
 	mt *mirrorv1alpha1.MirrorTarget,
 	sourceCatalog, targetRef string,
-	packages []string,
+	packages []mirrorv1alpha1.IncludePackage,
 ) *batchv1.Job {
 	backoffLimit := int32(3)
 	ttlAfterFinished := int32(600) // 10 min
@@ -202,10 +206,23 @@ func (m *CatalogBuildManager) buildJobSpec(
 		"mirror.openshift.io/imageset": is.Name,
 	}
 
+	// Legacy package names for backward compatibility.
+	pkgNames := make([]string, 0, len(packages))
+	for _, p := range packages {
+		pkgNames = append(pkgNames, p.Name)
+	}
+
 	env := []corev1.EnvVar{
 		{Name: EnvSourceCatalog, Value: sourceCatalog},
 		{Name: EnvTargetRef, Value: targetRef},
-		{Name: EnvCatalogPackages, Value: strings.Join(packages, ",")},
+		{Name: EnvCatalogPackages, Value: strings.Join(pkgNames, ",")},
+	}
+
+	// Include the full filter config (channels + versions) when available.
+	if len(packages) > 0 {
+		if data, err := json.Marshal(packages); err == nil {
+			env = append(env, corev1.EnvVar{Name: EnvCatalogIncludeConfig, Value: string(data)})
+		}
 	}
 
 	if mt.Spec.Insecure {
@@ -395,7 +412,8 @@ func DeleteBuildJob(ctx context.Context, c client.Client, name, namespace string
 }
 
 // BuildSignature computes a deterministic hash of the operator image and
-// package configuration. When this changes, catalog builds should be re-run.
+// package configuration including channel and version filter details.
+// When this changes, catalog builds should be re-run.
 func (m *CatalogBuildManager) BuildSignature(operators []mirrorv1alpha1.Operator) string {
 	h := sha256.New()
 	// Include the operator image so image upgrades force a rebuild.
@@ -407,12 +425,34 @@ func (m *CatalogBuildManager) BuildSignature(operators []mirrorv1alpha1.Operator
 		}
 		_, _ = fmt.Fprintf(h, "catalog=%s\n", op.Catalog)
 		_, _ = fmt.Fprintf(h, "full=%t\n", op.Full)
-		pkgs := make([]string, 0, len(op.Packages))
-		for _, p := range op.Packages {
-			pkgs = append(pkgs, p.Name)
+
+		// Sort packages for deterministic output.
+		pkgs := make([]mirrorv1alpha1.IncludePackage, len(op.Packages))
+		copy(pkgs, op.Packages)
+		sort.Slice(pkgs, func(i, j int) bool { return pkgs[i].Name < pkgs[j].Name })
+
+		for _, p := range pkgs {
+			_, _ = fmt.Fprintf(h, "pkg=%s\n", p.Name)
+			if p.MinVersion != "" {
+				_, _ = fmt.Fprintf(h, "pkg.min=%s\n", p.MinVersion)
+			}
+			if p.MaxVersion != "" {
+				_, _ = fmt.Fprintf(h, "pkg.max=%s\n", p.MaxVersion)
+			}
+			// Sort channels for deterministic output.
+			chans := make([]mirrorv1alpha1.IncludeChannel, len(p.Channels))
+			copy(chans, p.Channels)
+			sort.Slice(chans, func(i, j int) bool { return chans[i].Name < chans[j].Name })
+			for _, ch := range chans {
+				_, _ = fmt.Fprintf(h, "ch=%s\n", ch.Name)
+				if ch.MinVersion != "" {
+					_, _ = fmt.Fprintf(h, "ch.min=%s\n", ch.MinVersion)
+				}
+				if ch.MaxVersion != "" {
+					_, _ = fmt.Fprintf(h, "ch.max=%s\n", ch.MaxVersion)
+				}
+			}
 		}
-		sort.Strings(pkgs)
-		_, _ = fmt.Fprintf(h, "packages=%s\n", strings.Join(pkgs, ","))
 	}
 	return fmt.Sprintf("%x", h.Sum(nil))[:16]
 }

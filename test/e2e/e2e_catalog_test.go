@@ -24,6 +24,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/catalog"
 	"github.com/operator-framework/operator-registry/alpha/declcfg"
 	"github.com/operator-framework/operator-registry/alpha/property"
@@ -122,7 +123,10 @@ var _ = Describe("Catalog FBC Filter and Index Rebuild", Label("catalog"), func(
 	Context("FilterFBC", func() {
 		It("should include only selected packages and exclude others", func(ctx context.Context) {
 			cfg := buildTestFBC()
-			selected := []string{"openshift-gitops-operator", "compliance-operator"}
+			selected := []mirrorv1alpha1.IncludePackage{
+				{Name: "openshift-gitops-operator"},
+				{Name: "compliance-operator"},
+			}
 
 			filtered, err := resolver.FilterFBC(ctx, cfg, selected)
 			Expect(err).NotTo(HaveOccurred())
@@ -181,7 +185,7 @@ var _ = Describe("Catalog FBC Filter and Index Rebuild", Label("catalog"), func(
 
 		It("should extract only the filtered packages' images after FilterFBC", func(ctx context.Context) {
 			cfg := buildTestFBC()
-			filtered, err := resolver.FilterFBC(ctx, cfg, []string{"compliance-operator"})
+			filtered, err := resolver.FilterFBC(ctx, cfg, []mirrorv1alpha1.IncludePackage{{Name: "compliance-operator"}})
 			Expect(err).NotTo(HaveOccurred())
 
 			images := resolver.ExtractImages(filtered)
@@ -197,7 +201,7 @@ var _ = Describe("Catalog FBC Filter and Index Rebuild", Label("catalog"), func(
 	Context("Index rebuild (WriteYAML roundtrip)", func() {
 		It("should produce valid YAML that can be reloaded as a DeclarativeConfig", func(ctx context.Context) {
 			cfg := buildTestFBC()
-			selected := []string{"openshift-gitops-operator"}
+			selected := []mirrorv1alpha1.IncludePackage{{Name: "openshift-gitops-operator"}}
 
 			filtered, err := resolver.FilterFBC(ctx, cfg, selected)
 			Expect(err).NotTo(HaveOccurred())
@@ -218,7 +222,7 @@ var _ = Describe("Catalog FBC Filter and Index Rebuild", Label("catalog"), func(
 
 		It("should produce valid JSON index via WriteJSON", func(ctx context.Context) {
 			cfg := buildTestFBC()
-			selected := []string{"compliance-operator"}
+			selected := []mirrorv1alpha1.IncludePackage{{Name: "compliance-operator"}}
 
 			filtered, err := resolver.FilterFBC(ctx, cfg, selected)
 			Expect(err).NotTo(HaveOccurred())
@@ -239,7 +243,7 @@ var _ = Describe("Catalog FBC Filter and Index Rebuild", Label("catalog"), func(
 		It("should return empty config when no packages match the filter", func(ctx context.Context) {
 			cfg := buildTestFBC()
 
-			empty, err := resolver.FilterFBC(ctx, cfg, []string{"non-existent-operator"})
+			empty, err := resolver.FilterFBC(ctx, cfg, []mirrorv1alpha1.IncludePackage{{Name: "non-existent-operator"}})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(empty.Packages).To(BeEmpty())
 			Expect(empty.Channels).To(BeEmpty())

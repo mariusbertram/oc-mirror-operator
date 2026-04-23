@@ -180,11 +180,7 @@ func (c *Collector) CollectOperators(ctx context.Context, spec *mirrorv1alpha1.I
 // CollectOperatorEntry resolves a single Operator entry. Used by the manager
 // when a per-entry cache miss requires re-resolution.
 func (c *Collector) CollectOperatorEntry(ctx context.Context, op mirrorv1alpha1.Operator, target *mirrorv1alpha1.MirrorTarget) ([]TargetImage, error) {
-	pkgs := make([]string, 0, len(op.Packages))
-	for _, p := range op.Packages {
-		pkgs = append(pkgs, p.Name)
-	}
-	imagesWithBundles, err := c.catalogResolver.ResolveCatalogWithBundles(ctx, op.Catalog, pkgs)
+	imagesWithBundles, err := c.catalogResolver.ResolveCatalogWithBundles(ctx, op.Catalog, op.Packages)
 	if err != nil {
 		return nil, err
 	}

@@ -271,12 +271,11 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs( //nolint:gocyclo
 			continue
 		}
 
-		// Collect package names for this catalog entry.
-		var packages []string
+		// Use the full IncludePackage slice (with channel/version filters) unless op.Full
+		// is set (which means mirror everything, no package filtering).
+		var packages []mirrorv1alpha1.IncludePackage
 		if !op.Full {
-			for _, p := range op.Packages {
-				packages = append(packages, p.Name)
-			}
+			packages = op.Packages
 		}
 
 		// Derive the target catalog image reference.

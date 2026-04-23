@@ -26,6 +26,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/catalog"
 	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
 )
@@ -143,7 +144,7 @@ var _ = Describe("Catalog FBC Live Extraction", Label("catalog-live", "integrati
 			DeferCleanup(func() { _ = os.RemoveAll(tmpDir) })
 
 			targetRef := "ocidir://" + filepath.Join(tmpDir, "filtered-catalog") + ":latest"
-			packages := []string{"postgresql-operator"}
+			packages := []mirrorv1alpha1.IncludePackage{{Name: "postgresql-operator"}}
 
 			By(fmt.Sprintf("building filtered catalog image for packages %v → %s", packages, targetRef))
 			digest, err := resolver.BuildFilteredCatalogImage(ctx, catalogLiveImage, targetRef, packages)
