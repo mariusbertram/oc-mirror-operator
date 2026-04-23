@@ -2,8 +2,60 @@ package v1alpha1
 
 import (
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+// ProxyConfig configures HTTP/HTTPS proxy settings injected into worker,
+// manager, and catalog-builder pods that must reach upstream registries through
+// a corporate proxy.
+type ProxyConfig struct {
+	// HTTPProxy sets the HTTP_PROXY and http_proxy environment variables.
+	// +optional
+	HTTPProxy string `json:"httpProxy,omitempty"`
+
+	// HTTPSProxy sets the HTTPS_PROXY and https_proxy environment variables.
+	// +optional
+	HTTPSProxy string `json:"httpsProxy,omitempty"`
+
+	// NoProxy sets the NO_PROXY and no_proxy environment variables.
+	// Should include cluster-internal addresses (e.g. ".svc,.cluster.local")
+	// to prevent pod-to-pod traffic from being sent through the proxy.
+	// +optional
+	NoProxy string `json:"noProxy,omitempty"`
+}
+
+// CABundleRef references a ConfigMap in the same namespace that contains a
+// PEM-encoded CA certificate bundle.  The bundle is injected into worker,
+// manager, and catalog-builder pods so they can trust custom or private CAs
+// when connecting to upstream registries or the target registry.
+type CABundleRef struct {
+	// ConfigMapName is the name of the ConfigMap containing the CA bundle.
+	// +kubebuilder:validation:MinLength=1
+	ConfigMapName string `json:"configMapName"`
+
+	// Key is the key within the ConfigMap that holds the PEM-encoded CA
+	// certificate bundle.  Defaults to "ca-bundle.crt".
+	// +optional
+	Key string `json:"key,omitempty"`
+}
+
+// WorkerStorageConfig replaces the default emptyDir blob buffer with a
+// dynamically-provisioned PVC (generic ephemeral volume) for worker pods.
+// Use this when mirroring very large images (e.g. LLMs) that need more
+// scratch space than the default 10 GiB emptyDir can provide.
+type WorkerStorageConfig struct {
+	// StorageClassName selects the StorageClass for the ephemeral PVC.
+	// If omitted the cluster's default StorageClass is used.
+	// +optional
+	StorageClassName *string `json:"storageClassName,omitempty"`
+
+	// Size is the requested storage capacity (e.g. "100Gi").
+	// Defaults to "10Gi" when not set.
+	// +kubebuilder:default="10Gi"
+	// +optional
+	Size resource.Quantity `json:"size,omitempty"`
+}
 
 // PodConfig defines configuration for the manager or worker pods
 type PodConfig struct {
@@ -128,6 +180,28 @@ type MirrorTargetSpec struct {
 	// +optional
 	// +kubebuilder:validation:XValidation:rule="duration(self) >= duration('1h')",message="checkExistInterval must be at least 1h"
 	CheckExistInterval *metav1.Duration `json:"checkExistInterval,omitempty"`
+
+	// Proxy configures HTTP/HTTPS proxy settings for worker, manager, and
+	// catalog-builder pods.  Set NoProxy to include cluster-internal addresses
+	// (e.g. ".svc,.cluster.local") to prevent internal pod traffic from being
+	// routed through the proxy.
+	// +optional
+	Proxy *ProxyConfig `json:"proxy,omitempty"`
+
+	// CABundle references a ConfigMap in the same namespace that contains a
+	// PEM-encoded CA certificate bundle.  When set, the bundle is mounted into
+	// worker, manager, and catalog-builder pods and SSL_CERT_FILE is set so
+	// that custom or private CAs are trusted.
+	// +optional
+	CABundle *CABundleRef `json:"caBundle,omitempty"`
+
+	// WorkerStorage replaces the default 10 GiB emptyDir blob buffer with a
+	// dynamically-provisioned ephemeral PVC for worker pods.  Use this when
+	// mirroring very large images (e.g. LLMs) that exceed the emptyDir limit.
+	// The PVC is bound to the worker pod lifecycle and deleted automatically
+	// when the pod is removed.
+	// +optional
+	WorkerStorage *WorkerStorageConfig `json:"workerStorage,omitempty"`
 }
 
 const (

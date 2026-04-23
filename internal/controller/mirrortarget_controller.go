@@ -63,6 +63,11 @@ type MirrorTargetReconciler struct {
 // +kubebuilder:rbac:groups=route.openshift.io,resources=routes,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
+// persistentvolumeclaims: the operator must hold PVC verbs itself so that it
+// can grant them to the coordinator Role (Kubernetes RBAC anti-escalation).
+// Worker pods use generic ephemeral volumes which require PVC create on behalf
+// of the pod creator (the coordinator/manager).
+// +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;delete
 
 func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	l := log.FromContext(ctx)
@@ -408,6 +413,13 @@ func (r *MirrorTargetReconciler) ensureCoordinatorRBAC(ctx context.Context, mt *
 				APIGroups: []string{""},
 				Resources: []string{"configmaps"},
 				Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
+			},
+			// Required for generic ephemeral volumes on worker pods: the admission
+			// controller creates a PVC on behalf of the pod creator (coordinator).
+			{
+				APIGroups: []string{""},
+				Resources: []string{"persistentvolumeclaims"},
+				Verbs:     []string{"get", "list", "create", "delete"},
 			},
 		}
 		return nil
@@ -1101,7 +1113,7 @@ func pointerTo[T any](v T) *T {
 
 // managerContainerEnv returns the env vars for the manager container.
 // DOCKER_CONFIG is only set when an AuthSecret is configured, matching the
-// volume mount.
+// volume mount.  Proxy and CA env vars are injected when configured.
 func managerContainerEnv(mt *mirrorv1alpha1.MirrorTarget) []corev1.EnvVar {
 	env := []corev1.EnvVar{
 		{
@@ -1123,33 +1135,83 @@ func managerContainerEnv(mt *mirrorv1alpha1.MirrorTarget) []corev1.EnvVar {
 			Value: "/docker-config",
 		})
 	}
+	env = append(env, proxyEnvVars(mt.Spec.Proxy)...)
+	env = append(env, caBundleEnvVars(mt.Spec.CABundle)...)
 	return env
+}
+
+// proxyEnvVars returns HTTP/HTTPS/NO_PROXY env vars (upper and lower case) for
+// the given proxy configuration.  Returns nil when cfg is nil.
+func proxyEnvVars(cfg *mirrorv1alpha1.ProxyConfig) []corev1.EnvVar {
+	if cfg == nil {
+		return nil
+	}
+	var env []corev1.EnvVar
+	if v := cfg.HTTPProxy; v != "" {
+		env = append(env,
+			corev1.EnvVar{Name: "HTTP_PROXY", Value: v},
+			corev1.EnvVar{Name: "http_proxy", Value: v},
+		)
+	}
+	if v := cfg.HTTPSProxy; v != "" {
+		env = append(env,
+			corev1.EnvVar{Name: "HTTPS_PROXY", Value: v},
+			corev1.EnvVar{Name: "https_proxy", Value: v},
+		)
+	}
+	if v := cfg.NoProxy; v != "" {
+		env = append(env,
+			corev1.EnvVar{Name: "NO_PROXY", Value: v},
+			corev1.EnvVar{Name: "no_proxy", Value: v},
+		)
+	}
+	return env
+}
+
+// caBundleEnvVars returns the SSL_CERT_FILE env var pointing to the mounted CA
+// bundle.  Returns nil when ref is nil.
+func caBundleEnvVars(ref *mirrorv1alpha1.CABundleRef) []corev1.EnvVar {
+	if ref == nil {
+		return nil
+	}
+	key := ref.Key
+	if key == "" {
+		key = "ca-bundle.crt"
+	}
+	return []corev1.EnvVar{
+		{Name: "SSL_CERT_FILE", Value: "/run/secrets/ca/" + key},
+	}
 }
 
 // managerContainerVolumeMounts returns the volume mounts for the manager
 // container. The dockerconfig mount is only present when an AuthSecret is
 // configured to avoid pod admission failures on empty secret references.
+// The ca-bundle mount is added when a CABundle is configured.
 func managerContainerVolumeMounts(mt *mirrorv1alpha1.MirrorTarget) []corev1.VolumeMount {
-	if mt.Spec.AuthSecret == "" {
-		return nil
-	}
-	return []corev1.VolumeMount{
-		{
+	var mounts []corev1.VolumeMount
+	if mt.Spec.AuthSecret != "" {
+		mounts = append(mounts, corev1.VolumeMount{
 			Name:      "dockerconfig",
 			MountPath: "/docker-config",
 			ReadOnly:  true,
-		},
+		})
 	}
+	if mt.Spec.CABundle != nil {
+		mounts = append(mounts, corev1.VolumeMount{
+			Name:      "ca-bundle",
+			MountPath: "/run/secrets/ca",
+			ReadOnly:  true,
+		})
+	}
+	return mounts
 }
 
 // managerPodVolumes returns the volumes for the manager pod, gated on the
-// presence of an AuthSecret.
+// presence of an AuthSecret and/or a CABundle.
 func managerPodVolumes(mt *mirrorv1alpha1.MirrorTarget) []corev1.Volume {
-	if mt.Spec.AuthSecret == "" {
-		return nil
-	}
-	return []corev1.Volume{
-		{
+	var volumes []corev1.Volume
+	if mt.Spec.AuthSecret != "" {
+		volumes = append(volumes, corev1.Volume{
 			Name: "dockerconfig",
 			VolumeSource: corev1.VolumeSource{
 				Secret: &corev1.SecretVolumeSource{
@@ -1159,6 +1221,26 @@ func managerPodVolumes(mt *mirrorv1alpha1.MirrorTarget) []corev1.Volume {
 					},
 				},
 			},
-		},
+		})
 	}
+	if mt.Spec.CABundle != nil {
+		key := mt.Spec.CABundle.Key
+		if key == "" {
+			key = "ca-bundle.crt"
+		}
+		volumes = append(volumes, corev1.Volume{
+			Name: "ca-bundle",
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: mt.Spec.CABundle.ConfigMapName,
+					},
+					Items: []corev1.KeyToPath{
+						{Key: key, Path: key},
+					},
+				},
+			},
+		})
+	}
+	return volumes
 }

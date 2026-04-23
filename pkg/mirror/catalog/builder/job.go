@@ -261,6 +261,39 @@ func (m *CatalogBuildManager) buildJobSpec(
 		})
 	}
 
+	// Inject proxy env vars when configured.
+	env = append(env, catalogProxyEnvVars(mt.Spec.Proxy)...)
+
+	// Inject CA bundle when configured.
+	if mt.Spec.CABundle != nil {
+		caKey := mt.Spec.CABundle.Key
+		if caKey == "" {
+			caKey = "ca-bundle.crt"
+		}
+		env = append(env, corev1.EnvVar{
+			Name:  "SSL_CERT_FILE",
+			Value: "/run/secrets/ca/" + caKey,
+		})
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      "ca-bundle",
+			MountPath: "/run/secrets/ca",
+			ReadOnly:  true,
+		})
+		volumes = append(volumes, corev1.Volume{
+			Name: "ca-bundle",
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: mt.Spec.CABundle.ConfigMapName,
+					},
+					Items: []corev1.KeyToPath{
+						{Key: caKey, Path: caKey},
+					},
+				},
+			},
+		})
+	}
+
 	return &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -316,6 +349,34 @@ func ptrBool(b bool) *bool { return &b }
 func resourcePtr(q string) *resource.Quantity {
 	v := resource.MustParse(q)
 	return &v
+}
+
+// catalogProxyEnvVars returns HTTP/HTTPS/NO_PROXY environment variables (upper
+// and lower case) for the catalog-builder job.  Returns nil when cfg is nil.
+func catalogProxyEnvVars(cfg *mirrorv1alpha1.ProxyConfig) []corev1.EnvVar {
+	if cfg == nil {
+		return nil
+	}
+	var env []corev1.EnvVar
+	if v := cfg.HTTPProxy; v != "" {
+		env = append(env,
+			corev1.EnvVar{Name: "HTTP_PROXY", Value: v},
+			corev1.EnvVar{Name: "http_proxy", Value: v},
+		)
+	}
+	if v := cfg.HTTPSProxy; v != "" {
+		env = append(env,
+			corev1.EnvVar{Name: "HTTPS_PROXY", Value: v},
+			corev1.EnvVar{Name: "https_proxy", Value: v},
+		)
+	}
+	if v := cfg.NoProxy; v != "" {
+		env = append(env,
+			corev1.EnvVar{Name: "NO_PROXY", Value: v},
+			corev1.EnvVar{Name: "no_proxy", Value: v},
+		)
+	}
+	return env
 }
 
 // DeleteBuildJob deletes a catalog build Job so it can be recreated.

@@ -81,6 +81,9 @@ Unlike the static `oc-mirror` CLI tool, this operator works cloud-natively and d
 | **Blob Replication Planning** | Greedy set cover optimizes mirror order: shared layers are pushed first → subsequent images use blob mount (zero-copy) |
 | **Catalog Build Signature** | SHA256 hash over operator image + catalog + package list automatically detects when a rebuild is needed |
 | **Resource Server (HTTP API)** | Provides IDMS/ITMS, CatalogSource, ClusterCatalog and signature ConfigMaps via REST — Route (OpenShift), Ingress or Service |
+| **HTTP Proxy Support** | Configurable `spec.proxy` injects HTTP/HTTPS/NO_PROXY into all pods for corporate proxy environments |
+| **Custom CA Bundle** | `spec.caBundle` mounts a ConfigMap-based CA into all pods and sets `SSL_CERT_FILE` — supports private registries with custom CAs |
+| **Ephemeral PVC for Large Images** | `spec.workerStorage` replaces the default emptyDir with a dynamically-provisioned PVC (generic ephemeral volume) for LLMs and other oversized images |
 
 ---
 
@@ -468,6 +471,60 @@ The process for large blobs:
 
 Advantages over RAM buffering: No OOM risk with multi-GB layers.
 
+### Ephemeral PVC for Very Large Images (LLMs etc.)
+
+For images that exceed the default 10 GiB emptyDir limit (e.g. LLM model images or large AI datasets), configure `spec.workerStorage`:
+
+```yaml
+spec:
+  workerStorage:
+    storageClassName: fast-ssd  # omit to use cluster default
+    size: 200Gi
+```
+
+When `workerStorage` is set, worker pods use a **generic ephemeral PVC** instead of emptyDir. Kubernetes binds the PVC to the pod lifecycle — the PVC is automatically deleted when the worker pod is deleted. No manual cleanup is required.
+
+---
+
+## HTTP Proxy Configuration
+
+If worker, manager, and catalog-builder pods must reach upstream registries through a corporate HTTP proxy, configure `spec.proxy`:
+
+```yaml
+spec:
+  proxy:
+    httpProxy: "http://proxy.corp.example.com:3128"
+    httpsProxy: "http://proxy.corp.example.com:3128"
+    # Always include cluster-internal addresses in noProxy to prevent
+    # pod-to-pod traffic from being routed through the proxy.
+    noProxy: ".svc,.cluster.local,localhost,127.0.0.1"
+```
+
+Both uppercase (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`) and lowercase (`http_proxy`, `https_proxy`, `no_proxy`) env vars are injected for maximum tool compatibility.
+
+> **Important**: Always add `.svc` and `.cluster.local` to `noProxy`. Worker pods communicate with the manager at `<target>-manager.<namespace>.svc.cluster.local:8080` — without these exclusions, that traffic may be sent to the external proxy and fail.
+
+---
+
+## Custom CA Bundle
+
+To trust a custom or private CA when connecting to upstream registries or the target registry, create a ConfigMap containing the PEM-encoded CA bundle and reference it in `spec.caBundle`:
+
+```bash
+kubectl create configmap custom-ca \
+  --from-file=ca-bundle.crt=/path/to/ca-chain.pem \
+  -n <namespace>
+```
+
+```yaml
+spec:
+  caBundle:
+    configMapName: custom-ca
+    key: ca-bundle.crt  # optional, defaults to "ca-bundle.crt"
+```
+
+The ConfigMap is mounted into worker, manager, and catalog-builder pods at `/run/secrets/ca/`. The `SSL_CERT_FILE` environment variable is set accordingly so that the Go TLS stack and all tools in the operator image trust the bundle.
+
 ---
 
 ## Drift Detection
@@ -623,8 +680,8 @@ The operator runs with a **namespace-scoped `Role`** (not `ClusterRole`). Each l
 
 | Service Account | Permissions |
 |-----------------|----------------|
-| `oc-mirror-operator-controller-manager` | CRD management, Deployments, Services, ConfigMaps, Secrets (read), Routes, Ingresses, Roles/RoleBindings (`get;create;update` — no `delete`/`patch`/`escalate`/`bind` verbs to prevent privilege escalation) |
-| `oc-mirror-coordinator` | ImageSets/ImageSets status (`get;list;watch;update;patch`), MirrorTargets (only `get;list;watch`), Pods (`get;list;watch;create;delete`), ConfigMaps (`get;list;watch;create;update;patch;delete`), worker token secret (`get;list;watch;create;update`) |
+| `oc-mirror-operator-controller-manager` | CRD management, Deployments, Services, ConfigMaps, Secrets (read), Routes, Ingresses, Roles/RoleBindings (`get;create;update` — no `delete`/`patch`/`escalate`/`bind` verbs to prevent privilege escalation), PersistentVolumeClaims (`get;list;watch;create;delete` — needed so the controller can grant the same to the coordinator Role) |
+| `oc-mirror-coordinator` | ImageSets/ImageSets status (`get;list;watch;update;patch`), MirrorTargets (only `get;list;watch`), Pods (`get;list;watch;create;delete`), ConfigMaps (`get;list;watch;create;update;patch;delete`), worker token secret (`get;list;watch;create;update`), PersistentVolumeClaims (`get;list;create;delete` — for generic ephemeral volumes on worker pods) |
 | `oc-mirror-worker` | No cluster permissions |
 
 ### Pod Security

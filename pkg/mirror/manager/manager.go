@@ -920,19 +920,47 @@ func (m *MirrorManager) startWorkerBatch(ctx context.Context, mt *mirrorv1alpha1
 	var volumeMounts []corev1.VolumeMount
 	var volumes []corev1.Volume
 
-	// Ephemeral volume for buffering large blobs to disk before upload.
+	// Blob buffer volume for large image layers.  By default an emptyDir is
+	// used.  When WorkerStorage is configured, a generic ephemeral PVC is
+	// used instead — Kubernetes binds the PVC to the pod lifecycle so no
+	// explicit cleanup is needed.
 	volumeMounts = append(volumeMounts, corev1.VolumeMount{
 		Name:      "blob-buffer",
 		MountPath: "/tmp/blob-buffer",
 	})
-	volumes = append(volumes, corev1.Volume{
-		Name: "blob-buffer",
-		VolumeSource: corev1.VolumeSource{
-			EmptyDir: &corev1.EmptyDirVolumeSource{
-				SizeLimit: resourcePtr("10Gi"),
+	if ws := mt.Spec.WorkerStorage; ws != nil {
+		size := ws.Size
+		if size.IsZero() {
+			size = resource.MustParse("10Gi")
+		}
+		volumes = append(volumes, corev1.Volume{
+			Name: "blob-buffer",
+			VolumeSource: corev1.VolumeSource{
+				Ephemeral: &corev1.EphemeralVolumeSource{
+					VolumeClaimTemplate: &corev1.PersistentVolumeClaimTemplate{
+						Spec: corev1.PersistentVolumeClaimSpec{
+							AccessModes:      []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+							StorageClassName: ws.StorageClassName,
+							Resources: corev1.VolumeResourceRequirements{
+								Requests: corev1.ResourceList{
+									corev1.ResourceStorage: size,
+								},
+							},
+						},
+					},
+				},
 			},
-		},
-	})
+		})
+	} else {
+		volumes = append(volumes, corev1.Volume{
+			Name: "blob-buffer",
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{
+					SizeLimit: resourcePtr("10Gi"),
+				},
+			},
+		})
+	}
 
 	if mt.Spec.AuthSecret != "" {
 		envVars = append(envVars, corev1.EnvVar{
@@ -951,6 +979,39 @@ func (m *MirrorManager) startWorkerBatch(ctx context.Context, mt *mirrorv1alpha1
 					SecretName: mt.Spec.AuthSecret,
 					Items: []corev1.KeyToPath{
 						{Key: ".dockerconfigjson", Path: "config.json"},
+					},
+				},
+			},
+		})
+	}
+
+	// Inject proxy env vars when a proxy is configured.
+	envVars = append(envVars, workerProxyEnvVars(mt.Spec.Proxy)...)
+
+	// Inject CA bundle when configured.
+	if mt.Spec.CABundle != nil {
+		caKey := mt.Spec.CABundle.Key
+		if caKey == "" {
+			caKey = "ca-bundle.crt"
+		}
+		envVars = append(envVars, corev1.EnvVar{
+			Name:  "SSL_CERT_FILE",
+			Value: "/run/secrets/ca/" + caKey,
+		})
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      "ca-bundle",
+			MountPath: "/run/secrets/ca",
+			ReadOnly:  true,
+		})
+		volumes = append(volumes, corev1.Volume{
+			Name: "ca-bundle",
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: mt.Spec.CABundle.ConfigMapName,
+					},
+					Items: []corev1.KeyToPath{
+						{Key: caKey, Path: caKey},
 					},
 				},
 			},
@@ -1021,6 +1082,35 @@ func pointerTo[T any](v T) *T {
 func resourcePtr(q string) *resource.Quantity {
 	v := resource.MustParse(q)
 	return &v
+}
+
+// workerProxyEnvVars returns HTTP/HTTPS/NO_PROXY environment variables (both
+// upper and lower case) for the given proxy configuration so that tools that
+// only check one variant still see the proxy.  Returns nil when cfg is nil.
+func workerProxyEnvVars(cfg *mirrorv1alpha1.ProxyConfig) []corev1.EnvVar {
+	if cfg == nil {
+		return nil
+	}
+	var env []corev1.EnvVar
+	if v := cfg.HTTPProxy; v != "" {
+		env = append(env,
+			corev1.EnvVar{Name: "HTTP_PROXY", Value: v},
+			corev1.EnvVar{Name: "http_proxy", Value: v},
+		)
+	}
+	if v := cfg.HTTPSProxy; v != "" {
+		env = append(env,
+			corev1.EnvVar{Name: "HTTPS_PROXY", Value: v},
+			corev1.EnvVar{Name: "https_proxy", Value: v},
+		)
+	}
+	if v := cfg.NoProxy; v != "" {
+		env = append(env,
+			corev1.EnvVar{Name: "NO_PROXY", Value: v},
+			corev1.EnvVar{Name: "no_proxy", Value: v},
+		)
+	}
+	return env
 }
 
 func containsString(slice []string, s string) bool {
