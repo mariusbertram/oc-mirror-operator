@@ -21,12 +21,16 @@ import (
 	"os"
 	"os/exec"
 	"testing"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/mariusbertram/oc-mirror-operator/test/utils"
 )
+
+// operatorNamespace is the namespace where the controller-manager runs.
+const operatorNamespace = "oc-mirror-system"
 
 var (
 	// Optional Environment Variables:
@@ -37,10 +41,14 @@ var (
 	// isCertManagerAlreadyInstalled will be set true when CertManager CRDs be found on the cluster
 	isCertManagerAlreadyInstalled = false
 
-	// skipClusterSetup=true skips docker-build + Kind image loading and CertManager installation.
-	// Set this when only running integration tests that do not need a live cluster
-	// (e.g., Cincinnati API and Catalog FBC tests): SKIP_CLUSTER_SETUP=true.
+	// skipClusterSetup=true skips docker-build + Kind image loading.
+	// Set this when the image was already built and loaded in a prior CI step.
 	skipClusterSetup = os.Getenv("SKIP_CLUSTER_SETUP") == "true"
+
+	// skipOperatorDeploy=true skips CRD installation and operator deployment.
+	// Set this when running only non-cluster tests (catalog FBC, Cincinnati API)
+	// on a machine without a Kubernetes cluster: SKIP_OPERATOR_DEPLOY=true.
+	skipOperatorDeploy = os.Getenv("SKIP_OPERATOR_DEPLOY") == "true"
 
 	// projectImage is the name of the image which will be build and loaded
 	// with the code source changes to be tested.
@@ -58,28 +66,22 @@ func TestE2E(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
-	if skipClusterSetup {
-		_, _ = fmt.Fprintf(GinkgoWriter, "SKIP_CLUSTER_SETUP=true: skipping docker-build, Kind load and CertManager setup\n")
-		return
+	if !skipClusterSetup {
+		By("building the manager(Operator) image")
+		cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", projectImage))
+		_, err := utils.Run(cmd)
+		ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the manager(Operator) image")
+
+		By("loading the manager(Operator) image on Kind")
+		// Pass the podman provider env var through if the Makefile set it.
+		if p := os.Getenv("KIND_EXPERIMENTAL_PROVIDER"); p != "" {
+			Expect(os.Setenv("KIND_EXPERIMENTAL_PROVIDER", p)).To(Succeed())
+		}
+		err = utils.LoadImageToKindClusterWithName(projectImage)
+		ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the manager(Operator) image into Kind")
 	}
 
-	By("building the manager(Operator) image")
-	cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", projectImage))
-	_, err := utils.Run(cmd)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the manager(Operator) image")
-
-	By("loading the manager(Operator) image on Kind")
-	// Pass the podman provider env var through if the Makefile set it.
-	if p := os.Getenv("KIND_EXPERIMENTAL_PROVIDER"); p != "" {
-		Expect(os.Setenv("KIND_EXPERIMENTAL_PROVIDER", p)).To(Succeed())
-	}
-	err = utils.LoadImageToKindClusterWithName(projectImage)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the manager(Operator) image into Kind")
-
-	// The tests-e2e are intended to run on a temporary cluster that is created and destroyed for testing.
-	// To prevent errors when tests run in environments with CertManager already installed,
-	// we check for its presence before execution.
-	// Setup CertManager before the suite if not skipped and if not already installed
+	// Setup CertManager before the suite if not skipped and if not already installed.
 	if !skipCertManagerInstall {
 		By("checking if cert manager is installed already")
 		isCertManagerAlreadyInstalled = utils.IsCertManagerCRDsInstalled()
@@ -90,6 +92,33 @@ var _ = BeforeSuite(func() {
 			_, _ = fmt.Fprintf(GinkgoWriter, "WARNING: CertManager is already installed. Skipping installation...\n")
 		}
 	}
+
+	// Install CRDs and deploy the operator once for the entire suite.
+	// All cluster test suites share this single operator instance — there is no
+	// per-Describe install/deploy, which prevents CRDs from cycling through
+	// "terminating" state between suites.
+	if !skipOperatorDeploy {
+		By("installing CRDs")
+		cmd := exec.Command("make", "install")
+		_, err := utils.Run(cmd)
+		ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to install CRDs")
+
+		By("deploying the operator")
+		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectImage))
+		_, err = utils.Run(cmd)
+		ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to deploy the operator")
+
+		By("waiting for controller-manager to be ready")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "pods",
+				"-l", "control-plane=controller-manager",
+				"-n", operatorNamespace,
+				"-o", "jsonpath={.items[0].status.phase}")
+			output, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(output).To(Equal("Running"), "controller-manager pod not running")
+		}, 2*time.Minute, 5*time.Second).Should(Succeed())
+	}
 })
 
 var _ = AfterSuite(func() {
@@ -97,5 +126,10 @@ var _ = AfterSuite(func() {
 	if !skipCertManagerInstall && !isCertManagerAlreadyInstalled {
 		_, _ = fmt.Fprintf(GinkgoWriter, "Uninstalling CertManager...\n")
 		utils.UninstallCertManager()
+	}
+
+	if !skipOperatorDeploy {
+		By("undeploying the operator")
+		_ = exec.Command("make", "undeploy").Run()
 	}
 })

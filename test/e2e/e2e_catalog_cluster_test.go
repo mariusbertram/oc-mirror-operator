@@ -24,7 +24,6 @@ limitations under the License.
 package e2e
 
 import (
-	"context"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -36,9 +35,6 @@ import (
 	"github.com/mariusbertram/oc-mirror-operator/test/utils"
 )
 
-// The operator namespace created by kustomize (namePrefix = oc-mirror-).
-const operatorNamespace = "oc-mirror-system"
-
 // Catalog cluster tests use the brtrm-dev-catalog (small, GHCR-hosted, no auth needed)
 // instead of the large quay.io/operatorhubio/catalog (~2 GB). They run in standard CI.
 var _ = Describe("Catalog Build Job E2E", Ordered, Label("cluster", "catalog-cluster"), func() {
@@ -48,12 +44,8 @@ var _ = Describe("Catalog Build Job E2E", Ordered, Label("cluster", "catalog-clu
 		imageSetName   = "catalog-test-imageset"
 		sourceCatalog  = "ghcr.io/mariusbertram/brtrm-dev-catalog/catalog:latest"
 		catalogPackage = "ip-rule-operator"
+		registryHost   = "registry.default.svc.cluster.local:5000"
 	)
-
-	// registryHost is the in-cluster registry service.
-	// registry.default.svc.cluster.local:5000 is deployed by the existing
-	// test infra in config/samples/registry_deploy.yaml.
-	const registryHost = "registry.default.svc.cluster.local:5000"
 
 	BeforeAll(func() {
 		By("deploying the in-cluster registry")
@@ -66,74 +58,22 @@ var _ = Describe("Catalog Build Job E2E", Ordered, Label("cluster", "catalog-clu
 			"-n", ns, "--timeout=90s")
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Registry deployment did not become ready")
-
-		// Ensure CRDs from a previous suite's undeploy are fully deleted before re-installing.
-		// Without this, `make install` may succeed but the CRD stays in "terminating" state,
-		// causing subsequent `kubectl apply` of custom resources to be rejected.
-		By("waiting for any previous CRDs to be fully removed")
-		for _, crd := range []string{
-			"imagesets.mirror.openshift.io",
-			"mirrortargets.mirror.openshift.io",
-		} {
-			_ = exec.Command("kubectl", "wait", "--for=delete",
-				"crd/"+crd, "--timeout=90s").Run()
-		}
-
-		By("installing CRDs")
-		cmd = exec.Command("make", "install")
-		_, err = utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
-
-		// Wait for CRDs to be fully established before creating any custom resources.
-		By("waiting for CRDs to be established")
-		cmd = exec.Command("kubectl", "wait", "--for=condition=Established",
-			"crd/imagesets.mirror.openshift.io",
-			"crd/mirrortargets.mirror.openshift.io",
-			"--timeout=60s")
-		_, err = utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "CRDs did not become Established")
-
-		By("deploying the controller-manager")
-		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectImage))
-		_, err = utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
-
-		By("waiting for controller-manager to be ready")
-		Eventually(func(g Gomega) {
-			cmd := exec.Command("kubectl", "get", "pods",
-				"-l", "control-plane=controller-manager",
-				"-n", operatorNamespace,
-				"-o", "jsonpath={.items[0].status.phase}")
-			output, err := utils.Run(cmd)
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(output).To(Equal("Running"), "controller-manager pod not running")
-		}, 2*time.Minute, 5*time.Second).Should(Succeed())
 	})
 
 	AfterAll(func() {
-		// Remove finalizers first so CRDs can be fully deleted by `make undeploy`.
 		By("removing finalizers from test resources")
-		patchCtx, patchCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer patchCancel()
-		_ = exec.CommandContext(patchCtx, "kubectl", "patch", "imageset", imageSetName, "-n", ns,
+		_ = exec.Command("kubectl", "patch", "imageset", imageSetName, "-n", ns,
 			"-p", `{"metadata":{"finalizers":[]}}`, "--type=merge").Run()
-		_ = exec.CommandContext(patchCtx, "kubectl", "patch", "mirrortarget", targetName, "-n", ns,
+		_ = exec.Command("kubectl", "patch", "mirrortarget", targetName, "-n", ns,
 			"-p", `{"metadata":{"finalizers":[]}}`, "--type=merge").Run()
 
 		By("deleting test resources")
-		deleteCtx, deleteCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer deleteCancel()
-		_ = exec.CommandContext(deleteCtx, "kubectl", "delete", "imageset", imageSetName, "-n", ns,
+		_ = exec.Command("kubectl", "delete", "imageset", imageSetName, "-n", ns,
 			"--ignore-not-found=true").Run()
-		_ = exec.CommandContext(deleteCtx, "kubectl", "delete", "mirrortarget", targetName, "-n", ns,
+		_ = exec.Command("kubectl", "delete", "mirrortarget", targetName, "-n", ns,
 			"--ignore-not-found=true").Run()
-		_ = exec.CommandContext(deleteCtx, "kubectl", "delete", "-f", "config/samples/registry_deploy.yaml",
+		_ = exec.Command("kubectl", "delete", "-f", "config/samples/registry_deploy.yaml",
 			"--ignore-not-found=true").Run()
-
-		By("undeploying the operator")
-		undeployCtx, undeployCancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer undeployCancel()
-		_ = exec.CommandContext(undeployCtx, "make", "undeploy").Run()
 	})
 
 	Context("CatalogBuildJob lifecycle", func() {
