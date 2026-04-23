@@ -18,9 +18,13 @@ type ProxyConfig struct {
 	// +optional
 	HTTPSProxy string `json:"httpsProxy,omitempty"`
 
-	// NoProxy sets the NO_PROXY and no_proxy environment variables.
-	// Should include cluster-internal addresses (e.g. ".svc,.cluster.local")
-	// to prevent pod-to-pod traffic from being sent through the proxy.
+	// NoProxy sets additional NO_PROXY and no_proxy entries appended to the
+	// automatically-injected cluster-internal defaults.
+	// When HTTPProxy or HTTPSProxy is set, the operator always prepends
+	// "localhost,127.0.0.1,.svc,.svc.cluster.local" so that pod-to-service
+	// traffic (e.g. to the manager service) bypasses the proxy without
+	// additional user configuration.  Use this field to add further
+	// exclusions such as the pod/service CIDR or custom domains.
 	// +optional
 	NoProxy string `json:"noProxy,omitempty"`
 }
@@ -182,9 +186,10 @@ type MirrorTargetSpec struct {
 	CheckExistInterval *metav1.Duration `json:"checkExistInterval,omitempty"`
 
 	// Proxy configures HTTP/HTTPS proxy settings for worker, manager, and
-	// catalog-builder pods.  Set NoProxy to include cluster-internal addresses
-	// (e.g. ".svc,.cluster.local") to prevent internal pod traffic from being
-	// routed through the proxy.
+	// catalog-builder pods.  Cluster-internal FQDN suffixes
+	// (localhost, 127.0.0.1, .svc, .svc.cluster.local) are automatically
+	// added to NO_PROXY when a proxy is configured; add further exclusions
+	// via ProxyConfig.NoProxy if needed (e.g. the pod CIDR).
 	// +optional
 	Proxy *ProxyConfig `json:"proxy,omitempty"`
 

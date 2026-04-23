@@ -208,4 +208,69 @@ var _ = Describe("MirrorTarget Controller", func() {
 			}, timeout, interval).Should(BeTrue())
 		})
 	})
+
+	Describe("proxyEnvVars", func() {
+		getEnvVal := func(envs []corev1.EnvVar, name string) string {
+			for _, e := range envs {
+				if e.Name == name {
+					return e.Value
+				}
+			}
+			return ""
+		}
+
+		It("returns nil when cfg is nil", func() {
+			Expect(proxyEnvVars(nil)).To(BeNil())
+		})
+
+		It("injects HTTP_PROXY and auto-fills NO_PROXY with cluster defaults", func() {
+			env := proxyEnvVars(&mirrorv1alpha1.ProxyConfig{HTTPProxy: "http://proxy:3128"})
+			Expect(getEnvVal(env, "HTTP_PROXY")).To(Equal("http://proxy:3128"))
+			noProxy := getEnvVal(env, "NO_PROXY")
+			Expect(noProxy).To(ContainSubstring("localhost"))
+			Expect(noProxy).To(ContainSubstring("127.0.0.1"))
+			Expect(noProxy).To(ContainSubstring(".svc"))
+			Expect(noProxy).To(ContainSubstring(".svc.cluster.local"))
+		})
+
+		It("appends user NoProxy after cluster defaults", func() {
+			env := proxyEnvVars(&mirrorv1alpha1.ProxyConfig{
+				HTTPSProxy: "https://proxy:3128",
+				NoProxy:    "custom.domain,10.0.0.0/8",
+			})
+			noProxy := getEnvVal(env, "NO_PROXY")
+			Expect(noProxy).To(HavePrefix("localhost,127.0.0.1,.svc,.svc.cluster.local,"))
+			Expect(noProxy).To(ContainSubstring("custom.domain"))
+			Expect(noProxy).To(ContainSubstring("10.0.0.0/8"))
+		})
+
+		It("does NOT inject NO_PROXY defaults when no proxy is set", func() {
+			env := proxyEnvVars(&mirrorv1alpha1.ProxyConfig{NoProxy: "custom.domain"})
+			noProxy := getEnvVal(env, "NO_PROXY")
+			Expect(noProxy).To(Equal("custom.domain"))
+		})
+
+		It("sets both upper and lower case env var names", func() {
+			env := proxyEnvVars(&mirrorv1alpha1.ProxyConfig{
+				HTTPProxy:  "http://proxy:3128",
+				HTTPSProxy: "https://proxy:3128",
+			})
+			Expect(getEnvVal(env, "HTTP_PROXY")).NotTo(BeEmpty())
+			Expect(getEnvVal(env, "http_proxy")).NotTo(BeEmpty())
+			Expect(getEnvVal(env, "HTTPS_PROXY")).NotTo(BeEmpty())
+			Expect(getEnvVal(env, "https_proxy")).NotTo(BeEmpty())
+			Expect(getEnvVal(env, "NO_PROXY")).NotTo(BeEmpty())
+			Expect(getEnvVal(env, "no_proxy")).NotTo(BeEmpty())
+		})
+
+		It("overrides KUBERNETES_SERVICE_HOST to FQDN when proxy is set", func() {
+			env := proxyEnvVars(&mirrorv1alpha1.ProxyConfig{HTTPProxy: "http://proxy:3128"})
+			Expect(getEnvVal(env, "KUBERNETES_SERVICE_HOST")).To(Equal("kubernetes.default.svc.cluster.local"))
+		})
+
+		It("does NOT override KUBERNETES_SERVICE_HOST when only NoProxy is set", func() {
+			env := proxyEnvVars(&mirrorv1alpha1.ProxyConfig{NoProxy: "custom.domain"})
+			Expect(getEnvVal(env, "KUBERNETES_SERVICE_HOST")).To(BeEmpty())
+		})
+	})
 })

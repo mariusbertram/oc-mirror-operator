@@ -368,8 +368,20 @@ func resourcePtr(q string) *resource.Quantity {
 	return &v
 }
 
+// clusterNoProxy contains address patterns that always bypass the proxy so that
+// pod-to-service traffic via cluster-internal FQDNs is never routed through an
+// external proxy. Kept in sync with the controller's clusterNoProxy.
+var clusterNoProxy = []string{
+	"localhost",
+	"127.0.0.1",
+	".svc",
+	".svc.cluster.local",
+}
+
 // catalogProxyEnvVars returns HTTP/HTTPS/NO_PROXY environment variables (upper
 // and lower case) for the catalog-builder job.  Returns nil when cfg is nil.
+// When a proxy is configured, clusterNoProxy entries are automatically prepended
+// to NO_PROXY so that pod-to-service traffic bypasses the proxy by default.
 func catalogProxyEnvVars(cfg *mirrorv1alpha1.ProxyConfig) []corev1.EnvVar {
 	if cfg == nil {
 		return nil
@@ -387,13 +399,32 @@ func catalogProxyEnvVars(cfg *mirrorv1alpha1.ProxyConfig) []corev1.EnvVar {
 			corev1.EnvVar{Name: "https_proxy", Value: v},
 		)
 	}
-	if v := cfg.NoProxy; v != "" {
+	// Also override KUBERNETES_SERVICE_HOST to the FQDN so that client-go's
+	// in-cluster config bypasses the proxy via the .svc.cluster.local NO_PROXY rule.
+	if cfg.HTTPProxy != "" || cfg.HTTPSProxy != "" {
+		noProxy := buildEffectiveNoProxy(cfg.NoProxy)
 		env = append(env,
-			corev1.EnvVar{Name: "NO_PROXY", Value: v},
-			corev1.EnvVar{Name: "no_proxy", Value: v},
+			corev1.EnvVar{Name: "NO_PROXY", Value: noProxy},
+			corev1.EnvVar{Name: "no_proxy", Value: noProxy},
+			corev1.EnvVar{Name: "KUBERNETES_SERVICE_HOST", Value: "kubernetes.default.svc.cluster.local"},
+		)
+	} else if cfg.NoProxy != "" {
+		env = append(env,
+			corev1.EnvVar{Name: "NO_PROXY", Value: cfg.NoProxy},
+			corev1.EnvVar{Name: "no_proxy", Value: cfg.NoProxy},
 		)
 	}
 	return env
+}
+
+// buildEffectiveNoProxy prepends clusterNoProxy to userNoProxy so that
+// cluster-internal FQDNs always bypass the proxy.
+func buildEffectiveNoProxy(userNoProxy string) string {
+	base := strings.Join(clusterNoProxy, ",")
+	if userNoProxy == "" {
+		return base
+	}
+	return base + "," + userNoProxy
 }
 
 // DeleteBuildJob deletes a catalog build Job so it can be recreated.

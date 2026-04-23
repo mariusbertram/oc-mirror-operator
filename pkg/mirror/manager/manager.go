@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -1084,9 +1085,22 @@ func resourcePtr(q string) *resource.Quantity {
 	return &v
 }
 
+// clusterNoProxy contains address patterns that always bypass the proxy so that
+// pod-to-service traffic via cluster-internal FQDNs is never routed through an
+// external proxy.  Kept in sync with the controller's clusterNoProxy.
+var clusterNoProxy = []string{
+	"localhost",
+	"127.0.0.1",
+	".svc",
+	".svc.cluster.local",
+}
+
 // workerProxyEnvVars returns HTTP/HTTPS/NO_PROXY environment variables (both
 // upper and lower case) for the given proxy configuration so that tools that
 // only check one variant still see the proxy.  Returns nil when cfg is nil.
+// When a proxy is configured, clusterNoProxy entries are automatically prepended
+// to NO_PROXY, and KUBERNETES_SERVICE_HOST is overridden to the FQDN so that
+// client-go's in-cluster config bypasses the proxy.
 func workerProxyEnvVars(cfg *mirrorv1alpha1.ProxyConfig) []corev1.EnvVar {
 	if cfg == nil {
 		return nil
@@ -1104,13 +1118,29 @@ func workerProxyEnvVars(cfg *mirrorv1alpha1.ProxyConfig) []corev1.EnvVar {
 			corev1.EnvVar{Name: "https_proxy", Value: v},
 		)
 	}
-	if v := cfg.NoProxy; v != "" {
+	if cfg.HTTPProxy != "" || cfg.HTTPSProxy != "" {
+		noProxy := workerBuildEffectiveNoProxy(cfg.NoProxy)
+		env = append(env,
+			corev1.EnvVar{Name: "NO_PROXY", Value: noProxy},
+			corev1.EnvVar{Name: "no_proxy", Value: noProxy},
+			corev1.EnvVar{Name: "KUBERNETES_SERVICE_HOST", Value: "kubernetes.default.svc.cluster.local"},
+		)
+	} else if v := cfg.NoProxy; v != "" {
 		env = append(env,
 			corev1.EnvVar{Name: "NO_PROXY", Value: v},
 			corev1.EnvVar{Name: "no_proxy", Value: v},
 		)
 	}
 	return env
+}
+
+// workerBuildEffectiveNoProxy prepends clusterNoProxy to userNoProxy.
+func workerBuildEffectiveNoProxy(userNoProxy string) string {
+	base := strings.Join(clusterNoProxy, ",")
+	if userNoProxy == "" {
+		return base
+	}
+	return base + "," + userNoProxy
 }
 
 func containsString(slice []string, s string) bool {
