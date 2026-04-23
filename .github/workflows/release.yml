@@ -108,6 +108,20 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Regenerate bundle from source
+        run: |
+          VERSION="${{ needs.build-operator.outputs.version }}"
+          # Regenerate CRDs, RBAC and bundle manifests from kubebuilder annotations.
+          # A placeholder image is used here; the real digest is injected by the next step.
+          IMG=placeholder/oc-mirror-operator:v${VERSION} \
+          VERSION=${VERSION} \
+          USE_IMAGE_DIGESTS=false \
+          make manifests bundle
+
       - name: Inject version and operator image digest into CSV
         run: |
           VERSION="${{ needs.build-operator.outputs.version }}"
