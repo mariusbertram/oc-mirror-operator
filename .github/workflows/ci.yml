@@ -171,6 +171,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0  # required to access v0.0.2 git tag
 
       - uses: actions/setup-go@v6
         with:
@@ -188,26 +190,53 @@ jobs:
           chmod +x ./kind
           sudo mv ./kind /usr/local/bin/kind
 
-      - name: Create Kind cluster
-        run: kind create cluster --name oc-mirror-olm-test
+      - name: Start local registry
+        run: |
+          docker run -d -p 127.0.0.1:5001:5000 --name kind-registry --restart=always registry:2
+
+      - name: Create Kind cluster with registry mirror
+        run: |
+          cat <<'EOF' | kind create cluster --name oc-mirror-olm-test --config=-
+          kind: Cluster
+          apiVersion: kind.x-k8s.io/v1alpha4
+          containerdConfigPatches:
+          - |-
+            [plugins."io.containerd.grpc.v1.cri".registry]
+              [plugins."io.containerd.grpc.v1.cri".registry.mirrors]
+                [plugins."io.containerd.grpc.v1.cri".registry.mirrors."localhost:5001"]
+                  endpoint = ["http://kind-registry:5000"]
+          EOF
+          docker network connect kind kind-registry
 
       - name: Load operator image into Kind
         run: |
           docker load -i /tmp/operator-image.tar
           kind load docker-image example.com/oc-mirror:v0.0.1 --name oc-mirror-olm-test
 
-      - name: Build new bundle image and load into Kind
+      - name: Download and install operator-sdk
+        run: make operator-sdk
+
+      - name: Build fake old bundle (v0.0.2) from git tag and push to local registry
+        run: |
+          # Extract the entire bundle/ tree from the v0.0.2 git tag into a temp context dir.
+          mkdir -p /tmp/fake-bundle-ctx
+          git archive v0.0.2 bundle/ | tar -x -C /tmp/fake-bundle-ctx
+          # Patch the operator image reference to the one pre-loaded in Kind.
+          sed -i 's|image: ghcr.io/mariusbertram/oc-mirror-operator.*|image: example.com/oc-mirror:v0.0.1|g' \
+            /tmp/fake-bundle-ctx/bundle/manifests/oc-mirror.clusterserviceversion.yaml
+          # Build and push using the same bundle.Dockerfile (expects bundle/ subdir in context).
+          docker build -f bundle.Dockerfile -t localhost:5001/oc-mirror-bundle:v0.0.2 /tmp/fake-bundle-ctx
+          docker push localhost:5001/oc-mirror-bundle:v0.0.2
+
+      - name: Build new bundle image and push to local registry
         run: |
           # Regenerate bundle pointing at the operator image already in Kind.
           # VERSION=0.0.3 ensures a different semver from the old bundle (v0.0.2)
           # so operator-sdk run bundle-upgrade can replace it.
           IMG=example.com/oc-mirror:v0.0.1 VERSION=0.0.3 USE_IMAGE_DIGESTS=false \
             PATH=$PATH:$(go env GOPATH)/bin make bundle
-          docker build -f bundle.Dockerfile -t oc-mirror-bundle:v0.0.3 .
-          kind load docker-image oc-mirror-bundle:v0.0.3 --name oc-mirror-olm-test
-
-      - name: Download and install operator-sdk
-        run: make operator-sdk
+          docker build -f bundle.Dockerfile -t localhost:5001/oc-mirror-bundle:v0.0.3 .
+          docker push localhost:5001/oc-mirror-bundle:v0.0.3
 
       - name: Install OLM
         run: bin/operator-sdk olm install --timeout 3m
@@ -215,9 +244,10 @@ jobs:
       - name: Run OLM upgrade e2e test
         run: |
           go mod tidy
-          OLD_BUNDLE_IMG=ghcr.io/mariusbertram/oc-mirror-operator-bundle:v0.0.2 \
-          NEW_BUNDLE_IMG=oc-mirror-bundle:v0.0.3 \
+          OLD_BUNDLE_IMG=localhost:5001/oc-mirror-bundle:v0.0.2 \
+          NEW_BUNDLE_IMG=localhost:5001/oc-mirror-bundle:v0.0.3 \
           OPERATOR_SDK_BIN=bin/operator-sdk \
+          BUNDLE_SDK_FLAGS="--use-http" \
           SKIP_CLUSTER_SETUP=true \
           SKIP_OPERATOR_DEPLOY=true \
           CERT_MANAGER_INSTALL_SKIP=true \

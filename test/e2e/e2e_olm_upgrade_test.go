@@ -25,9 +25,11 @@ limitations under the License.
 //
 // Run requirements:
 //   - OLM installed in the cluster
-//   - OLD_BUNDLE_IMG: pullable bundle image of the previous release (e.g. ghcr.io/…:v0.0.2)
-//   - NEW_BUNDLE_IMG: locally-built bundle image loaded into kind (e.g. oc-mirror-bundle:v0.0.3)
+//   - OLD_BUNDLE_IMG: pullable bundle image of the previous release (pushed to an accessible registry)
+//   - NEW_BUNDLE_IMG: new bundle image pushed to the same registry
 //   - OPERATOR_SDK_BIN: path to operator-sdk binary (default: bin/operator-sdk)
+//   - BUNDLE_SDK_FLAGS: extra flags passed to operator-sdk run bundle / run bundle-upgrade
+//     (default: "--skip-tls-verify" for HTTPS registries; use "--use-http" for plain HTTP registries)
 //
 // Invoked by CI with label filter "olm-upgrade".
 package e2e
@@ -52,6 +54,7 @@ var _ = Describe("OLM Upgrade", Ordered, Label("olm-upgrade"), func() {
 		oldBundleImg string
 		newBundleImg string
 		sdkBin       string
+		sdkFlags     []string
 	)
 
 	BeforeAll(func() {
@@ -64,6 +67,15 @@ var _ = Describe("OLM Upgrade", Ordered, Label("olm-upgrade"), func() {
 		if oldBundleImg == "" || newBundleImg == "" {
 			Skip("OLD_BUNDLE_IMG and NEW_BUNDLE_IMG must be set for OLM upgrade tests")
 		}
+
+		// BUNDLE_SDK_FLAGS controls registry access: "--use-http" for plain HTTP
+		// registries (e.g. localhost:5001 in CI), "--skip-tls-verify" for HTTPS
+		// registries with self-signed certs. Defaults to "--skip-tls-verify".
+		rawFlags := os.Getenv("BUNDLE_SDK_FLAGS")
+		if rawFlags == "" {
+			rawFlags = "--skip-tls-verify"
+		}
+		sdkFlags = strings.Fields(rawFlags)
 
 		By("ensuring the operator namespace exists")
 		// ignore error — namespace may already exist
@@ -80,11 +92,12 @@ var _ = Describe("OLM Upgrade", Ordered, Label("olm-upgrade"), func() {
 
 	It("should install the previous bundle version via OLM", func() {
 		By(fmt.Sprintf("running old bundle %s", oldBundleImg))
-		cmd := exec.Command(sdkBin, "run", "bundle", oldBundleImg,
+		args := append([]string{"run", "bundle", oldBundleImg,
 			"--namespace", olmNs,
 			"--timeout", "4m",
-			"--image-pull-policy", "IfNotPresent",
-			"--skip-tls-verify")
+			"--image-pull-policy", "IfNotPresent"},
+			sdkFlags...)
+		cmd := exec.Command(sdkBin, args...)
 		out, err := utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "old bundle install failed:\n%s", out)
 
@@ -101,11 +114,12 @@ var _ = Describe("OLM Upgrade", Ordered, Label("olm-upgrade"), func() {
 
 	It("should upgrade to the new bundle without RBAC anti-escalation errors", func() {
 		By(fmt.Sprintf("upgrading to new bundle %s", newBundleImg))
-		cmd := exec.Command(sdkBin, "run", "bundle-upgrade", newBundleImg,
+		args := append([]string{"run", "bundle-upgrade", newBundleImg,
 			"--namespace", olmNs,
 			"--timeout", "4m",
-			"--image-pull-policy", "IfNotPresent",
-			"--skip-tls-verify")
+			"--image-pull-policy", "IfNotPresent"},
+			sdkFlags...)
+		cmd := exec.Command(sdkBin, args...)
 		out, err := utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "bundle upgrade failed:\n%s", out)
 
