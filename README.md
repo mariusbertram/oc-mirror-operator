@@ -847,3 +847,15 @@ oc-mirror-operator/
     │   └── builder/           # Catalog-Builder job management, build signature
     └── imagestate/            # ConfigMap-based state persistence (gzip JSON)
 ```
+
+---
+
+## Documentation
+
+| Document | Description |
+|---|---|
+| [User Guide](docs/user-guide.md) | Installation, configuration, and operational walkthrough |
+| [API Reference](docs/api-reference.md) | Complete CRD field reference for MirrorTarget and ImageSet |
+| [OLM Upgrade Guide](docs/olm-upgrade.md) | How to upgrade between operator versions via OLM |
+| [Contributing Guide](docs/contributing.md) | Development setup, build, test, CI, and release process |
+| [Changelog](CHANGELOG.md) | Release history and migration notes |
