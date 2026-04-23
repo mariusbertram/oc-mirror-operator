@@ -68,6 +68,38 @@ spec:
                 maximum: 100
                 minimum: 1
                 type: integer
+              caBundle:
+                description: |-
+                  CABundle references a ConfigMap in the same namespace that contains a
+                  PEM-encoded CA certificate bundle.  When set, the bundle is mounted into
+                  worker, manager, and catalog-builder pods and SSL_CERT_FILE is set so
+                  that custom or private CAs are trusted.
+                properties:
+                  configMapName:
+                    description: ConfigMapName is the name of the ConfigMap containing
+                      the CA bundle.
+                    minLength: 1
+                    type: string
+                  key:
+                    description: |-
+                      Key is the key within the ConfigMap that holds the PEM-encoded CA
+                      certificate bundle.  Defaults to "ca-bundle.crt".
+                    type: string
+                required:
+                - configMapName
+                type: object
+              checkExistInterval:
+                description: |-
+                  CheckExistInterval defines how often the manager verifies that images
+                  exist in the target registry. On manager startup the check always runs
+                  immediately. For Mirrored images this detects drift (manual deletions).
+                  For permanently-failed images (PermanentlyFailed=true) this triggers a
+                  retry attempt in case the upstream error was transient.
+                  Minimum: 1h. Default: 6h.
+                type: string
+                x-kubernetes-validations:
+                - message: checkExistInterval must be at least 1h
+                  rule: duration(self) >= duration('1h')
               concurrency:
                 description: |-
                   Concurrency controls how many worker pods may run in parallel.
@@ -248,6 +280,28 @@ spec:
                 x-kubernetes-validations:
                 - message: pollInterval must be 0s (disabled) or at least 1h
                   rule: duration(self) == duration('0s') || duration(self) >= duration('1h')
+              proxy:
+                description: |-
+                  Proxy configures HTTP/HTTPS proxy settings for worker, manager, and
+                  catalog-builder pods.  Set NoProxy to include cluster-internal addresses
+                  (e.g. ".svc,.cluster.local") to prevent internal pod traffic from being
+                  routed through the proxy.
+                properties:
+                  httpProxy:
+                    description: HTTPProxy sets the HTTP_PROXY and http_proxy environment
+                      variables.
+                    type: string
+                  httpsProxy:
+                    description: HTTPSProxy sets the HTTPS_PROXY and https_proxy environment
+                      variables.
+                    type: string
+                  noProxy:
+                    description: |-
+                      NoProxy sets the NO_PROXY and no_proxy environment variables.
+                      Should include cluster-internal addresses (e.g. ".svc,.cluster.local")
+                      to prevent pod-to-pod traffic from being sent through the proxy.
+                    type: string
+                type: object
               registry:
                 description: Registry is the URL of the target registry (e.g. registry.example.com/mirror)
                 type: string
@@ -362,6 +416,30 @@ spec:
                           type: string
                       type: object
                     type: array
+                type: object
+              workerStorage:
+                description: |-
+                  WorkerStorage replaces the default 10 GiB emptyDir blob buffer with a
+                  dynamically-provisioned ephemeral PVC for worker pods.  Use this when
+                  mirroring very large images (e.g. LLMs) that exceed the emptyDir limit.
+                  The PVC is bound to the worker pod lifecycle and deleted automatically
+                  when the pod is removed.
+                properties:
+                  size:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    default: 10Gi
+                    description: |-
+                      Size is the requested storage capacity (e.g. "100Gi").
+                      Defaults to "10Gi" when not set.
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                  storageClassName:
+                    description: |-
+                      StorageClassName selects the StorageClass for the ephemeral PVC.
+                      If omitted the cluster's default StorageClass is used.
+                    type: string
                 type: object
             required:
             - registry
