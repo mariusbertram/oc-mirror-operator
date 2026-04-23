@@ -53,6 +53,15 @@ var _ = Describe("oc-mirror Operator E2E", Ordered, Label("cluster"), func() {
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
 
+		// Ensure CRDs are fully established before proceeding.
+		By("waiting for CRDs to be established")
+		cmd = exec.Command("kubectl", "wait", "--for=condition=Established",
+			"crd/imagesets.mirror.openshift.io",
+			"crd/mirrortargets.mirror.openshift.io",
+			"--timeout=60s")
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "CRDs did not become Established")
+
 		By("deploying the controller-manager")
 		// Using the projectImage built in BeforeSuite
 		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectImage))
@@ -70,13 +79,31 @@ var _ = Describe("oc-mirror Operator E2E", Ordered, Label("cluster"), func() {
 	})
 
 	AfterAll(func() {
-		By("cleaning up resources")
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		defer cancel()
-		_ = exec.CommandContext(cleanupCtx, "kubectl", "delete", "imageset", imageSetName, "-n", mirrorNamespace, "--wait=false").Run()
-		_ = exec.CommandContext(cleanupCtx, "kubectl", "delete", "mirrortarget", targetName, "-n", mirrorNamespace, "--wait=false").Run()
-		_ = exec.CommandContext(cleanupCtx, "kubectl", "delete", "-f", "config/samples/registry_deploy.yaml", "--wait=false").Run()
-		_ = exec.CommandContext(cleanupCtx, "make", "undeploy").Run()
+		// Remove finalizers first so the operator is not required to be running for deletion.
+		// This prevents CRDs from getting stuck in "terminating" (which would block the next
+		// test suite's BeforeAll when it tries to re-install CRDs via `make install`).
+		By("removing finalizers from test resources")
+		patchCtx, patchCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer patchCancel()
+		_ = exec.CommandContext(patchCtx, "kubectl", "patch", "imageset", imageSetName,
+			"-n", mirrorNamespace, "-p", `{"metadata":{"finalizers":[]}}`, "--type=merge").Run()
+		_ = exec.CommandContext(patchCtx, "kubectl", "patch", "mirrortarget", targetName,
+			"-n", mirrorNamespace, "-p", `{"metadata":{"finalizers":[]}}`, "--type=merge").Run()
+
+		By("deleting test resources")
+		deleteCtx, deleteCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer deleteCancel()
+		_ = exec.CommandContext(deleteCtx, "kubectl", "delete", "imageset", imageSetName,
+			"-n", mirrorNamespace, "--ignore-not-found=true").Run()
+		_ = exec.CommandContext(deleteCtx, "kubectl", "delete", "mirrortarget", targetName,
+			"-n", mirrorNamespace, "--ignore-not-found=true").Run()
+		_ = exec.CommandContext(deleteCtx, "kubectl", "delete", "-f",
+			"config/samples/registry_deploy.yaml", "--ignore-not-found=true").Run()
+
+		By("undeploying the operator")
+		undeployCtx, undeployCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer undeployCancel()
+		_ = exec.CommandContext(undeployCtx, "make", "undeploy").Run()
 	})
 
 	Context("Mirroring Scenario", func() {

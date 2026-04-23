@@ -67,10 +67,31 @@ var _ = Describe("Catalog Build Job E2E", Ordered, Label("cluster", "catalog-clu
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Registry deployment did not become ready")
 
+		// Ensure CRDs from a previous suite's undeploy are fully deleted before re-installing.
+		// Without this, `make install` may succeed but the CRD stays in "terminating" state,
+		// causing subsequent `kubectl apply` of custom resources to be rejected.
+		By("waiting for any previous CRDs to be fully removed")
+		for _, crd := range []string{
+			"imagesets.mirror.openshift.io",
+			"mirrortargets.mirror.openshift.io",
+		} {
+			_ = exec.Command("kubectl", "wait", "--for=delete",
+				"crd/"+crd, "--timeout=90s").Run()
+		}
+
 		By("installing CRDs")
 		cmd = exec.Command("make", "install")
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
+
+		// Wait for CRDs to be fully established before creating any custom resources.
+		By("waiting for CRDs to be established")
+		cmd = exec.Command("kubectl", "wait", "--for=condition=Established",
+			"crd/imagesets.mirror.openshift.io",
+			"crd/mirrortargets.mirror.openshift.io",
+			"--timeout=60s")
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "CRDs did not become Established")
 
 		By("deploying the controller-manager")
 		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectImage))
@@ -90,16 +111,29 @@ var _ = Describe("Catalog Build Job E2E", Ordered, Label("cluster", "catalog-clu
 	})
 
 	AfterAll(func() {
-		By("cleaning up test resources")
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		defer cancel()
-		_ = exec.CommandContext(cleanupCtx, "kubectl", "delete", "imageset", imageSetName, "-n", ns,
-			"--ignore-not-found=true", "--wait=false").Run()
-		_ = exec.CommandContext(cleanupCtx, "kubectl", "delete", "mirrortarget", targetName, "-n", ns,
-			"--ignore-not-found=true", "--wait=false").Run()
-		_ = exec.CommandContext(cleanupCtx, "kubectl", "delete", "-f", "config/samples/registry_deploy.yaml",
-			"--ignore-not-found=true", "--wait=false").Run()
-		_ = exec.CommandContext(cleanupCtx, "make", "undeploy").Run()
+		// Remove finalizers first so CRDs can be fully deleted by `make undeploy`.
+		By("removing finalizers from test resources")
+		patchCtx, patchCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer patchCancel()
+		_ = exec.CommandContext(patchCtx, "kubectl", "patch", "imageset", imageSetName, "-n", ns,
+			"-p", `{"metadata":{"finalizers":[]}}`, "--type=merge").Run()
+		_ = exec.CommandContext(patchCtx, "kubectl", "patch", "mirrortarget", targetName, "-n", ns,
+			"-p", `{"metadata":{"finalizers":[]}}`, "--type=merge").Run()
+
+		By("deleting test resources")
+		deleteCtx, deleteCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer deleteCancel()
+		_ = exec.CommandContext(deleteCtx, "kubectl", "delete", "imageset", imageSetName, "-n", ns,
+			"--ignore-not-found=true").Run()
+		_ = exec.CommandContext(deleteCtx, "kubectl", "delete", "mirrortarget", targetName, "-n", ns,
+			"--ignore-not-found=true").Run()
+		_ = exec.CommandContext(deleteCtx, "kubectl", "delete", "-f", "config/samples/registry_deploy.yaml",
+			"--ignore-not-found=true").Run()
+
+		By("undeploying the operator")
+		undeployCtx, undeployCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer undeployCancel()
+		_ = exec.CommandContext(undeployCtx, "make", "undeploy").Run()
 	})
 
 	Context("CatalogBuildJob lifecycle", func() {
