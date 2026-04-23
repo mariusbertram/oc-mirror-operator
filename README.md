@@ -495,14 +495,23 @@ spec:
   proxy:
     httpProxy: "http://proxy.corp.example.com:3128"
     httpsProxy: "http://proxy.corp.example.com:3128"
-    # Always include cluster-internal addresses in noProxy to prevent
-    # pod-to-pod traffic from being routed through the proxy.
-    noProxy: ".svc,.cluster.local,localhost,127.0.0.1"
+    # Optional: additional NO_PROXY exclusions (e.g. pod CIDR, custom domains)
+    # noProxy: "10.128.0.0/14,custom.internal.domain"
 ```
 
 Both uppercase (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`) and lowercase (`http_proxy`, `https_proxy`, `no_proxy`) env vars are injected for maximum tool compatibility.
 
-> **Important**: Always add `.svc` and `.cluster.local` to `noProxy`. Worker pods communicate with the manager at `<target>-manager.<namespace>.svc.cluster.local:8080` — without these exclusions, that traffic may be sent to the external proxy and fail.
+When `httpProxy` or `httpsProxy` is set, the operator **automatically** injects the following into `NO_PROXY`:
+
+```
+localhost,127.0.0.1,.svc,.svc.cluster.local
+```
+
+This ensures pod-to-pod traffic via cluster-internal FQDNs (e.g. the manager service at `<target>-manager.<namespace>.svc.cluster.local`) always bypasses the proxy without manual configuration.
+
+In addition, `KUBERNETES_SERVICE_HOST` is overridden to `kubernetes.default.svc.cluster.local` so that `client-go`'s in-cluster config also bypasses the proxy when calling the Kubernetes API (Kubernetes auto-injects `KUBERNETES_SERVICE_HOST` as a ClusterIP which would not match FQDN-based NO_PROXY patterns otherwise).
+
+The `spec.proxy.noProxy` field is only needed for **additional** exclusions such as the pod CIDR or custom internal domains.
 
 ---
 
@@ -681,8 +690,12 @@ The operator runs with a **namespace-scoped `Role`** (not `ClusterRole`). Each l
 | Service Account | Permissions |
 |-----------------|----------------|
 | `oc-mirror-operator-controller-manager` | CRD management, Deployments, Services, ConfigMaps, Secrets (read), Routes, Ingresses, Roles/RoleBindings (`get;create;update` — no `delete`/`patch`/`escalate`/`bind` verbs to prevent privilege escalation), PersistentVolumeClaims (`get;list;watch;create;delete` — needed so the controller can grant the same to the coordinator Role) |
-| `oc-mirror-coordinator` | ImageSets/ImageSets status (`get;list;watch;update;patch`), MirrorTargets (only `get;list;watch`), Pods (`get;list;watch;create;delete`), ConfigMaps (`get;list;watch;create;update;patch;delete`), worker token secret (`get;list;watch;create;update`), PersistentVolumeClaims (`get;list;create;delete` — for generic ephemeral volumes on worker pods) |
-| `oc-mirror-worker` | No cluster permissions |
+| `{mt.Name}-coordinator` | ImageSets/ImageSets status (`get;list;watch;update;patch`), MirrorTargets (only `get;list;watch`), Pods (`get;list;watch;create;delete`), ConfigMaps (`get;list;watch;create;update;patch;delete`), worker token secret (`get;list;watch;create;update`), PersistentVolumeClaims (`get;list;create;delete` — for generic ephemeral volumes on worker pods) |
+| `{mt.Name}-worker` | No cluster permissions |
+
+> Each `MirrorTarget` creates its own set of RBAC resources named `{mt.Name}-coordinator` and `{mt.Name}-worker`. Multiple `MirrorTarget`s in the same namespace do not conflict. Resources are garbage collected automatically when the `MirrorTarget` is deleted.
+
+> **Upgrade note:** If upgrading from a version that used fixed names (`oc-mirror-coordinator`, `oc-mirror-worker`), those resources will be orphaned. Delete them manually: `kubectl delete sa,role,rolebinding oc-mirror-coordinator oc-mirror-worker -n <namespace>`
 
 ### Pod Security
 All dynamically created pods (manager and worker) run with **restricted Pod Security Standards**:

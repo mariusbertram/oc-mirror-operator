@@ -31,6 +31,10 @@ This document describes the complete configuration and operation of the `oc-mirr
    - [Polling and CheckExist Intervals](#73-polling-and-checkexist-intervals)
    - [Expose (Resource Server)](#74-expose-resource-server)
    - [Pod Resources and Placement](#75-pod-resources-and-placement)
+   - [Image Cleanup on Removal](#76-image-cleanup-on-removal)
+   - [HTTP Proxy Configuration](#77-http-proxy-configuration)
+   - [Custom CA Bundle](#78-custom-ca-bundle)
+   - [Worker Storage for Large Images](#79-worker-storage-for-large-images)
 8. [Monitoring Status](#8-monitoring-status)
    - [MirrorTarget Status](#81-mirrortarget-status)
    - [ImageSet Status](#82-imageset-status)
@@ -49,6 +53,7 @@ This document describes the complete configuration and operation of the `oc-mirr
     - [MirrorTarget Fields](#112-mirrortarget-fields)
 12. [Examples](#12-examples)
 13. [Troubleshooting](#13-troubleshooting)
+    - [HTTP Proxy Issues](#135-http-proxy-issues)
 
 ---
 
@@ -164,6 +169,15 @@ A `MirrorTarget` defines **where** to mirror to:
 - Exposure of the Resource Server (IDMS/ITMS endpoint)
 
 For each `MirrorTarget`, the operator starts **one manager pod** in the same namespace. This manager is responsible for worker orchestration, image state management, and the Resource Server.
+
+#### Multiple MirrorTargets per Namespace
+
+Multiple `MirrorTarget` CRs can coexist in the same namespace. Each `MirrorTarget` creates its own isolated set of RBAC resources (`{mt.Name}-coordinator`, `{mt.Name}-worker`) — there are no naming conflicts.
+
+Use cases:
+- Mirror to different target registries from the same namespace
+- Separate ImageSets with different concurrency/performance settings
+- Isolate different teams' mirror configurations
 
 ### 3.2 ImageSet
 
@@ -774,6 +788,91 @@ With this annotation, when an `ImageSet` is removed from the `spec.imageSets` li
 
 ---
 
+### 7.7 HTTP Proxy Configuration
+
+If manager, worker, and catalog-builder pods must reach registries through a corporate HTTP proxy:
+
+```yaml
+spec:
+  proxy:
+    httpProxy: "http://proxy.corp.example.com:3128"
+    httpsProxy: "http://proxy.corp.example.com:3128"
+    # Optional: additional NO_PROXY entries (e.g. pod CIDR, custom domains)
+    # noProxy: "10.128.0.0/14,.internal.corp.example.com"
+```
+
+**Auto-injected NO_PROXY entries:**
+
+When `httpProxy` or `httpsProxy` is set, the operator automatically prepends the following to `NO_PROXY` in every pod:
+
+```
+localhost,127.0.0.1,.svc,.svc.cluster.local
+```
+
+This covers:
+- Pod-to-pod traffic via the manager service (`<target>-manager.<namespace>.svc.cluster.local`)
+- All other cluster-internal service FQDNs
+
+**Kubernetes API access:**
+
+The operator also overrides `KUBERNETES_SERVICE_HOST` to `kubernetes.default.svc.cluster.local`. This forces `client-go` to use the FQDN instead of the ClusterIP (which Kubernetes injects automatically and would not match FQDN-based NO_PROXY patterns). The Kubernetes API server certificate always includes `kubernetes.default.svc.cluster.local` as a SAN, so TLS verification is unaffected.
+
+**The `spec.proxy.noProxy` field** is only needed for additional exclusions that go beyond the auto-injected defaults, for example:
+- Pod or service CIDR (if the proxy intercepts intra-cluster IP traffic)
+- Custom internal domains not covered by `.svc.cluster.local`
+
+**Example with custom exclusions:**
+
+```yaml
+spec:
+  proxy:
+    httpProxy: "http://proxy.corp.example.com:3128"
+    httpsProxy: "http://proxy.corp.example.com:3128"
+    noProxy: "10.128.0.0/14,.corp.internal,my-registry.internal.example.com"
+```
+
+Both uppercase (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`) and lowercase (`http_proxy`, `https_proxy`, `no_proxy`) variants are injected for maximum compatibility.
+
+---
+
+### 7.8 Custom CA Bundle
+
+To trust a custom or private CA when connecting to registries, create a ConfigMap with the PEM-encoded CA bundle:
+
+```bash
+kubectl create configmap custom-ca \
+  --from-file=ca-bundle.crt=/path/to/ca-chain.pem \
+  -n <namespace>
+```
+
+```yaml
+spec:
+  caBundle:
+    configMapName: custom-ca
+    key: ca-bundle.crt   # optional, defaults to "ca-bundle.crt"
+```
+
+The bundle is mounted into all manager, worker, and catalog-builder pods and `SSL_CERT_FILE` is set automatically.
+
+---
+
+### 7.9 Worker Storage for Large Images
+
+By default, worker pods use a 10 GiB `emptyDir` volume as a blob buffer. For very large images (e.g. AI/ML models, LLMs) that exceed this limit, replace it with a dynamically-provisioned PVC:
+
+```yaml
+spec:
+  workerStorage:
+    size: "100Gi"
+    storageClassName: "fast-ssd"   # optional, uses cluster default if omitted
+```
+
+The PVC uses a **generic ephemeral volume** — it is automatically deleted when the worker pod finishes. No manual cleanup is needed.
+
+> **Note:** Blobs are always deleted from the buffer after upload. The volume only needs to be large enough for the **largest individual blob**, not the sum of all blobs in a batch.
+
+---
+
 ## 8. Monitoring Status
 
 ### 8.1 MirrorTarget Status
@@ -1156,6 +1255,19 @@ spec:
     resources: {}
     nodeSelector: {}
     tolerations: []
+
+  proxy:                              # HTTP proxy configuration (optional)
+    httpProxy: <url>                  # HTTP_PROXY value
+    httpsProxy: <url>                 # HTTPS_PROXY value
+    noProxy: <csv>                    # additional NO_PROXY entries (cluster-internal defaults are auto-injected)
+
+  caBundle:                           # custom CA bundle (optional)
+    configMapName: <name>             # ConfigMap containing the PEM bundle
+    key: ca-bundle.crt                # key in the ConfigMap (default: "ca-bundle.crt")
+
+  workerStorage:                      # ephemeral PVC for large image blobs (optional)
+    size: "10Gi"                      # PVC size (default: "10Gi")
+    storageClassName: <class>         # StorageClass (default: cluster default)
 ```
 
 **MirrorTarget Status:**
@@ -1391,6 +1503,41 @@ If `CatalogReady=False` with reason `WaitingForOperatorMirror`:
 **Cause:** Quay creates new repositories only on the first push attempt. After that, the repository must either be set to "Public" in Quay, or the push user must be configured as a member of the organization with write permissions.
 
 **Solution:** Create a robot account in Quay with `write` permission on the organization and use it as the `authSecret`.
+
+---
+
+### 13.5 HTTP Proxy Issues
+
+**Symptom:** Manager pod cannot reach the Kubernetes API (connection refused/timeout via proxy)
+
+**Cause:** The proxy is intercepting requests to the Kubernetes API ClusterIP. `client-go` uses the `KUBERNETES_SERVICE_HOST` environment variable which is auto-injected by Kubernetes as an IP address. IP addresses do not match FQDN-based `NO_PROXY` rules.
+
+**Solution:** This is automatically fixed by the operator when `spec.proxy.httpProxy` or `spec.proxy.httpsProxy` is set: `KUBERNETES_SERVICE_HOST` is overridden to `kubernetes.default.svc.cluster.local` so that the `.svc.cluster.local` NO_PROXY rule applies.
+
+If you are seeing this issue, verify that:
+1. `spec.proxy.httpProxy` or `spec.proxy.httpsProxy` is set in your MirrorTarget
+2. The controller pod itself also has proxy settings configured (this is done at the OLM/Subscription level, not via the MirrorTarget spec)
+
+**Symptom:** Worker pods cannot reach the manager service
+
+**Cause:** The manager service FQDN (`<target>-manager.<namespace>.svc.cluster.local`) is being sent through the proxy.
+
+**Solution:** Automatically handled — `.svc.cluster.local` is always in `NO_PROXY` when a proxy is configured. Verify the manager deployment has the correct NO_PROXY env var:
+```bash
+kubectl get deployment <mirrortarget>-manager -n <namespace> \
+  -o jsonpath='{.spec.template.spec.containers[0].env}' | jq '.[] | select(.name=="NO_PROXY")'
+```
+
+**Symptom:** Custom registry with self-signed certificate fails even with proxy configured
+
+**Solution:** Use `spec.caBundle` in addition to `spec.proxy` to trust the registry's CA:
+```yaml
+spec:
+  proxy:
+    httpProxy: "http://proxy.corp.example.com:3128"
+  caBundle:
+    configMapName: my-registry-ca
+```
 
 ---
 
