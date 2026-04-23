@@ -118,6 +118,8 @@ spec:
 			verifyMirroring := func(g Gomega) {
 				// The Manager pod sets totalImages, mirroredImages, and pendingImages.
 				// Poll until all images are mirrored (pending == 0, mirrored == total > 0).
+				// Note: integer fields with omitempty are absent from JSON when 0, so
+				// jsonpath returns "" instead of "0" — treat "" and "0" as equivalent.
 				cmd := exec.Command("kubectl", "get", "imageset", imageSetName,
 					"-o", "jsonpath={.status.totalImages}:{.status.mirroredImages}:{.status.pendingImages}")
 				output, err := utils.Run(cmd)
@@ -127,8 +129,9 @@ spec:
 				total, mirrored, pending := parts[0], parts[1], parts[2]
 				g.Expect(total).NotTo(BeEmpty())
 				g.Expect(total).NotTo(Equal("0"), "no images resolved yet")
-				g.Expect(pending).To(Equal("0"), fmt.Sprintf(
-					"images still mirroring — total=%s mirrored=%s pending=%s", total, mirrored, pending))
+				// pending="" means 0 (omitempty); accept both forms
+				g.Expect(pending).To(Or(Equal("0"), BeEmpty()), fmt.Sprintf(
+					"images still pending — total=%s mirrored=%s pending=%s", total, mirrored, pending))
 				g.Expect(mirrored).To(Equal(total), fmt.Sprintf(
 					"not all images mirrored — total=%s mirrored=%s", total, mirrored))
 			}
