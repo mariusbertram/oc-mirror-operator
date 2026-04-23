@@ -32,23 +32,26 @@ import (
 // operatorNamespace is the namespace where the controller-manager runs.
 const operatorNamespace = "oc-mirror-system"
 
+// envTrue is the string value used to enable boolean environment variable flags.
+const envTrue = "true"
+
 var (
 	// Optional Environment Variables:
 	// - CERT_MANAGER_INSTALL_SKIP=true: Skips CertManager installation during test setup.
 	// These variables are useful if CertManager is already installed, avoiding
 	// re-installation and conflicts.
-	skipCertManagerInstall = os.Getenv("CERT_MANAGER_INSTALL_SKIP") == "true"
+	skipCertManagerInstall = os.Getenv("CERT_MANAGER_INSTALL_SKIP") == envTrue
 	// isCertManagerAlreadyInstalled will be set true when CertManager CRDs be found on the cluster
 	isCertManagerAlreadyInstalled = false
 
 	// skipClusterSetup=true skips docker-build + Kind image loading.
 	// Set this when the image was already built and loaded in a prior CI step.
-	skipClusterSetup = os.Getenv("SKIP_CLUSTER_SETUP") == "true"
+	skipClusterSetup = os.Getenv("SKIP_CLUSTER_SETUP") == envTrue
 
 	// skipOperatorDeploy=true skips CRD installation and operator deployment.
 	// Set this when running only non-cluster tests (catalog FBC, Cincinnati API)
 	// on a machine without a Kubernetes cluster: SKIP_OPERATOR_DEPLOY=true.
-	skipOperatorDeploy = os.Getenv("SKIP_OPERATOR_DEPLOY") == "true"
+	skipOperatorDeploy = os.Getenv("SKIP_OPERATOR_DEPLOY") == envTrue
 
 	// projectImage is the name of the image which will be build and loaded
 	// with the code source changes to be tested.
