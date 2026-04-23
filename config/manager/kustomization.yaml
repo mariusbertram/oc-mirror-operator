@@ -5,7 +5,7 @@ kind: Kustomization
 images:
 - name: controller
   newName: ghcr.io/mariusbertram/oc-mirror-operator
-  newTag: v0.0.2
+  newTag: v0.0.3
 
 # Mirror the manager container image into OPERATOR_IMAGE so the env var
 # follows whatever `make bundle IMG=...` (or the OLM ClusterServiceVersion)

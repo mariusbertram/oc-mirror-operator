@@ -157,3 +157,74 @@ jobs:
       - name: Cleanup Kind cluster
         if: always()
         run: kind delete cluster --name oc-mirror-test-e2e
+
+  # ── 6. E2E OLM upgrade test ────────────────────────────────────────────────
+  # Installs the previous release bundle via OLM, then upgrades to the
+  # freshly-built bundle and verifies RBAC is correctly provisioned.
+  e2e-olm-upgrade:
+    name: E2E OLM upgrade test
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Download operator image artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: operator-image
+          path: /tmp
+
+      - name: Install Kind
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/latest/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+
+      - name: Create Kind cluster
+        run: kind create cluster --name oc-mirror-olm-test
+
+      - name: Load operator image into Kind
+        run: |
+          docker load -i /tmp/operator-image.tar
+          kind load docker-image example.com/oc-mirror:v0.0.1 --name oc-mirror-olm-test
+
+      - name: Build new bundle image and load into Kind
+        run: |
+          # Regenerate bundle pointing at the operator image already in Kind.
+          # VERSION=0.0.3 ensures a different semver from the old bundle (v0.0.2)
+          # so operator-sdk run bundle-upgrade can replace it.
+          IMG=example.com/oc-mirror:v0.0.1 VERSION=0.0.3 USE_IMAGE_DIGESTS=false \
+            PATH=$PATH:$(go env GOPATH)/bin make bundle
+          docker build -f bundle.Dockerfile -t oc-mirror-bundle:v0.0.3 .
+          kind load docker-image oc-mirror-bundle:v0.0.3 --name oc-mirror-olm-test
+
+      - name: Download and install operator-sdk
+        run: make operator-sdk
+
+      - name: Install OLM
+        run: bin/operator-sdk olm install --timeout 3m
+
+      - name: Run OLM upgrade e2e test
+        run: |
+          go mod tidy
+          OLD_BUNDLE_IMG=ghcr.io/mariusbertram/oc-mirror-operator-bundle:v0.0.2 \
+          NEW_BUNDLE_IMG=oc-mirror-bundle:v0.0.3 \
+          OPERATOR_SDK_BIN=bin/operator-sdk \
+          SKIP_CLUSTER_SETUP=true \
+          SKIP_OPERATOR_DEPLOY=true \
+          CERT_MANAGER_INSTALL_SKIP=true \
+          go test ./test/e2e/ -v -timeout 25m \
+            -ginkgo.v \
+            -ginkgo.label-filter="olm-upgrade"
+
+      - name: Cleanup Kind cluster
+        if: always()
+        run: kind delete cluster --name oc-mirror-olm-test
