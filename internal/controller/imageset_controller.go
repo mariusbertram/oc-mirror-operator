@@ -13,6 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	utilretry "k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -160,15 +161,50 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs( //nolint:gocyclo
 		return nil
 	}
 
-	// Gate: only launch / re-launch catalog build jobs when (a) the
+	// Short-circuit: if the CatalogReady condition is already True, bypass the
+	// mirroring gate so subsequent reconciles do not overwrite the True condition
+	// after the one-shot recollect annotation has been cleared. A rebuild will
+	// still be triggered if the build signature changes or the poll interval expires
+	// (catalogNeedsRebuild logic below).
+	alreadyBuilt := false
+	for _, c := range is.Status.Conditions {
+		if c.Type == "CatalogReady" && c.Status == metav1.ConditionTrue {
+			alreadyBuilt = true
+			break
+		}
+	}
+
+	// Gate: only launch catalog build jobs when (a) the
 	// "mirror.openshift.io/recollect" annotation requests it as a one-shot,
-	// or (b) all operator-origin entries in the per-ImageSet imagestate
-	// ConfigMap have reached the "Mirrored" state. Building the filtered
-	// catalog before bundle images are present in the target registry would
-	// produce a catalog that references unresolved digests.
+	// (b) all operator-origin entries in the per-ImageSet imagestate ConfigMap
+	// have reached the "Mirrored" state, or (c) the catalog was already built
+	// successfully in a prior reconcile. Building the filtered catalog before
+	// bundle images are present in the target registry would produce a catalog
+	// that references unresolved digests.
 	_, recollectRequested := is.Annotations[mirrorv1alpha1.RecollectAnnotation]
 	operatorMirroringComplete, knowState := operatorImagesMirrored(ctx, r.Client, is)
-	gateOpen := recollectRequested || operatorMirroringComplete
+	gateOpen := recollectRequested || operatorMirroringComplete || alreadyBuilt
+
+	// If the gate is otherwise closed, keep it open while a catalog build job
+	// already exists (Pending, Running, or Succeeded). This handles the race
+	// where the manager pod clears the one-shot recollect annotation (via
+	// manager_resolve.go) before the catalog build job finishes, which would
+	// otherwise cause the controller to ignore the running job and never set
+	// CatalogReady=True.
+	if !gateOpen {
+		for _, op := range operators {
+			if op.Catalog == "" {
+				continue
+			}
+			jobName := builder.JobName(is.Name, op.Catalog)
+			phase, _ := builder.GetBuildJobStatus(ctx, r.Client, jobName, is.Namespace)
+			if phase == builder.JobPhasePending || phase == builder.JobPhaseRunning || phase == builder.JobPhaseSucceeded {
+				gateOpen = true
+				break
+			}
+		}
+	}
+
 	if !gateOpen {
 		if knowState {
 			l.Info("Catalog build deferred: operator images still mirroring",
@@ -295,10 +331,29 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs( //nolint:gocyclo
 	case anyFailed:
 		setCondition(&is.Status.Conditions, "CatalogReady", metav1.ConditionFalse, "CatalogBuildFailed", "one or more catalog build jobs failed", is.Generation)
 	case allSucceeded:
-		setCondition(&is.Status.Conditions, "CatalogReady", metav1.ConditionTrue, "CatalogBuildSucceeded", "all catalog images built successfully", is.Generation)
+		// Use RetryOnConflict because the per-MirrorTarget manager pod is a
+		// concurrent writer of ImageSet.status (TotalImages, MirroredImages,
+		// etc.). Without retry, the status.Update for CatalogReady=True would
+		// fail silently whenever the manager writes in the same instant.
+		err := utilretry.RetryOnConflict(utilretry.DefaultRetry, func() error {
+			// Re-read the ImageSet on each retry to get the latest ResourceVersion.
+			fresh := &mirrorv1alpha1.ImageSet{}
+			if rerr := r.Get(ctx, types.NamespacedName{Name: is.Name, Namespace: is.Namespace}, fresh); rerr != nil {
+				return rerr
+			}
+			setCondition(&fresh.Status.Conditions, "CatalogReady", metav1.ConditionTrue,
+				"CatalogBuildSucceeded", "all catalog images built successfully", fresh.Generation)
+			return r.Status().Update(ctx, fresh)
+		})
+		if err != nil {
+			return err
+		}
 		// Honoring the recollect annotation is one-shot: clear it after a
 		// successful catalog build so subsequent reconciles use the
 		// signature-based gating again.
+		// The annotation clear MUST happen after the successful status update
+		// so that any reconcile triggered by the annotation change will see
+		// alreadyBuilt=true and keep CatalogReady=True.
 		if recollectRequested {
 			if is.Annotations != nil {
 				delete(is.Annotations, mirrorv1alpha1.RecollectAnnotation)
@@ -307,6 +362,7 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs( //nolint:gocyclo
 				}
 			}
 		}
+		return nil
 	default:
 		setCondition(&is.Status.Conditions, "CatalogReady", metav1.ConditionFalse, "CatalogBuildRunning", "catalog build jobs are still running", is.Generation)
 	}
