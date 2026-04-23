@@ -51,9 +51,20 @@ func New(client *mirrorclient.MirrorClient) *ReleaseResolver {
 	}
 }
 
+// NodeImages extracts the Image field from a slice of Nodes, returning only
+// the payload image references. Useful for callers that need []string from a
+// []Node result (e.g. for ResolvedSignature computation).
+func NodeImages(nodes []Node) []string {
+	imgs := make([]string, 0, len(nodes))
+	for _, n := range nodes {
+		imgs = append(imgs, n.Image)
+	}
+	return imgs
+}
+
 // ResolvedSignature returns a stable hash that uniquely identifies the result
-// of ResolveRelease for a given channel-spec entry. It is the SHA-256 hex of
-// the sorted, comma-joined payload-image references (which themselves embed
+// of ResolveReleaseNodes for a given channel-spec entry. It is the SHA-256 hex
+// of the sorted, comma-joined payload-image references (which themselves embed
 // upstream digests in OCP cincinnati graphs).
 //
 // Used by the manager as a cheap caching probe: if the new ResolvedSignature
@@ -119,26 +130,37 @@ func (r *ReleaseResolver) FetchGraph(ctx context.Context, channel string, arch [
 	return &graph, nil
 }
 
-func (r *ReleaseResolver) ResolveRelease(ctx context.Context, channel, minVersion, maxVersion string, arch []string, full, shortestPath bool) ([]string, error) {
+// ResolveReleaseNodes resolves the Cincinnati upgrade graph for the given
+// channel and version constraints, returning the matching Nodes (both Image
+// and Version fields populated). This allows callers to use the version string
+// for destination tagging, avoiding the tag-collision bug that occurs when
+// multiple versions are resolved but only a single effectiveMaxVersion is
+// available.
+//
+// Resolution modes (evaluated in order):
+//   - full=true: return all nodes in the channel.
+//   - minVersion="" && maxVersion!="": return the single node matching maxVersion.
+//   - minVersion!="" && maxVersion!="" && shortestPath: BFS from min to max.
+//   - minVersion!="" && maxVersion!="": range filter [min, max] inclusive.
+//   - minVersion!="" && maxVersion="": all nodes >= minVersion.
+//   - no constraints: return only the latest (highest semver) node.
+func (r *ReleaseResolver) ResolveReleaseNodes(ctx context.Context, channel, minVersion, maxVersion string, arch []string, full, shortestPath bool) ([]Node, error) {
 	graph, err := r.FetchGraph(ctx, channel, arch)
 	if err != nil {
 		return nil, err
 	}
 
-	// full: return all nodes in the channel
 	if full {
-		var images []string
-		for _, node := range graph.Nodes {
-			images = append(images, node.Image)
-		}
-		return images, nil
+		nodes := make([]Node, len(graph.Nodes))
+		copy(nodes, graph.Nodes)
+		return nodes, nil
 	}
 
-	// only maxVersion: return just that node (original behavior)
+	// only maxVersion: return just that node
 	if minVersion == "" && maxVersion != "" {
 		for _, node := range graph.Nodes {
 			if node.Version == maxVersion {
-				return []string{node.Image}, nil
+				return []Node{node}, nil
 			}
 		}
 		return nil, fmt.Errorf("version %s not found in channel %s", maxVersion, channel)
@@ -147,7 +169,7 @@ func (r *ReleaseResolver) ResolveRelease(ctx context.Context, channel, minVersio
 	// both minVersion and maxVersion set
 	if minVersion != "" && maxVersion != "" {
 		if shortestPath {
-			return r.shortestPath(graph, minVersion, maxVersion)
+			return r.shortestPathNodes(graph, minVersion, maxVersion)
 		}
 		minSV, err := semver.ParseTolerant(minVersion)
 		if err != nil {
@@ -157,36 +179,36 @@ func (r *ReleaseResolver) ResolveRelease(ctx context.Context, channel, minVersio
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse maxVersion %s: %w", maxVersion, err)
 		}
-		var images []string
+		var nodes []Node
 		for _, node := range graph.Nodes {
 			sv, parseErr := semver.ParseTolerant(node.Version)
 			if parseErr != nil {
 				continue
 			}
 			if sv.GTE(minSV) && sv.LTE(maxSV) {
-				images = append(images, node.Image)
+				nodes = append(nodes, node)
 			}
 		}
-		return images, nil
+		return nodes, nil
 	}
 
-	// only minVersion set
+	// only minVersion set: all nodes >= minVersion (min to latest)
 	if minVersion != "" {
 		minSV, err := semver.ParseTolerant(minVersion)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse minVersion %s: %w", minVersion, err)
 		}
-		var images []string
+		var nodes []Node
 		for _, node := range graph.Nodes {
 			sv, parseErr := semver.ParseTolerant(node.Version)
 			if parseErr != nil {
 				continue
 			}
 			if sv.GTE(minSV) {
-				images = append(images, node.Image)
+				nodes = append(nodes, node)
 			}
 		}
-		return images, nil
+		return nodes, nil
 	}
 
 	// no constraints: return only the latest version in the channel
@@ -195,7 +217,19 @@ func (r *ReleaseResolver) ResolveRelease(ctx context.Context, channel, minVersio
 		return nil, fmt.Errorf("no nodes found in channel %s", channel)
 	}
 	fmt.Printf("No version constraint specified for channel %s, defaulting to latest: %s\n", channel, latest.Version)
-	return []string{latest.Image}, nil
+	return []Node{*latest}, nil
+}
+
+// ResolveRelease resolves the Cincinnati graph and returns the payload image
+// references. It is a thin wrapper around ResolveReleaseNodes that discards
+// the version information. Prefer ResolveReleaseNodes when the version string
+// is needed for destination tagging.
+func (r *ReleaseResolver) ResolveRelease(ctx context.Context, channel, minVersion, maxVersion string, arch []string, full, shortestPath bool) ([]string, error) {
+	nodes, err := r.ResolveReleaseNodes(ctx, channel, minVersion, maxVersion, arch, full, shortestPath)
+	if err != nil {
+		return nil, err
+	}
+	return NodeImages(nodes), nil
 }
 
 // ResolveLatestVersion returns the highest semver version available in the given channel.
@@ -536,7 +570,7 @@ func collectKubeVirtRefs(stream coreOSStream, wantArches map[string]bool) []stri
 	}
 	return refs
 }
-func (r *ReleaseResolver) shortestPath(graph *Graph, fromVersion, toVersion string) ([]string, error) {
+func (r *ReleaseResolver) shortestPathNodes(graph *Graph, fromVersion, toVersion string) ([]Node, error) {
 	versionIdx := make(map[string]int, len(graph.Nodes))
 	for i, node := range graph.Nodes {
 		versionIdx[node.Version] = i
@@ -603,9 +637,9 @@ func (r *ReleaseResolver) shortestPath(graph *Graph, fromVersion, toVersion stri
 	}
 	path = append([]int{fromIdx}, path...)
 
-	images := make([]string, 0, len(path))
+	nodes := make([]Node, 0, len(path))
 	for _, idx := range path {
-		images = append(images, graph.Nodes[idx].Image)
+		nodes = append(nodes, graph.Nodes[idx])
 	}
-	return images, nil
+	return nodes, nil
 }

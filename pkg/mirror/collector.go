@@ -89,67 +89,51 @@ func (c *Collector) CollectReleases(ctx context.Context, spec *mirrorv1alpha1.Im
 	return results, nil
 }
 
-// ResolveReleasePayloadImages performs the cheap channel→payload-image-list
-// resolution (Cincinnati graph traversal) without doing the expensive
-// per-payload component image extraction. The result is suitable for caching
-// signature computation (release.ResolvedSignature) and is reused as input to
-// CollectReleasesForChannel to avoid double work.
-func (c *Collector) ResolveReleasePayloadImages(ctx context.Context, rel mirrorv1alpha1.ReleaseChannel, arch []string) ([]string, error) {
+// ResolveReleasePayloadNodes resolves the Cincinnati graph for the given
+// channel and returns the matched Nodes (Version + Image). The caller can use
+// the returned Node.Version for per-version destination tagging and
+// NodeImages() for signature computation.
+func (c *Collector) ResolveReleasePayloadNodes(ctx context.Context, rel mirrorv1alpha1.ReleaseChannel, arch []string) ([]release.Node, error) {
 	if len(arch) == 0 {
 		arch = []string{"amd64"}
 	}
-	effectiveMaxVersion := rel.MaxVersion
-	if effectiveMaxVersion == "" && !rel.Full && rel.MinVersion == "" {
-		resolved, resolveErr := c.releaseResolver.ResolveLatestVersion(ctx, rel.Name, arch)
-		if resolveErr == nil {
-			effectiveMaxVersion = resolved
-		}
-	}
-	return c.releaseResolver.ResolveRelease(ctx, rel.Name, rel.MinVersion, effectiveMaxVersion, arch, rel.Full, rel.ShortestPath)
+	return c.releaseResolver.ResolveReleaseNodes(ctx, rel.Name, rel.MinVersion, rel.MaxVersion, arch, rel.Full, rel.ShortestPath)
 }
 
 // CollectReleasesForChannel resolves a single release channel and extracts
-// component + KubeVirt images. If payloadImages is non-nil it is used as-is
+// component + KubeVirt images. If payloadNodes is non-nil it is used as-is
 // (avoids an extra Cincinnati round-trip when the caller already invoked
-// ResolveReleasePayloadImages for caching purposes).
+// ResolveReleasePayloadNodes for caching purposes). Each payload image is
+// tagged at the destination using its own Node.Version, so multiple resolved
+// versions never collide on a shared ":latest" tag.
 func (c *Collector) CollectReleasesForChannel(
 	ctx context.Context,
 	spec *mirrorv1alpha1.ImageSetSpec,
 	target *mirrorv1alpha1.MirrorTarget,
 	rel mirrorv1alpha1.ReleaseChannel,
-	payloadImages []string,
+	payloadNodes []release.Node,
 ) ([]TargetImage, error) {
-	results := make([]TargetImage, 0, len(payloadImages))
+	results := make([]TargetImage, 0, len(payloadNodes))
 	arch := spec.Mirror.Platform.Architectures
 	if len(arch) == 0 {
 		arch = []string{"amd64"}
 	}
 
-	effectiveMaxVersion := rel.MaxVersion
-	if effectiveMaxVersion == "" && !rel.Full && rel.MinVersion == "" {
-		resolved, resolveErr := c.releaseResolver.ResolveLatestVersion(ctx, rel.Name, arch)
-		if resolveErr != nil {
-			fmt.Printf("Warning: failed to resolve latest version for channel %s: %v\n", rel.Name, resolveErr)
-		} else {
-			effectiveMaxVersion = resolved
-		}
-	}
-
-	if payloadImages == nil {
+	if payloadNodes == nil {
 		var err error
-		payloadImages, err = c.releaseResolver.ResolveRelease(ctx, rel.Name, rel.MinVersion, effectiveMaxVersion, arch, rel.Full, rel.ShortestPath)
+		payloadNodes, err = c.releaseResolver.ResolveReleaseNodes(ctx, rel.Name, rel.MinVersion, rel.MaxVersion, arch, rel.Full, rel.ShortestPath)
 		if err != nil {
 			return nil, fmt.Errorf("resolve release %s: %w", rel.Name, err)
 		}
 	}
 
-	for _, payloadImg := range payloadImages {
-		dest := releasePayloadDestination(target.Spec.Registry, effectiveMaxVersion, payloadImg)
-		results = append(results, c.toTargetImage(payloadImg, dest, nil))
+	for _, node := range payloadNodes {
+		dest := releasePayloadDestination(target.Spec.Registry, node.Version, node.Image)
+		results = append(results, c.toTargetImage(node.Image, dest, nil))
 
-		componentImages, extractErr := c.releaseResolver.ExtractComponentImages(ctx, payloadImg, arch[0])
+		componentImages, extractErr := c.releaseResolver.ExtractComponentImages(ctx, node.Image, arch[0])
 		if extractErr != nil {
-			fmt.Printf("Warning: failed to extract component images from %s: %v\n", payloadImg, extractErr)
+			fmt.Printf("Warning: failed to extract component images from %s: %v\n", node.Image, extractErr)
 			continue
 		}
 		for _, compImg := range componentImages {
@@ -158,9 +142,9 @@ func (c *Collector) CollectReleasesForChannel(
 		}
 
 		if spec.Mirror.Platform.KubeVirtContainer {
-			kvImages, kvErr := c.releaseResolver.ExtractKubeVirtImages(ctx, payloadImg, arch)
+			kvImages, kvErr := c.releaseResolver.ExtractKubeVirtImages(ctx, node.Image, arch)
 			if kvErr != nil {
-				fmt.Printf("Warning: failed to extract KubeVirt images from %s: %v\n", payloadImg, kvErr)
+				fmt.Printf("Warning: failed to extract KubeVirt images from %s: %v\n", node.Image, kvErr)
 			} else {
 				for _, kvImg := range kvImages {
 					kvDest := componentDestination(target.Spec.Registry, kvImg)

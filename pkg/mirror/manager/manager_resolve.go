@@ -167,19 +167,19 @@ func (m *MirrorManager) resolveReleaseSection( //nolint:unparam
 		cached := annotations[annoKey]
 		originRef := fmt.Sprintf("%s [%s]", ch.Name, strings.Join(arch, ","))
 
-		payloadImages, resolveErr := collector.ResolveReleasePayloadImages(ctx, ch, arch)
+		payloadNodes, resolveErr := collector.ResolveReleasePayloadNodes(ctx, ch, arch)
 		if resolveErr != nil {
 			fmt.Printf("Warning: probe release channel %s: %v\n", ch.Name, resolveErr)
 			carryOverByOriginAndSig(currentState, newState, imagestate.OriginRelease, sig, originRef)
 			continue
 		}
-		freshSig := release.ResolvedSignature(payloadImages)
+		freshSig := release.ResolvedSignature(release.NodeImages(payloadNodes))
 		if !recollect && cached != "" && cached == freshSig {
 			carryOverByOriginAndSig(currentState, newState, imagestate.OriginRelease, sig, originRef)
 			continue
 		}
 
-		images, err := collector.CollectReleasesForChannel(ctx, &is.Spec, mt, ch, payloadImages)
+		images, err := collector.CollectReleasesForChannel(ctx, &is.Spec, mt, ch, payloadNodes)
 		if err != nil {
 			fmt.Printf("Warning: collect release channel %s: %v\n", ch.Name, err)
 			carryOverByOriginAndSig(currentState, newState, imagestate.OriginRelease, sig, originRef)
