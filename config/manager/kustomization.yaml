@@ -4,8 +4,8 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 images:
 - name: controller
-  newName: quay.lab.brtrm.dev/marius/oc-mirror-operator
-  newTag: dev
+  newName: example.com/oc-mirror
+  newTag: v0.0.1
 
 # Mirror the manager container image into OPERATOR_IMAGE so the env var
 # follows whatever `make bundle IMG=...` (or the OLM ClusterServiceVersion)
