@@ -131,7 +131,7 @@ The architecture follows a scalable **three-layer model** with a **Catalog Build
 │                         │ regclient + emptyDir                      │
 │                         ▼                                           │
 │                  ┌──────────────────────────────┐                   │
-│                  │   Target Registry              │                   │
+│                  │   Target Registry            │                   │
 │                  └──────────────────────────────┘                   │
 └─────────────────────────────────────────────────────────────────────┘
 ```
