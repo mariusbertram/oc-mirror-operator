@@ -284,6 +284,7 @@ The manager pod hosts an HTTP server on port **8081** that provides cluster reso
 | `GET /resources/{imageset}/catalogs/{name}/catalogsource.yaml` | `CatalogSource` | OLM v0-compatible CatalogSource (gRPC) for the filtered catalog |
 | `GET /resources/{imageset}/catalogs/{name}/clustercatalog.yaml` | `ClusterCatalog` | OLM v1-compatible ClusterCatalog resource |
 | `GET /resources/{imageset}/catalogs/{name}/packages.json` | JSON | All packages, channels, and versions from the filtered catalog |
+| `GET /resources/{imageset}/catalogs/{name}/upstream-packages.json` | JSON | All packages, channels, and versions from the **upstream source** catalog (unfiltered) |
 | `GET /resources/{imageset}/signature-configmaps.yaml` | ConfigMaps | Release signature ConfigMaps in OpenShift verification format |
 
 ### Ready-Gating

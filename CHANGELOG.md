@@ -21,6 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `GET /resources/{imageset}/catalogs/{catalog}/packages.json` returns all
   packages, channels, and versions from the filtered catalog image. Requires
   `CatalogReady` condition (returns HTTP 409 if not built yet).
+- **Upstream catalog packages endpoint**: New Resource Server endpoint
+  `GET /resources/{imageset}/catalogs/{catalog}/upstream-packages.json` returns
+  the full, unfiltered package list from the upstream source catalog. Useful for
+  discovering available operators before configuring the ImageSet filter. No
+  `CatalogReady` gate required.
 - **TLS fallback for insecure registries**: When `insecure: true` is set on the
   MirrorTarget, the operator first attempts HTTPS without TLS certificate
   verification. If that fails, it falls back to plain HTTP. Previously only

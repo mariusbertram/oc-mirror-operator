@@ -1160,7 +1160,18 @@ curl http://${MIRROR_URL}/resources/<imageset-name>/catalogs/<catalog-name>/pack
 > The endpoint returns HTTP 409 if the catalog has not been built yet
 > (`CatalogReady` condition not met).
 
-### 10.4 Release Signatures
+### 10.4 Upstream Catalog Packages
+
+Discover **all** operators, channels, and versions available in the upstream source catalog — useful for finding out what is available before configuring your ImageSet filter:
+
+```bash
+curl http://${MIRROR_URL}/resources/<imageset-name>/catalogs/<catalog-name>/upstream-packages.json | jq .
+```
+
+> This endpoint fetches the catalog directly from the upstream registry
+> (e.g. `registry.redhat.io`). No `CatalogReady` gate is required.
+
+### 10.5 Release Signatures
 
 ```bash
 # ConfigMap with release signatures for the mirrored OCP release

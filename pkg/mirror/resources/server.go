@@ -47,6 +47,7 @@ func (s *Server) Run(ctx context.Context) {
 	mux.HandleFunc("/resources/{imageset}/catalogs/{catalog}/catalogsource.yaml", s.handleCatalogSource)
 	mux.HandleFunc("/resources/{imageset}/catalogs/{catalog}/clustercatalog.yaml", s.handleClusterCatalog)
 	mux.HandleFunc("/resources/{imageset}/catalogs/{catalog}/packages.json", s.handleCatalogPackages)
+	mux.HandleFunc("/resources/{imageset}/catalogs/{catalog}/upstream-packages.json", s.handleUpstreamCatalogPackages)
 	mux.HandleFunc("/resources/{imageset}/signature-configmaps.yaml", s.handleSignatures)
 
 	server := &http.Server{
@@ -124,6 +125,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 				fmt.Sprintf("/resources/%s/catalogs/%s/catalogsource.yaml", is.Name, catName),
 				fmt.Sprintf("/resources/%s/catalogs/%s/clustercatalog.yaml", is.Name, catName),
 				fmt.Sprintf("/resources/%s/catalogs/%s/packages.json", is.Name, catName),
+				fmt.Sprintf("/resources/%s/catalogs/%s/upstream-packages.json", is.Name, catName),
 			)
 		}
 		idx.ImageSets = append(idx.ImageSets, entry)
@@ -287,6 +289,48 @@ func (s *Server) handleCatalogPackages(w http.ResponseWriter, r *http.Request) {
 	cfg, err := resolver.LoadFBC(r.Context(), cat.TargetImage)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("failed to load catalog from %s: %v", cat.TargetImage, err), http.StatusInternalServerError)
+		return
+	}
+
+	resp := buildCatalogPackagesResponse(cat, cfg)
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// handleUpstreamCatalogPackages returns the full, unfiltered package list from the
+// upstream source catalog. This lets users discover which operators, channels,
+// and versions are available before configuring their ImageSet filter.
+func (s *Server) handleUpstreamCatalogPackages(w http.ResponseWriter, r *http.Request) {
+	isName := r.PathValue("imageset")
+	catSlug := r.PathValue("catalog")
+
+	is, err := s.getImageSet(r.Context(), isName)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+
+	mt, err := s.getMirrorTarget(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	catalogs := extractCatalogs(is, mt.Spec.Registry)
+	cat, ok := findCatalog(catalogs, catSlug)
+	if !ok {
+		http.Error(w, fmt.Sprintf("catalog %q not found in ImageSet %s", catSlug, isName), http.StatusNotFound)
+		return
+	}
+
+	// Load FBC directly from the upstream source catalog image.
+	mc := mirrorclient.NewMirrorClient(nil, s.authConfigPath)
+	resolver := catalog.New(mc)
+
+	cfg, err := resolver.LoadFBC(r.Context(), cat.SourceCatalog)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("failed to load upstream catalog from %s: %v", cat.SourceCatalog, err), http.StatusInternalServerError)
 		return
 	}
 
