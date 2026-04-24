@@ -110,7 +110,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          fetch-depth: 0  # required to access v0.0.2 git tag for OLM upgrade
+          fetch-depth: 0  # required to access git tags for OLM upgrade
 
       - uses: actions/setup-go@v6
         with:
@@ -179,29 +179,42 @@ jobs:
       - name: Download and install operator-sdk
         run: make operator-sdk
 
-      - name: Build fake old bundle (v0.0.2) from git tag and push to local registry
+      - name: Determine latest release tag
+        id: latest-tag
+        run: |
+          LATEST_TAG=$(git tag --sort=-version:refname | head -1)
+          LATEST_VER=${LATEST_TAG#v}
+          # Bump patch for the new bundle version
+          IFS='.' read -r major minor patch <<< "$LATEST_VER"
+          NEW_VER="${major}.${minor}.$((patch + 1))"
+          echo "old_tag=$LATEST_TAG" >> "$GITHUB_OUTPUT"
+          echo "old_ver=$LATEST_VER" >> "$GITHUB_OUTPUT"
+          echo "new_ver=$NEW_VER" >> "$GITHUB_OUTPUT"
+          echo "Old bundle: $LATEST_TAG ($LATEST_VER) → New bundle: $NEW_VER"
+
+      - name: Build old bundle from latest tag and push to local registry
         run: |
           mkdir -p /tmp/fake-bundle-ctx
-          git archive v0.0.2 bundle/ | tar -x -C /tmp/fake-bundle-ctx
+          git archive ${{ steps.latest-tag.outputs.old_tag }} bundle/ | tar -x -C /tmp/fake-bundle-ctx
           sed -i 's|image: ghcr.io/mariusbertram/oc-mirror-operator.*|image: example.com/oc-mirror:v0.0.1|g' \
             /tmp/fake-bundle-ctx/bundle/manifests/oc-mirror.clusterserviceversion.yaml
-          docker build -f bundle.Dockerfile -t localhost:5001/oc-mirror-bundle:v0.0.2 /tmp/fake-bundle-ctx
-          docker push localhost:5001/oc-mirror-bundle:v0.0.2
+          docker build -f bundle.Dockerfile -t localhost:5001/oc-mirror-bundle:${{ steps.latest-tag.outputs.old_ver }} /tmp/fake-bundle-ctx
+          docker push localhost:5001/oc-mirror-bundle:${{ steps.latest-tag.outputs.old_ver }}
 
       - name: Build new bundle image and push to local registry
         run: |
-          IMG=example.com/oc-mirror:v0.0.1 VERSION=0.0.3 USE_IMAGE_DIGESTS=false \
+          IMG=example.com/oc-mirror:v0.0.1 VERSION=${{ steps.latest-tag.outputs.new_ver }} USE_IMAGE_DIGESTS=false \
             PATH=$PATH:$(go env GOPATH)/bin make bundle
-          docker build -f bundle.Dockerfile -t localhost:5001/oc-mirror-bundle:v0.0.3 .
-          docker push localhost:5001/oc-mirror-bundle:v0.0.3
+          docker build -f bundle.Dockerfile -t localhost:5001/oc-mirror-bundle:${{ steps.latest-tag.outputs.new_ver }} .
+          docker push localhost:5001/oc-mirror-bundle:${{ steps.latest-tag.outputs.new_ver }}
 
       - name: Install OLM
         run: bin/operator-sdk olm install --timeout 3m
 
       - name: "Phase 2: Run OLM upgrade E2E tests"
         run: |
-          OLD_BUNDLE_IMG=localhost:5001/oc-mirror-bundle:v0.0.2 \
-          NEW_BUNDLE_IMG=localhost:5001/oc-mirror-bundle:v0.0.3 \
+          OLD_BUNDLE_IMG=localhost:5001/oc-mirror-bundle:${{ steps.latest-tag.outputs.old_ver }} \
+          NEW_BUNDLE_IMG=localhost:5001/oc-mirror-bundle:${{ steps.latest-tag.outputs.new_ver }} \
           OPERATOR_SDK_BIN=bin/operator-sdk \
           BUNDLE_SDK_FLAGS="--use-http" \
           SKIP_CLUSTER_SETUP=true \
