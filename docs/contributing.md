@@ -88,6 +88,9 @@ go mod tidy
 
 # Install code-generation tools
 make controller-gen kustomize
+
+# Install the pre-commit hook (runs fmt, vet, lint, and tests before each commit)
+make hooks
 ```
 
 ---

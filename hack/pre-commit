@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Pre-commit hook — runs fmt, vet, lint, and unit tests before allowing a commit.
+# Install: cp hack/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+#   or:   ln -sf ../../hack/pre-commit .git/hooks/pre-commit
+set -euo pipefail
+
+echo "▶ pre-commit: go fmt"
+if [ -n "$(go fmt ./... 2>&1)" ]; then
+  echo "✗ go fmt produced changes — please stage them and retry"
+  exit 1
+fi
+
+echo "▶ pre-commit: go vet"
+go vet ./...
+
+echo "▶ pre-commit: golangci-lint"
+if command -v golangci-lint &>/dev/null; then
+  golangci-lint run
+else
+  echo "  (skipped — golangci-lint not found, install via 'make lint')"
+fi
+
+echo "▶ pre-commit: unit tests"
+make test
+
+echo "✔ all checks passed"

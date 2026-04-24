@@ -104,6 +104,11 @@ generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and
 fmt: ## Run go fmt against code.
 	go fmt ./...
 
+.PHONY: hooks
+hooks: ## Install git pre-commit hook (runs fmt, vet, lint, tests).
+	@ln -sf ../../hack/pre-commit .git/hooks/pre-commit
+	@echo "pre-commit hook installed"
+
 .PHONY: vet
 vet: ## Run go vet against code.
 	go vet ./...
