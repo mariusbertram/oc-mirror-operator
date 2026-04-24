@@ -460,10 +460,13 @@ func (r *MirrorTargetReconciler) ensureNetworkPolicies(ctx context.Context, mt *
 	resourcesPort := intstr.FromInt(8081)
 
 	policies := []*networkingv1.NetworkPolicy{
-		// 1. Default-deny ingress for the manager pods. Only worker pods of the
-		// same MirrorTarget may reach the status (8080) and resources (8081)
-		// endpoints. Egress is left unrestricted because the manager talks to
-		// the kube-apiserver and remote registries.
+		// 1. Manager ingress policy. Two rules:
+		//    a) Status endpoint (8080): only worker pods of the same
+		//       MirrorTarget may report status.
+		//    b) Resource API (8081): open to all sources so that users,
+		//       Ingress controllers, and Routes can reach it.
+		// Egress is left unrestricted because the manager talks to the
+		// kube-apiserver and remote registries.
 		{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:            mt.Name + "-manager-ingress",
@@ -475,12 +478,18 @@ func (r *MirrorTargetReconciler) ensureNetworkPolicies(ctx context.Context, mt *
 				PodSelector: managerSelector,
 				PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
 				Ingress: []networkingv1.NetworkPolicyIngressRule{
+					// Status port — workers only
 					{
 						From: []networkingv1.NetworkPolicyPeer{
 							{PodSelector: &workerSelector},
 						},
 						Ports: []networkingv1.NetworkPolicyPort{
 							{Protocol: &tcp, Port: &statusPort},
+						},
+					},
+					// Resource API — open to all (Ingress/Route/port-forward)
+					{
+						Ports: []networkingv1.NetworkPolicyPort{
 							{Protocol: &tcp, Port: &resourcesPort},
 						},
 					},
