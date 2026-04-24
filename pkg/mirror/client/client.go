@@ -19,7 +19,8 @@ import (
 
 // MirrorClient handles image mirroring using regclient
 type MirrorClient struct {
-	rc *regclient.RegClient
+	rc         *regclient.RegClient
+	rcFallback *regclient.RegClient // HTTP fallback for insecure hosts
 }
 
 // largeBlobThreshold is the size above which blobs are pre-buffered to disk
@@ -35,7 +36,9 @@ const largeBlobThreshold = 100 * 1024 * 1024 // 100 MiB
 const blobBufferDir = "/tmp/blob-buffer"
 
 // NewMirrorClient creates a new MirrorClient.
-// insecureHosts: registry hostnames that should use plain HTTP / skip TLS verification.
+// insecureHosts: registry hostnames where TLS verification is skipped. The
+// client first tries HTTPS without certificate validation (TLSInsecure) and
+// falls back to plain HTTP (TLSDisabled) if that fails.
 // destHosts: registry hostnames of destination registries; configured with BlobMax=-1
 // to always use monolithic PUT (fast when blobs are pre-buffered by the reader hook).
 // authConfigPath: path to a Docker credential store directory (mounted secret).
@@ -88,15 +91,58 @@ func NewMirrorClient(insecureHosts []string, authConfigPath string, destHosts ..
 		opts = append(opts, regclient.WithConfigHost(hostConfigs...))
 	}
 
-	return &MirrorClient{
+	mc := &MirrorClient{
 		rc: regclient.New(opts...),
 	}
+
+	// Build a fallback client with TLSDisabled (plain HTTP) for insecure hosts.
+	// Used when the primary TLSInsecure (HTTPS skip-verify) attempt fails.
+	if len(insecureHosts) > 0 {
+		fallbackHostMap := make(map[string]config.Host)
+		for k, v := range hostMap {
+			fallbackHostMap[k] = v
+		}
+		for _, h := range insecureHosts {
+			if h == "" {
+				continue
+			}
+			fallbackHostMap[h] = config.Host{
+				Name:    h,
+				TLS:     config.TLSDisabled,
+				BlobMax: -1,
+			}
+		}
+		fallbackConfigs := make([]config.Host, 0, len(fallbackHostMap))
+		for _, hc := range fallbackHostMap {
+			fallbackConfigs = append(fallbackConfigs, hc)
+		}
+		fallbackOpts := []regclient.Opt{}
+		if authConfigPath != "" {
+			configFile := authConfigPath + "/config.json"
+			fallbackOpts = append(fallbackOpts, regclient.WithDockerCredsFile(configFile))
+		} else {
+			fallbackOpts = append(fallbackOpts, regclient.WithDockerCreds())
+		}
+		fallbackOpts = append(fallbackOpts, regclient.WithConfigHost(fallbackConfigs...))
+		mc.rcFallback = regclient.New(fallbackOpts...)
+	}
+
+	return mc
 }
 
 // CopyImage copies an image from source to destination, including signatures.
 // It returns the effective destination reference that was actually pushed (which may
 // differ from dest when src is a digest-only reference and a tag is synthesized).
 func (c *MirrorClient) CopyImage(ctx context.Context, src, dest string) (string, error) {
+	effectiveDest, err := c.copyImageWith(ctx, c.rc, src, dest)
+	if err != nil && c.rcFallback != nil {
+		fmt.Printf("HTTPS (skip-verify) failed for %s, falling back to HTTP: %v\n", dest, err)
+		return c.copyImageWith(ctx, c.rcFallback, src, dest)
+	}
+	return effectiveDest, err
+}
+
+func (c *MirrorClient) copyImageWith(ctx context.Context, rc *regclient.RegClient, src, dest string) (string, error) {
 	srcRef, err := ref.New(src)
 	if err != nil {
 		return "", fmt.Errorf("failed to parse source reference %s: %w", src, err)
@@ -113,7 +159,7 @@ func (c *MirrorClient) CopyImage(ctx context.Context, src, dest string) (string,
 		destRef.Tag = tag
 	}
 
-	err = c.rc.ImageCopy(ctx, srcRef, destRef,
+	err = rc.ImageCopy(ctx, srcRef, destRef,
 		regclient.ImageWithReferrers(),
 		regclient.ImageWithBlobReaderHook(bufferLargeBlobs),
 	)
@@ -139,7 +185,7 @@ func (c *MirrorClient) CopyImage(ctx context.Context, src, dest string) (string,
 		destSigRef.Digest = ""
 
 		// Best-effort: skip silently if the .sig tag does not exist at the source.
-		if err := c.rc.ImageCopy(ctx, srcSigRef, destSigRef); err == nil {
+		if err := rc.ImageCopy(ctx, srcSigRef, destSigRef); err == nil {
 			fmt.Printf("Copied cosign signature %s\n", sigTag)
 		}
 	}
@@ -151,12 +197,20 @@ func (c *MirrorClient) CopyImage(ctx context.Context, src, dest string) (string,
 // Returns (true, nil) if the image exists, (false, nil) if it does not exist
 // (404/MANIFEST_UNKNOWN), or (false, err) for other errors (auth, network).
 func (c *MirrorClient) CheckExist(ctx context.Context, image string) (bool, error) {
+	exists, err := c.checkExistWith(ctx, c.rc, image)
+	if err != nil && c.rcFallback != nil {
+		return c.checkExistWith(ctx, c.rcFallback, image)
+	}
+	return exists, err
+}
+
+func (c *MirrorClient) checkExistWith(ctx context.Context, rc *regclient.RegClient, image string) (bool, error) {
 	r, err := ref.New(image)
 	if err != nil {
 		return false, err
 	}
 
-	_, err = c.rc.ManifestHead(ctx, r)
+	_, err = rc.ManifestHead(ctx, r)
 	if err != nil {
 		if errors.Is(err, errs.ErrNotFound) {
 			return false, nil
@@ -169,12 +223,20 @@ func (c *MirrorClient) CheckExist(ctx context.Context, image string) (bool, erro
 
 // GetDigest returns the digest of an image
 func (c *MirrorClient) GetDigest(ctx context.Context, image string) (string, error) {
+	digest, err := c.getDigestWith(ctx, c.rc, image)
+	if err != nil && c.rcFallback != nil {
+		return c.getDigestWith(ctx, c.rcFallback, image)
+	}
+	return digest, err
+}
+
+func (c *MirrorClient) getDigestWith(ctx context.Context, rc *regclient.RegClient, image string) (string, error) {
 	r, err := ref.New(image)
 	if err != nil {
 		return "", err
 	}
 
-	m, err := c.rc.ManifestHead(ctx, r)
+	m, err := rc.ManifestHead(ctx, r)
 	if err != nil {
 		return "", err
 	}
@@ -217,6 +279,14 @@ func (c *MirrorClient) ImageConfig(ctx context.Context, r ref.Ref) (*blob.BOCICo
 // Tag references are resolved to digests before deletion. Returns nil if the
 // image was already gone (404).
 func (c *MirrorClient) DeleteManifest(ctx context.Context, image string) error {
+	err := c.deleteManifestWith(ctx, c.rc, image)
+	if err != nil && c.rcFallback != nil {
+		return c.deleteManifestWith(ctx, c.rcFallback, image)
+	}
+	return err
+}
+
+func (c *MirrorClient) deleteManifestWith(ctx context.Context, rc *regclient.RegClient, image string) error {
 	r, err := ref.New(image)
 	if err != nil {
 		return fmt.Errorf("failed to parse reference %s: %w", image, err)
@@ -224,7 +294,7 @@ func (c *MirrorClient) DeleteManifest(ctx context.Context, image string) error {
 
 	// regclient requires a digest to delete; resolve tag→digest via HEAD.
 	if r.Digest == "" {
-		m, err := c.rc.ManifestHead(ctx, r)
+		m, err := rc.ManifestHead(ctx, r)
 		if err != nil {
 			if errors.Is(err, errs.ErrNotFound) {
 				return nil // already gone
@@ -234,7 +304,7 @@ func (c *MirrorClient) DeleteManifest(ctx context.Context, image string) error {
 		r.Digest = m.GetDescriptor().Digest.String()
 	}
 
-	err = c.rc.ManifestDelete(ctx, r)
+	err = rc.ManifestDelete(ctx, r)
 	if err != nil {
 		if errors.Is(err, errs.ErrNotFound) {
 			return nil // already gone
