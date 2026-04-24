@@ -246,33 +246,61 @@ func (c *MirrorClient) getDigestWith(ctx context.Context, rc *regclient.RegClien
 
 // ManifestGet retrieves a manifest from the registry.
 func (c *MirrorClient) ManifestGet(ctx context.Context, r ref.Ref) (manifest.Manifest, error) {
-	return c.rc.ManifestGet(ctx, r)
+	m, err := c.rc.ManifestGet(ctx, r)
+	if err != nil && c.rcFallback != nil {
+		return c.rcFallback.ManifestGet(ctx, r)
+	}
+	return m, err
 }
 
 // ManifestPut pushes a manifest to the registry.
 func (c *MirrorClient) ManifestPut(ctx context.Context, r ref.Ref, m manifest.Manifest) error {
-	return c.rc.ManifestPut(ctx, r, m)
+	err := c.rc.ManifestPut(ctx, r, m)
+	if err != nil && c.rcFallback != nil {
+		return c.rcFallback.ManifestPut(ctx, r, m)
+	}
+	return err
 }
 
 // BlobGet retrieves a blob from the registry.
 func (c *MirrorClient) BlobGet(ctx context.Context, r ref.Ref, d descriptor.Descriptor) (blob.Reader, error) {
-	return c.rc.BlobGet(ctx, r, d)
+	br, err := c.rc.BlobGet(ctx, r, d)
+	if err != nil && c.rcFallback != nil {
+		return c.rcFallback.BlobGet(ctx, r, d)
+	}
+	return br, err
 }
 
 // BlobPut pushes a blob to the registry.
 func (c *MirrorClient) BlobPut(ctx context.Context, r ref.Ref, d descriptor.Descriptor, rdr io.Reader) (descriptor.Descriptor, error) {
-	return c.rc.BlobPut(ctx, r, d, rdr)
+	desc, err := c.rc.BlobPut(ctx, r, d, rdr)
+	if err != nil && c.rcFallback != nil {
+		// Reset reader for fallback if possible (e.g. *bytes.Reader).
+		if seeker, ok := rdr.(io.Seeker); ok {
+			_, _ = seeker.Seek(0, io.SeekStart)
+		}
+		return c.rcFallback.BlobPut(ctx, r, d, rdr)
+	}
+	return desc, err
 }
 
 // BlobCopy copies a blob from src to dst, using cross-repo mount when possible.
 // Large blobs are pre-buffered to disk via the reader hook to avoid upload timeouts.
 func (c *MirrorClient) BlobCopy(ctx context.Context, src, dst ref.Ref, d descriptor.Descriptor) error {
-	return c.rc.BlobCopy(ctx, src, dst, d, regclient.BlobWithReaderHook(bufferLargeBlobs))
+	err := c.rc.BlobCopy(ctx, src, dst, d, regclient.BlobWithReaderHook(bufferLargeBlobs))
+	if err != nil && c.rcFallback != nil {
+		return c.rcFallback.BlobCopy(ctx, src, dst, d, regclient.BlobWithReaderHook(bufferLargeBlobs))
+	}
+	return err
 }
 
 // ImageConfig retrieves the OCI image config for a given ref and platform.
 func (c *MirrorClient) ImageConfig(ctx context.Context, r ref.Ref) (*blob.BOCIConfig, error) {
-	return c.rc.ImageConfig(ctx, r, regclient.ImageWithPlatform("linux/amd64"))
+	cfg, err := c.rc.ImageConfig(ctx, r, regclient.ImageWithPlatform("linux/amd64"))
+	if err != nil && c.rcFallback != nil {
+		return c.rcFallback.ImageConfig(ctx, r, regclient.ImageWithPlatform("linux/amd64"))
+	}
+	return cfg, err
 }
 
 // DeleteManifest deletes a manifest (image) from the registry by reference.
