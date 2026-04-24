@@ -1,12 +1,29 @@
 #!/usr/bin/env bash
 # Pre-commit hook — runs fmt, vet, lint, and unit tests before allowing a commit.
-# Install: cp hack/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
-#   or:   ln -sf ../../hack/pre-commit .git/hooks/pre-commit
+# Install via: make hooks
 set -euo pipefail
 
+# Ensure go is on PATH — check GOROOT, common SDK locations, then fall back.
+if ! command -v go &>/dev/null; then
+  for candidate in "${GOROOT:-}/bin" "$HOME/sdk"/go*/bin "$HOME/go/bin" "/usr/local/go/bin"; do
+    if [ -x "$candidate/go" ] 2>/dev/null; then
+      export PATH="$candidate:$PATH"
+      break
+    fi
+  done
+fi
+
+if ! command -v go &>/dev/null; then
+  echo "✗ go not found — set GOROOT or add go to PATH"
+  exit 1
+fi
+
 echo "▶ pre-commit: go fmt"
-if [ -n "$(go fmt ./... 2>&1)" ]; then
-  echo "✗ go fmt produced changes — please stage them and retry"
+FMT_OUTPUT="$(go fmt ./...)"
+if [ -n "$FMT_OUTPUT" ]; then
+  echo "✗ go fmt produced changes in:"
+  echo "$FMT_OUTPUT"
+  echo "  Please stage the changes and retry."
   exit 1
 fi
 
@@ -16,8 +33,10 @@ go vet ./...
 echo "▶ pre-commit: golangci-lint"
 if command -v golangci-lint &>/dev/null; then
   golangci-lint run
+elif [ -x "./bin/golangci-lint" ]; then
+  ./bin/golangci-lint run
 else
-  echo "  (skipped — golangci-lint not found, install via 'make lint')"
+  echo "  (skipped — golangci-lint not found, run 'make lint' once to install)"
 fi
 
 echo "▶ pre-commit: unit tests"
