@@ -30,6 +30,29 @@ var _ = Describe("Mirror Manager", func() {
 		m = NewWithClients(c, cs, "test", "default", "test-image:latest", "", scheme)
 	})
 
+	Context("Operator cache versioning", func() {
+		It("should build a versioned cache token", func() {
+			token := operatorCacheValue("sha256:abc123")
+			Expect(token).To(Equal(operatorCacheVersion + ":sha256:abc123"))
+		})
+
+		It("should match when version and digest are the same", func() {
+			Expect(operatorCacheHit("v2:sha256:abc123", "sha256:abc123")).To(BeTrue())
+		})
+
+		It("should NOT match an old unversioned annotation (forces re-resolution on upgrade)", func() {
+			Expect(operatorCacheHit("sha256:abc123", "sha256:abc123")).To(BeFalse())
+		})
+
+		It("should NOT match when digest changed", func() {
+			Expect(operatorCacheHit("v2:sha256:old", "sha256:new")).To(BeFalse())
+		})
+
+		It("should NOT match empty cached value", func() {
+			Expect(operatorCacheHit("", "sha256:abc123")).To(BeFalse())
+		})
+	})
+
 	Context("Reconcile Logic", func() {
 		It("should handle empty image sets correctly", func() {
 			err := m.reconcile(context.TODO())

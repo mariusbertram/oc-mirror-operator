@@ -29,6 +29,23 @@ import (
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/release"
 )
 
+// operatorCacheVersion is bumped whenever the operator resolution or filtering
+// logic changes semantically (e.g. default-channel narrowing).  Old cached
+// annotation values that were written with a different (or no) version prefix
+// will not match the fresh value, forcing a re-resolution.
+const operatorCacheVersion = "v2"
+
+// operatorCacheValue builds the cache token written to the ImageSet annotation.
+func operatorCacheValue(digest string) string {
+	return operatorCacheVersion + ":" + digest
+}
+
+// operatorCacheHit returns true if the cached annotation value matches the
+// current cache token for the given digest.
+func operatorCacheHit(cached, digest string) bool {
+	return cached != "" && cached == operatorCacheValue(digest)
+}
+
 // resolveImageSet enumerates the upstream content (releases, operator
 // catalogs, additional images) referenced by an ImageSet, merges the result
 // into the per-ImageSet imagestate ConfigMap, and refreshes the digest cache
@@ -230,7 +247,8 @@ func (m *MirrorManager) resolveOperatorSection( //nolint:unparam
 			continue
 		}
 
-		if !recollect && cached != "" && cached == freshDigest {
+		cacheToken := operatorCacheValue(freshDigest)
+		if !recollect && operatorCacheHit(cached, freshDigest) {
 			carryOverByOriginAndSig(currentState, newState, imagestate.OriginOperator, sig, originRef)
 			continue
 		}
@@ -243,8 +261,8 @@ func (m *MirrorManager) resolveOperatorSection( //nolint:unparam
 		}
 		mergeIntoStateWithSig(newState, images, imagestate.OriginOperator, sig, originRef, currentState)
 
-		if annotations[annoKey] != freshDigest {
-			annotations[annoKey] = freshDigest
+		if annotations[annoKey] != cacheToken {
+			annotations[annoKey] = cacheToken
 			annoChanged = true
 		}
 	}
