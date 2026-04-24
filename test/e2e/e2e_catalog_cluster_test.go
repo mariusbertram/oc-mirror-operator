@@ -135,9 +135,10 @@ spec:
 		})
 
 		It("should complete the CatalogBuildJob successfully", func() {
-			By("waiting up to 3 minutes for the CatalogBuildJob to succeed")
+			By("waiting up to 5 minutes for the CatalogBuildJob to succeed")
 			// The job pulls ghcr.io/mariusbertram/brtrm-dev-catalog/catalog:latest (small,
-			// only 2 operators) and filters it — should complete well within 3 minutes.
+			// only 2 operators) and filters it — should complete well within 5 minutes.
+			// Extra time accounts for image pull on cold GitHub Actions runners.
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "jobs",
 					"-l", "mirror.openshift.io/imageset="+imageSetName,
@@ -147,7 +148,45 @@ spec:
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal("1"),
 					"CatalogBuildJob has not succeeded yet (succeeded=%s)", output)
-			}, 3*time.Minute, 10*time.Second).Should(Succeed())
+			}, 5*time.Minute, 10*time.Second).Should(Succeed(), func() string {
+				// Dump diagnostic info on failure
+				var diag strings.Builder
+				diag.WriteString("\n=== CatalogBuildJob diagnostic dump ===\n")
+
+				// Job status
+				if out, err := utils.Run(exec.Command("kubectl", "get", "jobs",
+					"-l", "mirror.openshift.io/imageset="+imageSetName,
+					"-n", ns, "-o", "yaml")); err == nil {
+					diag.WriteString("\n--- Job YAML ---\n")
+					diag.WriteString(out)
+				}
+
+				// Pod status
+				if out, err := utils.Run(exec.Command("kubectl", "get", "pods",
+					"-l", "mirror.openshift.io/imageset="+imageSetName,
+					"-n", ns, "-o", "wide")); err == nil {
+					diag.WriteString("\n--- Pods ---\n")
+					diag.WriteString(out)
+				}
+
+				// Pod logs
+				if out, err := utils.Run(exec.Command("kubectl", "logs",
+					"-l", "mirror.openshift.io/imageset="+imageSetName,
+					"-n", ns, "--tail=50", "--all-containers")); err == nil {
+					diag.WriteString("\n--- Pod logs (last 50 lines) ---\n")
+					diag.WriteString(out)
+				}
+
+				// Events
+				if out, err := utils.Run(exec.Command("kubectl", "get", "events",
+					"-n", ns, "--sort-by=.lastTimestamp",
+					"--field-selector", "reason!=Pulling")); err == nil {
+					diag.WriteString("\n--- Events ---\n")
+					diag.WriteString(out)
+				}
+
+				return diag.String()
+			})
 		})
 
 		It("should set the CatalogReady condition to True on the ImageSet", func() {
