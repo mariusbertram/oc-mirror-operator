@@ -33,7 +33,7 @@ import (
 // logic changes semantically (e.g. heads-only channel filtering).  Old cached
 // annotation values that were written with a different (or no) version prefix
 // will not match the fresh value, forcing a re-resolution.
-const operatorCacheVersion = "v3"
+const operatorCacheVersion = "v4"
 
 // operatorCacheValue builds the cache token written to the ImageSet annotation.
 func operatorCacheValue(digest string) string {
@@ -495,6 +495,8 @@ func mergeWorkerUpdates(resolved, live imagestate.ImageState) imagestate.ImageSt
 //   - imagestate is empty (initial resolution)
 //   - the recollect annotation is set
 //   - the spec has changed (Generation > Status.ObservedGeneration)
+//   - a cache annotation carries an outdated operatorCacheVersion (operator
+//     binary was upgraded and filtering logic changed)
 //   - the configured pollInterval has elapsed since LastSuccessfulPollTime
 func shouldResolve(is *mirrorv1alpha1.ImageSet, mt *mirrorv1alpha1.MirrorTarget, currentState imagestate.ImageState) bool {
 	if len(currentState) == 0 {
@@ -506,6 +508,9 @@ func shouldResolve(is *mirrorv1alpha1.ImageSet, mt *mirrorv1alpha1.MirrorTarget,
 		}
 	}
 	if is.Generation > is.Status.ObservedGeneration {
+		return true
+	}
+	if hasStaleCacheAnnotations(is) {
 		return true
 	}
 	pollInterval := 24 * time.Hour
@@ -527,4 +532,23 @@ func shouldResolve(is *mirrorv1alpha1.ImageSet, mt *mirrorv1alpha1.MirrorTarget,
 		return true
 	}
 	return time.Since(is.Status.LastSuccessfulPollTime.Time) >= pollInterval
+}
+
+// hasStaleCacheAnnotations returns true if any catalog-digest cache annotation
+// on the ImageSet was written with an older operatorCacheVersion. This forces
+// re-resolution after an operator binary upgrade that changed the filtering
+// logic (e.g. heads-only), even if the ImageSet spec itself hasn't changed.
+func hasStaleCacheAnnotations(is *mirrorv1alpha1.ImageSet) bool {
+	if is.Annotations == nil {
+		return false
+	}
+	prefix := operatorCacheVersion + ":"
+	for k, v := range is.Annotations {
+		if strings.HasPrefix(k, mirrorv1alpha1.CatalogDigestAnnotationPrefix) {
+			if !strings.HasPrefix(v, prefix) {
+				return true
+			}
+		}
+	}
+	return false
 }

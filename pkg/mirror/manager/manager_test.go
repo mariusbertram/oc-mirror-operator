@@ -38,7 +38,7 @@ var _ = Describe("Mirror Manager", func() {
 		})
 
 		It("should match when version and digest are the same", func() {
-			Expect(operatorCacheHit("v3:sha256:abc123", "sha256:abc123")).To(BeTrue())
+			Expect(operatorCacheHit("v4:sha256:abc123", "sha256:abc123")).To(BeTrue())
 		})
 
 		It("should NOT match an old unversioned annotation (forces re-resolution on upgrade)", func() {
@@ -46,7 +46,7 @@ var _ = Describe("Mirror Manager", func() {
 		})
 
 		It("should NOT match when digest changed", func() {
-			Expect(operatorCacheHit("v3:sha256:old", "sha256:new")).To(BeFalse())
+			Expect(operatorCacheHit("v4:sha256:old", "sha256:new")).To(BeFalse())
 		})
 
 		It("should NOT match empty cached value", func() {
@@ -112,6 +112,93 @@ var _ = Describe("Mirror Manager", func() {
 		It("should silently skip when entry does not exist", func() {
 			// Should not panic
 			m.setImageStateLocked("nonexistent", stateMirrored, "")
+		})
+	})
+
+	Context("hasStaleCacheAnnotations", func() {
+		It("should return false when no annotations exist", func() {
+			is := &mirrorv1alpha1.ImageSet{}
+			Expect(hasStaleCacheAnnotations(is)).To(BeFalse())
+		})
+
+		It("should return false when all catalog annotations have current version", func() {
+			is := &mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						mirrorv1alpha1.CatalogDigestAnnotationPrefix + "abc": operatorCacheVersion + ":sha256:xyz",
+						"unrelated-annotation": "value",
+					},
+				},
+			}
+			Expect(hasStaleCacheAnnotations(is)).To(BeFalse())
+		})
+
+		It("should return true when a catalog annotation has an old version prefix", func() {
+			is := &mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						mirrorv1alpha1.CatalogDigestAnnotationPrefix + "abc": "v2:sha256:xyz",
+					},
+				},
+			}
+			Expect(hasStaleCacheAnnotations(is)).To(BeTrue())
+		})
+
+		It("should return true when a catalog annotation has no version prefix (legacy)", func() {
+			is := &mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						mirrorv1alpha1.CatalogDigestAnnotationPrefix + "abc": "sha256:xyz",
+					},
+				},
+			}
+			Expect(hasStaleCacheAnnotations(is)).To(BeTrue())
+		})
+	})
+
+	Context("shouldResolve", func() {
+		It("should return true when state is empty", func() {
+			is := &mirrorv1alpha1.ImageSet{}
+			mt := &mirrorv1alpha1.MirrorTarget{}
+			Expect(shouldResolve(is, mt, nil)).To(BeTrue())
+		})
+
+		It("should return true when cache annotations have stale version", func() {
+			is := &mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						mirrorv1alpha1.CatalogDigestAnnotationPrefix + "abc": "v1:sha256:xyz",
+					},
+					Generation: 1,
+				},
+				Status: mirrorv1alpha1.ImageSetStatus{ObservedGeneration: 1},
+			}
+			mt := &mirrorv1alpha1.MirrorTarget{}
+			state := imagestate.ImageState{
+				"reg.io/img:v1": &imagestate.ImageEntry{State: "Pending"},
+			}
+			Expect(shouldResolve(is, mt, state)).To(BeTrue())
+		})
+
+		It("should return false when spec unchanged and cache is current", func() {
+			is := &mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						mirrorv1alpha1.CatalogDigestAnnotationPrefix + "abc": operatorCacheVersion + ":sha256:xyz",
+					},
+					Generation: 1,
+				},
+				Status: mirrorv1alpha1.ImageSetStatus{ObservedGeneration: 1},
+			}
+			mt := &mirrorv1alpha1.MirrorTarget{
+				Spec: mirrorv1alpha1.MirrorTargetSpec{
+					PollInterval: &metav1.Duration{Duration: -1},
+				},
+			}
+			state := imagestate.ImageState{
+				"reg.io/img:v1": &imagestate.ImageEntry{State: "Pending"},
+			}
+			Expect(shouldResolve(is, mt, state)).To(BeFalse())
 		})
 	})
 
