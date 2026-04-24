@@ -548,21 +548,22 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 			m.mu.Lock()
 			if resolveErr != nil {
 				fmt.Printf("Warning: failed to resolve ImageSet %s: %v\n", is.Name, resolveErr)
-			} else {
-				// Even if state is byte-identical (resolved==false), we still
-				// performed a successful poll cycle and should advance the
-				// poll clock to avoid re-probing every reconcile tick.
-				justResolved = true
-				if resolved {
-					live := m.imageStates[is.Name]
-					newState = mergeWorkerUpdates(newState, live)
-					if err := imagestate.Save(ctx, m.Client, m.Namespace, &is, newState); err != nil {
-						fmt.Printf("Warning: failed to save resolved state for %s: %v\n", is.Name, err)
-					} else {
-						isState = newState
-						m.imageStates[is.Name] = isState
-					}
+			} else if resolved {
+				live := m.imageStates[is.Name]
+				newState = mergeWorkerUpdates(newState, live)
+				if err := imagestate.Save(ctx, m.Client, m.Namespace, &is, newState); err != nil {
+					fmt.Printf("Warning: failed to save resolved state for %s: %v\n", is.Name, err)
+					// Mark dirty so the next reconcile tick retries the save.
+					m.dirtyStateNames[is.Name] = true
+				} else {
+					justResolved = true
+					isState = newState
+					m.imageStates[is.Name] = isState
 				}
+			} else {
+				// State is byte-identical (no spec change) but we successfully
+				// polled — advance the poll clock.
+				justResolved = true
 			}
 		}
 
@@ -741,6 +742,8 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 			}
 			if err := imagestate.Save(ctx, m.Client, m.Namespace, &is, isState); err != nil {
 				fmt.Printf("Warning: failed to save image state for %s: %v\n", is.Name, err)
+				// Re-set the dirty flag so the next reconcile tick retries.
+				m.dirtyStateNames[is.Name] = true
 			}
 		}
 		m.updateImageSetStatusLocked(ctx, &is, isState, justResolved)
@@ -755,7 +758,20 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 func (m *MirrorManager) setImageStateLocked(dest, st, lastError string) {
 	isName, ok := m.destToIS[dest]
 	if !ok {
-		return
+		// Fallback: linear search through imageStates. This handles the
+		// startup race where a worker callback arrives before the first
+		// reconcile has populated destToIS.
+		for name, state := range m.imageStates {
+			if _, exists := state[dest]; exists {
+				isName = name
+				m.destToIS[dest] = name
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			return
+		}
 	}
 	isState, ok := m.imageStates[isName]
 	if !ok {
@@ -763,6 +779,11 @@ func (m *MirrorManager) setImageStateLocked(dest, st, lastError string) {
 	}
 	entry, ok := isState[dest]
 	if !ok {
+		return
+	}
+	// Idempotency: skip if already in the desired state with the same
+	// error. Prevents duplicate HTTP retries from inflating RetryCount.
+	if entry.State == st && entry.LastError == lastError {
 		return
 	}
 	entry.State = st

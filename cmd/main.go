@@ -398,20 +398,34 @@ func reportStatus(dest, digest, errMsg string) {
 		fmt.Printf("Failed to marshal status request: %v\n", err)
 		return
 	}
-	httpReq, err := http.NewRequestWithContext(context.Background(), "POST", managerURL+"/status", bytes.NewBuffer(body))
-	if err != nil {
-		fmt.Printf("Failed to build status request: %v\n", err)
-		return
+
+	// Retry the callback up to 3 times with a 2-second delay so transient
+	// network blips or manager lock contention don't permanently lose state.
+	// The manager's handler is idempotent (same dest + state → no side effects).
+	for attempt := 1; attempt <= 3; attempt++ {
+		if attempt > 1 {
+			time.Sleep(2 * time.Second)
+		}
+		httpReq, reqErr := http.NewRequestWithContext(context.Background(), "POST", managerURL+"/status", bytes.NewBuffer(body))
+		if reqErr != nil {
+			fmt.Printf("Failed to build status request: %v\n", reqErr)
+			return
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Authorization", "Bearer "+os.Getenv("WORKER_TOKEN"))
+		httpClient := &http.Client{Timeout: 10 * time.Second}
+		resp, doErr := httpClient.Do(httpReq)
+		if doErr != nil {
+			fmt.Printf("Status callback attempt %d/%d failed: %v\n", attempt, 3, doErr)
+			continue
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			return
+		}
+		fmt.Printf("Status callback attempt %d/%d: HTTP %d\n", attempt, 3, resp.StatusCode)
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+os.Getenv("WORKER_TOKEN"))
-	httpClient := &http.Client{Timeout: 10 * time.Second}
-	resp, err := httpClient.Do(httpReq)
-	if err != nil {
-		fmt.Printf("Failed to report status to manager: %v\n", err)
-		return
-	}
-	defer func() { _ = resp.Body.Close() }()
+	fmt.Printf("Failed to report status to manager after 3 attempts for %s\n", dest)
 }
 
 // shouldMirror queries the manager whether `dest` is still required.
