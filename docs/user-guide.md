@@ -485,6 +485,12 @@ spec:
 
 ### 6.2 Operator Catalogs
 
+> **Heads-only default (oc-mirror v2 compatible):** When a package is listed
+> without explicit channels or version ranges, only the **channel head** (latest
+> version) of every channel is mirrored. This matches `oc-mirror v2` behaviour
+> and keeps the mirror footprint small. To include more versions, use the
+> `previousVersions` field or specify channels explicitly.
+
 #### Single operator from a catalog
 
 ```yaml
@@ -494,6 +500,7 @@ spec:
       - catalog: registry.redhat.io/redhat/redhat-operator-index:v4.14
         packages:
           - name: web-terminal
+            # Heads-only: mirrors the latest version of every channel
 ```
 
 #### Multiple packages from the same catalog
@@ -508,6 +515,21 @@ spec:
           - name: devworkspace-operator
           - name: openshift-pipelines-operator-rh
 ```
+
+#### Head+N mode (include previous versions)
+
+```yaml
+spec:
+  mirror:
+    operators:
+      - catalog: registry.redhat.io/redhat/redhat-operator-index:v4.14
+        packages:
+          - name: web-terminal
+            previousVersions: 2   # head + 2 older versions per channel
+```
+
+> `previousVersions` only applies in heads-only mode — when no explicit
+> `channels`, `minVersion` or `maxVersion` are specified for the package.
 
 #### Specific channel of an operator
 
@@ -658,7 +680,7 @@ metadata:
 spec:
   registry: quay.example.com/mirror       # target registry (without https://)
   authSecret: mirror-creds                # secret name with registry credentials
-  insecure: false                         # true = self-signed TLS allowed
+  insecure: false                         # true = TLS fallback: tries HTTPS without verification first, falls back to plain HTTP
   imageSets:
     - releases-4-14
     - operators-4-14
@@ -1102,19 +1124,13 @@ MIRROR_URL="<mirrortarget-name>-resources.<namespace>.svc.cluster.local:8081"
 
 ```bash
 # ImageDigestMirrorSet (for digest-based image refs)
-curl http://${MIRROR_URL}/resources/idms/<imageset-name> | kubectl apply -f -
+curl http://${MIRROR_URL}/resources/<imageset-name>/idms.yaml | kubectl apply -f -
 
 # ImageTagMirrorSet (for tag-based image refs)
-curl http://${MIRROR_URL}/resources/itms/<imageset-name> | kubectl apply -f -
+curl http://${MIRROR_URL}/resources/<imageset-name>/itms.yaml | kubectl apply -f -
 
 # List all available resources
 curl http://${MIRROR_URL}/resources/
-```
-
-Alternatively as a single combined ConfigMap:
-
-```bash
-curl http://${MIRROR_URL}/resources/mirror-config/<imageset-name> | kubectl apply -f -
 ```
 
 ### 10.2 CatalogSource and ClusterCatalog
@@ -1123,19 +1139,33 @@ After a successful catalog build, the generated OLM resources are available:
 
 ```bash
 # OLM v0: CatalogSource
-curl http://${MIRROR_URL}/resources/catalogsource/<imageset-name> | kubectl apply -f -
+curl http://${MIRROR_URL}/resources/<imageset-name>/catalogs/<catalog-name>/catalogsource.yaml \
+  | kubectl apply -f -
 
 # OLM v1: ClusterCatalog
-curl http://${MIRROR_URL}/resources/clustercatalog/<imageset-name> | kubectl apply -f -
+curl http://${MIRROR_URL}/resources/<imageset-name>/catalogs/<catalog-name>/clustercatalog.yaml \
+  | kubectl apply -f -
 ```
 
 These resources reference the mirrored, filtered catalog image in the target registry.
 
-### 10.3 Release Signatures
+### 10.3 Catalog Packages
+
+Browse the packages, channels, and versions available in a mirrored catalog:
+
+```bash
+curl http://${MIRROR_URL}/resources/<imageset-name>/catalogs/<catalog-name>/packages.json | jq .
+```
+
+> The endpoint returns HTTP 409 if the catalog has not been built yet
+> (`CatalogReady` condition not met).
+
+### 10.4 Release Signatures
 
 ```bash
 # ConfigMap with release signatures for the mirrored OCP release
-curl http://${MIRROR_URL}/resources/signatures/<imageset-name> | kubectl apply -f -
+curl http://${MIRROR_URL}/resources/<imageset-name>/signature-configmaps.yaml \
+  | kubectl apply -f -
 ```
 
 ---
@@ -1181,6 +1211,7 @@ spec:
         packages:
           - name: <package-name>      # package name (required)
             defaultChannel: <channel> # default channel (optional)
+            previousVersions: 0       # older versions behind head to include (heads-only mode)
             minVersion: <version>     # minimum version (optional)
             maxVersion: <version>     # maximum version (optional)
             channels:

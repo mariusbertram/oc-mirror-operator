@@ -210,6 +210,13 @@ spec:
                               name:
                                 description: Name of package.
                                 type: string
+                              previousVersions:
+                                default: 0
+                                description: |-
+                                  PreviousVersions is the number of older versions (before the channel
+                                  head) to include per channel when no explicit channels or version
+                                  ranges are specified (heads-only mode). Defaults to 0 (head only).
+                                type: integer
                             required:
                             - name
                             type: object

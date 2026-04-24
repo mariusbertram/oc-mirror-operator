@@ -243,10 +243,17 @@ kubectl get imagesets -n <namespace>
 | Field | Type | Description |
 |---|---|---|
 | `name` | `string` | Package name. |
-| `channels` | `[]IncludeChannel` | Specific channels within this package. Omit to include all. |
+| `channels` | `[]IncludeChannel` | Specific channels within this package. Omit for **heads-only** mode (see below). |
 | `defaultChannel` | `string` | Override the default channel for this package. |
+| `previousVersions` | `int` | Number of older versions behind the channel head to include in heads-only mode. Default: `0` (head only). Only effective when no explicit channels or version ranges are specified. |
 | `minVersion` | `string` | Minimum bundle version to include. |
 | `maxVersion` | `string` | Maximum bundle version to include. |
+
+> **Heads-only mode (oc-mirror v2 compatible):** When a package is listed without
+> explicit `channels`, `minVersion`, or `maxVersion`, only the **channel head**
+> (latest version) of every channel is included. Set `previousVersions` to
+> include additional older versions. To mirror all versions of specific channels,
+> specify them explicitly in the `channels` array.
 
 #### IncludeChannel
 

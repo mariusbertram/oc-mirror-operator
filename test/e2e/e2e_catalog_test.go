@@ -147,7 +147,8 @@ var _ = Describe("Catalog FBC Filter and Index Rebuild", Label("catalog"), func(
 			}
 
 			By("verifying Bundles")
-			Expect(filtered.Bundles).To(HaveLen(4), "2 bundles per selected package = 4 total")
+			// Heads-only: 1 head bundle per selected package = 2 total.
+			Expect(filtered.Bundles).To(HaveLen(2), "1 head bundle per selected package = 2 total")
 			for _, b := range filtered.Bundles {
 				Expect(b.Package).NotTo(Equal("advanced-cluster-management"),
 					"ACM bundles must not appear in filtered FBC")
@@ -217,7 +218,7 @@ var _ = Describe("Catalog FBC Filter and Index Rebuild", Label("catalog"), func(
 			Expect(err).NotTo(HaveOccurred(), "reloading the serialised YAML should succeed")
 			Expect(reloaded.Packages).To(HaveLen(1))
 			Expect(reloaded.Packages[0].Name).To(Equal("openshift-gitops-operator"))
-			Expect(reloaded.Bundles).To(HaveLen(2))
+			Expect(reloaded.Bundles).To(HaveLen(1), "heads-only: 1 head bundle")
 		})
 
 		It("should produce valid JSON index via WriteJSON", func(ctx context.Context) {
@@ -235,7 +236,7 @@ var _ = Describe("Catalog FBC Filter and Index Rebuild", Label("catalog"), func(
 			Expect(reloaded.Packages).To(HaveLen(1))
 			Expect(reloaded.Packages[0].Name).To(Equal("compliance-operator"))
 			Expect(reloaded.Channels).To(HaveLen(1))
-			Expect(reloaded.Bundles).To(HaveLen(2))
+			Expect(reloaded.Bundles).To(HaveLen(1), "heads-only: 1 head bundle")
 		})
 	})
 

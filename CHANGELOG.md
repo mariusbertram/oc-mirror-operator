@@ -7,9 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Heads-only operator filtering (oc-mirror v2 compatible)**: When a package is
+  listed without explicit channels or version ranges, only the channel head (latest
+  version) of every channel is included — matching `oc-mirror v2` behaviour.
+  Previously all versions of all channels were mirrored. To include more than just
+  the head, use the new `previousVersions` field.
+- **Head+N mode** (`spec.mirror.operators[].packages[].previousVersions`): New
+  integer field (default `0`) that includes N older versions behind the channel
+  head in heads-only mode. Example: `previousVersions: 2` mirrors the head plus
+  the two preceding versions per channel.
+- **Catalog packages endpoint**: New Resource Server endpoint
+  `GET /resources/{imageset}/catalogs/{catalog}/packages.json` returns all
+  packages, channels, and versions from the filtered catalog image. Requires
+  `CatalogReady` condition (returns HTTP 409 if not built yet).
+- **TLS fallback for insecure registries**: When `insecure: true` is set on the
+  MirrorTarget, the operator first attempts HTTPS without TLS certificate
+  verification. If that fails, it falls back to plain HTTP. Previously only
+  plain HTTP was used.
+
+### Fixed
+- **ConfigMap state persistence**: Fixed an issue where image state could remain
+  stuck on `Pending` after successful mirroring. Root causes: fallback linear
+  search added for hash-miss in `setImageStateLocked`; dirty flag is re-set on
+  save failure to prevent permanent state loss; worker `reportStatus` now retries
+  3 times with 2 s backoff.
+- **Cache invalidation**: Operator resolution results are now tagged with a
+  versioned cache token (`operatorCacheVersion`). Stale cache entries from prior
+  operator versions are automatically invalidated on upgrade, preventing
+  incorrect filtering results.
+
+### Changed
+- **CI**: Merged the `e2e` and `e2e-olm-upgrade` workflow jobs into a single
+  `e2e` job with two phases (regular e2e → OLM upgrade) sharing one KinD cluster.
+- **CI**: Removed all Gemini-based CI workflows (triage, code-review, dispatch).
+
 ### Documentation
 - Updated README and user guide with per-MirrorTarget RBAC naming, proxy
   auto-injection details, and multi-MirrorTarget deployment guide.
+- Updated all documentation for heads-only filtering, head+N mode,
+  `previousVersions` field, TLS fallback, catalog packages endpoint, and
+  merged CI pipeline.
 
 ---
 

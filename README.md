@@ -23,8 +23,9 @@ Unlike the static `oc-mirror` CLI tool, this operator works cloud-natively and d
 | **Operator Catalog Mirroring** | ✅ | ✅ | FBC parsing, package filtering, bundle image extraction with automatic dependency resolution |
 | **Operator Dependency Resolution** | ✅ | ✅ | Transitive BFS resolution of `olm.package.required`, `olm.gvk.required` and companion packages (e.g. `odf-operator` → `odf-dependencies`) |
 | **Filtered Catalog Image (OLM v0+v1)** | ✅ | ✅ | Source image as base + FBC overlay layer with opaque whiteouts — compatible with CatalogSource (gRPC) and ClusterCatalog |
-| **Package/Channel Filtering** | ✅ | ✅ | Individual packages and channels selectable |
+| **Package/Channel Filtering** | ✅ | ✅ | Individual packages and channels selectable; heads-only default (oc-mirror v2 compatible) |
 | **Version Ranges (Operators)** | ✅ | ✅ | `minVersion` / `maxVersion` per package or channel |
+| **Head+N Mode** | ✗ | ✅ | `previousVersions` field includes N older versions behind the channel head |
 | **Additional Images** | ✅ | ✅ | Individual images with optional `targetRepo` / `targetTag` |
 | **Cosign Signatures** | ✅ | ✅ | Tag-based `.sig` signatures are automatically copied along |
 | **OCI Referrers** | ✅ | ✅ | Attestations, SBOMs via `regclient.ImageWithReferrers()` |
@@ -180,6 +181,20 @@ When filtering an operator catalog, all transitive dependencies are automaticall
 | `olm.gvk.required` | GVK dependencies (Group/Version/Kind), resolved to the provider package | Bundle requires `StorageCluster` API → `ocs-operator` |
 | Companion packages | Red Hat naming convention: `<name>-dependencies`, `<name>-deps` | `odf-operator` → `odf-dependencies` |
 
+### Heads-Only Filtering (oc-mirror v2 Compatible)
+
+When a package is listed without explicit channels or version ranges, the operator
+uses **heads-only** mode — only the channel head (latest version) of every channel
+is included. This matches the behaviour of `oc-mirror v2`.
+
+| Configuration | Behaviour |
+|---|---|
+| `packages` omitted or `full: true` | Full catalog — all packages, all versions |
+| `packages: [{name: X}]` | Heads-only: latest version of every channel in package X |
+| `packages: [{name: X, previousVersions: 2}]` | Head + 2 previous versions per channel |
+| `packages: [{name: X, channels: [{name: stable}]}]` | All versions in the specified channel(s) |
+| `packages: [{name: X, minVersion: "1.0", maxVersion: "2.0"}]` | Version range filter across all channels |
+
 ### Filtered Catalog Image (OCI Layer Architecture)
 
 ```
@@ -268,6 +283,7 @@ The manager pod hosts an HTTP server on port **8081** that provides cluster reso
 | `GET /resources/{imageset}/itms.yaml` | `ImageTagMirrorSet` | Tag-based mirror rules (if tag-based images are present) |
 | `GET /resources/{imageset}/catalogs/{name}/catalogsource.yaml` | `CatalogSource` | OLM v0-compatible CatalogSource (gRPC) for the filtered catalog |
 | `GET /resources/{imageset}/catalogs/{name}/clustercatalog.yaml` | `ClusterCatalog` | OLM v1-compatible ClusterCatalog resource |
+| `GET /resources/{imageset}/catalogs/{name}/packages.json` | JSON | All packages, channels, and versions from the filtered catalog |
 | `GET /resources/{imageset}/signature-configmaps.yaml` | ConfigMaps | Release signature ConfigMaps in OpenShift verification format |
 
 ### Ready-Gating
@@ -331,6 +347,7 @@ spec:
   authSecret: "target-registry-creds"
 
   # For registries with self-signed certificates
+  # TLS fallback: tries HTTPS without verification, then falls back to plain HTTP
   insecure: false
 
   # Upstream polling interval (default: 24h, min: 1h, 0 = disabled)

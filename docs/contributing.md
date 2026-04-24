@@ -170,8 +170,13 @@ There are two test categories:
 
 - **In-memory catalog tests** — pure Go, no cluster needed (`make test` includes
   these via build tag).
-- **Catalog-cluster tests** — require a cluster and a reachable upstream catalog.
-  Skipped in standard CI; run manually for deep validation.
+- **Cluster tests** — require a KinD cluster with the operator deployed.
+  - *Regular e2e* (`cluster` label): mirror lifecycle, catalog builds, resource
+    server tests.
+  - *Catalog-cluster tests* (`catalog-cluster` label): require a reachable
+    upstream catalog image.
+  - *OLM upgrade tests* (`olm-upgrade` label): validate the full OLM upgrade
+    path. Run as Phase 2 of the merged CI e2e job.
 
 ---
 
@@ -217,7 +222,7 @@ The project uses GitHub Actions. Workflows are in `.github/workflows/`.
 
 | Workflow | Trigger | Jobs |
 |---|---|---|
-| `ci.yml` | push / pull_request | unit tests → build image → e2e (KinD) → multi-arch check → bundle build check |
+| `ci.yml` | push / pull_request | unit tests → build image → e2e (KinD, two phases: regular + OLM upgrade) → multi-arch check → bundle build check |
 | `lint.yml` | push / pull_request | golangci-lint + gofmt |
 | `release.yml` | push tag `v*` | build multi-arch image → push to GHCR → regenerate bundle → build & push bundle image → create GitHub release |
 

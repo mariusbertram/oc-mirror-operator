@@ -27,7 +27,7 @@ CatalogSource that serves the operator bundle and then triggering an InstallPlan
 The operator uses `replaces:` in its CSV to declare a linear upgrade graph:
 
 ```
-v0.0.1 → v0.0.2 → v0.0.3 → v0.0.4 → v0.0.5 → v0.0.6
+v0.0.1 → v0.0.2 → v0.0.3 → v0.0.4 → v0.0.5 → v0.0.6 → v0.0.7 (next)
 ```
 
 OLM will apply each intermediate step automatically when upgrading across
@@ -44,6 +44,7 @@ multiple versions.
 | v0.0.3 | v0.0.4 | Operator icon restored; OLM upgrade e2e test added. |
 | v0.0.4 | v0.0.5 | Release workflow fix only — no functional change. |
 | v0.0.5 | v0.0.6 | RBAC resource names change to per-MirrorTarget; proxy FQDN fix; tag@digest support. See [Migration Notes](#migration-notes-by-version). |
+| v0.0.6 | v0.0.7 | Heads-only operator filtering; head+N mode; TLS fallback; state persistence fixes. See [Migration Notes](#migration-notes-by-version). |
 
 ---
 
@@ -125,6 +126,36 @@ kubectl get csv -n oc-mirror-operator -w
 ---
 
 ## Migration Notes by Version
+
+### v0.0.7 — Heads-only operator filtering (behaviour change)
+
+**Operator catalog filtering now defaults to heads-only mode.** When a package is
+listed without explicit channels or version ranges, only the channel head (latest
+version) of every channel is included. Previously all versions of all channels
+were mirrored.
+
+**What this means for you:**
+- After upgrading, a one-time re-resolution of all operator catalogs occurs
+  automatically (cache version bump).
+- Packages that previously mirrored all versions will now only mirror the latest
+  per channel, reducing mirror size significantly.
+- To **preserve the old behaviour** (all versions), specify channels explicitly:
+  ```yaml
+  packages:
+    - name: my-operator
+      channels:
+        - name: stable       # explicitly selecting channels mirrors all versions
+        - name: preview
+  ```
+- To include a few older versions behind the head, use `previousVersions`:
+  ```yaml
+  packages:
+    - name: my-operator
+      previousVersions: 3    # head + 3 previous versions per channel
+  ```
+
+**TLS fallback:** `insecure: true` now tries HTTPS without certificate verification
+before falling back to plain HTTP. No configuration change needed.
 
 ### v0.0.6 — Per-MirrorTarget RBAC names
 

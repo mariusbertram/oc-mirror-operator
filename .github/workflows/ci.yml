@@ -96,83 +96,21 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: false
 
-  # ── 5. E2E tests (reuses image from build job) ─────────────────────────────
+  # ── 5. E2E tests (all: cluster, catalog, OLM upgrade) ────────────────────
+  # Single Kind cluster with local registry; tests run in two phases:
+  #   Phase 1 — regular tests (operator deployed via make deploy)
+  #   Phase 2 — OLM upgrade tests (operator installed via bundle)
   e2e:
     name: E2E tests
     runs-on: ubuntu-latest
     needs: build
     permissions:
       contents: read
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-
-      - name: Download operator image artifact
-        uses: actions/download-artifact@v8
-        with:
-          name: operator-image
-          path: /tmp
-
-      - name: Install Kind
-        run: |
-          curl -Lo ./kind https://kind.sigs.k8s.io/dl/latest/kind-linux-amd64
-          chmod +x ./kind
-          sudo mv ./kind /usr/local/bin/kind
-
-      - name: Create Kind cluster
-        run: kind create cluster --name oc-mirror-test-e2e
-
-      - name: Load operator image into Kind
-        run: |
-          docker load -i /tmp/operator-image.tar
-          kind load docker-image example.com/oc-mirror:v0.0.1 --name oc-mirror-test-e2e
-
-      - name: Install cert-manager v1.16.3
-        run: |
-          kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.16.3/cert-manager.yaml
-          kubectl wait deployment/cert-manager-webhook \
-            --namespace cert-manager \
-            --for=condition=Available \
-            --timeout=120s
-
-      - name: Run E2E tests
-        run: |
-          go mod tidy
-          SKIP_CLUSTER_SETUP=true \
-          CERT_MANAGER_INSTALL_SKIP=true \
-          KIND_CLUSTER=oc-mirror-test-e2e \
-          go test ./test/e2e/ -v -timeout 20m \
-            -ginkgo.v \
-            -ginkgo.label-filter="!catalog-live"
-          # label map:
-          #   cluster              – needs Kind + deployed operator (e2e_mirror_test.go)
-          #   catalog-cluster      – needs Kind + small brtrm-dev-catalog (GHCR, ip-rule-operator)
-          #   catalog              – pure in-memory FBC filter tests, no cluster required
-          #   release / integration – Cincinnati API (api.openshift.com), reachable in CI
-          #   catalog-live         – quay.io/operatorhubio/catalog (~2 GB), manual only
-
-      - name: Cleanup Kind cluster
-        if: always()
-        run: kind delete cluster --name oc-mirror-test-e2e
-
-  # ── 6. E2E OLM upgrade test ────────────────────────────────────────────────
-  # Installs the previous release bundle via OLM, then upgrades to the
-  # freshly-built bundle and verifies RBAC is correctly provisioned.
-  e2e-olm-upgrade:
-    name: E2E OLM upgrade test
-    runs-on: ubuntu-latest
-    needs: build
-    permissions:
-      contents: read
       packages: read
-
     steps:
       - uses: actions/checkout@v6
         with:
-          fetch-depth: 0  # required to access v0.0.2 git tag
+          fetch-depth: 0  # required to access v0.0.2 git tag for OLM upgrade
 
       - uses: actions/setup-go@v6
         with:
@@ -191,12 +129,11 @@ jobs:
           sudo mv ./kind /usr/local/bin/kind
 
       - name: Start local registry
-        run: |
-          docker run -d -p 127.0.0.1:5001:5000 --name kind-registry --restart=always registry:2
+        run: docker run -d -p 127.0.0.1:5001:5000 --name kind-registry --restart=always registry:2
 
       - name: Create Kind cluster with registry mirror
         run: |
-          cat <<'EOF' | kind create cluster --name oc-mirror-olm-test --config=-
+          cat <<'EOF' | kind create cluster --name oc-mirror-e2e --config=-
           kind: Cluster
           apiVersion: kind.x-k8s.io/v1alpha4
           containerdConfigPatches:
@@ -211,28 +148,48 @@ jobs:
       - name: Load operator image into Kind
         run: |
           docker load -i /tmp/operator-image.tar
-          kind load docker-image example.com/oc-mirror:v0.0.1 --name oc-mirror-olm-test
+          kind load docker-image example.com/oc-mirror:v0.0.1 --name oc-mirror-e2e
 
+      - name: Install cert-manager v1.16.3
+        run: |
+          kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.16.3/cert-manager.yaml
+          kubectl wait deployment/cert-manager-webhook \
+            --namespace cert-manager \
+            --for=condition=Available \
+            --timeout=120s
+
+      # ── Phase 1: regular e2e tests ──────────────────────────────────────
+      - name: "Phase 1: Run E2E tests (cluster, catalog, release)"
+        run: |
+          go mod tidy
+          SKIP_CLUSTER_SETUP=true \
+          CERT_MANAGER_INSTALL_SKIP=true \
+          KIND_CLUSTER=oc-mirror-e2e \
+          go test ./test/e2e/ -v -timeout 20m \
+            -ginkgo.v \
+            -ginkgo.label-filter="!catalog-live && !olm-upgrade"
+          # label map:
+          #   cluster         – needs Kind + deployed operator (mirror, catalog-cluster)
+          #   catalog         – pure in-memory FBC filter tests, no cluster required
+          #   release         – Cincinnati API (api.openshift.com), reachable in CI
+          #   catalog-live    – quay.io/operatorhubio/catalog (~2 GB), manual only
+          #   olm-upgrade     – OLM bundle upgrade tests (run in phase 2)
+
+      # ── Phase 2: OLM upgrade test ──────────────────────────────────────
       - name: Download and install operator-sdk
         run: make operator-sdk
 
       - name: Build fake old bundle (v0.0.2) from git tag and push to local registry
         run: |
-          # Extract the entire bundle/ tree from the v0.0.2 git tag into a temp context dir.
           mkdir -p /tmp/fake-bundle-ctx
           git archive v0.0.2 bundle/ | tar -x -C /tmp/fake-bundle-ctx
-          # Patch the operator image reference to the one pre-loaded in Kind.
           sed -i 's|image: ghcr.io/mariusbertram/oc-mirror-operator.*|image: example.com/oc-mirror:v0.0.1|g' \
             /tmp/fake-bundle-ctx/bundle/manifests/oc-mirror.clusterserviceversion.yaml
-          # Build and push using the same bundle.Dockerfile (expects bundle/ subdir in context).
           docker build -f bundle.Dockerfile -t localhost:5001/oc-mirror-bundle:v0.0.2 /tmp/fake-bundle-ctx
           docker push localhost:5001/oc-mirror-bundle:v0.0.2
 
       - name: Build new bundle image and push to local registry
         run: |
-          # Regenerate bundle pointing at the operator image already in Kind.
-          # VERSION=0.0.3 ensures a different semver from the old bundle (v0.0.2)
-          # so operator-sdk run bundle-upgrade can replace it.
           IMG=example.com/oc-mirror:v0.0.1 VERSION=0.0.3 USE_IMAGE_DIGESTS=false \
             PATH=$PATH:$(go env GOPATH)/bin make bundle
           docker build -f bundle.Dockerfile -t localhost:5001/oc-mirror-bundle:v0.0.3 .
@@ -241,9 +198,8 @@ jobs:
       - name: Install OLM
         run: bin/operator-sdk olm install --timeout 3m
 
-      - name: Run OLM upgrade e2e test
+      - name: "Phase 2: Run OLM upgrade E2E tests"
         run: |
-          go mod tidy
           OLD_BUNDLE_IMG=localhost:5001/oc-mirror-bundle:v0.0.2 \
           NEW_BUNDLE_IMG=localhost:5001/oc-mirror-bundle:v0.0.3 \
           OPERATOR_SDK_BIN=bin/operator-sdk \
@@ -251,10 +207,13 @@ jobs:
           SKIP_CLUSTER_SETUP=true \
           SKIP_OPERATOR_DEPLOY=true \
           CERT_MANAGER_INSTALL_SKIP=true \
+          KIND_CLUSTER=oc-mirror-e2e \
           go test ./test/e2e/ -v -timeout 25m \
             -ginkgo.v \
             -ginkgo.label-filter="olm-upgrade"
 
-      - name: Cleanup Kind cluster
+      - name: Cleanup
         if: always()
-        run: kind delete cluster --name oc-mirror-olm-test
+        run: |
+          kind delete cluster --name oc-mirror-e2e
+          docker rm -f kind-registry 2>/dev/null || true
