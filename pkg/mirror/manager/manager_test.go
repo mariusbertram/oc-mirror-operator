@@ -126,7 +126,7 @@ var _ = Describe("Mirror Manager", func() {
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{
 						mirrorv1alpha1.CatalogDigestAnnotationPrefix + "abc": operatorCacheVersion + ":sha256:xyz",
-						"unrelated-annotation": "value",
+						"unrelated-annotation":                               "value",
 					},
 				},
 			}
