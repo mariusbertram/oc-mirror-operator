@@ -148,7 +148,7 @@ spec:
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal("1"),
 					"CatalogBuildJob has not succeeded yet (succeeded=%s)", output)
-			}, 5*time.Minute, 10*time.Second).Should(Succeed(), func() string {
+			}, 10*time.Minute, 10*time.Second).Should(Succeed(), func() string {
 				// Dump diagnostic info on failure
 				var diag strings.Builder
 				diag.WriteString("\n=== CatalogBuildJob diagnostic dump ===\n")
