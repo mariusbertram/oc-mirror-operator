@@ -749,10 +749,9 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 	return nil
 }
 
-// setImageStateLocked updates the in-memory state for a single destination.
-// Caller must hold m.mu. The ConfigMap is NOT flushed here; the next reconcile
-// tick (every 30s) will persist the change. This keeps the status-update HTTP
-// handler fast.
+// setImageStateLocked updates the in-memory state for a single destination
+// and marks the ImageSet dirty so the next reconcile tick flushes the change
+// to the ConfigMap. Caller must hold m.mu.
 func (m *MirrorManager) setImageStateLocked(dest, st, lastError string) {
 	isName, ok := m.destToIS[dest]
 	if !ok {
@@ -768,14 +767,13 @@ func (m *MirrorManager) setImageStateLocked(dest, st, lastError string) {
 	}
 	entry.State = st
 	entry.LastError = lastError
+	// Mark the ImageSet dirty so the next reconcile tick flushes the
+	// state change to the ConfigMap.
+	m.dirtyStateNames[isName] = true
 	if st == stateFailed {
 		entry.RetryCount++
 		if entry.RetryCount >= 10 && !entry.PermanentlyFailed {
 			entry.PermanentlyFailed = true
-			// Flag the ImageSet so the next reconcile flushes PermanentlyFailed
-			// to the ConfigMap. Without this the catalog-build gate (which reads
-			// the ConfigMap) would never see the flag and block indefinitely.
-			m.dirtyStateNames[isName] = true
 		}
 	}
 }

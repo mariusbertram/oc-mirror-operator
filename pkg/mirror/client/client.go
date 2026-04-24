@@ -63,7 +63,7 @@ func NewMirrorClient(insecureHosts []string, authConfigPath string, destHosts ..
 		}
 		hostMap[h] = config.Host{
 			Name:    h,
-			TLS:     config.TLSDisabled,
+			TLS:     config.TLSInsecure,
 			BlobMax: -1,
 		}
 	}
