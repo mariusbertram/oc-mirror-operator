@@ -10,25 +10,31 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
+	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/catalog"
+	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/imagestate"
+	"github.com/operator-framework/operator-registry/alpha/declcfg"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // Server serves generated cluster resources via HTTP.
 type Server struct {
-	client    client.Client
-	namespace string
-	target    string // MirrorTarget name
+	client         client.Client
+	namespace      string
+	target         string // MirrorTarget name
+	authConfigPath string // Docker auth config directory (for registry access)
 }
 
 // NewServer creates a new resource HTTP server.
-func NewServer(cl client.Client, namespace, targetName string) *Server {
+func NewServer(cl client.Client, namespace, targetName, authConfigPath string) *Server {
 	return &Server{
-		client:    cl,
-		namespace: namespace,
-		target:    targetName,
+		client:         cl,
+		namespace:      namespace,
+		target:         targetName,
+		authConfigPath: authConfigPath,
 	}
 }
 
@@ -40,6 +46,7 @@ func (s *Server) Run(ctx context.Context) {
 	mux.HandleFunc("/resources/{imageset}/itms.yaml", s.handleITMS)
 	mux.HandleFunc("/resources/{imageset}/catalogs/{catalog}/catalogsource.yaml", s.handleCatalogSource)
 	mux.HandleFunc("/resources/{imageset}/catalogs/{catalog}/clustercatalog.yaml", s.handleClusterCatalog)
+	mux.HandleFunc("/resources/{imageset}/catalogs/{catalog}/packages.json", s.handleCatalogPackages)
 	mux.HandleFunc("/resources/{imageset}/signature-configmaps.yaml", s.handleSignatures)
 
 	server := &http.Server{
@@ -116,6 +123,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 			entry.Resources = append(entry.Resources,
 				fmt.Sprintf("/resources/%s/catalogs/%s/catalogsource.yaml", is.Name, catName),
 				fmt.Sprintf("/resources/%s/catalogs/%s/clustercatalog.yaml", is.Name, catName),
+				fmt.Sprintf("/resources/%s/catalogs/%s/packages.json", is.Name, catName),
 			)
 		}
 		idx.ImageSets = append(idx.ImageSets, entry)
@@ -231,6 +239,61 @@ func (s *Server) handleClusterCatalog(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/yaml")
 	_, _ = w.Write(data)
+}
+
+func (s *Server) handleCatalogPackages(w http.ResponseWriter, r *http.Request) {
+	isName := r.PathValue("imageset")
+	catSlug := r.PathValue("catalog")
+
+	is, err := s.getImageSet(r.Context(), isName)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+
+	// Gate on CatalogReady — the target catalog must be built before we can
+	// inspect it. This avoids showing unfiltered upstream content that may
+	// not actually be available in the mirror.
+	if !isCatalogReady(is) {
+		http.Error(w, fmt.Sprintf("catalog for ImageSet %s is not ready yet", isName), http.StatusConflict)
+		return
+	}
+
+	mt, err := s.getMirrorTarget(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	catalogs := extractCatalogs(is, mt.Spec.Registry)
+	cat, ok := findCatalog(catalogs, catSlug)
+	if !ok {
+		http.Error(w, fmt.Sprintf("catalog %q not found in ImageSet %s", catSlug, isName), http.StatusNotFound)
+		return
+	}
+
+	// Build a registry client and load FBC from the target (mirrored) catalog image.
+	var insecureHosts []string
+	if mt.Spec.Insecure {
+		host := mt.Spec.Registry
+		if i := strings.Index(host, "/"); i >= 0 {
+			host = host[:i]
+		}
+		insecureHosts = []string{host}
+	}
+	mc := mirrorclient.NewMirrorClient(insecureHosts, s.authConfigPath)
+	resolver := catalog.New(mc)
+
+	cfg, err := resolver.LoadFBC(r.Context(), cat.TargetImage)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("failed to load catalog from %s: %v", cat.TargetImage, err), http.StatusInternalServerError)
+		return
+	}
+
+	resp := buildCatalogPackagesResponse(cat, cfg)
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func (s *Server) handleSignatures(w http.ResponseWriter, r *http.Request) {
@@ -422,4 +485,118 @@ func findCatalog(catalogs []CatalogInfo, slug string) (CatalogInfo, bool) {
 		}
 	}
 	return CatalogInfo{}, false
+}
+
+func isCatalogReady(is *mirrorv1alpha1.ImageSet) bool {
+	for _, c := range is.Status.Conditions {
+		if c.Type == "CatalogReady" && c.Status == metav1.ConditionTrue {
+			return true
+		}
+	}
+	return false
+}
+
+// --- Catalog packages response types ---
+
+// catalogPackagesResponse is the JSON envelope for the packages endpoint.
+type catalogPackagesResponse struct {
+	Catalog     string           `json:"catalog"`
+	TargetImage string           `json:"targetImage"`
+	Packages    []packageSummary `json:"packages"`
+}
+
+// packageSummary describes a single operator package in the catalog.
+type packageSummary struct {
+	Name           string           `json:"name"`
+	DefaultChannel string           `json:"defaultChannel,omitempty"`
+	Channels       []channelSummary `json:"channels"`
+}
+
+// channelSummary describes a single channel within an operator package.
+type channelSummary struct {
+	Name    string         `json:"name"`
+	Entries []bundleEntry  `json:"entries"`
+}
+
+// bundleEntry describes a single bundle version within a channel.
+type bundleEntry struct {
+	Name    string `json:"name"`
+	Version string `json:"version,omitempty"`
+}
+
+func buildCatalogPackagesResponse(cat CatalogInfo, cfg *declcfg.DeclarativeConfig) catalogPackagesResponse {
+	// Index bundles and channels by package.
+	channelsByPkg := make(map[string][]declcfg.Channel)
+	for _, ch := range cfg.Channels {
+		channelsByPkg[ch.Package] = append(channelsByPkg[ch.Package], ch)
+	}
+
+	// Extract version from olm.package property for each bundle.
+	bundleVersions := make(map[string]string, len(cfg.Bundles))
+	for _, b := range cfg.Bundles {
+		bundleVersions[b.Name] = bundleVersion(b)
+	}
+
+	// Build default channel index.
+	defaultChannels := make(map[string]string, len(cfg.Packages))
+	for _, p := range cfg.Packages {
+		defaultChannels[p.Name] = p.DefaultChannel
+	}
+
+	// Build sorted package list.
+	pkgNames := make([]string, 0, len(cfg.Packages))
+	for _, p := range cfg.Packages {
+		pkgNames = append(pkgNames, p.Name)
+	}
+	sort.Strings(pkgNames)
+
+	packages := make([]packageSummary, 0, len(pkgNames))
+	for _, pkgName := range pkgNames {
+		channels := channelsByPkg[pkgName]
+		sort.Slice(channels, func(i, j int) bool { return channels[i].Name < channels[j].Name })
+
+		chSummaries := make([]channelSummary, 0, len(channels))
+		for _, ch := range channels {
+			entries := make([]bundleEntry, 0, len(ch.Entries))
+			for _, e := range ch.Entries {
+				entries = append(entries, bundleEntry{
+					Name:    e.Name,
+					Version: bundleVersions[e.Name],
+				})
+			}
+			sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
+			chSummaries = append(chSummaries, channelSummary{
+				Name:    ch.Name,
+				Entries: entries,
+			})
+		}
+
+		packages = append(packages, packageSummary{
+			Name:           pkgName,
+			DefaultChannel: defaultChannels[pkgName],
+			Channels:       chSummaries,
+		})
+	}
+
+	return catalogPackagesResponse{
+		Catalog:     cat.SourceCatalog,
+		TargetImage: cat.TargetImage,
+		Packages:    packages,
+	}
+}
+
+// bundleVersion extracts the version from a bundle's olm.package property.
+func bundleVersion(b declcfg.Bundle) string {
+	for _, prop := range b.Properties {
+		if prop.Type != "olm.package" {
+			continue
+		}
+		var v struct {
+			Version string `json:"version"`
+		}
+		if json.Unmarshal(prop.Value, &v) == nil && v.Version != "" {
+			return v.Version
+		}
+	}
+	return ""
 }

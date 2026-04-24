@@ -463,8 +463,10 @@ func (r *CatalogResolver) FilterFBC(ctx context.Context, cfg *declcfg.Declarativ
 
 	// Build index of which packages exist in the full catalog.
 	catalogPkgs := make(map[string]bool, len(cfg.Packages))
+	defaultChannelByPkg := make(map[string]string, len(cfg.Packages))
 	for _, p := range cfg.Packages {
 		catalogPkgs[p.Name] = true
+		defaultChannelByPkg[p.Name] = p.DefaultChannel
 	}
 
 	bundlesByPkg := make(map[string][]declcfg.Bundle)
@@ -475,8 +477,13 @@ func (r *CatalogResolver) FilterFBC(ctx context.Context, cfg *declcfg.Declarativ
 	}
 
 	channelsByPkg := make(map[string][]declcfg.Channel)
+	channelNamesByPkg := make(map[string]map[string]bool)
 	for _, c := range cfg.Channels {
 		channelsByPkg[c.Package] = append(channelsByPkg[c.Package], c)
+		if channelNamesByPkg[c.Package] == nil {
+			channelNamesByPkg[c.Package] = make(map[string]bool)
+		}
+		channelNamesByPkg[c.Package][c.Name] = true
 	}
 
 	// Build GVK provider index: GVK key → set of package names that provide it.
@@ -506,6 +513,27 @@ func (r *CatalogResolver) FilterFBC(ctx context.Context, cfg *declcfg.Declarativ
 		explicitFilters[inc.Name] = buildPkgIncludeFilter(inc)
 	}
 
+	// When no channels are explicitly specified and no version filters exist,
+	// restrict to the package's default channel from the catalog metadata.
+	// This prevents mirroring all channels when the user only lists a package name.
+	for pkgName, f := range explicitFilters {
+		if !f.allowAllChannels || f.pkgHasMinVer || f.pkgHasMaxVer || len(f.channelFilters) > 0 {
+			continue
+		}
+		defCh := defaultChannelByPkg[pkgName]
+		if defCh == "" {
+			continue
+		}
+		// Verify the default channel actually exists in the catalog.
+		if channelNamesByPkg[pkgName] == nil || !channelNamesByPkg[pkgName][defCh] {
+			continue
+		}
+		f.allowAllChannels = false
+		f.allowedChannels[defCh] = true
+		explicitFilters[pkgName] = f
+		fmt.Printf("Package %s: no channels specified, restricting to default channel %q\n", pkgName, defCh)
+	}
+
 	// Auto-discover companion dependency packages (Red Hat convention).
 	for _, inc := range includes {
 		candidates := []string{inc.Name + "-dependencies", inc.Name + "-dependency", inc.Name + "-deps"}
@@ -522,7 +550,31 @@ func (r *CatalogResolver) FilterFBC(ctx context.Context, cfg *declcfg.Declarativ
 		}
 	}
 
-	// Resolve transitive dependencies via BFS.
+	// Build the set of bundles reachable from allowed channels for explicit
+	// packages that have channel restrictions. Only these bundles are walked
+	// during dependency BFS so that bundles from excluded channels do not
+	// pull in unwanted dependencies.
+	explicitBundleSet := make(map[string]bool)
+	// Track which explicit packages actually have channel restrictions.
+	hasChannelRestriction := make(map[string]bool)
+	for pkgName, f := range explicitFilters {
+		if f.allowAllChannels {
+			continue // no channel restriction, all bundles allowed for BFS
+		}
+		hasChannelRestriction[pkgName] = true
+		for _, ch := range channelsByPkg[pkgName] {
+			if !f.allowedChannels[ch.Name] {
+				continue
+			}
+			for _, entry := range ch.Entries {
+				explicitBundleSet[entry.Name] = true
+			}
+		}
+	}
+
+	// Resolve transitive dependencies via BFS. For explicitly requested
+	// packages with channel restrictions walk only bundles reachable from
+	// their allowed channels; for all others walk all bundles.
 	queue := make([]string, 0, len(pkgSet))
 	for p := range pkgSet {
 		queue = append(queue, p)
@@ -532,6 +584,11 @@ func (r *CatalogResolver) FilterFBC(ctx context.Context, cfg *declcfg.Declarativ
 		queue = queue[1:]
 
 		for _, b := range bundlesByPkg[current] {
+			// For explicit packages with channel restrictions, skip
+			// bundles not reachable from allowed channels.
+			if hasChannelRestriction[current] && !explicitBundleSet[b.Name] {
+				continue
+			}
 			for _, prop := range b.Properties {
 				switch prop.Type {
 				case olmPackageRequired:
@@ -733,6 +790,15 @@ func (r *CatalogResolver) ResolveCatalogWithBundles(ctx context.Context, catalog
 		return nil, fmt.Errorf("failed to filter FBC: %w", err)
 	}
 	return r.ExtractImagesWithBundles(filtered), nil
+}
+
+// LoadFBC fetches the catalog image layers and parses the File-Based Catalog.
+// Returns the full, unfiltered DeclarativeConfig. Use FilterFBC to narrow it.
+func (r *CatalogResolver) LoadFBC(ctx context.Context, catalogImage string) (*declcfg.DeclarativeConfig, error) {
+	if r.client == nil {
+		return nil, fmt.Errorf("registry client is required for LoadFBC")
+	}
+	return r.loadFBCFromImage(ctx, catalogImage)
 }
 
 // BuildFilteredCatalogImage pulls sourceCatalogImage, filters its FBC to the

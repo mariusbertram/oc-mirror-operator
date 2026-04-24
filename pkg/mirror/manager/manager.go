@@ -199,7 +199,7 @@ func (m *MirrorManager) Run(ctx context.Context) error {
 	go m.runStatusAPI(ctx)
 
 	// Start Resource Server (public, port 8081)
-	go resources.NewServer(m.Client, m.Namespace, m.TargetName).Run(ctx)
+	go resources.NewServer(m.Client, m.Namespace, m.TargetName, m.authConfigPath).Run(ctx)
 
 	// Run reconcile once immediately on startup, then every 30s.
 	if err := m.reconcile(ctx); err != nil {

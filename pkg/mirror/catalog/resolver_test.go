@@ -561,3 +561,261 @@ func TestExtractImages(t *testing.T) {
 		t.Errorf("expected 5 unique images, got %d: %v", len(images), images)
 	}
 }
+
+// TestFilterFBC_DefaultChannelOnly verifies that when no channels are specified,
+// only the package's default channel is included.
+func TestFilterFBC_DefaultChannelOnly(t *testing.T) {
+	cfg := &declcfg.DeclarativeConfig{
+		Packages: []declcfg.Package{
+			{Name: "my-op", DefaultChannel: "stable"},
+		},
+		Channels: []declcfg.Channel{
+			{
+				Name:    "stable",
+				Package: "my-op",
+				Entries: []declcfg.ChannelEntry{
+					{Name: "my-op.v1.0.0"},
+					{Name: "my-op.v2.0.0"},
+				},
+			},
+			{
+				Name:    "preview",
+				Package: "my-op",
+				Entries: []declcfg.ChannelEntry{
+					{Name: "my-op.v3.0.0"},
+				},
+			},
+		},
+		Bundles: []declcfg.Bundle{
+			{
+				Name: "my-op.v1.0.0", Package: "my-op",
+				Image: "reg/my-op@sha256:100",
+				Properties: []property.Property{
+					{Type: olmPackage, Value: json.RawMessage(`{"packageName":"my-op","version":"1.0.0"}`)},
+				},
+			},
+			{
+				Name: "my-op.v2.0.0", Package: "my-op",
+				Image: "reg/my-op@sha256:200",
+				Properties: []property.Property{
+					{Type: olmPackage, Value: json.RawMessage(`{"packageName":"my-op","version":"2.0.0"}`)},
+				},
+			},
+			{
+				Name: "my-op.v3.0.0", Package: "my-op",
+				Image: "reg/my-op@sha256:300",
+				Properties: []property.Property{
+					{Type: olmPackage, Value: json.RawMessage(`{"packageName":"my-op","version":"3.0.0"}`)},
+				},
+			},
+		},
+	}
+
+	resolver := &CatalogResolver{}
+	// No channels specified — should default to "stable" only.
+	filtered, err := resolver.FilterFBC(context.Background(), cfg, []mirrorv1alpha1.IncludePackage{
+		{Name: "my-op"},
+	})
+	if err != nil {
+		t.Fatalf("FilterFBC: %v", err)
+	}
+
+	if len(filtered.Channels) != 1 {
+		t.Errorf("expected 1 channel (default=stable), got %d", len(filtered.Channels))
+	}
+	if len(filtered.Channels) > 0 && filtered.Channels[0].Name != "stable" {
+		t.Errorf("expected channel 'stable', got %q", filtered.Channels[0].Name)
+	}
+
+	bundleNames := map[string]bool{}
+	for _, b := range filtered.Bundles {
+		bundleNames[b.Name] = true
+	}
+	if len(filtered.Bundles) != 2 {
+		t.Errorf("expected 2 bundles (v1, v2 from stable), got %d: %v", len(filtered.Bundles), bundleNames)
+	}
+	if bundleNames["my-op.v3.0.0"] {
+		t.Error("preview channel bundle v3.0.0 should not be included")
+	}
+}
+
+// TestFilterFBC_DefaultChannelNoDefaultSet verifies that when no channels are
+// specified and the package has no default channel, all channels are included
+// as a safe fallback.
+func TestFilterFBC_DefaultChannelNoDefaultSet(t *testing.T) {
+	cfg := &declcfg.DeclarativeConfig{
+		Packages: []declcfg.Package{
+			{Name: "my-op"}, // no DefaultChannel
+		},
+		Channels: []declcfg.Channel{
+			{
+				Name:    "stable",
+				Package: "my-op",
+				Entries: []declcfg.ChannelEntry{{Name: "my-op.v1.0.0"}},
+			},
+			{
+				Name:    "preview",
+				Package: "my-op",
+				Entries: []declcfg.ChannelEntry{{Name: "my-op.v2.0.0"}},
+			},
+		},
+		Bundles: []declcfg.Bundle{
+			{
+				Name: "my-op.v1.0.0", Package: "my-op",
+				Image:      "reg/my-op@sha256:100",
+				Properties: []property.Property{{Type: olmPackage, Value: json.RawMessage(`{"packageName":"my-op","version":"1.0.0"}`)}},
+			},
+			{
+				Name: "my-op.v2.0.0", Package: "my-op",
+				Image:      "reg/my-op@sha256:200",
+				Properties: []property.Property{{Type: olmPackage, Value: json.RawMessage(`{"packageName":"my-op","version":"2.0.0"}`)}},
+			},
+		},
+	}
+
+	resolver := &CatalogResolver{}
+	filtered, err := resolver.FilterFBC(context.Background(), cfg, []mirrorv1alpha1.IncludePackage{
+		{Name: "my-op"},
+	})
+	if err != nil {
+		t.Fatalf("FilterFBC: %v", err)
+	}
+
+	// No default channel → fallback to all channels.
+	if len(filtered.Channels) != 2 {
+		t.Errorf("expected 2 channels (no default → all), got %d", len(filtered.Channels))
+	}
+	if len(filtered.Bundles) != 2 {
+		t.Errorf("expected 2 bundles (all channels), got %d", len(filtered.Bundles))
+	}
+}
+
+// TestFilterFBC_DefaultChannelDepNotPulledFromExcluded verifies that
+// dependencies reachable only from an excluded (non-default) channel
+// are NOT pulled in.
+func TestFilterFBC_DefaultChannelDepNotPulledFromExcluded(t *testing.T) {
+	cfg := &declcfg.DeclarativeConfig{
+		Packages: []declcfg.Package{
+			{Name: "my-op", DefaultChannel: "stable"},
+			{Name: "dep-op"},
+		},
+		Channels: []declcfg.Channel{
+			{
+				Name:    "stable",
+				Package: "my-op",
+				Entries: []declcfg.ChannelEntry{{Name: "my-op.v1.0.0"}},
+			},
+			{
+				Name:    "preview",
+				Package: "my-op",
+				Entries: []declcfg.ChannelEntry{{Name: "my-op.v2.0.0"}},
+			},
+			{
+				Name:    "stable",
+				Package: "dep-op",
+				Entries: []declcfg.ChannelEntry{{Name: "dep-op.v1.0.0"}},
+			},
+		},
+		Bundles: []declcfg.Bundle{
+			{
+				Name: "my-op.v1.0.0", Package: "my-op",
+				Image: "reg/my-op@sha256:100",
+				Properties: []property.Property{
+					{Type: olmPackage, Value: json.RawMessage(`{"packageName":"my-op","version":"1.0.0"}`)},
+				},
+			},
+			{
+				Name: "my-op.v2.0.0", Package: "my-op",
+				Image: "reg/my-op@sha256:200",
+				Properties: []property.Property{
+					{Type: olmPackage, Value: json.RawMessage(`{"packageName":"my-op","version":"2.0.0"}`)},
+					// Only the preview bundle requires dep-op.
+					{Type: olmPackageRequired, Value: json.RawMessage(`{"packageName":"dep-op"}`)},
+				},
+			},
+			{
+				Name: "dep-op.v1.0.0", Package: "dep-op",
+				Image: "reg/dep-op@sha256:d00",
+				Properties: []property.Property{
+					{Type: olmPackage, Value: json.RawMessage(`{"packageName":"dep-op","version":"1.0.0"}`)},
+				},
+			},
+		},
+	}
+
+	resolver := &CatalogResolver{}
+	filtered, err := resolver.FilterFBC(context.Background(), cfg, []mirrorv1alpha1.IncludePackage{
+		{Name: "my-op"},
+	})
+	if err != nil {
+		t.Fatalf("FilterFBC: %v", err)
+	}
+
+	// Only my-op should be included; dep-op is only required by the
+	// preview channel bundle which is excluded by the default-channel filter.
+	pkgNames := map[string]bool{}
+	for _, p := range filtered.Packages {
+		pkgNames[p.Name] = true
+	}
+	if pkgNames["dep-op"] {
+		t.Error("dep-op should NOT be included — it is only required by the excluded preview channel")
+	}
+	if !pkgNames["my-op"] {
+		t.Error("my-op should be included")
+	}
+	if len(filtered.Packages) != 1 {
+		t.Errorf("expected 1 package (my-op only), got %d: %v", len(filtered.Packages), pkgNames)
+	}
+}
+
+// TestFilterFBC_VersionFilterAllowsAllChannels verifies that when version
+// filters are specified without explicit channels, all channels are searched.
+func TestFilterFBC_VersionFilterAllowsAllChannels(t *testing.T) {
+	cfg := &declcfg.DeclarativeConfig{
+		Packages: []declcfg.Package{
+			{Name: "my-op", DefaultChannel: "stable"},
+		},
+		Channels: []declcfg.Channel{
+			{
+				Name:    "stable",
+				Package: "my-op",
+				Entries: []declcfg.ChannelEntry{{Name: "my-op.v1.0.0"}},
+			},
+			{
+				Name:    "preview",
+				Package: "my-op",
+				Entries: []declcfg.ChannelEntry{{Name: "my-op.v2.0.0"}},
+			},
+		},
+		Bundles: []declcfg.Bundle{
+			{
+				Name: "my-op.v1.0.0", Package: "my-op",
+				Image:      "reg/my-op@sha256:100",
+				Properties: []property.Property{{Type: olmPackage, Value: json.RawMessage(`{"packageName":"my-op","version":"1.0.0"}`)}},
+			},
+			{
+				Name: "my-op.v2.0.0", Package: "my-op",
+				Image:      "reg/my-op@sha256:200",
+				Properties: []property.Property{{Type: olmPackage, Value: json.RawMessage(`{"packageName":"my-op","version":"2.0.0"}`)}},
+			},
+		},
+	}
+
+	resolver := &CatalogResolver{}
+	// MinVersion filter with no channels → searches all channels.
+	filtered, err := resolver.FilterFBC(context.Background(), cfg, []mirrorv1alpha1.IncludePackage{
+		{Name: "my-op", IncludeBundle: mirrorv1alpha1.IncludeBundle{MinVersion: "1.5.0"}},
+	})
+	if err != nil {
+		t.Fatalf("FilterFBC: %v", err)
+	}
+
+	// Both channels should be present since version filter keeps allowAllChannels.
+	if len(filtered.Channels) != 2 {
+		t.Errorf("expected 2 channels (version filter keeps all), got %d", len(filtered.Channels))
+	}
+	// Only v2.0.0 matches >= 1.5.0.
+	if len(filtered.Bundles) != 1 {
+		t.Errorf("expected 1 bundle (v2.0.0 >= 1.5.0), got %d", len(filtered.Bundles))
+	}
+}
