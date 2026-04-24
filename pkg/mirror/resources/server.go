@@ -514,8 +514,8 @@ type packageSummary struct {
 
 // channelSummary describes a single channel within an operator package.
 type channelSummary struct {
-	Name    string         `json:"name"`
-	Entries []bundleEntry  `json:"entries"`
+	Name    string        `json:"name"`
+	Entries []bundleEntry `json:"entries"`
 }
 
 // bundleEntry describes a single bundle version within a channel.
