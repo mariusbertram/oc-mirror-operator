@@ -127,6 +127,12 @@ type IncludePackage struct {
 	Channels []IncludeChannel `json:"channels,omitempty"`
 	// +optional
 	DefaultChannel string `json:"defaultChannel,omitempty"`
+	// PreviousVersions is the number of older versions (before the channel
+	// head) to include per channel when no explicit channels or version
+	// ranges are specified (heads-only mode). Defaults to 0 (head only).
+	// +optional
+	// +kubebuilder:default=0
+	PreviousVersions int `json:"previousVersions,omitempty"`
 
 	// +optional
 	IncludeBundle `json:",inline"`

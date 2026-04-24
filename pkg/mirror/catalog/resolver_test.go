@@ -562,9 +562,9 @@ func TestExtractImages(t *testing.T) {
 	}
 }
 
-// TestFilterFBC_DefaultChannelOnly verifies that when no channels are specified,
-// only the package's default channel is included.
-func TestFilterFBC_DefaultChannelOnly(t *testing.T) {
+// TestFilterFBC_HeadsOnly verifies that when no channels are specified,
+// only the channel head (latest version) of every channel is included.
+func TestFilterFBC_HeadsOnly(t *testing.T) {
 	cfg := &declcfg.DeclarativeConfig{
 		Packages: []declcfg.Package{
 			{Name: "my-op", DefaultChannel: "stable"},
@@ -575,7 +575,7 @@ func TestFilterFBC_DefaultChannelOnly(t *testing.T) {
 				Package: "my-op",
 				Entries: []declcfg.ChannelEntry{
 					{Name: "my-op.v1.0.0"},
-					{Name: "my-op.v2.0.0"},
+					{Name: "my-op.v2.0.0", Replaces: "my-op.v1.0.0"},
 				},
 			},
 			{
@@ -612,7 +612,7 @@ func TestFilterFBC_DefaultChannelOnly(t *testing.T) {
 	}
 
 	resolver := &CatalogResolver{}
-	// No channels specified — should default to "stable" only.
+	// No channels specified — heads-only: v2.0.0 (stable head) + v3.0.0 (preview head).
 	filtered, err := resolver.FilterFBC(context.Background(), cfg, []mirrorv1alpha1.IncludePackage{
 		{Name: "my-op"},
 	})
@@ -620,22 +620,33 @@ func TestFilterFBC_DefaultChannelOnly(t *testing.T) {
 		t.Fatalf("FilterFBC: %v", err)
 	}
 
-	if len(filtered.Channels) != 1 {
-		t.Errorf("expected 1 channel (default=stable), got %d", len(filtered.Channels))
+	// Both channels should be included.
+	if len(filtered.Channels) != 2 {
+		t.Errorf("expected 2 channels (heads-only includes all), got %d", len(filtered.Channels))
 	}
-	if len(filtered.Channels) > 0 && filtered.Channels[0].Name != "stable" {
-		t.Errorf("expected channel 'stable', got %q", filtered.Channels[0].Name)
+	// Channel entries should be trimmed to heads only.
+	for _, ch := range filtered.Channels {
+		if len(ch.Entries) != 1 {
+			t.Errorf("channel %s: expected 1 entry (head only), got %d", ch.Name, len(ch.Entries))
+		}
 	}
 
 	bundleNames := map[string]bool{}
 	for _, b := range filtered.Bundles {
 		bundleNames[b.Name] = true
 	}
+	// Only heads: v2.0.0 + v3.0.0.
 	if len(filtered.Bundles) != 2 {
-		t.Errorf("expected 2 bundles (v1, v2 from stable), got %d: %v", len(filtered.Bundles), bundleNames)
+		t.Errorf("expected 2 bundles (heads only), got %d: %v", len(filtered.Bundles), bundleNames)
 	}
-	if bundleNames["my-op.v3.0.0"] {
-		t.Error("preview channel bundle v3.0.0 should not be included")
+	if bundleNames["my-op.v1.0.0"] {
+		t.Error("v1.0.0 should not be included — it is superseded by v2.0.0")
+	}
+	if !bundleNames["my-op.v2.0.0"] {
+		t.Error("v2.0.0 (stable head) should be included")
+	}
+	if !bundleNames["my-op.v3.0.0"] {
+		t.Error("v3.0.0 (preview head) should be included")
 	}
 }
 
@@ -690,10 +701,9 @@ func TestFilterFBC_DefaultChannelNoDefaultSet(t *testing.T) {
 	}
 }
 
-// TestFilterFBC_DefaultChannelDepNotPulledFromExcluded verifies that
-// dependencies reachable only from an excluded (non-default) channel
-// are NOT pulled in.
-func TestFilterFBC_DefaultChannelDepNotPulledFromExcluded(t *testing.T) {
+// TestFilterFBC_HeadsOnlyDepsFromAllChannels verifies that in heads-only mode,
+// dependencies of ALL channel heads are resolved (not just the default channel).
+func TestFilterFBC_HeadsOnlyDepsFromAllChannels(t *testing.T) {
 	cfg := &declcfg.DeclarativeConfig{
 		Packages: []declcfg.Package{
 			{Name: "my-op", DefaultChannel: "stable"},
@@ -751,20 +761,20 @@ func TestFilterFBC_DefaultChannelDepNotPulledFromExcluded(t *testing.T) {
 		t.Fatalf("FilterFBC: %v", err)
 	}
 
-	// Only my-op should be included; dep-op is only required by the
-	// preview channel bundle which is excluded by the default-channel filter.
+	// In heads-only mode, both channel heads are included. The preview head
+	// (my-op.v2.0.0) requires dep-op, so dep-op IS transitively included.
 	pkgNames := map[string]bool{}
 	for _, p := range filtered.Packages {
 		pkgNames[p.Name] = true
 	}
-	if pkgNames["dep-op"] {
-		t.Error("dep-op should NOT be included — it is only required by the excluded preview channel")
+	if !pkgNames["dep-op"] {
+		t.Error("dep-op SHOULD be included — the preview head requires it")
 	}
 	if !pkgNames["my-op"] {
 		t.Error("my-op should be included")
 	}
-	if len(filtered.Packages) != 1 {
-		t.Errorf("expected 1 package (my-op only), got %d: %v", len(filtered.Packages), pkgNames)
+	if len(filtered.Packages) != 2 {
+		t.Errorf("expected 2 packages (my-op + dep-op), got %d: %v", len(filtered.Packages), pkgNames)
 	}
 }
 
@@ -818,4 +828,157 @@ func TestFilterFBC_VersionFilterAllowsAllChannels(t *testing.T) {
 	if len(filtered.Bundles) != 1 {
 		t.Errorf("expected 1 bundle (v2.0.0 >= 1.5.0), got %d", len(filtered.Bundles))
 	}
+}
+
+// TestChannelHeadPlusN directly tests the channelHeadPlusN helper.
+func TestChannelHeadPlusN(t *testing.T) {
+	ch := declcfg.Channel{
+		Name:    "stable",
+		Package: "my-op",
+		Entries: []declcfg.ChannelEntry{
+			{Name: "my-op.v1.0.0"},
+			{Name: "my-op.v2.0.0", Replaces: "my-op.v1.0.0"},
+			{Name: "my-op.v3.0.0", Replaces: "my-op.v2.0.0"},
+			{Name: "my-op.v4.0.0", Replaces: "my-op.v3.0.0"},
+		},
+	}
+
+	tests := []struct {
+		name     string
+		previous int
+		want     []string
+	}{
+		{"head only", 0, []string{"my-op.v4.0.0"}},
+		{"head+1", 1, []string{"my-op.v3.0.0", "my-op.v4.0.0"}},
+		{"head+2", 2, []string{"my-op.v2.0.0", "my-op.v3.0.0", "my-op.v4.0.0"}},
+		{"head+10 (more than exist)", 10, []string{"my-op.v1.0.0", "my-op.v2.0.0", "my-op.v3.0.0", "my-op.v4.0.0"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := channelHeadPlusN(ch, tt.previous)
+			if len(got) != len(tt.want) {
+				t.Fatalf("channelHeadPlusN(prev=%d) = %v, want %v", tt.previous, got, tt.want)
+			}
+			for i, g := range got {
+				if g != tt.want[i] {
+					t.Errorf("channelHeadPlusN(prev=%d)[%d] = %q, want %q", tt.previous, i, g, tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestChannelHeadPlusN_Skips verifies that Skips are considered when finding heads.
+func TestChannelHeadPlusN_Skips(t *testing.T) {
+	ch := declcfg.Channel{
+		Name:    "stable",
+		Package: "my-op",
+		Entries: []declcfg.ChannelEntry{
+			{Name: "my-op.v1.0.0"},
+			{Name: "my-op.v2.0.0", Replaces: "my-op.v1.0.0"},
+			// v3 skips v2 and replaces v1 → v2 is superseded by Skips.
+			{Name: "my-op.v3.0.0", Replaces: "my-op.v1.0.0", Skips: []string{"my-op.v2.0.0"}},
+		},
+	}
+
+	got := channelHeadPlusN(ch, 0)
+	if len(got) != 1 || got[0] != "my-op.v3.0.0" {
+		t.Errorf("expected [my-op.v3.0.0] as sole head, got %v", got)
+	}
+
+	// head+1: walk back via Replaces (v3 → v1), so we get v1 + v3.
+	got = channelHeadPlusN(ch, 1)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 entries for head+1, got %v", got)
+	}
+	if got[0] != "my-op.v1.0.0" || got[1] != "my-op.v3.0.0" {
+		t.Errorf("expected [my-op.v1.0.0, my-op.v3.0.0], got %v", got)
+	}
+}
+
+// TestFilterFBC_HeadPlusN verifies the PreviousVersions field.
+func TestFilterFBC_HeadPlusN(t *testing.T) {
+	cfg := &declcfg.DeclarativeConfig{
+		Packages: []declcfg.Package{
+			{Name: "my-op", DefaultChannel: "stable"},
+		},
+		Channels: []declcfg.Channel{
+			{
+				Name:    "stable",
+				Package: "my-op",
+				Entries: []declcfg.ChannelEntry{
+					{Name: "my-op.v1.0.0"},
+					{Name: "my-op.v2.0.0", Replaces: "my-op.v1.0.0"},
+					{Name: "my-op.v3.0.0", Replaces: "my-op.v2.0.0"},
+				},
+			},
+		},
+		Bundles: []declcfg.Bundle{
+			{
+				Name: "my-op.v1.0.0", Package: "my-op",
+				Image:      "reg/my-op@sha256:100",
+				Properties: []property.Property{{Type: olmPackage, Value: json.RawMessage(`{"packageName":"my-op","version":"1.0.0"}`)}},
+			},
+			{
+				Name: "my-op.v2.0.0", Package: "my-op",
+				Image:      "reg/my-op@sha256:200",
+				Properties: []property.Property{{Type: olmPackage, Value: json.RawMessage(`{"packageName":"my-op","version":"2.0.0"}`)}},
+			},
+			{
+				Name: "my-op.v3.0.0", Package: "my-op",
+				Image:      "reg/my-op@sha256:300",
+				Properties: []property.Property{{Type: olmPackage, Value: json.RawMessage(`{"packageName":"my-op","version":"3.0.0"}`)}},
+			},
+		},
+	}
+
+	resolver := &CatalogResolver{}
+
+	// head+0: only v3.0.0
+	filtered, err := resolver.FilterFBC(context.Background(), cfg, []mirrorv1alpha1.IncludePackage{
+		{Name: "my-op"},
+	})
+	if err != nil {
+		t.Fatalf("FilterFBC head+0: %v", err)
+	}
+	if len(filtered.Bundles) != 1 {
+		names := bundleNameSet(filtered.Bundles)
+		t.Errorf("head+0: expected 1 bundle (v3), got %d: %v", len(filtered.Bundles), names)
+	}
+
+	// head+1: v2.0.0 + v3.0.0
+	filtered, err = resolver.FilterFBC(context.Background(), cfg, []mirrorv1alpha1.IncludePackage{
+		{Name: "my-op", PreviousVersions: 1},
+	})
+	if err != nil {
+		t.Fatalf("FilterFBC head+1: %v", err)
+	}
+	names := bundleNameSet(filtered.Bundles)
+	if len(filtered.Bundles) != 2 {
+		t.Errorf("head+1: expected 2 bundles (v2+v3), got %d: %v", len(filtered.Bundles), names)
+	}
+	if !names["my-op.v2.0.0"] || !names["my-op.v3.0.0"] {
+		t.Errorf("head+1: expected v2+v3, got %v", names)
+	}
+
+	// head+5: all 3 (more than chain length)
+	filtered, err = resolver.FilterFBC(context.Background(), cfg, []mirrorv1alpha1.IncludePackage{
+		{Name: "my-op", PreviousVersions: 5},
+	})
+	if err != nil {
+		t.Fatalf("FilterFBC head+5: %v", err)
+	}
+	if len(filtered.Bundles) != 3 {
+		names = bundleNameSet(filtered.Bundles)
+		t.Errorf("head+5: expected 3 bundles (all), got %d: %v", len(filtered.Bundles), names)
+	}
+}
+
+func bundleNameSet(bundles []declcfg.Bundle) map[string]bool {
+	m := make(map[string]bool, len(bundles))
+	for _, b := range bundles {
+		m[b.Name] = true
+	}
+	return m
 }

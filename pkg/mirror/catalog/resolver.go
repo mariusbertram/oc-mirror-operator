@@ -449,6 +449,66 @@ func bundleMatchesVersionFilter(b declcfg.Bundle, vf channelVersionFilter) bool 
 	return true
 }
 
+// channelHeadPlusN returns the head bundle(s) of a channel plus up to
+// `previous` older entries walking backwards through the Replaces chain.
+// With previous=0 only the head(s) are returned.
+func channelHeadPlusN(ch declcfg.Channel, previous int) []string {
+	if len(ch.Entries) == 0 {
+		return nil
+	}
+	superseded := make(map[string]bool, len(ch.Entries))
+	for _, e := range ch.Entries {
+		if e.Replaces != "" {
+			superseded[e.Replaces] = true
+		}
+		for _, s := range e.Skips {
+			superseded[s] = true
+		}
+	}
+	var heads []string
+	for _, e := range ch.Entries {
+		if !superseded[e.Name] {
+			heads = append(heads, e.Name)
+		}
+	}
+	if len(heads) == 0 {
+		// Safety fallback: return last entry.
+		heads = []string{ch.Entries[len(ch.Entries)-1].Name}
+	}
+
+	if previous <= 0 {
+		return heads
+	}
+
+	// Walk backwards from each head through the Replaces chain.
+	entryByName := make(map[string]declcfg.ChannelEntry, len(ch.Entries))
+	for _, e := range ch.Entries {
+		entryByName[e.Name] = e
+	}
+	include := make(map[string]bool, len(heads)*(previous+1))
+	for _, head := range heads {
+		include[head] = true
+		current := head
+		for i := 0; i < previous; i++ {
+			entry, ok := entryByName[current]
+			if !ok || entry.Replaces == "" {
+				break
+			}
+			include[entry.Replaces] = true
+			current = entry.Replaces
+		}
+	}
+
+	// Return in original entry order.
+	var result []string
+	for _, e := range ch.Entries {
+		if include[e.Name] {
+			result = append(result, e.Name)
+		}
+	}
+	return result
+}
+
 // FilterFBC implements the in-memory filtering of a declarative configuration.
 // It includes transitive dependencies by resolving both olm.package.required
 // and olm.gvk.required properties from bundles of selected packages.
@@ -456,6 +516,10 @@ func bundleMatchesVersionFilter(b declcfg.Bundle, vf channelVersionFilter) bool 
 // When packages specify Channels or version ranges (MinVersion/MaxVersion),
 // only the matching channels and bundles are retained. Transitively discovered
 // dependency packages are always included in full (no filtering applied).
+//
+// oc-mirror v2 compatible behaviour: when no channels or version filters are
+// specified for a package, only the channel head (latest version) of every
+// channel is included ("heads-only" mode).
 func (r *CatalogResolver) FilterFBC(ctx context.Context, cfg *declcfg.DeclarativeConfig, includes []mirrorv1alpha1.IncludePackage) (*declcfg.DeclarativeConfig, error) { //nolint:gocyclo
 	if len(includes) == 0 {
 		return cfg, nil
@@ -508,30 +572,42 @@ func (r *CatalogResolver) FilterFBC(ctx context.Context, cfg *declcfg.Declarativ
 	// Build per-package filter structs from user config.
 	explicitFilters := make(map[string]pkgIncludeFilter, len(includes))
 	pkgSet := make(map[string]bool, len(includes))
+	prevVersionsByPkg := make(map[string]int, len(includes))
 	for _, inc := range includes {
 		pkgSet[inc.Name] = true
 		explicitFilters[inc.Name] = buildPkgIncludeFilter(inc)
+		prevVersionsByPkg[inc.Name] = inc.PreviousVersions
 	}
 
-	// When no channels are explicitly specified and no version filters exist,
-	// restrict to the package's default channel from the catalog metadata.
-	// This prevents mirroring all channels when the user only lists a package name.
+	// Identify "heads-only" packages: no channels, no version filters.
+	// These include the channel head plus PreviousVersions older entries
+	// of every channel (oc-mirror v2 behaviour).
+	headsOnlyPkgs := make(map[string]bool)
+	channelHeadsByPkg := make(map[string]map[string][]string) // pkg → channel → selected bundle names
 	for pkgName, f := range explicitFilters {
 		if !f.allowAllChannels || f.pkgHasMinVer || f.pkgHasMaxVer || len(f.channelFilters) > 0 {
 			continue
 		}
-		defCh := defaultChannelByPkg[pkgName]
-		if defCh == "" {
+		// If all channels have empty entries, we cannot determine heads —
+		// skip heads-only for this package and include everything.
+		allEmpty := true
+		for _, ch := range channelsByPkg[pkgName] {
+			if len(ch.Entries) > 0 {
+				allEmpty = false
+				break
+			}
+		}
+		if allEmpty {
 			continue
 		}
-		// Verify the default channel actually exists in the catalog.
-		if channelNamesByPkg[pkgName] == nil || !channelNamesByPkg[pkgName][defCh] {
-			continue
+		headsOnlyPkgs[pkgName] = true
+		channelHeadsByPkg[pkgName] = make(map[string][]string)
+		prev := prevVersionsByPkg[pkgName]
+		for _, ch := range channelsByPkg[pkgName] {
+			selected := channelHeadPlusN(ch, prev)
+			channelHeadsByPkg[pkgName][ch.Name] = selected
+			fmt.Printf("Package %s channel %s: head+%d → %v\n", pkgName, ch.Name, prev, selected)
 		}
-		f.allowAllChannels = false
-		f.allowedChannels[defCh] = true
-		explicitFilters[pkgName] = f
-		fmt.Printf("Package %s: no channels specified, restricting to default channel %q\n", pkgName, defCh)
 	}
 
 	// Auto-discover companion dependency packages (Red Hat convention).
@@ -558,6 +634,16 @@ func (r *CatalogResolver) FilterFBC(ctx context.Context, cfg *declcfg.Declarativ
 	// Track which explicit packages actually have channel restrictions.
 	hasChannelRestriction := make(map[string]bool)
 	for pkgName, f := range explicitFilters {
+		// Heads-only packages: restrict BFS to head bundles only.
+		if headsOnlyPkgs[pkgName] {
+			hasChannelRestriction[pkgName] = true
+			for _, heads := range channelHeadsByPkg[pkgName] {
+				for _, h := range heads {
+					explicitBundleSet[h] = true
+				}
+			}
+			continue
+		}
 		if f.allowAllChannels {
 			continue // no channel restriction, all bundles allowed for BFS
 		}
@@ -629,10 +715,20 @@ func (r *CatalogResolver) FilterFBC(ctx context.Context, cfg *declcfg.Declarativ
 			continue
 		}
 
-		// Short-circuit: no filtering at all for this package.
-		noFiltering := f.allowAllChannels && !f.pkgHasMinVer && !f.pkgHasMaxVer && len(f.channelFilters) == 0
-		if noFiltering {
-			continue // will be handled in the final loop by checking pkgSet only
+		// Heads-only: include all channels but only head bundles.
+		if headsOnlyPkgs[pkgName] {
+			headSet := make(map[string]bool)
+			for chName, heads := range channelHeadsByPkg[pkgName] {
+				if allowedChannels[pkgName] == nil {
+					allowedChannels[pkgName] = make(map[string]bool)
+				}
+				allowedChannels[pkgName][chName] = true
+				for _, h := range heads {
+					headSet[h] = true
+					allowedBundles[h] = true
+				}
+			}
+			continue
 		}
 
 		for _, ch := range channelsByPkg[pkgName] {
@@ -678,10 +774,26 @@ func (r *CatalogResolver) FilterFBC(ctx context.Context, cfg *declcfg.Declarativ
 			filtered.Channels = append(filtered.Channels, ch)
 			continue
 		}
-		// Explicit packages: if no channel filtering → include all.
-		f := explicitFilters[ch.Package]
-		if f.allowAllChannels && !f.pkgHasMinVer && !f.pkgHasMaxVer && len(f.channelFilters) == 0 {
-			filtered.Channels = append(filtered.Channels, ch)
+		// Heads-only packages: include the channel but trim entries to heads.
+		if headsOnlyPkgs[ch.Package] {
+			headNames := channelHeadsByPkg[ch.Package][ch.Name]
+			if len(headNames) == 0 {
+				continue
+			}
+			headSet := make(map[string]bool, len(headNames))
+			for _, h := range headNames {
+				headSet[h] = true
+			}
+			trimmed := ch
+			trimmed.Entries = nil
+			for _, e := range ch.Entries {
+				if headSet[e.Name] {
+					trimmed.Entries = append(trimmed.Entries, declcfg.ChannelEntry{Name: e.Name})
+				}
+			}
+			if len(trimmed.Entries) > 0 {
+				filtered.Channels = append(filtered.Channels, trimmed)
+			}
 			continue
 		}
 		// Check allowed channels map.
@@ -696,12 +808,6 @@ func (r *CatalogResolver) FilterFBC(ctx context.Context, cfg *declcfg.Declarativ
 		}
 		// Transitively discovered packages: include all bundles.
 		if _, isExplicit := explicitFilters[b.Package]; !isExplicit {
-			filtered.Bundles = append(filtered.Bundles, b)
-			continue
-		}
-		// Explicit packages: if no filtering → include all bundles.
-		f := explicitFilters[b.Package]
-		if f.allowAllChannels && !f.pkgHasMinVer && !f.pkgHasMaxVer && len(f.channelFilters) == 0 {
 			filtered.Bundles = append(filtered.Bundles, b)
 			continue
 		}

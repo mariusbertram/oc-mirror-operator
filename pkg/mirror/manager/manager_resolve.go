@@ -30,10 +30,10 @@ import (
 )
 
 // operatorCacheVersion is bumped whenever the operator resolution or filtering
-// logic changes semantically (e.g. default-channel narrowing).  Old cached
+// logic changes semantically (e.g. heads-only channel filtering).  Old cached
 // annotation values that were written with a different (or no) version prefix
 // will not match the fresh value, forcing a re-resolution.
-const operatorCacheVersion = "v2"
+const operatorCacheVersion = "v3"
 
 // operatorCacheValue builds the cache token written to the ImageSet annotation.
 func operatorCacheValue(digest string) string {
