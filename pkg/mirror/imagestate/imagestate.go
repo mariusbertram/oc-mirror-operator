@@ -105,6 +105,25 @@ func Load(ctx context.Context, c client.Client, namespace, imageSetName string) 
 	return LoadByConfigMapName(ctx, c, namespace, ConfigMapName(imageSetName))
 }
 
+// LoadWithExistence reads the ImageState and reports whether the ConfigMap
+// actually exists in the cluster. This allows callers to distinguish "ConfigMap
+// was deleted" from "ConfigMap exists but is empty".
+func LoadWithExistence(ctx context.Context, c client.Client, namespace, imageSetName string) (state ImageState, exists bool, err error) {
+	cm := &corev1.ConfigMap{}
+	getErr := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: ConfigMapName(imageSetName)}, cm)
+	if getErr != nil {
+		if errors.IsNotFound(getErr) {
+			return make(ImageState), false, nil
+		}
+		return nil, false, fmt.Errorf("get image state configmap: %w", getErr)
+	}
+	s, decodeErr := decode(cm)
+	if decodeErr != nil {
+		return nil, true, decodeErr
+	}
+	return s, true, nil
+}
+
 // LoadByConfigMapName reads the ImageState from a ConfigMap with the given name.
 // Returns an empty ImageState (not nil) if the ConfigMap does not exist.
 func LoadByConfigMapName(ctx context.Context, c client.Client, namespace, cmName string) (ImageState, error) {

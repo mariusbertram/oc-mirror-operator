@@ -300,7 +300,7 @@ func (m *MirrorManager) handleStatusUpdate(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
 	var req WorkerStatusRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -520,13 +520,22 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 		// restarts.
 		isState, hasCached := m.imageStates[is.Name]
 		if !hasCached || len(isState) == 0 {
-			var loadErr error
-			isState, loadErr = imagestate.Load(ctx, m.Client, m.Namespace, is.Name)
+			loaded, cmExists, loadErr := imagestate.LoadWithExistence(ctx, m.Client, m.Namespace, is.Name)
 			if loadErr != nil {
 				fmt.Printf("Warning: failed to load image state for %s: %v\n", is.Name, loadErr)
-				isState = make(imagestate.ImageState)
+				loaded = make(imagestate.ImageState)
 			}
-			m.imageStates[is.Name] = isState
+			// Only overwrite the in-memory cache from ConfigMap when the
+			// ConfigMap actually exists. If the ConfigMap was deleted
+			// externally while we have a populated cache, preserve the
+			// cache and mark dirty so it gets recreated on the next flush.
+			if hasCached && len(isState) > 0 && !cmExists {
+				fmt.Printf("ConfigMap for %s was deleted externally; preserving in-memory state and marking dirty\n", is.Name)
+				m.dirtyStateNames[is.Name] = true
+			} else {
+				isState = loaded
+				m.imageStates[is.Name] = isState
+			}
 		}
 
 		// Manager-side resolution: enumerate upstream images for this ImageSet
@@ -553,15 +562,20 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 			} else if resolved {
 				live := m.imageStates[is.Name]
 				newState = mergeWorkerUpdates(newState, live)
+				// Resolution succeeded. Advance poll clock regardless of save outcome.
+				// The save can be retried via dirty-flag mechanism; poll timing should
+				// not depend on transient ConfigMap write errors.
+				justResolved = true
 				if err := imagestate.Save(ctx, m.Client, m.Namespace, &is, newState); err != nil {
 					fmt.Printf("Warning: failed to save resolved state for %s: %v\n", is.Name, err)
 					// Mark dirty so the next reconcile tick retries the save.
 					m.dirtyStateNames[is.Name] = true
-				} else {
-					justResolved = true
-					isState = newState
-					m.imageStates[is.Name] = isState
 				}
+				// Update in-memory cache regardless of save outcome so the
+				// dirty-flag flush path can persist the resolved state, and
+				// worker dispatching sees the latest image list.
+				isState = newState
+				m.imageStates[is.Name] = isState
 			} else {
 				// State is byte-identical (no spec change) but we successfully
 				// polled — advance the poll clock.
@@ -575,7 +589,8 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 					if err := imagestate.Save(ctx, m.Client, m.Namespace, &is, newState); err != nil {
 						fmt.Printf("Warning: failed to save initial empty state for %s: %v\n", is.Name, err)
 						m.dirtyStateNames[is.Name] = true
-						justResolved = false // Don't advance poll clock on save error
+						// Still keep justResolved=true since resolution succeeded;
+						// poll clock should advance. Save will be retried on next reconcile.
 					}
 				}
 			}
