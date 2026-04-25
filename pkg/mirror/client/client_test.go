@@ -250,4 +250,22 @@ var _ = Describe("MirrorClient", func() {
 			Expect(err.Error()).To(ContainSubstring("create temp file"))
 		})
 	})
+
+	Describe("DownloadToOCILayout error paths", func() {
+		It("returns error for invalid source reference", func() {
+			mc := NewMirrorClient(nil, "")
+			err := mc.DownloadToOCILayout(context.Background(), ":::invalid", "/tmp/test-ocidir")
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("failed to parse source reference"))
+		})
+
+		It("returns error when source is unreachable", func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			mc := NewMirrorClient(nil, "")
+			err := mc.DownloadToOCILayout(ctx, "localhost:1/nosuchimage:latest", os.TempDir())
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("failed to download"))
+		})
+	})
 })

@@ -11,6 +11,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"os"
 	"sort"
 	"strings"
 	"testing/fstest"
@@ -93,6 +94,95 @@ func classifyLayer(r io.Reader) (skippable bool, totalSize int64, firstReject st
 	}
 
 	return sawAny, totalSize, "", nil
+}
+
+// classifyResult holds the output of classifying all layers in a catalog image.
+type classifyResult struct {
+	keptLayers  []descriptor.Descriptor
+	keptDiffIDs []godigest.Digest
+	configFS    fstest.MapFS
+}
+
+// classifySourceLayers reads every layer from a local OCI layout ref, classifies
+// each as FBC-only (skippable) or containing non-FBC content (kept), and
+// simultaneously extracts FBC config files into the returned MapFS.
+func classifySourceLayers(ctx context.Context, client *mirrorclient.MirrorClient, localRef ref.Ref,
+	srcLayers []descriptor.Descriptor, srcDiffIDs []godigest.Digest, imageLabel string) *classifyResult {
+
+	keptLayers := make([]descriptor.Descriptor, 0, len(srcLayers))
+	keptDiffIDs := make([]godigest.Digest, 0, len(srcDiffIDs))
+	configFS := make(fstest.MapFS)
+	var skippedCount int
+	var skippedBytes int64
+	for i, layer := range srcLayers {
+		blobRdr, blobErr := client.BlobGet(ctx, localRef, layer)
+		if blobErr != nil {
+			slog.WarnContext(ctx, "cannot classify source layer, will copy",
+				"image", imageLabel, "digest", layer.Digest.String(), "error", blobErr)
+			keptLayers = append(keptLayers, layer)
+			keptDiffIDs = append(keptDiffIDs, srcDiffIDs[i])
+			continue
+		}
+		skip, sz, firstReject, classifyErr := classifyAndExtractFBC(blobRdr, configFS)
+		_ = blobRdr.Close()
+		if classifyErr != nil {
+			slog.WarnContext(ctx, "layer classification failed, will copy",
+				"image", imageLabel, "digest", layer.Digest.String(), "error", classifyErr)
+			keptLayers = append(keptLayers, layer)
+			keptDiffIDs = append(keptDiffIDs, srcDiffIDs[i])
+			continue
+		}
+		if skip {
+			skippedCount++
+			skippedBytes += layer.Size
+			slog.InfoContext(ctx, "skipping source FBC/cache-only layer",
+				"image", imageLabel,
+				"digest", layer.Digest.String(),
+				"compressed_bytes", layer.Size,
+				"uncompressed_bytes", sz)
+			continue
+		}
+		slog.InfoContext(ctx, "keeping source layer (non-FBC content)",
+			"image", imageLabel,
+			"digest", layer.Digest.String(),
+			"compressed_bytes", layer.Size,
+			"first_non_fbc_entry", firstReject)
+		keptLayers = append(keptLayers, layer)
+		keptDiffIDs = append(keptDiffIDs, srcDiffIDs[i])
+	}
+	if skippedCount > 0 {
+		slog.InfoContext(ctx, "filtered catalog: dropped fully-replaced source layers",
+			"skipped_layers", skippedCount,
+			"kept_layers", len(keptLayers),
+			"saved_compressed_bytes", skippedBytes)
+	}
+	return &classifyResult{keptLayers: keptLayers, keptDiffIDs: keptDiffIDs, configFS: configFS}
+}
+
+// resolveManifestList resolves a manifest list to a single linux/amd64 manifest.
+// If the manifest is already a single image, it is returned as-is along with the
+// unmodified ref. Otherwise the ref is updated to point at the platform digest.
+func resolveManifestList(ctx context.Context, client *mirrorclient.MirrorClient,
+	localRef ref.Ref, m manifest.Manifest, imageLabel string) (ref.Ref, manifest.Manifest, error) {
+
+	if !m.IsList() {
+		return localRef, m, nil
+	}
+	p, err := platform.Parse("linux/amd64")
+	if err != nil {
+		return localRef, nil, fmt.Errorf("failed to parse platform: %w", err)
+	}
+	desc, err := manifest.GetPlatformDesc(m, &p)
+	if err != nil {
+		return localRef, nil, fmt.Errorf("no linux/amd64 manifest in %s: %w", imageLabel, err)
+	}
+	localRef.Digest = desc.Digest.String()
+	localRef.Tag = ""
+	resolved, err := client.ManifestGet(ctx, localRef)
+	if err != nil {
+		return localRef, nil, fmt.Errorf("failed to get platform manifest: %w", err)
+	}
+	return localRef, resolved, nil
 }
 
 // classifyAndExtractFBC combines layer classification with FBC content
@@ -1011,129 +1101,85 @@ func (r *CatalogResolver) LoadFBC(ctx context.Context, catalogImage string) (*de
 //	operators.operatorframework.io.index.configs.v1=/configs
 //
 // so that OLM can serve it directly.  Returns the digest of the pushed manifest.
+//
+// Internally the source image is first downloaded into a local OCI directory
+// layout (via regclient's "ocidir://" scheme) so that all subsequent layer
+// reads are local disk I/O — this eliminates redundant network round-trips
+// and makes the build resilient to transient registry slowness.
 func (r *CatalogResolver) BuildFilteredCatalogImage(ctx context.Context, sourceCatalogImage, targetRef string, includes []mirrorv1alpha1.IncludePackage) (string, error) {
 	if r.client == nil {
 		return "", fmt.Errorf("registry client is required for BuildFilteredCatalogImage")
 	}
 
-	// 1. Parse references.
-	srcRef, err := ref.New(sourceCatalogImage)
-	if err != nil {
-		return "", fmt.Errorf("failed to parse source catalog reference %s: %w", sourceCatalogImage, err)
-	}
+	// 1. Parse destination reference (validated early to fail fast).
 	destRef, err := ref.New(targetRef)
 	if err != nil {
 		return "", fmt.Errorf("failed to parse target reference %s: %w", targetRef, err)
 	}
 
-	// 2. Get the source manifest (resolve manifest list → linux/amd64).
-	srcManifest, err := r.client.ManifestGet(ctx, srcRef)
+	// 2. Download the source catalog to a local OCI layout.
+	// This is a single network pass; regclient handles retries internally.
+	tmpDir, err := os.MkdirTemp("", "catalog-build-*")
 	if err != nil {
-		return "", fmt.Errorf("failed to get source manifest for %s: %w", sourceCatalogImage, err)
+		return "", fmt.Errorf("failed to create temp dir for OCI layout: %w", err)
 	}
-	if srcManifest.IsList() {
-		p, parseErr := platform.Parse("linux/amd64")
-		if parseErr != nil {
-			return "", fmt.Errorf("failed to parse platform: %w", parseErr)
-		}
-		desc, descErr := manifest.GetPlatformDesc(srcManifest, &p)
-		if descErr != nil {
-			return "", fmt.Errorf("no linux/amd64 manifest in %s: %w", sourceCatalogImage, descErr)
-		}
-		srcRef.Digest = desc.Digest.String()
-		srcRef.Tag = ""
-		srcManifest, err = r.client.ManifestGet(ctx, srcRef)
-		if err != nil {
-			return "", fmt.Errorf("failed to get platform manifest: %w", err)
-		}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	fmt.Printf("Downloading source catalog %s to local OCI layout…\n", sourceCatalogImage)
+	if err := r.client.DownloadToOCILayout(ctx, sourceCatalogImage, tmpDir); err != nil {
+		return "", fmt.Errorf("failed to download source catalog %s: %w", sourceCatalogImage, err)
 	}
 
-	// 3. Get source image config (preserves entrypoint, labels, rootfs, etc.).
-	srcConfig, err := r.client.ImageConfig(ctx, srcRef)
+	localRef, err := ref.New(fmt.Sprintf("ocidir://%s:source", tmpDir))
 	if err != nil {
-		return "", fmt.Errorf("failed to get source image config: %w", err)
+		return "", fmt.Errorf("failed to build local OCI layout ref: %w", err)
 	}
 
-	// 4. Get all source layers.
-	srcLayers, err := srcManifest.GetLayers() //nolint:staticcheck
+	// 3. Get the local manifest (resolve manifest list → linux/amd64).
+	localManifest, err := r.client.ManifestGet(ctx, localRef)
+	if err != nil {
+		return "", fmt.Errorf("failed to get local manifest for %s: %w", sourceCatalogImage, err)
+	}
+	localRef, localManifest, err = resolveManifestList(ctx, r.client, localRef, localManifest, sourceCatalogImage)
+	if err != nil {
+		return "", err
+	}
+
+	// 4. Get local image config.
+	localConfig, err := r.client.ImageConfig(ctx, localRef)
+	if err != nil {
+		return "", fmt.Errorf("failed to get local image config: %w", err)
+	}
+
+	// 5. Get all source layers from the local layout.
+	srcLayers, err := localManifest.GetLayers() //nolint:staticcheck
 	if err != nil {
 		return "", fmt.Errorf("failed to get source layers: %w", err)
 	}
-	srcDiffIDs := srcConfig.GetConfig().RootFS.DiffIDs
+	srcDiffIDs := localConfig.GetConfig().RootFS.DiffIDs
 	if len(srcDiffIDs) != len(srcLayers) {
 		return "", fmt.Errorf("manifest/config mismatch: %d layers vs %d diff_ids in %s",
 			len(srcLayers), len(srcDiffIDs), sourceCatalogImage)
 	}
-	fmt.Printf("Source catalog %s: %d layers\n", sourceCatalogImage, len(srcLayers))
+	fmt.Printf("Source catalog %s: %d layers (cached locally)\n", sourceCatalogImage, len(srcLayers))
 
-	// 4a. Classify each source layer AND extract FBC content in a single pass.
-	// This avoids downloading layers twice (once for classification, once for
-	// FBC extraction). Layers whose entire payload lives under configs/ or
-	// tmp/cache/ are wholly replaced by our new filtered overlay and can be
-	// skipped both at copy time and in the resulting manifest.
-	keptLayers := make([]descriptor.Descriptor, 0, len(srcLayers))
-	keptDiffIDs := make([]godigest.Digest, 0, len(srcDiffIDs))
-	configFS := make(fstest.MapFS)
-	var skippedCount int
-	var skippedBytes int64
-	for i, layer := range srcLayers {
-		blobRdr, blobErr := r.client.BlobGet(ctx, srcRef, layer)
-		if blobErr != nil {
-			// If we cannot inspect the layer, fall back to copying it (safe
-			// default — the original whiteout-overlay still works).
-			slog.WarnContext(ctx, "cannot classify source layer, will copy",
-				"image", sourceCatalogImage, "digest", layer.Digest.String(), "error", blobErr)
-			keptLayers = append(keptLayers, layer)
-			keptDiffIDs = append(keptDiffIDs, srcDiffIDs[i])
-			continue
-		}
-		skip, sz, firstReject, classifyErr := classifyAndExtractFBC(blobRdr, configFS)
-		_ = blobRdr.Close()
-		if classifyErr != nil {
-			slog.WarnContext(ctx, "layer classification failed, will copy",
-				"image", sourceCatalogImage, "digest", layer.Digest.String(), "error", classifyErr)
-			keptLayers = append(keptLayers, layer)
-			keptDiffIDs = append(keptDiffIDs, srcDiffIDs[i])
-			continue
-		}
-		if skip {
-			skippedCount++
-			skippedBytes += layer.Size
-			slog.InfoContext(ctx, "skipping source FBC/cache-only layer",
-				"image", sourceCatalogImage,
-				"digest", layer.Digest.String(),
-				"compressed_bytes", layer.Size,
-				"uncompressed_bytes", sz)
-			continue
-		}
-		slog.InfoContext(ctx, "keeping source layer (non-FBC content)",
-			"image", sourceCatalogImage,
-			"digest", layer.Digest.String(),
-			"compressed_bytes", layer.Size,
-			"first_non_fbc_entry", firstReject)
-		keptLayers = append(keptLayers, layer)
-		keptDiffIDs = append(keptDiffIDs, srcDiffIDs[i])
-	}
-	if skippedCount > 0 {
-		slog.InfoContext(ctx, "filtered catalog: dropped fully-replaced source layers",
-			"skipped_layers", skippedCount,
-			"kept_layers", len(keptLayers),
-			"saved_compressed_bytes", skippedBytes)
-	}
+	// 6. Classify each layer AND extract FBC content — all reads are local disk I/O.
+	cr := classifySourceLayers(ctx, r.client, localRef, srcLayers, srcDiffIDs, sourceCatalogImage)
 
-	// 5. Copy the kept source layers to target with retry for transient errors.
-	for i, layer := range keptLayers {
-		fmt.Printf("Copying source layer %d/%d (%s, %d bytes)\n", i+1, len(keptLayers), layer.Digest.String()[:16], layer.Size)
-		if err := blobCopyWithRetry(ctx, r.client, srcRef, destRef, layer, 3, 5*time.Minute); err != nil {
-			return "", fmt.Errorf("failed to copy source layer %d (%s): %w", i, layer.Digest, err)
+	// 7. Copy kept layers from local OCI layout to target registry.
+	// Reads from disk, uploads to network — each layer transferred only once.
+	for i, layer := range cr.keptLayers {
+		fmt.Printf("Uploading layer %d/%d (%s, %d bytes)\n", i+1, len(cr.keptLayers), layer.Digest.String()[:16], layer.Size)
+		if err := blobCopyWithRetry(ctx, r.client, localRef, destRef, layer, 3, 5*time.Minute); err != nil {
+			return "", fmt.Errorf("failed to upload source layer %d (%s): %w", i, layer.Digest, err)
 		}
 	}
 
-	// 6. Parse the FBC from the already-extracted config files (no re-download).
-	if len(configFS) == 0 {
+	// 8. Parse the FBC from the already-extracted config files (no re-download).
+	if len(cr.configFS) == 0 {
 		return "", fmt.Errorf("no FBC config files found under %s in %s", configsPath, sourceCatalogImage)
 	}
-	subFS, err := fs.Sub(configFS, strings.TrimSuffix(configsPath, "/"))
+	subFS, err := fs.Sub(cr.configFS, strings.TrimSuffix(configsPath, "/"))
 	if err != nil {
 		return "", fmt.Errorf("failed to create configs sub-fs: %w", err)
 	}
@@ -1149,7 +1195,7 @@ func (r *CatalogResolver) BuildFilteredCatalogImage(ctx context.Context, sourceC
 	fmt.Printf("Filtered FBC: %d packages, %d channels, %d bundles\n",
 		len(filtered.Packages), len(filtered.Channels), len(filtered.Bundles))
 
-	// 7. Build the filtered FBC layer (gzip-tar with opaque whiteout).
+	// 9. Build the filtered FBC layer (gzip-tar with opaque whiteout).
 	layerData, uncompressedDigest, err := buildFBCLayer(filtered)
 	if err != nil {
 		return "", fmt.Errorf("failed to build FBC layer: %w", err)
@@ -1162,24 +1208,20 @@ func (r *CatalogResolver) BuildFilteredCatalogImage(ctx context.Context, sourceC
 		Size:      int64(len(layerData)),
 	}
 
-	// 8. Push the filtered FBC layer blob.
+	// 10. Push the filtered FBC layer blob.
 	if _, err = r.client.BlobPut(ctx, destRef, layerDesc, bytes.NewReader(layerData)); err != nil {
 		return "", fmt.Errorf("failed to push FBC layer blob: %w", err)
 	}
 
-	// 9. Build new image config: keep source config, replace RootFS.DiffIDs
+	// 11. Build new image config: keep source config, replace RootFS.DiffIDs
 	// with the kept ones plus our new layer's diff_id.
-	imgCfg := srcConfig.GetConfig()
-	imgCfg.RootFS.DiffIDs = append(append([]godigest.Digest{}, keptDiffIDs...), uncompressedDigest)
-	// Ensure the OLM catalog label is set.
+	imgCfg := localConfig.GetConfig()
+	imgCfg.RootFS.DiffIDs = append(append([]godigest.Digest{}, cr.keptDiffIDs...), uncompressedDigest)
 	if imgCfg.Config.Labels == nil {
 		imgCfg.Config.Labels = make(map[string]string)
 	}
 	imgCfg.Config.Labels["operators.operatorframework.io.index.configs.v1"] = "/configs"
-	// Since we remove the pre-built cache (opaque whiteout), disable integrity
-	// enforcement so opm rebuilds it on first serve.
 	imgCfg.Config.Cmd = []string{"serve", "/configs", "--cache-dir=/tmp/cache", "--cache-enforce-integrity=false"}
-	// Append a history entry for our layer.
 	now := time.Now().UTC()
 	imgCfg.History = append(imgCfg.History, v1.History{
 		Created:   &now,
@@ -1194,15 +1236,15 @@ func (r *CatalogResolver) BuildFilteredCatalogImage(ctx context.Context, sourceC
 	}
 	configDesc := newConfig.GetDescriptor()
 
-	// 10. Push the new config blob.
+	// 12. Push the new config blob.
 	if _, err = r.client.BlobPut(ctx, destRef, configDesc, bytes.NewReader(configData)); err != nil {
 		return "", fmt.Errorf("failed to push image config blob: %w", err)
 	}
 
-	// 11. Build manifest: kept source layers + our FBC layer, new config.
-	allLayers := make([]descriptor.Descriptor, len(keptLayers)+1)
-	copy(allLayers, keptLayers)
-	allLayers[len(keptLayers)] = layerDesc
+	// 13. Build manifest: kept source layers + our FBC layer, new config.
+	allLayers := make([]descriptor.Descriptor, len(cr.keptLayers)+1)
+	copy(allLayers, cr.keptLayers)
+	allLayers[len(cr.keptLayers)] = layerDesc
 
 	ociM := v1.Manifest{
 		Versioned: v1.ManifestSchemaVersion,
@@ -1216,13 +1258,13 @@ func (r *CatalogResolver) BuildFilteredCatalogImage(ctx context.Context, sourceC
 		return "", fmt.Errorf("failed to create OCI manifest: %w", err)
 	}
 
-	// 12. Push manifest to target.
+	// 14. Push manifest to target.
 	if err = r.client.ManifestPut(ctx, destRef, m); err != nil {
 		return "", fmt.Errorf("failed to push catalog manifest to %s: %w", targetRef, err)
 	}
 
 	fmt.Printf("Catalog image pushed: %s (source layers kept: %d/%d, filtered packages: %d)\n",
-		targetRef, len(keptLayers), len(srcLayers), len(filtered.Packages))
+		targetRef, len(cr.keptLayers), len(srcLayers), len(filtered.Packages))
 	return m.GetDescriptor().Digest.String(), nil
 }
 

@@ -130,6 +130,29 @@ func NewMirrorClient(insecureHosts []string, authConfigPath string, destHosts ..
 	return mc
 }
 
+// DownloadToOCILayout copies a remote image into a local OCI directory layout.
+// This is used to cache the image locally before processing, avoiding multiple
+// network round-trips for individual blob operations. All subsequent BlobGet,
+// ManifestGet, and ImageConfig calls using an "ocidir://" ref pointing at
+// ociDir will read from the local filesystem with zero network I/O.
+func (c *MirrorClient) DownloadToOCILayout(ctx context.Context, src string, ociDir string) error {
+	srcRef, err := ref.New(src)
+	if err != nil {
+		return fmt.Errorf("failed to parse source reference %s: %w", src, err)
+	}
+	dstRef, err := ref.New(fmt.Sprintf("ocidir://%s:source", ociDir))
+	if err != nil {
+		return fmt.Errorf("failed to build ocidir reference for %s: %w", ociDir, err)
+	}
+	if err := c.rc.ImageCopy(ctx, srcRef, dstRef); err != nil {
+		if c.rcFallback != nil {
+			return c.rcFallback.ImageCopy(ctx, srcRef, dstRef)
+		}
+		return fmt.Errorf("failed to download %s to OCI layout: %w", src, err)
+	}
+	return nil
+}
+
 // CopyImage copies an image from source to destination, including signatures.
 // It returns the effective destination reference that was actually pushed (which may
 // differ from dest when src is a digest-only reference and a tag is synthesized).

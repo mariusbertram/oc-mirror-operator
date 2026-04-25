@@ -1258,9 +1258,9 @@ func TestBuildFilteredCatalogImage_ClientManifestError(t *testing.T) {
 		"localhost:1/dst:latest",
 		nil)
 	if err == nil {
-		t.Fatal("expected error from failing ManifestGet")
+		t.Fatal("expected error from failing DownloadToOCILayout")
 	}
-	if !strings.Contains(err.Error(), "failed to get source manifest") {
+	if !strings.Contains(err.Error(), "failed to download source catalog") {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
