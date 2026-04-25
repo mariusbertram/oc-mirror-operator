@@ -23,7 +23,11 @@ func mustParseRef(s string) ref.Ref {
 }
 
 func shortCtx() context.Context {
-	ctx, _ := context.WithTimeout(context.Background(), 2*time.Second) //nolint:govet
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	go func() {
+		<-ctx.Done()
+		cancel()
+	}()
 	return ctx
 }
 

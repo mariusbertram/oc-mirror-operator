@@ -148,45 +148,40 @@ spec:
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal("1"),
 					"CatalogBuildJob has not succeeded yet (succeeded=%s)", output)
-			}, 15*time.Minute, 10*time.Second).Should(Succeed(), func() string {
-				// Dump diagnostic info on failure
-				var diag strings.Builder
-				diag.WriteString("\n=== CatalogBuildJob diagnostic dump ===\n")
+			}, 15*time.Minute, 10*time.Second).Should(Succeed())
 
-				// Job status
-				if out, err := utils.Run(exec.Command("kubectl", "get", "jobs",
-					"-l", "mirror.openshift.io/imageset="+imageSetName,
-					"-n", ns, "-o", "yaml")); err == nil {
-					diag.WriteString("\n--- Job YAML ---\n")
-					diag.WriteString(out)
+			// If the Eventually above fails, the AfterEach/cleanup still runs but
+			// we won't reach this point — diagnostics are handled by DeferCleanup below.
+		})
+
+		// Dump diagnostic info when the catalog-build test fails.  Using
+		// DeferCleanup ensures the output appears in Ginkgo's captured writer
+		// output section regardless of which It block failed.
+		AfterEach(func() {
+			if !CurrentSpecReport().Failed() {
+				return
+			}
+			_, _ = fmt.Fprintf(GinkgoWriter, "\n=== CatalogBuildJob diagnostic dump ===\n")
+
+			diagCmds := []struct {
+				label string
+				args  []string
+			}{
+				{"Job YAML", []string{"get", "jobs", "-l", "mirror.openshift.io/imageset=" + imageSetName, "-n", ns, "-o", "yaml"}},
+				{"Pods", []string{"get", "pods", "-l", "mirror.openshift.io/imageset=" + imageSetName, "-n", ns, "-o", "wide"}},
+				{"Pod logs (last 100 lines)", []string{"logs", "-l", "mirror.openshift.io/imageset=" + imageSetName, "-n", ns, "--tail=100", "--all-containers"}},
+				{"Events", []string{"get", "events", "-n", ns, "--sort-by=.lastTimestamp", "--field-selector", "reason!=Pulling"}},
+				{"Operator controller-manager logs", []string{"logs", "-l", "control-plane=controller-manager", "-n", "oc-mirror-operator-system", "--tail=100", "--all-containers"}},
+			}
+			for _, dc := range diagCmds {
+				out, err := exec.Command("kubectl", dc.args...).CombinedOutput()
+				_, _ = fmt.Fprintf(GinkgoWriter, "\n--- %s ---\n", dc.label)
+				if err != nil {
+					_, _ = fmt.Fprintf(GinkgoWriter, "ERROR: %v\n%s\n", err, string(out))
+				} else {
+					_, _ = fmt.Fprintf(GinkgoWriter, "%s\n", string(out))
 				}
-
-				// Pod status
-				if out, err := utils.Run(exec.Command("kubectl", "get", "pods",
-					"-l", "mirror.openshift.io/imageset="+imageSetName,
-					"-n", ns, "-o", "wide")); err == nil {
-					diag.WriteString("\n--- Pods ---\n")
-					diag.WriteString(out)
-				}
-
-				// Pod logs
-				if out, err := utils.Run(exec.Command("kubectl", "logs",
-					"-l", "mirror.openshift.io/imageset="+imageSetName,
-					"-n", ns, "--tail=50", "--all-containers")); err == nil {
-					diag.WriteString("\n--- Pod logs (last 50 lines) ---\n")
-					diag.WriteString(out)
-				}
-
-				// Events
-				if out, err := utils.Run(exec.Command("kubectl", "get", "events",
-					"-n", ns, "--sort-by=.lastTimestamp",
-					"--field-selector", "reason!=Pulling")); err == nil {
-					diag.WriteString("\n--- Events ---\n")
-					diag.WriteString(out)
-				}
-
-				return diag.String()
-			})
+			}
 		})
 
 		It("should set the CatalogReady condition to True on the ImageSet", func() {

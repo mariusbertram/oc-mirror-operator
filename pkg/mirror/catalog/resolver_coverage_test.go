@@ -255,7 +255,7 @@ func TestBundleVersion_SkipsNonMatchingThenFindsVersion(t *testing.T) {
 			{Type: olmPackage, Value: json.RawMessage(`{"packageName":"op","version":"1.0.0"}`)},
 		},
 	}
-	if got := bundleVersion(b); got != "1.0.0" {
+	if got := bundleVersion(b); got != "1.0.0" { //nolint:goconst
 		t.Errorf("expected 1.0.0, got %q", got)
 	}
 }
@@ -669,7 +669,7 @@ func TestExtractFBCLayer_ValidLayer(t *testing.T) {
 	body := []byte(`schema: olm.package
 name: test-op
 `)
-	data := makeGzipTarHelper(t, []tarEntry{
+	data := makeGzipTar(t, []tarEntry{
 		{name: "configs/", typeflag: tar.TypeDir},
 		{name: "configs/test-op/", typeflag: tar.TypeDir},
 		{name: "configs/test-op/catalog.yaml", typeflag: tar.TypeReg, size: int64(len(body)), body: body},
@@ -685,7 +685,7 @@ name: test-op
 }
 
 func TestExtractFBCLayer_SkipsNonConfigPaths(t *testing.T) {
-	data := makeGzipTarHelper(t, []tarEntry{
+	data := makeGzipTar(t, []tarEntry{
 		{name: "etc/hosts", typeflag: tar.TypeReg, size: 4, body: []byte("data")},
 		{name: "usr/bin/opm", typeflag: tar.TypeReg, size: 3, body: []byte("opm")},
 	})
@@ -697,7 +697,7 @@ func TestExtractFBCLayer_SkipsNonConfigPaths(t *testing.T) {
 }
 
 func TestExtractFBCLayer_SkipsDirectories(t *testing.T) {
-	data := makeGzipTarHelper(t, []tarEntry{
+	data := makeGzipTar(t, []tarEntry{
 		{name: "configs/", typeflag: tar.TypeDir},
 		{name: "configs/test-op/", typeflag: tar.TypeDir},
 	})
@@ -718,7 +718,7 @@ func TestExtractFBCLayer_NotGzip(t *testing.T) {
 
 func TestExtractFBCLayer_WithLeadingDotSlash(t *testing.T) {
 	body := []byte("data")
-	data := makeGzipTarHelper(t, []tarEntry{
+	data := makeGzipTar(t, []tarEntry{
 		{name: "./configs/op/catalog.yaml", typeflag: tar.TypeReg, size: int64(len(body)), body: body},
 	})
 	fsMap := make(fstest.MapFS)
@@ -729,7 +729,7 @@ func TestExtractFBCLayer_WithLeadingDotSlash(t *testing.T) {
 }
 
 func TestExtractFBCLayer_SymlinksSkipped(t *testing.T) {
-	data := makeGzipTarHelper(t, []tarEntry{
+	data := makeGzipTar(t, []tarEntry{
 		{name: "configs/link", typeflag: tar.TypeSymlink},
 	})
 	fsMap := make(fstest.MapFS)
@@ -742,7 +742,7 @@ func TestExtractFBCLayer_SymlinksSkipped(t *testing.T) {
 func TestExtractFBCLayer_MultipleFiles(t *testing.T) {
 	body1 := []byte("pkg1")
 	body2 := []byte("pkg2")
-	data := makeGzipTarHelper(t, []tarEntry{
+	data := makeGzipTar(t, []tarEntry{
 		{name: "configs/pkg1/catalog.yaml", typeflag: tar.TypeReg, size: int64(len(body1)), body: body1},
 		{name: "configs/pkg2/catalog.yaml", typeflag: tar.TypeReg, size: int64(len(body2)), body: body2},
 	})
@@ -775,7 +775,7 @@ func TestBuildFBCLayer_EmptyConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("not valid gzip: %v", err)
 	}
-	defer gz.Close()
+	defer func() { _ = gz.Close() }()
 
 	tr := tar.NewReader(gz)
 	var names []string
@@ -792,11 +792,11 @@ func TestBuildFBCLayer_EmptyConfig(t *testing.T) {
 
 	// Should contain: configs/, configs/.wh..wh..opq, tmp/, tmp/cache/, tmp/cache/.wh..wh..opq
 	expected := map[string]bool{
-		"configs/":                 true,
-		"configs/.wh..wh..opq":    true,
-		"tmp/":                     true,
-		"tmp/cache/":               true,
-		"tmp/cache/.wh..wh..opq":  true,
+		"configs/":               true,
+		"configs/.wh..wh..opq":   true,
+		"tmp/":                   true,
+		"tmp/cache/":             true,
+		"tmp/cache/.wh..wh..opq": true,
 	}
 	for _, n := range names {
 		delete(expected, n)
@@ -837,7 +837,7 @@ func TestBuildFBCLayer_SinglePackage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("not valid gzip: %v", err)
 	}
-	defer gz.Close()
+	defer func() { _ = gz.Close() }()
 
 	tr := tar.NewReader(gz)
 	var found bool
@@ -878,7 +878,7 @@ func TestBuildFBCLayer_MultiplePackagesSorted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("not valid gzip: %v", err)
 	}
-	defer gz.Close()
+	defer func() { _ = gz.Close() }()
 
 	tr := tar.NewReader(gz)
 	var pkgDirs []string
@@ -961,7 +961,7 @@ func TestExtractImagesWithBundles_ManyBundlesForSameImage(t *testing.T) {
 
 func TestClassifyLayer_LeadingDotSlash(t *testing.T) {
 	body := []byte("data")
-	data := makeGzipTarHelper(t, []tarEntry{
+	data := makeGzipTar(t, []tarEntry{
 		{name: "./configs/foo/catalog.yaml", typeflag: tar.TypeReg, size: int64(len(body)), body: body},
 	})
 	skip, _, _, err := classifyLayer(bytes.NewReader(data))
@@ -975,7 +975,7 @@ func TestClassifyLayer_LeadingDotSlash(t *testing.T) {
 
 func TestClassifyLayer_CacheOnlyLayer(t *testing.T) {
 	body := []byte("cache-data")
-	data := makeGzipTarHelper(t, []tarEntry{
+	data := makeGzipTar(t, []tarEntry{
 		{name: "tmp/cache/db.pogreb", typeflag: tar.TypeReg, size: int64(len(body)), body: body},
 	})
 	skip, sz, _, err := classifyLayer(bytes.NewReader(data))
@@ -991,7 +991,7 @@ func TestClassifyLayer_CacheOnlyLayer(t *testing.T) {
 }
 
 func TestClassifyLayer_HardlinkInConfigs(t *testing.T) {
-	data := makeGzipTarHelper(t, []tarEntry{
+	data := makeGzipTar(t, []tarEntry{
 		{name: "configs/foo/hardlink", typeflag: tar.TypeLink},
 	})
 	skip, _, reject, err := classifyLayer(bytes.NewReader(data))
@@ -1037,7 +1037,7 @@ func TestFilterFBC_ChannelVersionOverridesPkgVersion(t *testing.T) {
 	// Package-level min=1.0.0, but channel-level stable min=2.0.0 should override.
 	filtered, err := resolver.FilterFBC(context.Background(), cfg, []mirrorv1alpha1.IncludePackage{
 		{
-			Name: "my-op",
+			Name:          "my-op",
 			IncludeBundle: mirrorv1alpha1.IncludeBundle{MinVersion: "1.0.0"},
 			Channels: []mirrorv1alpha1.IncludeChannel{
 				{Name: "stable", IncludeBundle: mirrorv1alpha1.IncludeBundle{MinVersion: "2.0.0"}},
@@ -1500,73 +1500,59 @@ func TestFilterFBC_ChannelEntryNotInBundles(t *testing.T) {
 	}
 }
 
-func TestFilterFBC_CompanionDepsVariant(t *testing.T) {
-	// Test "-deps" suffix companion discovery.
-	cfg := &declcfg.DeclarativeConfig{
-		Packages: []declcfg.Package{
-			{Name: "myapp"},
-			{Name: "myapp-deps"},
+func TestFilterFBC_CompanionVariants(t *testing.T) {
+	tests := []struct {
+		name        string
+		suffix      string
+		expectedPkg string
+	}{
+		{
+			name:        "DepsVariant",
+			suffix:      "-deps",
+			expectedPkg: "myapp-deps",
 		},
-		Channels: []declcfg.Channel{
-			{Name: "stable", Package: "myapp",
-				Entries: []declcfg.ChannelEntry{{Name: "myapp.v1"}}},
-			{Name: "stable", Package: "myapp-deps"},
-		},
-		Bundles: []declcfg.Bundle{
-			{Name: "myapp.v1", Package: "myapp", Image: "reg/a@sha256:aaa"},
-			{Name: "myapp-deps.v1", Package: "myapp-deps", Image: "reg/d@sha256:bbb"},
-		},
-	}
-
-	resolver := &CatalogResolver{}
-	filtered, err := resolver.FilterFBC(context.Background(), cfg, []mirrorv1alpha1.IncludePackage{
-		{Name: "myapp"},
-	})
-	if err != nil {
-		t.Fatalf("FilterFBC: %v", err)
-	}
-
-	pkgNames := map[string]bool{}
-	for _, p := range filtered.Packages {
-		pkgNames[p.Name] = true
-	}
-	if !pkgNames["myapp-deps"] {
-		t.Error("myapp-deps should be auto-discovered as companion")
-	}
-}
-
-func TestFilterFBC_CompanionDependencyVariant(t *testing.T) {
-	// Test "-dependency" suffix companion discovery.
-	cfg := &declcfg.DeclarativeConfig{
-		Packages: []declcfg.Package{
-			{Name: "myapp"},
-			{Name: "myapp-dependency"},
-		},
-		Channels: []declcfg.Channel{
-			{Name: "stable", Package: "myapp",
-				Entries: []declcfg.ChannelEntry{{Name: "myapp.v1"}}},
-			{Name: "stable", Package: "myapp-dependency"},
-		},
-		Bundles: []declcfg.Bundle{
-			{Name: "myapp.v1", Package: "myapp", Image: "reg/a@sha256:aaa"},
-			{Name: "myapp-dependency.v1", Package: "myapp-dependency", Image: "reg/d@sha256:bbb"},
+		{
+			name:        "DependencyVariant",
+			suffix:      "-dependency",
+			expectedPkg: "myapp-dependency",
 		},
 	}
 
-	resolver := &CatalogResolver{}
-	filtered, err := resolver.FilterFBC(context.Background(), cfg, []mirrorv1alpha1.IncludePackage{
-		{Name: "myapp"},
-	})
-	if err != nil {
-		t.Fatalf("FilterFBC: %v", err)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Test suffix companion discovery.
+			cfg := &declcfg.DeclarativeConfig{
+				Packages: []declcfg.Package{
+					{Name: "myapp"},
+					{Name: "myapp" + tt.suffix},
+				},
+				Channels: []declcfg.Channel{
+					{Name: "stable", Package: "myapp",
+						Entries: []declcfg.ChannelEntry{{Name: "myapp.v1"}}},
+					{Name: "stable", Package: "myapp" + tt.suffix},
+				},
+				Bundles: []declcfg.Bundle{
+					{Name: "myapp.v1", Package: "myapp", Image: "reg/a@sha256:aaa"},
+					{Name: "myapp" + tt.suffix + ".v1", Package: "myapp" + tt.suffix, Image: "reg/d@sha256:bbb"},
+				},
+			}
 
-	pkgNames := map[string]bool{}
-	for _, p := range filtered.Packages {
-		pkgNames[p.Name] = true
-	}
-	if !pkgNames["myapp-dependency"] {
-		t.Error("myapp-dependency should be auto-discovered as companion")
+			resolver := &CatalogResolver{}
+			filtered, err := resolver.FilterFBC(context.Background(), cfg, []mirrorv1alpha1.IncludePackage{
+				{Name: "myapp"},
+			})
+			if err != nil {
+				t.Fatalf("FilterFBC: %v", err)
+			}
+
+			pkgNames := map[string]bool{}
+			for _, p := range filtered.Packages {
+				pkgNames[p.Name] = true
+			}
+			if !pkgNames[tt.expectedPkg] {
+				t.Errorf("%s should be auto-discovered as companion", tt.expectedPkg)
+			}
+		})
 	}
 }
 
@@ -1582,7 +1568,7 @@ func TestFilterFBC_HeadsOnlyEmptyChannelEntries(t *testing.T) {
 				},
 			},
 			{
-				Name:    "empty-ch", Package: "my-op",
+				Name: "empty-ch", Package: "my-op",
 				Entries: nil, // empty entries
 			},
 		},
@@ -1657,6 +1643,8 @@ relatedImages:
 
 // fakeOCIRegistry creates an httptest server that serves a minimal OCI
 // registry with a single catalog image containing FBC content.
+//
+//nolint:unparam
 func fakeOCIRegistry(t *testing.T) (*httptest.Server, string) {
 	t.Helper()
 
@@ -1702,7 +1690,7 @@ func fakeOCIRegistry(t *testing.T) (*httptest.Server, string) {
 		if strings.Contains(path, "/manifests/") {
 			w.Header().Set("Content-Type", "application/vnd.oci.image.manifest.v1+json")
 			w.Header().Set("Docker-Content-Digest", manifestDigest)
-			w.Write(manifestJSON)
+			_, _ = w.Write(manifestJSON)
 			return
 		}
 
@@ -1710,12 +1698,12 @@ func fakeOCIRegistry(t *testing.T) (*httptest.Server, string) {
 		if strings.Contains(path, "/blobs/") {
 			if strings.HasSuffix(path, layerDigest) || strings.Contains(path, layerDigest) {
 				w.Header().Set("Content-Type", "application/octet-stream")
-				w.Write(layerBytes)
+				_, _ = w.Write(layerBytes)
 				return
 			}
 			if strings.HasSuffix(path, configDigest) || strings.Contains(path, configDigest) {
 				w.Header().Set("Content-Type", "application/vnd.oci.image.config.v1+json")
-				w.Write(configJSON)
+				_, _ = w.Write(configJSON)
 				return
 			}
 			http.NotFound(w, r)
@@ -1800,39 +1788,4 @@ func TestLoadFBC_WithFakeRegistry(t *testing.T) {
 	if len(cfg.Packages) == 0 {
 		t.Error("expected at least 1 package in loaded FBC")
 	}
-}
-
-// makeGzipTarHelper reuses the same logic as classify_layer_test.go's
-// makeGzipTar but avoids name conflicts by using a different name.
-func makeGzipTarHelper(t *testing.T, entries []tarEntry) []byte {
-	t.Helper()
-	var buf bytes.Buffer
-	gz := gzip.NewWriter(&buf)
-	tw := tar.NewWriter(gz)
-	for _, e := range entries {
-		hdr := &tar.Header{
-			Typeflag: e.typeflag,
-			Name:     e.name,
-			Size:     e.size,
-			Mode:     0o644,
-		}
-		if e.typeflag == tar.TypeDir {
-			hdr.Mode = 0o755
-		}
-		if err := tw.WriteHeader(hdr); err != nil {
-			t.Fatalf("write header: %v", err)
-		}
-		if e.typeflag == tar.TypeReg && e.size > 0 {
-			if _, err := tw.Write(e.body); err != nil {
-				t.Fatalf("write body: %v", err)
-			}
-		}
-	}
-	if err := tw.Close(); err != nil {
-		t.Fatalf("close tar: %v", err)
-	}
-	if err := gz.Close(); err != nil {
-		t.Fatalf("close gz: %v", err)
-	}
-	return buf.Bytes()
 }

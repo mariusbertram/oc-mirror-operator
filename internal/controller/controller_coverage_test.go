@@ -33,9 +33,9 @@ func mustGzipJSON(v interface{}) []byte {
 	return buf.Bytes()
 }
 
-func cleanupMT(ctx context.Context, name, namespace string) {
+func cleanupMT(ctx context.Context, name string) {
 	mt := &mirrorv1alpha1.MirrorTarget{}
-	if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, mt); err == nil {
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: "default"}, mt); err == nil {
 		if controllerutil.ContainsFinalizer(mt, mirrorTargetFinalizer) {
 			controllerutil.RemoveFinalizer(mt, mirrorTargetFinalizer)
 			_ = k8sClient.Update(ctx, mt)
@@ -364,7 +364,7 @@ var _ = Describe("Coverage tests", func() {
 			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: isName, Namespace: ns}, is)).To(Succeed())
 			var found bool
 			for _, c := range is.Status.Conditions {
-				if c.Type == "CatalogReady" && c.Reason == "WaitingForOperatorMirror" {
+				if c.Type == conditionCatalogReady && c.Reason == "WaitingForOperatorMirror" {
 					found = true
 				}
 			}
@@ -427,7 +427,7 @@ var _ = Describe("Coverage tests", func() {
 			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: isName, Namespace: ns}, is)).To(Succeed())
 			var foundRunning bool
 			for _, c := range is.Status.Conditions {
-				if c.Type == "CatalogReady" && c.Reason == "CatalogBuildRunning" {
+				if c.Type == conditionCatalogReady && c.Reason == "CatalogBuildRunning" {
 					foundRunning = true
 				}
 			}
@@ -503,7 +503,7 @@ var _ = Describe("Coverage tests", func() {
 			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: isName, Namespace: ns}, fresh)).To(Succeed())
 			var foundReady bool
 			for _, c := range fresh.Status.Conditions {
-				if c.Type == "CatalogReady" && c.Status == metav1.ConditionTrue {
+				if c.Type == conditionCatalogReady && c.Status == metav1.ConditionTrue {
 					foundReady = true
 				}
 			}
@@ -574,7 +574,7 @@ var _ = Describe("Coverage tests", func() {
 			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: isName, Namespace: ns}, is)).To(Succeed())
 			var foundFailed bool
 			for _, c := range is.Status.Conditions {
-				if c.Type == "CatalogReady" && c.Reason == "CatalogBuildFailed" {
+				if c.Type == conditionCatalogReady && c.Reason == "CatalogBuildFailed" {
 					foundFailed = true
 				}
 			}
@@ -602,7 +602,7 @@ var _ = Describe("Coverage tests", func() {
 					Name:      isName,
 					Namespace: ns,
 					Annotations: map[string]string{
-						mirrorv1alpha1.RecollectAnnotation:     "",
+						mirrorv1alpha1.RecollectAnnotation:      "",
 						"mirror.openshift.io/catalog-build-sig": "stale-sig",
 					},
 				},
@@ -682,7 +682,7 @@ var _ = Describe("Coverage tests", func() {
 					Name:      isName,
 					Namespace: ns,
 					Annotations: map[string]string{
-						mirrorv1alpha1.RecollectAnnotation:       "",
+						mirrorv1alpha1.RecollectAnnotation:      "",
 						"mirror.openshift.io/catalog-build-sig": buildSig,
 					},
 				},
@@ -744,7 +744,7 @@ var _ = Describe("Coverage tests", func() {
 
 			// Set CatalogReady=True on status
 			is.Status.Conditions = []metav1.Condition{
-				{Type: "CatalogReady", Status: metav1.ConditionTrue, Reason: "CatalogBuildSucceeded",
+				{Type: conditionCatalogReady, Status: metav1.ConditionTrue, Reason: "CatalogBuildSucceeded",
 					Message: "ok", LastTransitionTime: metav1.Now()},
 			}
 			Expect(k8sClient.Status().Update(localCtx, is)).To(Succeed())
@@ -789,7 +789,7 @@ var _ = Describe("Coverage tests", func() {
 				},
 			}
 			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
-			DeferCleanup(func() { cleanupMT(localCtx, mtName, ns) })
+			DeferCleanup(func() { cleanupMT(localCtx, mtName) })
 
 			// Set KnownImageSets in memory (simulates previous reconcile state)
 			mt.Status.KnownImageSets = []string{"is-keep", removedIS}
@@ -833,7 +833,7 @@ var _ = Describe("Coverage tests", func() {
 				},
 			}
 			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
-			DeferCleanup(func() { cleanupMT(localCtx, mtName, ns) })
+			DeferCleanup(func() { cleanupMT(localCtx, mtName) })
 
 			mt.Status.KnownImageSets = []string{"is-keep-np", removedIS}
 
@@ -868,7 +868,7 @@ var _ = Describe("Coverage tests", func() {
 				},
 			}
 			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
-			DeferCleanup(func() { cleanupMT(localCtx, mtName, ns) })
+			DeferCleanup(func() { cleanupMT(localCtx, mtName) })
 
 			// Pre-create a succeeded cleanup job
 			jobName := cleanupJobName(mtName, cleanedIS)
@@ -921,7 +921,7 @@ var _ = Describe("Coverage tests", func() {
 				},
 			}
 			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
-			DeferCleanup(func() { cleanupMT(localCtx, mtName, ns) })
+			DeferCleanup(func() { cleanupMT(localCtx, mtName) })
 
 			// Pre-create a failed cleanup job
 			jobName := cleanupJobName(mtName, failedIS)
@@ -966,7 +966,7 @@ var _ = Describe("Coverage tests", func() {
 				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com"},
 			}
 			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
-			DeferCleanup(func() { cleanupMT(localCtx, mtName, ns) })
+			DeferCleanup(func() { cleanupMT(localCtx, mtName) })
 
 			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 			Expect(r.createCleanupJob(localCtx, mt, isName)).To(Succeed())
@@ -996,7 +996,7 @@ var _ = Describe("Coverage tests", func() {
 				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com"},
 			}
 			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
-			DeferCleanup(func() { cleanupMT(localCtx, mtName, ns) })
+			DeferCleanup(func() { cleanupMT(localCtx, mtName) })
 
 			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 			Expect(r.createCleanupJob(localCtx, mt, isName)).To(Succeed())
@@ -1029,7 +1029,7 @@ var _ = Describe("Coverage tests", func() {
 				},
 			}
 			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
-			DeferCleanup(func() { cleanupMT(localCtx, mtName, ns) })
+			DeferCleanup(func() { cleanupMT(localCtx, mtName) })
 
 			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 			Expect(r.createCleanupJob(localCtx, mt, isName)).To(Succeed())
@@ -1074,7 +1074,7 @@ var _ = Describe("Coverage tests", func() {
 				},
 			}
 			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
-			DeferCleanup(func() { cleanupMT(localCtx, mtName, ns) })
+			DeferCleanup(func() { cleanupMT(localCtx, mtName) })
 
 			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 			Expect(r.ensureIngress(localCtx, mt, mtName+"-resources")).To(Succeed())
@@ -1100,7 +1100,7 @@ var _ = Describe("Coverage tests", func() {
 				},
 			}
 			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
-			DeferCleanup(func() { cleanupMT(localCtx, mtName, ns) })
+			DeferCleanup(func() { cleanupMT(localCtx, mtName) })
 
 			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 			err := r.ensureIngress(localCtx, mt, mtName+"-resources")
@@ -1124,7 +1124,7 @@ var _ = Describe("Coverage tests", func() {
 				},
 			}
 			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
-			DeferCleanup(func() { cleanupMT(localCtx, mtName, ns) })
+			DeferCleanup(func() { cleanupMT(localCtx, mtName) })
 
 			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 			Expect(r.reconcileExposure(localCtx, mt)).To(Succeed())
@@ -1142,7 +1142,7 @@ var _ = Describe("Coverage tests", func() {
 				},
 			}
 			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
-			DeferCleanup(func() { cleanupMT(localCtx, mtName, ns) })
+			DeferCleanup(func() { cleanupMT(localCtx, mtName) })
 
 			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 			Expect(r.reconcileExposure(localCtx, mt)).To(Succeed())
@@ -1163,7 +1163,7 @@ var _ = Describe("Coverage tests", func() {
 				},
 			}
 			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
-			DeferCleanup(func() { cleanupMT(localCtx, mtName, ns) })
+			DeferCleanup(func() { cleanupMT(localCtx, mtName) })
 
 			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 			Expect(r.reconcileExposure(localCtx, mt)).To(Succeed())
@@ -1207,7 +1207,7 @@ var _ = Describe("Coverage tests", func() {
 				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com"},
 			}
 			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
-			DeferCleanup(func() { cleanupMT(localCtx, mtName, ns) })
+			DeferCleanup(func() { cleanupMT(localCtx, mtName) })
 
 			// Add finalizer
 			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: mtName, Namespace: ns}, mt)).To(Succeed())
@@ -1267,7 +1267,7 @@ var _ = Describe("Coverage tests", func() {
 				},
 			}
 			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
-			DeferCleanup(func() { cleanupMT(localCtx, mtName, ns) })
+			DeferCleanup(func() { cleanupMT(localCtx, mtName) })
 
 			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 

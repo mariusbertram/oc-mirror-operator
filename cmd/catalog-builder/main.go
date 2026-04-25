@@ -35,6 +35,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"time"
 
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/catalog"
@@ -94,7 +95,11 @@ func main() {
 	mc := mirrorclient.NewMirrorClient(insecureHosts, authDir)
 	resolver := catalog.New(mc)
 
-	ctx := context.Background()
+	// Apply a generous timeout so the job fails cleanly instead of hanging
+	// indefinitely when a registry push stalls (common in Kind CI clusters).
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
 	digest, err := resolver.BuildFilteredCatalogImage(ctx, source, target, packages)
 	if err != nil {
 		slog.Error("failed to build filtered catalog image", "error", err)

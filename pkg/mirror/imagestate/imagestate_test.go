@@ -17,6 +17,8 @@ import (
 
 // --- helpers ---
 
+const testStateMirrored = "Mirrored"
+
 func mustGzip(data []byte) []byte {
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
@@ -54,8 +56,8 @@ func TestCounts_Empty(t *testing.T) {
 
 func TestCounts_Mixed(t *testing.T) {
 	state := ImageState{
-		"img1": {State: "Mirrored"},
-		"img2": {State: "Mirrored"},
+		"img1": {State: testStateMirrored},
+		"img2": {State: testStateMirrored},
 		"img3": {State: "Pending"},
 		"img4": {State: "Failed", PermanentlyFailed: true},
 		"img5": {State: "Pending", PermanentlyFailed: true},
@@ -79,7 +81,7 @@ func TestCounts_Mixed(t *testing.T) {
 func TestCounts_MirroredNotCountedAsFailed(t *testing.T) {
 	// Even if PermanentlyFailed is set, Mirrored state takes precedence
 	state := ImageState{
-		"img1": {State: "Mirrored", PermanentlyFailed: true},
+		"img1": {State: testStateMirrored, PermanentlyFailed: true},
 	}
 	total, mirrored, _, failed := Counts(state)
 	if total != 1 || mirrored != 1 || failed != 0 {
@@ -93,7 +95,7 @@ func TestEncodeDecode_Roundtrip(t *testing.T) {
 	original := ImageState{
 		"registry.example.com/repo@sha256:abc": {
 			Source:            "quay.io/source@sha256:abc",
-			State:             "Mirrored",
+			State:             testStateMirrored,
 			Origin:            OriginRelease,
 			EntrySig:          "sig123",
 			OriginRef:         "stable-4.14 [amd64]",
@@ -169,7 +171,7 @@ func TestDecode_PlainJSON(t *testing.T) {
 	if len(state) != 1 {
 		t.Fatalf("expected 1 entry, got %d", len(state))
 	}
-	if state["img1"].State != "Mirrored" {
+	if state["img1"].State != testStateMirrored {
 		t.Fatalf("expected Mirrored, got %s", state["img1"].State)
 	}
 }
@@ -252,7 +254,7 @@ func TestLoad_MissingConfigMap(t *testing.T) {
 }
 
 func TestLoad_ExistingConfigMap(t *testing.T) {
-	original := ImageState{"dest": {Source: "src", State: "Mirrored"}}
+	original := ImageState{"dest": {Source: "src", State: testStateMirrored}}
 	data, _ := encode(original)
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-is-images", Namespace: "ns"},
@@ -263,7 +265,7 @@ func TestLoad_ExistingConfigMap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(state) != 1 || state["dest"].State != "Mirrored" {
+	if len(state) != 1 || state["dest"].State != testStateMirrored {
 		t.Fatalf("unexpected state: %v", state)
 	}
 }
@@ -340,7 +342,7 @@ func TestSave_CreatesNew(t *testing.T) {
 }
 
 func TestSave_UpdatesExisting(t *testing.T) {
-	oldData, _ := encode(ImageState{"old": {Source: "old-src", State: "Mirrored"}})
+	oldData, _ := encode(ImageState{"old": {Source: "old-src", State: testStateMirrored}})
 	existing := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-is-images", Namespace: "ns"},
 		BinaryData: map[string][]byte{"images.json.gz": oldData},
@@ -382,7 +384,7 @@ func TestSaveRaw_CreatesNew(t *testing.T) {
 }
 
 func TestSaveRaw_UpdatesExisting(t *testing.T) {
-	oldData, _ := encode(ImageState{"old": {Source: "old", State: "Mirrored"}})
+	oldData, _ := encode(ImageState{"old": {Source: "old", State: testStateMirrored}})
 	existing := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: "raw-cm", Namespace: "ns"},
 		BinaryData: map[string][]byte{"images.json.gz": oldData},

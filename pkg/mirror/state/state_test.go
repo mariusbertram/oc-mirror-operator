@@ -7,9 +7,9 @@ import (
 	"io"
 
 	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
-	godigest "github.com/opencontainers/go-digest"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	godigest "github.com/opencontainers/go-digest"
 	"github.com/regclient/regclient/types/blob"
 	"github.com/regclient/regclient/types/descriptor"
 	"github.com/regclient/regclient/types/manifest"

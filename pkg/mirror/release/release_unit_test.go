@@ -37,35 +37,7 @@ func buildTarGz(files map[string][]byte) *bytes.Buffer {
 	return &buf
 }
 
-// buildTarGzOrdered creates an in-memory gzipped tar honouring insertion order.
-func buildTarGzOrdered(entries []struct {
-	Name    string
-	Content []byte
-}) *bytes.Buffer {
-	var buf bytes.Buffer
-	gz := gzip.NewWriter(&buf)
-	tw := tar.NewWriter(gz)
-	for _, e := range entries {
-		_ = tw.WriteHeader(&tar.Header{
-			Name: e.Name,
-			Size: int64(len(e.Content)),
-			Mode: 0644,
-		})
-		_, _ = tw.Write(e.Content)
-	}
-	_ = tw.Close()
-	_ = gz.Close()
-	return &buf
-}
-
-// newResolverWithHTTPClient creates a ReleaseResolver that talks to the given
-// httptest server instead of the real Cincinnati API.
-func newResolverWithHTTPClient(serverURL string) *ReleaseResolver {
-	return &ReleaseResolver{
-		client:     nil,
-		httpClient: &http.Client{},
-	}
-}
+const unreachableURL = "http://127.0.0.1:1"
 
 // --- Tests ---
 
@@ -105,7 +77,7 @@ var _ = Describe("Unit", func() {
 		It("returns non-empty hex string for a single image", func() {
 			sig := ResolvedSignature([]string{"quay.io/a@sha256:aaa"})
 			Expect(sig).NotTo(BeEmpty())
-			Expect(len(sig)).To(Equal(64)) // SHA-256 hex
+			Expect(sig).To(HaveLen(64)) // SHA-256 hex
 		})
 		It("is deterministic", func() {
 			imgs := []string{"quay.io/a@sha256:aaa", "quay.io/b@sha256:bbb"}
@@ -647,31 +619,31 @@ var _ = Describe("Unit", func() {
 			server.Close()
 		})
 
-		resolveNodes := func(ctx context.Context, channel, minV, maxV string, arch []string, full, shortest bool) ([]Node, error) {
-			return resolveReleaseNodesFromURL(rr, ctx, server.URL, channel, minV, maxV, arch, full, shortest)
+		resolveNodes := func(channel, minV, maxV string, arch []string, full, shortest bool) ([]Node, error) {
+			return resolveReleaseNodesFromURL(rr, server.URL, channel, minV, maxV, arch, full, shortest)
 		}
 
 		It("full=true returns all nodes", func() {
-			nodes, err := resolveNodes(context.Background(), "stable-4.15", "", "", nil, true, false)
+			nodes, err := resolveNodes("stable-4.15", "", "", nil, true, false)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(nodes).To(HaveLen(4))
 		})
 
 		It("maxVersion only returns single matching node", func() {
-			nodes, err := resolveNodes(context.Background(), "stable-4.15", "", "4.14.5", nil, false, false)
+			nodes, err := resolveNodes("stable-4.15", "", "4.14.5", nil, false, false)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(nodes).To(HaveLen(1))
 			Expect(nodes[0].Version).To(Equal("4.14.5"))
 		})
 
 		It("maxVersion not found returns error", func() {
-			_, err := resolveNodes(context.Background(), "stable-4.15", "", "9.9.9", nil, false, false)
+			_, err := resolveNodes("stable-4.15", "", "9.9.9", nil, false, false)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("9.9.9 not found"))
 		})
 
 		It("minVersion + maxVersion returns range", func() {
-			nodes, err := resolveNodes(context.Background(), "stable-4.15", "4.14.5", "4.15.0", nil, false, false)
+			nodes, err := resolveNodes("stable-4.15", "4.14.5", "4.15.0", nil, false, false)
 			Expect(err).NotTo(HaveOccurred())
 			versions := make([]string, 0, len(nodes))
 			for _, n := range nodes {
@@ -682,7 +654,7 @@ var _ = Describe("Unit", func() {
 		})
 
 		It("minVersion + maxVersion + shortestPath returns BFS path", func() {
-			nodes, err := resolveNodes(context.Background(), "stable-4.15", "4.14.0", "4.15.0", nil, false, true)
+			nodes, err := resolveNodes("stable-4.15", "4.14.0", "4.15.0", nil, false, true)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(nodes).To(HaveLen(3))
 			Expect(nodes[0].Version).To(Equal("4.14.0"))
@@ -690,7 +662,7 @@ var _ = Describe("Unit", func() {
 		})
 
 		It("minVersion only returns all nodes >= min", func() {
-			nodes, err := resolveNodes(context.Background(), "stable-4.15", "4.15.0", "", nil, false, false)
+			nodes, err := resolveNodes("stable-4.15", "4.15.0", "", nil, false, false)
 			Expect(err).NotTo(HaveOccurred())
 			for _, n := range nodes {
 				Expect(n.Version).To(SatisfyAny(Equal("4.15.0"), Equal("4.15.1")))
@@ -698,7 +670,7 @@ var _ = Describe("Unit", func() {
 		})
 
 		It("no constraints returns latest node", func() {
-			nodes, err := resolveNodes(context.Background(), "stable-4.15", "", "", nil, false, false)
+			nodes, err := resolveNodes("stable-4.15", "", "", nil, false, false)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(nodes).To(HaveLen(1))
 			Expect(nodes[0].Version).To(Equal("4.15.1"))
@@ -712,7 +684,7 @@ var _ = Describe("Unit", func() {
 			}))
 			rr.httpClient = server.Client()
 
-			_, err := resolveReleaseNodesFromURL(rr, context.Background(), server.URL, "stable-4.15", "", "", nil, false, false)
+			_, err := resolveReleaseNodesFromURL(rr, server.URL, "stable-4.15", "", "", nil, false, false)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("no nodes found"))
 		})
@@ -721,9 +693,9 @@ var _ = Describe("Unit", func() {
 	// --- Tests that exercise the REAL production methods via OcpUpdateURL override ---
 	Describe("ResolveReleaseNodes (real method)", func() {
 		var (
-			server    *httptest.Server
-			rr        *ReleaseResolver
-			origURL   string
+			server  *httptest.Server
+			rr      *ReleaseResolver
+			origURL string
 		)
 
 		graphFixture := Graph{
@@ -904,7 +876,7 @@ var _ = Describe("Unit", func() {
 	Describe("FetchGraph error paths", func() {
 		It("returns error on connection refused", func() {
 			origURL := OcpUpdateURL
-			OcpUpdateURL = "http://127.0.0.1:1" // nothing listening
+			OcpUpdateURL = unreachableURL // nothing listening
 			defer func() { OcpUpdateURL = origURL }()
 
 			rr := New(nil)
@@ -963,7 +935,7 @@ var _ = Describe("Unit", func() {
 	Describe("ResolveRelease error propagation", func() {
 		It("returns error when FetchGraph fails", func() {
 			origURL := OcpUpdateURL
-			OcpUpdateURL = "http://127.0.0.1:1"
+			OcpUpdateURL = unreachableURL
 			defer func() { OcpUpdateURL = origURL }()
 
 			rr := New(nil)
@@ -973,7 +945,7 @@ var _ = Describe("Unit", func() {
 
 		It("returns error when ResolveLatestVersion FetchGraph fails", func() {
 			origURL := OcpUpdateURL
-			OcpUpdateURL = "http://127.0.0.1:1"
+			OcpUpdateURL = unreachableURL
 			defer func() { OcpUpdateURL = origURL }()
 
 			rr := New(nil)
@@ -1024,7 +996,7 @@ func fetchGraphFromURL(rr *ReleaseResolver, baseURL, channel string, arch []stri
 
 // resolveReleaseNodesFromURL exercises the same resolution logic as
 // ResolveReleaseNodes but fetches the graph from the given base URL.
-func resolveReleaseNodesFromURL(rr *ReleaseResolver, ctx context.Context, baseURL, channel, minVersion, maxVersion string, arch []string, full, shortestPath bool) ([]Node, error) {
+func resolveReleaseNodesFromURL(rr *ReleaseResolver, baseURL, channel, minVersion, maxVersion string, arch []string, full, shortestPath bool) ([]Node, error) {
 	graph, err := fetchGraphFromURL(rr, baseURL, channel, arch)
 	if err != nil {
 		return nil, err

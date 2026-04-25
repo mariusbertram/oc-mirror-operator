@@ -36,6 +36,8 @@ type ImageSetReconciler struct {
 	CatalogBuildMgr *builder.CatalogBuildManager
 }
 
+const conditionCatalogReady = "CatalogReady"
+
 // +kubebuilder:rbac:groups=mirror.openshift.io,resources=imagesets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=mirror.openshift.io,resources=imagesets/status,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=mirror.openshift.io,resources=imagesets/finalizers,verbs=update
@@ -83,7 +85,7 @@ func (r *ImageSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// annotation on the ImageSet (one-shot, cleared after recollection).
 	if err := r.reconcileCatalogBuildJobs(ctx, is, mt, pollExpired); err != nil {
 		l.Error(err, "Failed to reconcile catalog build jobs")
-		setCondition(&is.Status.Conditions, "CatalogReady", metav1.ConditionFalse, "CatalogBuildFailed", err.Error(), is.Generation)
+		setCondition(&is.Status.Conditions, conditionCatalogReady, metav1.ConditionFalse, "CatalogBuildFailed", err.Error(), is.Generation)
 		_ = r.Status().Update(ctx, is)
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
@@ -168,7 +170,7 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs( //nolint:gocyclo
 	// (catalogNeedsRebuild logic below).
 	alreadyBuilt := false
 	for _, c := range is.Status.Conditions {
-		if c.Type == "CatalogReady" && c.Status == metav1.ConditionTrue {
+		if c.Type == conditionCatalogReady && c.Status == metav1.ConditionTrue {
 			alreadyBuilt = true
 			break
 		}
@@ -213,7 +215,7 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs( //nolint:gocyclo
 			l.Info("Catalog build deferred: imagestate not yet populated by manager",
 				"imageSet", is.Name)
 		}
-		setCondition(&is.Status.Conditions, "CatalogReady", metav1.ConditionFalse,
+		setCondition(&is.Status.Conditions, conditionCatalogReady, metav1.ConditionFalse,
 			"WaitingForOperatorMirror",
 			"waiting for operator bundle images to be mirrored before building filtered catalog",
 			is.Generation)
@@ -256,7 +258,7 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs( //nolint:gocyclo
 	catalogAlreadyReady := false
 	if !catalogNeedsRebuild {
 		for _, c := range is.Status.Conditions {
-			if c.Type == "CatalogReady" && c.Status == metav1.ConditionTrue {
+			if c.Type == conditionCatalogReady && c.Status == metav1.ConditionTrue {
 				catalogAlreadyReady = true
 				break
 			}
@@ -328,7 +330,7 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs( //nolint:gocyclo
 
 	switch {
 	case anyFailed:
-		setCondition(&is.Status.Conditions, "CatalogReady", metav1.ConditionFalse, "CatalogBuildFailed", "one or more catalog build jobs failed", is.Generation)
+		setCondition(&is.Status.Conditions, conditionCatalogReady, metav1.ConditionFalse, "CatalogBuildFailed", "one or more catalog build jobs failed", is.Generation)
 	case allSucceeded:
 		// Use RetryOnConflict because the per-MirrorTarget manager pod is a
 		// concurrent writer of ImageSet.status (TotalImages, MirroredImages,
@@ -340,7 +342,7 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs( //nolint:gocyclo
 			if rerr := r.Get(ctx, types.NamespacedName{Name: is.Name, Namespace: is.Namespace}, fresh); rerr != nil {
 				return rerr
 			}
-			setCondition(&fresh.Status.Conditions, "CatalogReady", metav1.ConditionTrue,
+			setCondition(&fresh.Status.Conditions, conditionCatalogReady, metav1.ConditionTrue,
 				"CatalogBuildSucceeded", "all catalog images built successfully", fresh.Generation)
 			return r.Status().Update(ctx, fresh)
 		})
@@ -363,7 +365,7 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs( //nolint:gocyclo
 		}
 		return nil
 	default:
-		setCondition(&is.Status.Conditions, "CatalogReady", metav1.ConditionFalse, "CatalogBuildRunning", "catalog build jobs are still running", is.Generation)
+		setCondition(&is.Status.Conditions, conditionCatalogReady, metav1.ConditionFalse, "CatalogBuildRunning", "catalog build jobs are still running", is.Generation)
 	}
 
 	return r.Status().Update(ctx, is)

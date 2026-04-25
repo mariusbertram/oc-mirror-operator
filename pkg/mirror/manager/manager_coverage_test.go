@@ -37,6 +37,8 @@ var _ = Describe("Manager Coverage", func() {
 		m = NewWithClients(c, cs, "test", "default", "test-image:latest", "", scheme)
 	})
 
+	const testImageSetName = "my-is"
+
 	// ─── Pure helper functions ────────────────────────────────────────
 
 	Context("pointerTo", func() {
@@ -541,7 +543,7 @@ var _ = Describe("Manager Coverage", func() {
 			err := m.ensureWorkerTokenSecret(context.TODO(), mt)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(m.workerToken).NotTo(BeEmpty())
-			Expect(len(m.workerToken)).To(Equal(64)) // 32 bytes hex-encoded
+			Expect(m.workerToken).To(HaveLen(64)) // 32 bytes hex-encoded
 		})
 
 		It("loads existing secret", func() {
@@ -619,13 +621,13 @@ var _ = Describe("Manager Coverage", func() {
 	Context("handleStatusUpdate", func() {
 		BeforeEach(func() {
 			m.workerToken = "test-token"
-			m.imageStates["my-is"] = imagestate.ImageState{
+			m.imageStates[testImageSetName] = imagestate.ImageState{
 				"reg.io/mirror/img:v1": &imagestate.ImageEntry{
 					Source: "quay.io/img:v1",
 					State:  statePending,
 				},
 			}
-			m.destToIS["reg.io/mirror/img:v1"] = "my-is"
+			m.destToIS["reg.io/mirror/img:v1"] = testImageSetName
 		})
 
 		It("rejects non-POST methods", func() {
@@ -677,7 +679,7 @@ var _ = Describe("Manager Coverage", func() {
 			rr := httptest.NewRecorder()
 			m.handleStatusUpdate(rr, req)
 			Expect(rr.Code).To(Equal(http.StatusOK))
-			Expect(m.imageStates["my-is"]["reg.io/mirror/img:v1"].State).To(Equal(stateMirrored))
+			Expect(m.imageStates[testImageSetName]["reg.io/mirror/img:v1"].State).To(Equal(stateMirrored))
 			Expect(m.mirrored["reg.io/mirror/img:v1"]).To(BeTrue())
 			Expect(m.inProgress).NotTo(HaveKey("reg.io/mirror/img:v1"))
 		})
@@ -694,7 +696,7 @@ var _ = Describe("Manager Coverage", func() {
 			rr := httptest.NewRecorder()
 			m.handleStatusUpdate(rr, req)
 			Expect(rr.Code).To(Equal(http.StatusOK))
-			entry := m.imageStates["my-is"]["reg.io/mirror/img:v1"]
+			entry := m.imageStates[testImageSetName]["reg.io/mirror/img:v1"]
 			Expect(entry.State).To(Equal(stateFailed))
 			Expect(entry.RetryCount).To(Equal(1))
 		})
@@ -1100,14 +1102,14 @@ var _ = Describe("Manager Coverage", func() {
 			mt := &mirrorv1alpha1.MirrorTarget{
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
 				Spec: mirrorv1alpha1.MirrorTargetSpec{
-					Registry:  "reg.io",
-					ImageSets: []string{"my-is"},
+					Registry:     "reg.io",
+					ImageSets:    []string{testImageSetName},
 					PollInterval: &metav1.Duration{Duration: -1},
 				},
 			}
 			is := &mirrorv1alpha1.ImageSet{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:       "my-is",
+					Name:       testImageSetName,
 					Namespace:  "default",
 					Generation: 1,
 				},
@@ -1119,10 +1121,10 @@ var _ = Describe("Manager Coverage", func() {
 				Build()
 			cs := k8sfake.NewSimpleClientset()
 			m = NewWithClients(c, cs, "test", "default", "test-image:latest", "", scheme)
-			m.imageStates["my-is"] = imagestate.ImageState{
+			m.imageStates[testImageSetName] = imagestate.ImageState{
 				"reg.io/img:v1": &imagestate.ImageEntry{Source: "quay.io/img:v1", State: statePending},
 			}
-			m.dirtyStateNames["my-is"] = true
+			m.dirtyStateNames[testImageSetName] = true
 
 			err := m.reconcile(context.TODO())
 			Expect(err).NotTo(HaveOccurred())
@@ -1273,10 +1275,10 @@ var _ = Describe("Manager Coverage", func() {
 			cs := k8sfake.NewSimpleClientset(failedPod)
 			m.Clientset = cs
 			m.inProgress["d1"] = "failed-worker"
-			m.imageStates["my-is"] = imagestate.ImageState{
+			m.imageStates[testImageSetName] = imagestate.ImageState{
 				"d1": &imagestate.ImageEntry{Source: "s1", State: stateFailed},
 			}
-			m.destToIS["d1"] = "my-is"
+			m.destToIS["d1"] = testImageSetName
 
 			m.cleanupFinishedWorkers(context.TODO())
 			Expect(m.inProgress).NotTo(HaveKey("d1"))
@@ -1491,7 +1493,7 @@ var _ = Describe("Manager Coverage", func() {
 			mt := &mirrorv1alpha1.MirrorTarget{
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default", UID: "uid-1"},
 				Spec: mirrorv1alpha1.MirrorTargetSpec{
-					Registry: "reg.io",
+					Registry:      "reg.io",
 					WorkerStorage: &mirrorv1alpha1.WorkerStorageConfig{},
 				},
 			}
@@ -1503,7 +1505,7 @@ var _ = Describe("Manager Coverage", func() {
 			pod := pods.Items[0]
 			foundEphemeral := false
 			for _, v := range pod.Spec.Volumes {
-				if v.Name == "blob-buffer" && v.VolumeSource.Ephemeral != nil {
+				if v.Name == "blob-buffer" && v.Ephemeral != nil {
 					foundEphemeral = true
 				}
 			}
@@ -1599,7 +1601,7 @@ var _ = Describe("Manager Coverage", func() {
 						mirrorv1alpha1.CatalogDigestAnnotationPrefix + "old":  "v3:sha256:old",
 						mirrorv1alpha1.ReleaseDigestAnnotationPrefix + "old2": "release-old",
 						mirrorv1alpha1.RecollectAnnotation:                    "",
-						"keep-this": "value",
+						"keep-this":                                           "value",
 					},
 				},
 			}
@@ -1622,13 +1624,13 @@ var _ = Describe("Manager Coverage", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
 				Spec: mirrorv1alpha1.MirrorTargetSpec{
 					Registry:     "reg.io",
-					ImageSets:    []string{"my-is"},
+					ImageSets:    []string{testImageSetName},
 					PollInterval: &metav1.Duration{Duration: -1},
 				},
 			}
 			is := &mirrorv1alpha1.ImageSet{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:       "my-is",
+					Name:       testImageSetName,
 					Namespace:  "default",
 					Generation: 1,
 				},
@@ -1640,7 +1642,7 @@ var _ = Describe("Manager Coverage", func() {
 				Build()
 			cs := k8sfake.NewSimpleClientset()
 			m = NewWithClients(c, cs, "test", "default", "test-image:latest", "", scheme)
-			m.imageStates["my-is"] = imagestate.ImageState{
+			m.imageStates[testImageSetName] = imagestate.ImageState{
 				"reg.io/img:v1": &imagestate.ImageEntry{
 					Source:     "quay.io/img:v1",
 					State:      stateFailed,
@@ -1652,7 +1654,7 @@ var _ = Describe("Manager Coverage", func() {
 			err := m.reconcile(context.TODO())
 			Expect(err).NotTo(HaveOccurred())
 			// After reconcile, failed with retryCount < 10 should be reset to Pending
-			entry := m.imageStates["my-is"]["reg.io/img:v1"]
+			entry := m.imageStates[testImageSetName]["reg.io/img:v1"]
 			Expect(entry.State).To(Equal(statePending))
 		})
 
@@ -1661,13 +1663,13 @@ var _ = Describe("Manager Coverage", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
 				Spec: mirrorv1alpha1.MirrorTargetSpec{
 					Registry:     "reg.io",
-					ImageSets:    []string{"my-is"},
+					ImageSets:    []string{testImageSetName},
 					PollInterval: &metav1.Duration{Duration: -1},
 				},
 			}
 			is := &mirrorv1alpha1.ImageSet{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:       "my-is",
+					Name:       testImageSetName,
 					Namespace:  "default",
 					Generation: 1,
 				},
@@ -1679,7 +1681,7 @@ var _ = Describe("Manager Coverage", func() {
 				Build()
 			cs := k8sfake.NewSimpleClientset()
 			m = NewWithClients(c, cs, "test", "default", "test-image:latest", "", scheme)
-			m.imageStates["my-is"] = imagestate.ImageState{
+			m.imageStates[testImageSetName] = imagestate.ImageState{
 				"reg.io/img:v1": &imagestate.ImageEntry{
 					Source:     "quay.io/img:v1",
 					State:      stateFailed,
@@ -1690,7 +1692,7 @@ var _ = Describe("Manager Coverage", func() {
 
 			err := m.reconcile(context.TODO())
 			Expect(err).NotTo(HaveOccurred())
-			entry := m.imageStates["my-is"]["reg.io/img:v1"]
+			entry := m.imageStates[testImageSetName]["reg.io/img:v1"]
 			Expect(entry.PermanentlyFailed).To(BeTrue())
 		})
 
@@ -1699,13 +1701,13 @@ var _ = Describe("Manager Coverage", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
 				Spec: mirrorv1alpha1.MirrorTargetSpec{
 					Registry:     "reg.io",
-					ImageSets:    []string{"my-is"},
+					ImageSets:    []string{testImageSetName},
 					PollInterval: &metav1.Duration{Duration: -1},
 				},
 			}
 			is := &mirrorv1alpha1.ImageSet{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:       "my-is",
+					Name:       testImageSetName,
 					Namespace:  "default",
 					Generation: 1,
 				},
@@ -1717,7 +1719,7 @@ var _ = Describe("Manager Coverage", func() {
 				Build()
 			cs := k8sfake.NewSimpleClientset()
 			m = NewWithClients(c, cs, "test", "default", "test-image:latest", "", scheme)
-			m.imageStates["my-is"] = imagestate.ImageState{
+			m.imageStates[testImageSetName] = imagestate.ImageState{
 				"reg.io/img:v1": &imagestate.ImageEntry{
 					Source: "quay.io/img:v1",
 					State:  stateMirrored,
@@ -1736,13 +1738,13 @@ var _ = Describe("Manager Coverage", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
 				Spec: mirrorv1alpha1.MirrorTargetSpec{
 					Registry:     "reg.io",
-					ImageSets:    []string{"my-is"},
+					ImageSets:    []string{testImageSetName},
 					PollInterval: &metav1.Duration{Duration: -1},
 				},
 			}
 			is := &mirrorv1alpha1.ImageSet{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:       "my-is",
+					Name:       testImageSetName,
 					Namespace:  "default",
 					Generation: 1,
 				},
@@ -1754,7 +1756,7 @@ var _ = Describe("Manager Coverage", func() {
 				Build()
 			cs := k8sfake.NewSimpleClientset()
 			m = NewWithClients(c, cs, "test", "default", "test-image:latest", "", scheme)
-			m.imageStates["my-is"] = imagestate.ImageState{
+			m.imageStates[testImageSetName] = imagestate.ImageState{
 				"reg.io/img:v1": &imagestate.ImageEntry{
 					Source: "quay.io/img:v1",
 					State:  statePending,
@@ -1765,7 +1767,7 @@ var _ = Describe("Manager Coverage", func() {
 
 			err := m.reconcile(context.TODO())
 			Expect(err).NotTo(HaveOccurred())
-			Expect(m.imageStates["my-is"]["reg.io/img:v1"].State).To(Equal(stateMirrored))
+			Expect(m.imageStates[testImageSetName]["reg.io/img:v1"].State).To(Equal(stateMirrored))
 		})
 
 		It("skips already in-progress pending images", func() {
@@ -1773,13 +1775,13 @@ var _ = Describe("Manager Coverage", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
 				Spec: mirrorv1alpha1.MirrorTargetSpec{
 					Registry:     "reg.io",
-					ImageSets:    []string{"my-is"},
+					ImageSets:    []string{testImageSetName},
 					PollInterval: &metav1.Duration{Duration: -1},
 				},
 			}
 			is := &mirrorv1alpha1.ImageSet{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:       "my-is",
+					Name:       testImageSetName,
 					Namespace:  "default",
 					Generation: 1,
 				},
@@ -1791,7 +1793,7 @@ var _ = Describe("Manager Coverage", func() {
 				Build()
 			cs := k8sfake.NewSimpleClientset()
 			m = NewWithClients(c, cs, "test", "default", "test-image:latest", "", scheme)
-			m.imageStates["my-is"] = imagestate.ImageState{
+			m.imageStates[testImageSetName] = imagestate.ImageState{
 				"reg.io/img:v1": &imagestate.ImageEntry{
 					Source: "quay.io/img:v1",
 					State:  statePending,
@@ -1809,7 +1811,7 @@ var _ = Describe("Manager Coverage", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default", UID: "uid-1"},
 				Spec: mirrorv1alpha1.MirrorTargetSpec{
 					Registry:     "reg.io",
-					ImageSets:    []string{"my-is"},
+					ImageSets:    []string{testImageSetName},
 					Concurrency:  1,
 					BatchSize:    10,
 					PollInterval: &metav1.Duration{Duration: -1},
@@ -1817,7 +1819,7 @@ var _ = Describe("Manager Coverage", func() {
 			}
 			is := &mirrorv1alpha1.ImageSet{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:       "my-is",
+					Name:       testImageSetName,
 					Namespace:  "default",
 					Generation: 1,
 				},
@@ -1829,7 +1831,7 @@ var _ = Describe("Manager Coverage", func() {
 				Build()
 			cs := k8sfake.NewSimpleClientset()
 			m = NewWithClients(c, cs, "test", "default", "test-image:latest", "", scheme)
-			m.imageStates["my-is"] = imagestate.ImageState{
+			m.imageStates[testImageSetName] = imagestate.ImageState{
 				"reg.io/img:v1": &imagestate.ImageEntry{
 					Source: "quay.io/img:v1",
 					State:  statePending,
@@ -1847,13 +1849,13 @@ var _ = Describe("Manager Coverage", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
 				Spec: mirrorv1alpha1.MirrorTargetSpec{
 					Registry:     "reg.io",
-					ImageSets:    []string{"my-is"},
+					ImageSets:    []string{testImageSetName},
 					PollInterval: &metav1.Duration{Duration: -1},
 				},
 			}
 			is := &mirrorv1alpha1.ImageSet{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:       "my-is",
+					Name:       testImageSetName,
 					Namespace:  "default",
 					Generation: 1,
 				},
@@ -1865,7 +1867,7 @@ var _ = Describe("Manager Coverage", func() {
 				Build()
 			cs := k8sfake.NewSimpleClientset()
 			m = NewWithClients(c, cs, "test", "default", "test-image:latest", "", scheme)
-			m.imageStates["my-is"] = imagestate.ImageState{
+			m.imageStates[testImageSetName] = imagestate.ImageState{
 				"reg.io/img:v1": &imagestate.ImageEntry{
 					Source: "quay.io/img:v1",
 					State:  "UnknownState",
@@ -1882,13 +1884,13 @@ var _ = Describe("Manager Coverage", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
 				Spec: mirrorv1alpha1.MirrorTargetSpec{
 					Registry:     "reg.io",
-					ImageSets:    []string{"my-is"},
+					ImageSets:    []string{testImageSetName},
 					PollInterval: &metav1.Duration{Duration: -1},
 				},
 			}
 			is := &mirrorv1alpha1.ImageSet{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:       "my-is",
+					Name:       testImageSetName,
 					Namespace:  "default",
 					Generation: 1,
 				},
@@ -1912,7 +1914,7 @@ var _ = Describe("Manager Coverage", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default", UID: "uid-1"},
 				Spec: mirrorv1alpha1.MirrorTargetSpec{
 					Registry:     "reg.io",
-					ImageSets:    []string{"my-is"},
+					ImageSets:    []string{testImageSetName},
 					Concurrency:  2,
 					BatchSize:    1,
 					PollInterval: &metav1.Duration{Duration: -1},
@@ -1920,7 +1922,7 @@ var _ = Describe("Manager Coverage", func() {
 			}
 			is := &mirrorv1alpha1.ImageSet{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:       "my-is",
+					Name:       testImageSetName,
 					Namespace:  "default",
 					Generation: 1,
 				},
@@ -1932,7 +1934,7 @@ var _ = Describe("Manager Coverage", func() {
 				Build()
 			cs := k8sfake.NewSimpleClientset()
 			m = NewWithClients(c, cs, "test", "default", "test-image:latest", "", scheme)
-			m.imageStates["my-is"] = imagestate.ImageState{
+			m.imageStates[testImageSetName] = imagestate.ImageState{
 				"reg.io/img:v1": &imagestate.ImageEntry{Source: "quay.io/img:v1", State: statePending},
 				"reg.io/img:v2": &imagestate.ImageEntry{Source: "quay.io/img:v2", State: statePending},
 				"reg.io/img:v3": &imagestate.ImageEntry{Source: "quay.io/img:v3", State: statePending},
@@ -1943,7 +1945,7 @@ var _ = Describe("Manager Coverage", func() {
 			Expect(err).NotTo(HaveOccurred())
 			// With concurrency=2, batchSize=1, at most 2 batches should be dispatched
 			Expect(len(m.inProgress)).To(BeNumerically("<=", 3))
-			Expect(len(m.inProgress)).To(BeNumerically(">=", 1))
+			Expect(m.inProgress).ToNot(BeEmpty())
 		})
 
 		It("handles permanently failed image that already has flag set", func() {
@@ -1951,13 +1953,13 @@ var _ = Describe("Manager Coverage", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
 				Spec: mirrorv1alpha1.MirrorTargetSpec{
 					Registry:     "reg.io",
-					ImageSets:    []string{"my-is"},
+					ImageSets:    []string{testImageSetName},
 					PollInterval: &metav1.Duration{Duration: -1},
 				},
 			}
 			is := &mirrorv1alpha1.ImageSet{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:       "my-is",
+					Name:       testImageSetName,
 					Namespace:  "default",
 					Generation: 1,
 				},
@@ -1969,7 +1971,7 @@ var _ = Describe("Manager Coverage", func() {
 				Build()
 			cs := k8sfake.NewSimpleClientset()
 			m = NewWithClients(c, cs, "test", "default", "test-image:latest", "", scheme)
-			m.imageStates["my-is"] = imagestate.ImageState{
+			m.imageStates[testImageSetName] = imagestate.ImageState{
 				"reg.io/img:v1": &imagestate.ImageEntry{
 					Source:            "quay.io/img:v1",
 					State:             stateFailed,
@@ -2031,7 +2033,7 @@ var _ = Describe("Manager Coverage", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default", UID: "uid-1"},
 				Spec: mirrorv1alpha1.MirrorTargetSpec{
 					Registry:     "reg.io",
-					ImageSets:    []string{"my-is"},
+					ImageSets:    []string{testImageSetName},
 					Concurrency:  1,
 					BatchSize:    50,
 					PollInterval: &metav1.Duration{Duration: -1},
@@ -2039,7 +2041,7 @@ var _ = Describe("Manager Coverage", func() {
 			}
 			is := &mirrorv1alpha1.ImageSet{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:       "my-is",
+					Name:       testImageSetName,
 					Namespace:  "default",
 					Generation: 1,
 				},
@@ -2053,7 +2055,7 @@ var _ = Describe("Manager Coverage", func() {
 			m = NewWithClients(c, cs, "test", "default", "test-image:latest", "", scheme)
 			// Pre-fill an existing in-progress entry → activePods already at 1
 			m.inProgress["reg.io/other:v9"] = "existing-worker-pod"
-			m.imageStates["my-is"] = imagestate.ImageState{
+			m.imageStates[testImageSetName] = imagestate.ImageState{
 				"reg.io/img:v1": &imagestate.ImageEntry{Source: "quay.io/img:v1", State: statePending},
 				"reg.io/img:v2": &imagestate.ImageEntry{Source: "quay.io/img:v2", State: statePending},
 			}
@@ -2071,7 +2073,7 @@ var _ = Describe("Manager Coverage", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default", UID: "uid-1"},
 				Spec: mirrorv1alpha1.MirrorTargetSpec{
 					Registry:     "reg.io",
-					ImageSets:    []string{"my-is"},
+					ImageSets:    []string{testImageSetName},
 					Concurrency:  1,
 					BatchSize:    50,
 					PollInterval: &metav1.Duration{Duration: -1},
@@ -2079,7 +2081,7 @@ var _ = Describe("Manager Coverage", func() {
 			}
 			is := &mirrorv1alpha1.ImageSet{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:       "my-is",
+					Name:       testImageSetName,
 					Namespace:  "default",
 					Generation: 1,
 				},
@@ -2091,7 +2093,7 @@ var _ = Describe("Manager Coverage", func() {
 				Build()
 			cs := k8sfake.NewSimpleClientset()
 			m = NewWithClients(c, cs, "test", "default", "test-image:latest", "", scheme)
-			m.imageStates["my-is"] = imagestate.ImageState{
+			m.imageStates[testImageSetName] = imagestate.ImageState{
 				"reg.io/img:v1": &imagestate.ImageEntry{
 					Source:     "quay.io/img:v1",
 					State:      stateFailed,
@@ -2108,7 +2110,7 @@ var _ = Describe("Manager Coverage", func() {
 			err := m.reconcile(context.TODO())
 			Expect(err).NotTo(HaveOccurred())
 			// Failed with retryCount < 10 should reset to Pending
-			Expect(m.imageStates["my-is"]["reg.io/img:v1"].State).To(Equal(statePending))
+			Expect(m.imageStates[testImageSetName]["reg.io/img:v1"].State).To(Equal(statePending))
 			// Mirrored should be trusted
 			Expect(m.mirrored["reg.io/img:v2"]).To(BeTrue())
 		})
@@ -2118,14 +2120,14 @@ var _ = Describe("Manager Coverage", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
 				Spec: mirrorv1alpha1.MirrorTargetSpec{
 					Registry:           "reg.io",
-					ImageSets:          []string{"my-is"},
+					ImageSets:          []string{testImageSetName},
 					PollInterval:       &metav1.Duration{Duration: -1},
 					CheckExistInterval: &metav1.Duration{Duration: 2 * time.Hour},
 				},
 			}
 			is := &mirrorv1alpha1.ImageSet{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:       "my-is",
+					Name:       testImageSetName,
 					Namespace:  "default",
 					Generation: 1,
 				},
@@ -2137,7 +2139,7 @@ var _ = Describe("Manager Coverage", func() {
 				Build()
 			cs := k8sfake.NewSimpleClientset()
 			m = NewWithClients(c, cs, "test", "default", "test-image:latest", "", scheme)
-			m.imageStates["my-is"] = imagestate.ImageState{
+			m.imageStates[testImageSetName] = imagestate.ImageState{
 				"reg.io/img:v1": &imagestate.ImageEntry{Source: "quay.io/img:v1", State: statePending},
 			}
 			// Set lastDriftCheck to recent (within CheckExistInterval)
@@ -2152,16 +2154,16 @@ var _ = Describe("Manager Coverage", func() {
 
 	Context("setImageStateLocked additional", func() {
 		It("sets PermanentlyFailed when retryCount reaches 10", func() {
-			m.imageStates["my-is"] = imagestate.ImageState{
+			m.imageStates[testImageSetName] = imagestate.ImageState{
 				"reg.io/img:v1": &imagestate.ImageEntry{
 					Source:     "quay.io/img:v1",
 					State:      statePending,
 					RetryCount: 9,
 				},
 			}
-			m.destToIS["reg.io/img:v1"] = "my-is"
+			m.destToIS["reg.io/img:v1"] = testImageSetName
 			m.setImageStateLocked("reg.io/img:v1", stateFailed, "final error")
-			entry := m.imageStates["my-is"]["reg.io/img:v1"]
+			entry := m.imageStates[testImageSetName]["reg.io/img:v1"]
 			Expect(entry.RetryCount).To(Equal(10))
 			Expect(entry.PermanentlyFailed).To(BeTrue())
 		})
@@ -2173,22 +2175,22 @@ var _ = Describe("Manager Coverage", func() {
 		})
 
 		It("skips when entry not in isState", func() {
-			m.imageStates["my-is"] = imagestate.ImageState{}
-			m.destToIS["reg.io/img:v1"] = "my-is"
+			m.imageStates[testImageSetName] = imagestate.ImageState{}
+			m.destToIS["reg.io/img:v1"] = testImageSetName
 			// Should not panic
 			m.setImageStateLocked("reg.io/img:v1", stateMirrored, "")
 		})
 
 		It("marks dirty on state change", func() {
-			m.imageStates["my-is"] = imagestate.ImageState{
+			m.imageStates[testImageSetName] = imagestate.ImageState{
 				"reg.io/img:v1": &imagestate.ImageEntry{
 					Source: "quay.io/img:v1",
 					State:  statePending,
 				},
 			}
-			m.destToIS["reg.io/img:v1"] = "my-is"
+			m.destToIS["reg.io/img:v1"] = testImageSetName
 			m.setImageStateLocked("reg.io/img:v1", stateMirrored, "")
-			Expect(m.dirtyStateNames["my-is"]).To(BeTrue())
+			Expect(m.dirtyStateNames[testImageSetName]).To(BeTrue())
 		})
 	})
 
@@ -2214,9 +2216,9 @@ var _ = Describe("Manager Coverage", func() {
 			pod := pods.Items[0]
 			foundEphemeral := false
 			for _, v := range pod.Spec.Volumes {
-				if v.Name == "blob-buffer" && v.VolumeSource.Ephemeral != nil {
+				if v.Name == "blob-buffer" && v.Ephemeral != nil {
 					foundEphemeral = true
-					req := v.VolumeSource.Ephemeral.VolumeClaimTemplate.Spec.Resources.Requests[corev1.ResourceStorage]
+					req := v.Ephemeral.VolumeClaimTemplate.Spec.Resources.Requests[corev1.ResourceStorage]
 					Expect(req.String()).To(Equal("50Gi"))
 				}
 			}
