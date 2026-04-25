@@ -300,6 +300,8 @@ func (m *MirrorManager) handleStatusUpdate(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	defer r.Body.Close()
+
 	var req WorkerStatusRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid request", http.StatusBadRequest)
@@ -564,6 +566,18 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 				// State is byte-identical (no spec change) but we successfully
 				// polled — advance the poll clock.
 				justResolved = true
+				// If the current state in memory is empty, it may be because
+				// the state ConfigMap was deleted. If we just resolved, we
+				// must write the new state to a fresh ConfigMap, even if it's
+				// identical to the (empty) old state. This ensures an empty
+				// ConfigMap exists to signal that resolution has run.
+				if len(isState) == 0 {
+					if err := imagestate.Save(ctx, m.Client, m.Namespace, &is, newState); err != nil {
+						fmt.Printf("Warning: failed to save initial empty state for %s: %v\n", is.Name, err)
+						m.dirtyStateNames[is.Name] = true
+						justResolved = false // Don't advance poll clock on save error
+					}
+				}
 			}
 		}
 
