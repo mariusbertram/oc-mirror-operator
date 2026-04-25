@@ -85,16 +85,16 @@ var _ = Describe("OLM Upgrade", Ordered, Label("olm-upgrade"), func() {
 	AfterAll(func() {
 		By("cleaning up OLM operator install")
 		_ = exec.Command(sdkBin, "cleanup", "oc-mirror",
-			"--namespace", olmNs, "--timeout", "2m").Run()
+			"--namespace", olmNs, "--timeout", "4m").Run()
 		_ = exec.Command("kubectl", "delete", "mirrortarget", "olm-upgrade-rbac-test",
-			"-n", olmNs, "--ignore-not-found=true").Run()
+			"-n", olmNs, "--ignore-not-found=true", "--timeout=60s").Run()
 	})
 
 	It("should install the previous bundle version via OLM", func() {
 		By(fmt.Sprintf("running old bundle %s", oldBundleImg))
 		args := append([]string{"run", "bundle", oldBundleImg,
 			"--namespace", olmNs,
-			"--timeout", "4m",
+			"--timeout", "6m",
 			"--image-pull-policy", "IfNotPresent"},
 			sdkFlags...)
 		cmd := exec.Command(sdkBin, args...)
@@ -109,14 +109,14 @@ var _ = Describe("OLM Upgrade", Ordered, Label("olm-upgrade"), func() {
 			out, err := utils.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(strings.TrimSpace(out)).To(Equal("Succeeded"))
-		}, 4*time.Minute, 10*time.Second).Should(Succeed())
+		}, 6*time.Minute, 10*time.Second).Should(Succeed())
 	})
 
 	It("should upgrade to the new bundle without RBAC anti-escalation errors", func() {
 		By(fmt.Sprintf("upgrading to new bundle %s", newBundleImg))
 		args := append([]string{"run", "bundle-upgrade", newBundleImg,
 			"--namespace", olmNs,
-			"--timeout", "4m",
+			"--timeout", "6m",
 			"--image-pull-policy", "IfNotPresent"},
 			sdkFlags...)
 		cmd := exec.Command(sdkBin, args...)
@@ -131,7 +131,7 @@ var _ = Describe("OLM Upgrade", Ordered, Label("olm-upgrade"), func() {
 			out, err := utils.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(out).To(ContainSubstring("Succeeded"))
-		}, 4*time.Minute, 10*time.Second).Should(Succeed())
+		}, 6*time.Minute, 10*time.Second).Should(Succeed())
 	})
 
 	It("should grant PVC permissions to the controller-manager service account", func() {

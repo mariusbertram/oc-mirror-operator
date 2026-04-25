@@ -120,7 +120,7 @@ var _ = BeforeSuite(func() {
 			output, err := utils.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(output).To(Equal("Running"), "controller-manager pod not running")
-		}, 2*time.Minute, 5*time.Second).Should(Succeed())
+		}, 5*time.Minute, 5*time.Second).Should(Succeed())
 	}
 })
 

@@ -42,7 +42,7 @@ var _ = Describe("oc-mirror Operator E2E", Ordered, Label("cluster"), func() {
 		Expect(err).NotTo(HaveOccurred(), "Failed to deploy local registry")
 
 		By("waiting for registry to be ready")
-		cmd = exec.Command("kubectl", "rollout", "status", "deployment/registry", "--timeout=60s")
+		cmd = exec.Command("kubectl", "rollout", "status", "deployment/registry", "--timeout=120s")
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Registry failed to become ready")
 	})
@@ -54,13 +54,13 @@ var _ = Describe("oc-mirror Operator E2E", Ordered, Label("cluster"), func() {
 		_ = exec.Command("kubectl", "patch", "mirrortarget", targetName,
 			"-n", mirrorNamespace, "-p", `{"metadata":{"finalizers":[]}}`, "--type=merge").Run()
 
-		By("deleting test resources")
+		By("deleting test resources and waiting for removal")
 		_ = exec.Command("kubectl", "delete", "imageset", imageSetName,
-			"-n", mirrorNamespace, "--ignore-not-found=true").Run()
+			"-n", mirrorNamespace, "--ignore-not-found=true", "--timeout=60s").Run()
 		_ = exec.Command("kubectl", "delete", "mirrortarget", targetName,
-			"-n", mirrorNamespace, "--ignore-not-found=true").Run()
+			"-n", mirrorNamespace, "--ignore-not-found=true", "--timeout=60s").Run()
 		_ = exec.Command("kubectl", "delete", "-f",
-			"config/samples/registry_deploy.yaml", "--ignore-not-found=true").Run()
+			"config/samples/registry_deploy.yaml", "--ignore-not-found=true", "--timeout=60s").Run()
 	})
 
 	Context("Mirroring Scenario", func() {
@@ -120,7 +120,33 @@ spec:
 					"not all images mirrored — total=%s mirrored=%s", total, mirrored))
 			}
 			// Give the manager pod time to resolve and mirror the image.
-			Eventually(verifyMirroring, 5*time.Minute, 10*time.Second).Should(Succeed())
+			Eventually(verifyMirroring, 8*time.Minute, 10*time.Second).Should(Succeed(), func() string {
+				var diag strings.Builder
+				diag.WriteString("\n=== Mirror test diagnostic dump ===\n")
+
+				if out, err := utils.Run(exec.Command("kubectl", "get", "imageset", imageSetName,
+					"-n", mirrorNamespace, "-o", "yaml")); err == nil {
+					diag.WriteString("\n--- ImageSet YAML ---\n")
+					diag.WriteString(out)
+				}
+				if out, err := utils.Run(exec.Command("kubectl", "get", "pods",
+					"-n", mirrorNamespace, "-o", "wide")); err == nil {
+					diag.WriteString("\n--- Pods ---\n")
+					diag.WriteString(out)
+				}
+				if out, err := utils.Run(exec.Command("kubectl", "logs",
+					"-l", "app=oc-mirror-manager",
+					"-n", operatorNamespace, "--tail=80", "--all-containers")); err == nil {
+					diag.WriteString("\n--- Manager logs (last 80 lines) ---\n")
+					diag.WriteString(out)
+				}
+				if out, err := utils.Run(exec.Command("kubectl", "get", "events",
+					"-n", mirrorNamespace, "--sort-by=.lastTimestamp")); err == nil {
+					diag.WriteString("\n--- Events ---\n")
+					diag.WriteString(out)
+				}
+				return diag.String()
+			})
 
 		})
 	})

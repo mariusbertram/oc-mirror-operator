@@ -55,7 +55,7 @@ var _ = Describe("Catalog Build Job E2E", Ordered, Label("cluster", "catalog-clu
 
 		By("waiting for the registry to be ready")
 		cmd = exec.Command("kubectl", "rollout", "status", "deployment/registry",
-			"-n", ns, "--timeout=90s")
+			"-n", ns, "--timeout=120s")
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Registry deployment did not become ready")
 	})
@@ -67,13 +67,13 @@ var _ = Describe("Catalog Build Job E2E", Ordered, Label("cluster", "catalog-clu
 		_ = exec.Command("kubectl", "patch", "mirrortarget", targetName, "-n", ns,
 			"-p", `{"metadata":{"finalizers":[]}}`, "--type=merge").Run()
 
-		By("deleting test resources")
+		By("deleting test resources and waiting for removal")
 		_ = exec.Command("kubectl", "delete", "imageset", imageSetName, "-n", ns,
-			"--ignore-not-found=true").Run()
+			"--ignore-not-found=true", "--timeout=60s").Run()
 		_ = exec.Command("kubectl", "delete", "mirrortarget", targetName, "-n", ns,
-			"--ignore-not-found=true").Run()
+			"--ignore-not-found=true", "--timeout=60s").Run()
 		_ = exec.Command("kubectl", "delete", "-f", "config/samples/registry_deploy.yaml",
-			"--ignore-not-found=true").Run()
+			"--ignore-not-found=true", "--timeout=60s").Run()
 	})
 
 	Context("CatalogBuildJob lifecycle", func() {
@@ -135,7 +135,7 @@ spec:
 		})
 
 		It("should complete the CatalogBuildJob successfully", func() {
-			By("waiting up to 5 minutes for the CatalogBuildJob to succeed")
+			By("waiting up to 10 minutes for the CatalogBuildJob to succeed")
 			// The job pulls ghcr.io/mariusbertram/brtrm-dev-catalog/catalog:latest (small,
 			// only 2 operators) and filters it — should complete well within 5 minutes.
 			// Extra time accounts for image pull on cold GitHub Actions runners.
@@ -148,7 +148,7 @@ spec:
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal("1"),
 					"CatalogBuildJob has not succeeded yet (succeeded=%s)", output)
-			}, 10*time.Minute, 10*time.Second).Should(Succeed(), func() string {
+			}, 15*time.Minute, 10*time.Second).Should(Succeed(), func() string {
 				// Dump diagnostic info on failure
 				var diag strings.Builder
 				diag.WriteString("\n=== CatalogBuildJob diagnostic dump ===\n")

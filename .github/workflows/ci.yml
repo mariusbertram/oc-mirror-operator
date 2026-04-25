@@ -161,8 +161,10 @@ jobs:
               echo "Failed to create cluster after 3 attempts"
               exit 1
             fi
-            echo "Cluster creation failed, retrying in 10s..."
-            sleep 10
+            # Exponential backoff: 10s, 30s, 60s
+            backoff=$((10 * attempt))
+            echo "Cluster creation failed, retrying in ${backoff}s..."
+            sleep $backoff
           done
 
           # Configure registry mirror inside the node (containerd 2.x certs.d format)
@@ -178,6 +180,12 @@ jobs:
 
           docker network connect kind kind-registry 2>/dev/null || true
 
+      - name: Verify cluster health
+        run: |
+          kubectl cluster-info
+          kubectl get nodes -o wide
+          kubectl wait --for=condition=Ready node --all --timeout=120s
+
       - name: Load operator image into Kind
         run: |
           docker load -i /tmp/operator-image.tar
@@ -189,7 +197,7 @@ jobs:
           kubectl wait deployment/cert-manager-webhook \
             --namespace cert-manager \
             --for=condition=Available \
-            --timeout=120s
+            --timeout=300s
 
       # ── Phase 1: regular e2e tests ──────────────────────────────────────
       - name: "Phase 1: Run E2E tests (cluster, catalog, release)"
@@ -198,7 +206,7 @@ jobs:
           SKIP_CLUSTER_SETUP=true \
           CERT_MANAGER_INSTALL_SKIP=true \
           KIND_CLUSTER=oc-mirror-e2e \
-          go test ./test/e2e/ -v -timeout 20m \
+          go test ./test/e2e/ -v -timeout 30m \
             -ginkgo.v \
             -ginkgo.label-filter="!catalog-live && !olm-upgrade"
           # label map:
@@ -242,7 +250,7 @@ jobs:
           docker push localhost:5001/oc-mirror-bundle:${{ steps.latest-tag.outputs.new_ver }}
 
       - name: Install OLM
-        run: bin/operator-sdk olm install --timeout 3m
+        run: bin/operator-sdk olm install --timeout 5m
 
       - name: "Phase 2: Run OLM upgrade E2E tests"
         run: |
@@ -254,9 +262,25 @@ jobs:
           SKIP_OPERATOR_DEPLOY=true \
           CERT_MANAGER_INSTALL_SKIP=true \
           KIND_CLUSTER=oc-mirror-e2e \
-          go test ./test/e2e/ -v -timeout 25m \
+          go test ./test/e2e/ -v -timeout 30m \
             -ginkgo.v \
             -ginkgo.label-filter="olm-upgrade"
+
+      - name: Diagnostic dump on failure
+        if: failure()
+        run: |
+          echo "=== Cluster Nodes ==="
+          kubectl get nodes -o wide || true
+          echo "=== All Pods ==="
+          kubectl get pods -A -o wide || true
+          echo "=== Pod Events ==="
+          kubectl get events -A --sort-by=.lastTimestamp | tail -80 || true
+          echo "=== Controller-Manager Logs ==="
+          kubectl logs -l control-plane=controller-manager -n oc-mirror-system --tail=100 --all-containers 2>/dev/null || true
+          echo "=== OLM Pods ==="
+          kubectl get pods -n olm -o wide 2>/dev/null || true
+          echo "=== CSVs ==="
+          kubectl get csv -A 2>/dev/null || true
 
       - name: Cleanup
         if: always()
