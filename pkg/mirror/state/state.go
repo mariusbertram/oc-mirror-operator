@@ -9,6 +9,7 @@ import (
 
 	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
 	godigest "github.com/opencontainers/go-digest"
+	"github.com/regclient/regclient/types/blob"
 	"github.com/regclient/regclient/types/descriptor"
 	"github.com/regclient/regclient/types/manifest"
 	"github.com/regclient/regclient/types/mediatype"
@@ -26,12 +27,26 @@ type Metadata struct {
 	MirroredImages map[string]string `json:"mirroredImages"` // destination -> digest
 }
 
+// registryClient is the subset of MirrorClient used by StateManager.
+// Extracted as an interface so tests can provide a fake implementation.
+type registryClient interface {
+	ManifestGet(ctx context.Context, r ref.Ref) (manifest.Manifest, error)
+	ManifestPut(ctx context.Context, r ref.Ref, m manifest.Manifest) error
+	BlobGet(ctx context.Context, r ref.Ref, d descriptor.Descriptor) (blob.Reader, error)
+	BlobPut(ctx context.Context, r ref.Ref, d descriptor.Descriptor, rdr io.Reader) (descriptor.Descriptor, error)
+}
+
 // StateManager handles reading and writing metadata to the target registry
 type StateManager struct {
-	client *mirrorclient.MirrorClient
+	client registryClient
 }
 
 func New(client *mirrorclient.MirrorClient) *StateManager {
+	return &StateManager{client: client}
+}
+
+// NewWithClient creates a StateManager with a custom registryClient (for testing).
+func NewWithClient(client registryClient) *StateManager {
 	return &StateManager{client: client}
 }
 

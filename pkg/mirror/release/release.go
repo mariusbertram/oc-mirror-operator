@@ -23,9 +23,9 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-const (
-	OcpUpdateURL = "https://api.openshift.com/api/upgrades_info/v1/graph"
-)
+// OcpUpdateURL is the Cincinnati API endpoint for OpenShift release graphs.
+// It is a variable (not a constant) so that tests can override it with httptest servers.
+var OcpUpdateURL = "https://api.openshift.com/api/upgrades_info/v1/graph"
 
 type Graph struct {
 	Nodes []Node  `json:"nodes"`
