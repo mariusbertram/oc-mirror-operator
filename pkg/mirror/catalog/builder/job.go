@@ -199,7 +199,8 @@ func (m *CatalogBuildManager) buildJobSpec(
 	packages []mirrorv1alpha1.IncludePackage,
 ) *batchv1.Job {
 	backoffLimit := int32(3)
-	ttlAfterFinished := int32(600) // 10 min
+	ttlAfterFinished := int32(600)       // 10 min
+	activeDeadlineSeconds := int64(1800) // 30 min hard deadline per job attempt
 
 	commonLabels := map[string]string{
 		"app.kubernetes.io/managed-by": "oc-mirror-operator",
@@ -323,6 +324,7 @@ func (m *CatalogBuildManager) buildJobSpec(
 		Spec: batchv1.JobSpec{
 			BackoffLimit:            &backoffLimit,
 			TTLSecondsAfterFinished: &ttlAfterFinished,
+			ActiveDeadlineSeconds:   &activeDeadlineSeconds,
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: commonLabels},
 				Spec: corev1.PodSpec{

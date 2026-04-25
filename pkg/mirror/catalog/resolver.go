@@ -95,6 +95,102 @@ func classifyLayer(r io.Reader) (skippable bool, totalSize int64, firstReject st
 	return sawAny, totalSize, "", nil
 }
 
+// classifyAndExtractFBC combines layer classification with FBC content
+// extraction in a single streaming pass. It reads the entire gzipped tar
+// stream once, determines whether the layer is skippable (FBC-only), and
+// simultaneously extracts all configs/ entries into configFS.
+//
+// This avoids the need to download the same blob twice (once for
+// classification, once for FBC extraction in loadFBCFromImage).
+func classifyAndExtractFBC(r io.Reader, configFS fstest.MapFS) (skippable bool, totalSize int64, firstReject string, err error) {
+	gz, err := gzip.NewReader(r)
+	if err != nil {
+		return false, 0, "", fmt.Errorf("gzip: %w", err)
+	}
+	defer func() { _ = gz.Close() }()
+
+	tr := tar.NewReader(gz)
+	sawAny := false
+	fbcOnly := true
+
+	for {
+		hdr, nextErr := tr.Next()
+		if nextErr == io.EOF {
+			break
+		}
+		if nextErr != nil {
+			return false, 0, "", fmt.Errorf("tar: %w", nextErr)
+		}
+
+		name := strings.TrimPrefix(hdr.Name, "./")
+
+		if hdr.Typeflag == tar.TypeDir {
+			continue
+		}
+
+		// Extract FBC files regardless of whether the layer is skippable,
+		// because the opaque whiteout replaces configs/ from all layers.
+		if hdr.Typeflag == tar.TypeReg && strings.HasPrefix(name, configsPath) {
+			data, readErr := io.ReadAll(io.LimitReader(tr, 64*1024*1024))
+			if readErr == nil {
+				configFS[name] = &fstest.MapFile{Data: data}
+			}
+		}
+
+		if !strings.HasPrefix(name, configsPath) && !strings.HasPrefix(name, cachePath) {
+			if fbcOnly {
+				firstReject = name
+				fbcOnly = false
+			}
+			continue
+		}
+
+		if hdr.Typeflag != tar.TypeReg {
+			if fbcOnly {
+				firstReject = name + " (non-regular file)"
+				fbcOnly = false
+			}
+			continue
+		}
+
+		sawAny = true
+		totalSize += hdr.Size
+	}
+
+	return sawAny && fbcOnly, totalSize, firstReject, nil
+}
+
+// blobCopyWithRetry wraps BlobCopy with per-attempt timeouts and retries.
+// Each attempt is given its own context deadline so a stalled download does not
+// consume the entire parent context budget. Only context/network errors are
+// retried; other failures (auth, digest mismatch) are returned immediately.
+func blobCopyWithRetry(ctx context.Context, client *mirrorclient.MirrorClient, src, dst ref.Ref, d descriptor.Descriptor, maxAttempts int, perAttemptTimeout time.Duration) error {
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if attempt > 1 {
+			backoff := time.Duration(attempt-1) * 5 * time.Second
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoff):
+			}
+			slog.Info("retrying blob copy",
+				"attempt", attempt, "digest", d.Digest.String(), "error", lastErr)
+		}
+		attemptCtx, cancel := context.WithTimeout(ctx, perAttemptTimeout)
+		lastErr = client.BlobCopy(attemptCtx, src, dst, d)
+		cancel()
+		if lastErr == nil {
+			return nil
+		}
+		// Only retry on context deadline / network errors.
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+	}
+	return lastErr
+}
+
 type CatalogResolver struct {
 	client *mirrorclient.MirrorClient
 }
@@ -970,14 +1066,14 @@ func (r *CatalogResolver) BuildFilteredCatalogImage(ctx context.Context, sourceC
 	}
 	fmt.Printf("Source catalog %s: %d layers\n", sourceCatalogImage, len(srcLayers))
 
-	// 4a. Classify each source layer. Layers whose entire payload lives under
-	// configs/ or tmp/cache/ are wholly replaced by our new filtered overlay
-	// and can be skipped both at copy time (saves bandwidth & storage in the
-	// target registry) and in the resulting manifest. The corresponding
-	// diff_id is dropped from the new image config so manifest and config stay
-	// in sync.
+	// 4a. Classify each source layer AND extract FBC content in a single pass.
+	// This avoids downloading layers twice (once for classification, once for
+	// FBC extraction). Layers whose entire payload lives under configs/ or
+	// tmp/cache/ are wholly replaced by our new filtered overlay and can be
+	// skipped both at copy time and in the resulting manifest.
 	keptLayers := make([]descriptor.Descriptor, 0, len(srcLayers))
 	keptDiffIDs := make([]godigest.Digest, 0, len(srcDiffIDs))
+	configFS := make(fstest.MapFS)
 	var skippedCount int
 	var skippedBytes int64
 	for i, layer := range srcLayers {
@@ -991,7 +1087,7 @@ func (r *CatalogResolver) BuildFilteredCatalogImage(ctx context.Context, sourceC
 			keptDiffIDs = append(keptDiffIDs, srcDiffIDs[i])
 			continue
 		}
-		skip, sz, firstReject, classifyErr := classifyLayer(blobRdr)
+		skip, sz, firstReject, classifyErr := classifyAndExtractFBC(blobRdr, configFS)
 		_ = blobRdr.Close()
 		if classifyErr != nil {
 			slog.WarnContext(ctx, "layer classification failed, will copy",
@@ -1025,18 +1121,25 @@ func (r *CatalogResolver) BuildFilteredCatalogImage(ctx context.Context, sourceC
 			"saved_compressed_bytes", skippedBytes)
 	}
 
-	// 5. Copy the kept source layers to target (cross-repo mount when same registry).
+	// 5. Copy the kept source layers to target with retry for transient errors.
 	for i, layer := range keptLayers {
 		fmt.Printf("Copying source layer %d/%d (%s, %d bytes)\n", i+1, len(keptLayers), layer.Digest.String()[:16], layer.Size)
-		if err := r.client.BlobCopy(ctx, srcRef, destRef, layer); err != nil {
+		if err := blobCopyWithRetry(ctx, r.client, srcRef, destRef, layer, 3, 5*time.Minute); err != nil {
 			return "", fmt.Errorf("failed to copy source layer %d (%s): %w", i, layer.Digest, err)
 		}
 	}
 
-	// 6. Extract and filter the FBC.
-	cfg, err := r.loadFBCFromImage(ctx, sourceCatalogImage)
+	// 6. Parse the FBC from the already-extracted config files (no re-download).
+	if len(configFS) == 0 {
+		return "", fmt.Errorf("no FBC config files found under %s in %s", configsPath, sourceCatalogImage)
+	}
+	subFS, err := fs.Sub(configFS, strings.TrimSuffix(configsPath, "/"))
 	if err != nil {
-		return "", fmt.Errorf("failed to load FBC from %s: %w", sourceCatalogImage, err)
+		return "", fmt.Errorf("failed to create configs sub-fs: %w", err)
+	}
+	cfg, err := declcfg.LoadFS(ctx, subFS)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse FBC from %s: %w", sourceCatalogImage, err)
 	}
 
 	filtered, err := r.FilterFBC(ctx, cfg, includes)

@@ -97,7 +97,7 @@ func main() {
 
 	// Apply a generous timeout so the job fails cleanly instead of hanging
 	// indefinitely when a registry push stalls (common in Kind CI clusters).
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
 
 	digest, err := resolver.BuildFilteredCatalogImage(ctx, source, target, packages)

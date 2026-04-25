@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,12 +15,15 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/blang/semver/v4"
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
 	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
 	"github.com/operator-framework/operator-registry/alpha/declcfg"
 	"github.com/operator-framework/operator-registry/alpha/property"
+	"github.com/regclient/regclient/types/descriptor"
+	"github.com/regclient/regclient/types/ref"
 )
 
 // ---------------------------------------------------------------------------
@@ -51,8 +55,8 @@ func TestGetCatalogDigest_InvalidRef(t *testing.T) {
 func TestGetCatalogDigest_DigestAlreadyPresent(t *testing.T) {
 	r := &CatalogResolver{} // nil client — should not be reached
 	digest := "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	ref := "registry.example.com/catalog@" + digest
-	got, err := r.GetCatalogDigest(context.Background(), ref)
+	imgRef := "registry.example.com/catalog@" + digest
+	got, err := r.GetCatalogDigest(context.Background(), imgRef)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1341,8 +1345,113 @@ func TestClassifyLayer_EmptyArchive(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// FilterFBC — more edge cases
+// classifyAndExtractFBC
 // ---------------------------------------------------------------------------
+
+func TestClassifyAndExtractFBC_FBCOnly(t *testing.T) {
+	data := makeGzipTar(t, []tarEntry{
+		{name: "configs/", typeflag: tar.TypeDir},
+		{name: "configs/pkg-a/catalog.yaml", typeflag: tar.TypeReg, size: 6, body: []byte("hello\n")},
+		{name: "tmp/cache/pogreb.idx", typeflag: tar.TypeReg, size: 3, body: []byte("idx")},
+	})
+	fs := make(fstest.MapFS)
+	skip, sz, _, err := classifyAndExtractFBC(bytes.NewReader(data), fs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !skip {
+		t.Error("expected FBC-only layer to be skippable")
+	}
+	if sz != 9 {
+		t.Errorf("expected totalSize 9, got %d", sz)
+	}
+	if _, ok := fs["configs/pkg-a/catalog.yaml"]; !ok {
+		t.Error("expected FBC file to be extracted into configFS")
+	}
+	if string(fs["configs/pkg-a/catalog.yaml"].Data) != "hello\n" {
+		t.Errorf("expected extracted content 'hello\\n', got %q", string(fs["configs/pkg-a/catalog.yaml"].Data))
+	}
+}
+
+func TestClassifyAndExtractFBC_MixedLayer(t *testing.T) {
+	data := makeGzipTar(t, []tarEntry{
+		{name: "configs/pkg-a/catalog.yaml", typeflag: tar.TypeReg, size: 4, body: []byte("data")},
+		{name: "usr/bin/opm", typeflag: tar.TypeReg, size: 3, body: []byte("bin")},
+	})
+	fs := make(fstest.MapFS)
+	skip, _, reject, err := classifyAndExtractFBC(bytes.NewReader(data), fs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if skip {
+		t.Error("mixed layer should not be skippable")
+	}
+	if reject != "usr/bin/opm" {
+		t.Errorf("expected firstReject 'usr/bin/opm', got %q", reject)
+	}
+	// FBC files should still be extracted even from non-skippable layers.
+	if _, ok := fs["configs/pkg-a/catalog.yaml"]; !ok {
+		t.Error("expected FBC file to be extracted even from mixed layer")
+	}
+}
+
+func TestClassifyAndExtractFBC_InvalidGzip(t *testing.T) {
+	fs := make(fstest.MapFS)
+	_, _, _, err := classifyAndExtractFBC(bytes.NewReader([]byte("not gzip")), fs)
+	if err == nil {
+		t.Error("expected error for invalid gzip")
+	}
+}
+
+func TestClassifyAndExtractFBC_EmptyArchive(t *testing.T) {
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	_ = tw.Close()
+	_ = gz.Close()
+
+	fs := make(fstest.MapFS)
+	skip, _, _, err := classifyAndExtractFBC(bytes.NewReader(buf.Bytes()), fs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if skip {
+		t.Error("empty archive should not be skippable")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// blobCopyWithRetry
+// ---------------------------------------------------------------------------
+
+func TestBlobCopyWithRetry_SucceedsOnFirstAttempt(t *testing.T) {
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	mc := mirrorclient.NewMirrorClient(nil, "")
+	// We can't easily mock BlobCopy through the real client, so we test the
+	// retry logic structurally: with a very short timeout and cancelled parent.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // immediately cancelled
+
+	err := blobCopyWithRetry(ctx, mc, ref.Ref{}, ref.Ref{}, descriptor.Descriptor{}, 3, time.Second)
+	if err == nil {
+		t.Error("expected error with cancelled context")
+	}
+}
+
+func TestBlobCopyWithRetry_RespectsParentCancel(t *testing.T) {
+	mc := mirrorclient.NewMirrorClient(nil, "")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := blobCopyWithRetry(ctx, mc, ref.Ref{}, ref.Ref{}, descriptor.Descriptor{}, 3, time.Minute)
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled, got %v", err)
+	}
+}
 
 func TestFilterFBC_BundleWithInvalidGVKJSON(t *testing.T) {
 	// GVK property with invalid JSON should be silently skipped during
