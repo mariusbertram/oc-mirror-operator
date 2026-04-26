@@ -84,12 +84,14 @@ func main() {
 	for _, p := range packages {
 		pkgNames = append(pkgNames, p.Name)
 	}
+	startTime := time.Now()
 	slog.Info("starting catalog-builder",
 		"source", source,
 		"target", target,
 		"packages", pkgNames,
 		"insecureHosts", insecureHosts,
 		"authDir", authDir,
+		"startTime", startTime.Format(time.RFC3339),
 	)
 
 	mc := mirrorclient.NewMirrorClient(insecureHosts, authDir)
@@ -101,10 +103,13 @@ func main() {
 	defer cancel()
 
 	digest, err := resolver.BuildFilteredCatalogImage(ctx, source, target, packages)
+	elapsed := time.Since(startTime)
 	if err != nil {
-		slog.Error("failed to build filtered catalog image", "error", err)
+		slog.Error("failed to build filtered catalog image",
+			"error", err, "elapsed", elapsed.Round(time.Millisecond).String())
 		os.Exit(1)
 	}
 
-	slog.Info("catalog image pushed successfully", "digest", digest, "target", target)
+	slog.Info("catalog image pushed successfully",
+		"digest", digest, "target", target, "elapsed", elapsed.Round(time.Millisecond).String())
 }

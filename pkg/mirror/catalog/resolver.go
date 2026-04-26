@@ -267,12 +267,17 @@ func blobCopyWithRetry(ctx context.Context, client *mirrorclient.MirrorClient, s
 			case <-time.After(backoff):
 			}
 			slog.Info("retrying blob transfer",
-				"attempt", attempt, "digest", d.Digest.String(), "error", lastErr)
+				"attempt", attempt, "digest", d.Digest.String(), "error", lastErr,
+				"time", time.Now().Format("15:04:05"))
 		}
+		attemptStart := time.Now()
 		attemptCtx, cancel := context.WithTimeout(ctx, perAttemptTimeout)
 		lastErr = blobGetAndPut(attemptCtx, client, src, dst, d)
 		cancel()
 		if lastErr == nil {
+			slog.Info("blob transfer complete",
+				"digest", d.Digest.String()[:16], "bytes", d.Size,
+				"duration", time.Since(attemptStart).Round(time.Millisecond).String())
 			return nil
 		}
 		if ctx.Err() != nil {
@@ -1121,10 +1126,25 @@ func (r *CatalogResolver) LoadFBC(ctx context.Context, catalogImage string) (*de
 // layout (via regclient's "ocidir://" scheme) so that all subsequent layer
 // reads are local disk I/O — this eliminates redundant network round-trips
 // and makes the build resilient to transient registry slowness.
+// tlog prints a timestamped log line with wall-clock time, elapsed seconds
+// since start, and a step-level duration (since the previous tlog call).
+func tlog(start time.Time, prev *time.Time, format string, args ...any) {
+	now := time.Now()
+	elapsed := now.Sub(start).Seconds()
+	step := now.Sub(*prev).Seconds()
+	msg := fmt.Sprintf(format, args...)
+	fmt.Printf("[%s +%.1fs Δ%.1fs] %s\n", now.Format("15:04:05"), elapsed, step, msg)
+	*prev = now
+}
+
 func (r *CatalogResolver) BuildFilteredCatalogImage(ctx context.Context, sourceCatalogImage, targetRef string, includes []mirrorv1alpha1.IncludePackage) (string, error) {
 	if r.client == nil {
 		return "", fmt.Errorf("registry client is required for BuildFilteredCatalogImage")
 	}
+
+	start := time.Now()
+	prev := start
+	tlog(start, &prev, "Starting BuildFilteredCatalogImage")
 
 	// 1. Parse destination reference (validated early to fail fast).
 	destRef, err := ref.New(targetRef)
@@ -1140,10 +1160,11 @@ func (r *CatalogResolver) BuildFilteredCatalogImage(ctx context.Context, sourceC
 	}
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
-	fmt.Printf("Downloading source catalog %s to local OCI layout…\n", sourceCatalogImage)
+	tlog(start, &prev, "Downloading source catalog %s to local OCI layout…", sourceCatalogImage)
 	if err := r.client.DownloadToOCILayout(ctx, sourceCatalogImage, tmpDir); err != nil {
 		return "", fmt.Errorf("failed to download source catalog %s: %w", sourceCatalogImage, err)
 	}
+	tlog(start, &prev, "Download complete")
 
 	localRef, err := ref.New(fmt.Sprintf("ocidir://%s:source", tmpDir))
 	if err != nil {
@@ -1176,18 +1197,20 @@ func (r *CatalogResolver) BuildFilteredCatalogImage(ctx context.Context, sourceC
 		return "", fmt.Errorf("manifest/config mismatch: %d layers vs %d diff_ids in %s",
 			len(srcLayers), len(srcDiffIDs), sourceCatalogImage)
 	}
-	fmt.Printf("Source catalog %s: %d layers (cached locally)\n", sourceCatalogImage, len(srcLayers))
+	tlog(start, &prev, "Source catalog %s: %d layers (cached locally)", sourceCatalogImage, len(srcLayers))
 
 	// 6. Classify each layer AND extract FBC content — all reads are local disk I/O.
 	cr := classifySourceLayers(ctx, r.client, localRef, srcLayers, srcDiffIDs, sourceCatalogImage)
+	tlog(start, &prev, "Layer classification complete: %d kept, %d skipped", len(cr.keptLayers), len(srcLayers)-len(cr.keptLayers))
 
 	// 7. Copy kept layers from local OCI layout to target registry.
 	// Reads from disk, uploads to network — each layer transferred only once.
 	for i, layer := range cr.keptLayers {
-		fmt.Printf("Uploading layer %d/%d (%s, %d bytes)\n", i+1, len(cr.keptLayers), layer.Digest.String()[:16], layer.Size)
+		tlog(start, &prev, "Uploading layer %d/%d (%s, %d bytes)", i+1, len(cr.keptLayers), layer.Digest.String()[:16], layer.Size)
 		if err := blobCopyWithRetry(ctx, r.client, localRef, destRef, layer, 3, 5*time.Minute); err != nil {
 			return "", fmt.Errorf("failed to upload source layer %d (%s): %w", i, layer.Digest, err)
 		}
+		tlog(start, &prev, "Layer %d/%d uploaded", i+1, len(cr.keptLayers))
 	}
 
 	// 8. Parse the FBC from the already-extracted config files (no re-download).
@@ -1207,15 +1230,16 @@ func (r *CatalogResolver) BuildFilteredCatalogImage(ctx context.Context, sourceC
 	if err != nil {
 		return "", fmt.Errorf("failed to filter FBC: %w", err)
 	}
-	fmt.Printf("Filtered FBC: %d packages, %d channels, %d bundles\n",
+	tlog(start, &prev, "Filtered FBC: %d packages, %d channels, %d bundles",
 		len(filtered.Packages), len(filtered.Channels), len(filtered.Bundles))
 
 	// 9. Build the filtered FBC layer (gzip-tar with opaque whiteout).
-	fmt.Printf("Building FBC overlay layer…\n")
+	tlog(start, &prev, "Building FBC overlay layer…")
 	layerData, uncompressedDigest, err := buildFBCLayer(filtered)
 	if err != nil {
 		return "", fmt.Errorf("failed to build FBC layer: %w", err)
 	}
+	tlog(start, &prev, "FBC overlay layer built (%d bytes)", len(layerData))
 
 	layerDigest := godigest.FromBytes(layerData)
 	layerDesc := descriptor.Descriptor{
@@ -1227,13 +1251,14 @@ func (r *CatalogResolver) BuildFilteredCatalogImage(ctx context.Context, sourceC
 	// 10. Push the filtered FBC layer blob.
 	// Use a per-operation timeout to avoid indefinite hangs when the target
 	// registry only speaks HTTP and the TLS attempt stalls.
-	fmt.Printf("Pushing FBC overlay layer (%d bytes)…\n", len(layerData))
+	tlog(start, &prev, "Pushing FBC overlay layer (%d bytes)…", len(layerData))
 	pushCtx, pushCancel := context.WithTimeout(ctx, 5*time.Minute)
 	_, err = r.client.BlobPut(pushCtx, destRef, layerDesc, bytes.NewReader(layerData))
 	pushCancel()
 	if err != nil {
 		return "", fmt.Errorf("failed to push FBC layer blob: %w", err)
 	}
+	tlog(start, &prev, "FBC overlay layer pushed")
 
 	// 11. Build new image config: keep source config, replace RootFS.DiffIDs
 	// with the kept ones plus our new layer's diff_id.
@@ -1259,13 +1284,14 @@ func (r *CatalogResolver) BuildFilteredCatalogImage(ctx context.Context, sourceC
 	configDesc := newConfig.GetDescriptor()
 
 	// 12. Push the new config blob.
-	fmt.Printf("Pushing image config (%d bytes)…\n", len(configData))
+	tlog(start, &prev, "Pushing image config (%d bytes)…", len(configData))
 	cfgCtx, cfgCancel := context.WithTimeout(ctx, 2*time.Minute)
 	_, err = r.client.BlobPut(cfgCtx, destRef, configDesc, bytes.NewReader(configData))
 	cfgCancel()
 	if err != nil {
 		return "", fmt.Errorf("failed to push image config blob: %w", err)
 	}
+	tlog(start, &prev, "Image config pushed")
 
 	// 13. Build manifest: kept source layers + our FBC layer, new config.
 	allLayers := make([]descriptor.Descriptor, len(cr.keptLayers)+1)
@@ -1285,7 +1311,7 @@ func (r *CatalogResolver) BuildFilteredCatalogImage(ctx context.Context, sourceC
 	}
 
 	// 14. Push manifest to target.
-	fmt.Printf("Pushing manifest to %s…\n", targetRef)
+	tlog(start, &prev, "Pushing manifest to %s…", targetRef)
 	mfCtx, mfCancel := context.WithTimeout(ctx, 2*time.Minute)
 	err = r.client.ManifestPut(mfCtx, destRef, m)
 	mfCancel()
@@ -1293,7 +1319,7 @@ func (r *CatalogResolver) BuildFilteredCatalogImage(ctx context.Context, sourceC
 		return "", fmt.Errorf("failed to push catalog manifest to %s: %w", targetRef, err)
 	}
 
-	fmt.Printf("Catalog image pushed: %s (source layers kept: %d/%d, filtered packages: %d)\n",
+	tlog(start, &prev, "DONE — catalog image pushed: %s (kept: %d/%d layers, %d packages)",
 		targetRef, len(cr.keptLayers), len(srcLayers), len(filtered.Packages))
 	return m.GetDescriptor().Digest.String(), nil
 }
