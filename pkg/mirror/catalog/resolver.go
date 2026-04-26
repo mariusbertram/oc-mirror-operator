@@ -1211,6 +1211,7 @@ func (r *CatalogResolver) BuildFilteredCatalogImage(ctx context.Context, sourceC
 		len(filtered.Packages), len(filtered.Channels), len(filtered.Bundles))
 
 	// 9. Build the filtered FBC layer (gzip-tar with opaque whiteout).
+	fmt.Printf("Building FBC overlay layer…\n")
 	layerData, uncompressedDigest, err := buildFBCLayer(filtered)
 	if err != nil {
 		return "", fmt.Errorf("failed to build FBC layer: %w", err)
@@ -1224,7 +1225,13 @@ func (r *CatalogResolver) BuildFilteredCatalogImage(ctx context.Context, sourceC
 	}
 
 	// 10. Push the filtered FBC layer blob.
-	if _, err = r.client.BlobPut(ctx, destRef, layerDesc, bytes.NewReader(layerData)); err != nil {
+	// Use a per-operation timeout to avoid indefinite hangs when the target
+	// registry only speaks HTTP and the TLS attempt stalls.
+	fmt.Printf("Pushing FBC overlay layer (%d bytes)…\n", len(layerData))
+	pushCtx, pushCancel := context.WithTimeout(ctx, 5*time.Minute)
+	_, err = r.client.BlobPut(pushCtx, destRef, layerDesc, bytes.NewReader(layerData))
+	pushCancel()
+	if err != nil {
 		return "", fmt.Errorf("failed to push FBC layer blob: %w", err)
 	}
 
@@ -1252,7 +1259,11 @@ func (r *CatalogResolver) BuildFilteredCatalogImage(ctx context.Context, sourceC
 	configDesc := newConfig.GetDescriptor()
 
 	// 12. Push the new config blob.
-	if _, err = r.client.BlobPut(ctx, destRef, configDesc, bytes.NewReader(configData)); err != nil {
+	fmt.Printf("Pushing image config (%d bytes)…\n", len(configData))
+	cfgCtx, cfgCancel := context.WithTimeout(ctx, 2*time.Minute)
+	_, err = r.client.BlobPut(cfgCtx, destRef, configDesc, bytes.NewReader(configData))
+	cfgCancel()
+	if err != nil {
 		return "", fmt.Errorf("failed to push image config blob: %w", err)
 	}
 
@@ -1274,7 +1285,11 @@ func (r *CatalogResolver) BuildFilteredCatalogImage(ctx context.Context, sourceC
 	}
 
 	// 14. Push manifest to target.
-	if err = r.client.ManifestPut(ctx, destRef, m); err != nil {
+	fmt.Printf("Pushing manifest to %s…\n", targetRef)
+	mfCtx, mfCancel := context.WithTimeout(ctx, 2*time.Minute)
+	err = r.client.ManifestPut(mfCtx, destRef, m)
+	mfCancel()
+	if err != nil {
 		return "", fmt.Errorf("failed to push catalog manifest to %s: %w", targetRef, err)
 	}
 

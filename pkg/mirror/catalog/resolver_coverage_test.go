@@ -20,9 +20,12 @@ import (
 	"github.com/blang/semver/v4"
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
 	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
+	godigest "github.com/opencontainers/go-digest"
 	"github.com/operator-framework/operator-registry/alpha/declcfg"
 	"github.com/operator-framework/operator-registry/alpha/property"
 	"github.com/regclient/regclient/types/descriptor"
+	"github.com/regclient/regclient/types/manifest"
+	v1 "github.com/regclient/regclient/types/oci/v1"
 	"github.com/regclient/regclient/types/ref"
 )
 
@@ -1466,6 +1469,74 @@ func TestBlobGetAndPut_InvalidSource(t *testing.T) {
 	err := blobGetAndPut(ctx, mc, srcRef, dstRef, d)
 	if err == nil {
 		t.Error("expected error from blobGetAndPut with unreachable hosts")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// classifySourceLayers
+// ---------------------------------------------------------------------------
+
+func TestClassifySourceLayers_BlobGetFails(t *testing.T) {
+	// When BlobGet fails, all layers should be kept (safe default).
+	mc := mirrorclient.NewMirrorClient(nil, "")
+	localRef, _ := ref.New("localhost:1/test:latest")
+	layers := []descriptor.Descriptor{
+		{Digest: "sha256:aaaa", Size: 100},
+		{Digest: "sha256:bbbb", Size: 200},
+	}
+	diffIDs := []godigest.Digest{
+		"sha256:1111111111111111111111111111111111111111111111111111111111111111",
+		"sha256:2222222222222222222222222222222222222222222222222222222222222222",
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	cr := classifySourceLayers(ctx, mc, localRef, layers, diffIDs, "test-image")
+	if len(cr.keptLayers) != 2 {
+		t.Errorf("expected 2 kept layers, got %d", len(cr.keptLayers))
+	}
+	if len(cr.keptDiffIDs) != 2 {
+		t.Errorf("expected 2 kept diff IDs, got %d", len(cr.keptDiffIDs))
+	}
+}
+
+func TestClassifySourceLayers_EmptyLayers(t *testing.T) {
+	mc := mirrorclient.NewMirrorClient(nil, "")
+	localRef, _ := ref.New("localhost:1/test:latest")
+	cr := classifySourceLayers(context.Background(), mc, localRef, nil, nil, "test-image")
+	if len(cr.keptLayers) != 0 {
+		t.Errorf("expected 0 kept layers, got %d", len(cr.keptLayers))
+	}
+	if cr.configFS == nil {
+		t.Error("expected non-nil configFS")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// resolveManifestList
+// ---------------------------------------------------------------------------
+
+func TestResolveManifestList_NotAList(t *testing.T) {
+	// When the manifest is not a list, it should be returned as-is.
+	mc := mirrorclient.NewMirrorClient(nil, "")
+	localRef, _ := ref.New("localhost:1/test:latest")
+	// Create a simple OCI manifest (not a list).
+	m, err := manifest.New(manifest.WithOrig(v1.Manifest{
+		Versioned: v1.ManifestSchemaVersion,
+		MediaType: "application/vnd.oci.image.manifest.v1+json",
+	}))
+	if err != nil {
+		t.Fatalf("failed to create test manifest: %v", err)
+	}
+	outRef, outM, resolveErr := resolveManifestList(context.Background(), mc, localRef, m, "test-image")
+	if resolveErr != nil {
+		t.Fatalf("unexpected error: %v", resolveErr)
+	}
+	if outRef.Tag != localRef.Tag {
+		t.Errorf("expected ref unchanged, got tag=%q", outRef.Tag)
+	}
+	if outM != m {
+		t.Error("expected same manifest returned")
 	}
 }
 
