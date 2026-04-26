@@ -347,8 +347,8 @@ spec:
   # Reference to a secret with registry credentials (recommended)
   authSecret: "target-registry-creds"
 
-  # For registries with self-signed certificates
-  # TLS fallback: tries HTTPS without verification, then falls back to plain HTTP
+  # For registries with self-signed certificates or plain HTTP
+  # TLS fallback: tries plain HTTP first, falls back to HTTPS without verification
   insecure: false
 
   # Upstream polling interval (default: 24h, min: 1h, 0 = disabled)

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [v0.0.11] - 2026-04-26
+
 ### Added
 - **Heads-only operator filtering (oc-mirror v2 compatible)**: When a package is
   listed without explicit channels or version ranges, only the channel head (latest
@@ -27,32 +31,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   discovering available operators before configuring the ImageSet filter. No
   `CatalogReady` gate required.
 - **TLS fallback for insecure registries**: When `insecure: true` is set on the
-  MirrorTarget, the operator first attempts HTTPS without TLS certificate
-  verification. If that fails, it falls back to plain HTTP. Previously only
-  plain HTTP was used.
+  MirrorTarget, the client tries plain HTTP first and falls back to HTTPS
+  without certificate verification. This avoids a ~60 s TLS handshake timeout
+  per request against HTTP-only registries.
+- **Catalog build timing logs**: Each step of `BuildFilteredCatalogImage` now
+  prints wall-clock time, elapsed seconds, and per-step duration
+  (`[HH:MM:SS +Xs ΔXs]`) so CI logs reveal exactly where time is spent.
 
 ### Fixed
-- **ConfigMap state persistence**: Fixed an issue where image state could remain
-  stuck on `Pending` after successful mirroring. Root causes: fallback linear
-  search added for hash-miss in `setImageStateLocked`; dirty flag is re-set on
-  save failure to prevent permanent state loss; worker `reportStatus` now retries
-  3 times with 2 s backoff.
+- **ImageSet polling stuck**: Fixed a bug where the poll clock got stuck after
+  resolution errors and a race where ConfigMap deletions went undetected, leaving
+  image state stuck on `Pending`.
+- **Resource leak**: Closed an HTTP body that was leaked on successful mirror
+  HEAD checks; ensured empty state ConfigMap is always created on first
+  reconciliation.
+- **ConfigMap state persistence**: Fallback linear search for hash-miss in
+  `setImageStateLocked`; dirty flag re-set on save failure; worker
+  `reportStatus` retries 3× with 2 s backoff.
 - **Cache invalidation**: Operator resolution results are now tagged with a
-  versioned cache token (`operatorCacheVersion`). Stale cache entries from prior
-  operator versions are automatically invalidated on upgrade, preventing
-  incorrect filtering results.
+  versioned cache token (`operatorCacheVersion`). Stale entries are invalidated
+  on upgrade, preventing incorrect filtering results.
+- **Cross-scheme blob transfers**: Replaced `BlobCopy` with explicit
+  `BlobGet`+`BlobPut` to avoid indefinite hangs when transferring between OCI
+  directory layout and remote registries (regclient server-side mount issue).
+- **Per-operation push timeouts**: FBC layer push (5 min), config push (2 min),
+  and manifest push (2 min) now have individual context deadlines instead of
+  relying on the 20-minute parent context.
+- **TLS fallback order**: Insecure registries now try HTTP first, falling back
+  to HTTPS-skip-verify. The previous HTTPS-first order wasted ~60 s per
+  BlobPut/ManifestPut when the target registry was HTTP-only (e.g. in-cluster
+  `registry:5000`), causing 17+ minute stalls for catalog builds.
+- **OLM upgrade test**: Corrected coordinator Role name from hardcoded
+  `oc-mirror-coordinator` to `<mirrortarget-name>-coordinator`; added operator
+  readiness checks after install and upgrade; improved diagnostic dumps.
 
 ### Changed
+- **Catalog builder refactored to OCI layout**: Source catalogs are now
+  downloaded once to a local OCI directory layout via `regclient.ImageCopy`.
+  Layer classification and FBC extraction happen via fast local disk I/O,
+  eliminating redundant blob downloads.
+- **Unit test coverage ≥75%**: All 11 packages now meet the 75% minimum
+  coverage threshold (controller 76.6%, catalog 76.0%, client 76.4%,
+  imagestate 89.0%, state 86.4%, resources 88.1%, builder 97.1%, release 100%).
+- **E2E test stability**: Improved test reliability with better diagnostic
+  dumps, cleanup helpers, timeout handling, and label-based test filtering.
 - **CI**: Merged the `e2e` and `e2e-olm-upgrade` workflow jobs into a single
-  `e2e` job with two phases (regular e2e → OLM upgrade) sharing one KinD cluster.
+  `e2e` job with two phases sharing one KinD cluster.
 - **CI**: Removed all Gemini-based CI workflows (triage, code-review, dispatch).
+- **CI diagnostics**: Failure dumps now cover both `oc-mirror-system` and
+  `oc-mirror-operator` namespaces (pods, CSVs, deployments, roles, logs).
 
 ### Documentation
-- Updated README and user guide with per-MirrorTarget RBAC naming, proxy
-  auto-injection details, and multi-MirrorTarget deployment guide.
-- Updated all documentation for heads-only filtering, head+N mode,
-  `previousVersions` field, TLS fallback, catalog packages endpoint, and
-  merged CI pipeline.
+- Updated CHANGELOG, README, user guide, OLM upgrade guide, and API reference
+  for all changes in this release.
 
 ---
 
@@ -187,7 +218,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **E2E test suite**: Ginkgo/Gomega end-to-end tests for a KinD cluster
   covering the full mirroring lifecycle.
 
-[Unreleased]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.0.6...HEAD
+[Unreleased]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.0.11...HEAD
+[v0.0.11]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.0.10...v0.0.11
 [v0.0.6]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.0.5...v0.0.6
 [v0.0.5]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.0.4...v0.0.5
 [v0.0.4]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.0.3...v0.0.4

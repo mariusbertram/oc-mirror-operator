@@ -27,7 +27,7 @@ CatalogSource that serves the operator bundle and then triggering an InstallPlan
 The operator uses `replaces:` in its CSV to declare a linear upgrade graph:
 
 ```
-v0.0.1 → v0.0.2 → v0.0.3 → v0.0.4 → v0.0.5 → v0.0.6 → v0.0.7 (next)
+v0.0.1 → v0.0.2 → v0.0.3 → v0.0.4 → v0.0.5 → v0.0.6 → … → v0.0.11 (latest)
 ```
 
 OLM will apply each intermediate step automatically when upgrading across
@@ -45,6 +45,10 @@ multiple versions.
 | v0.0.4 | v0.0.5 | Release workflow fix only — no functional change. |
 | v0.0.5 | v0.0.6 | RBAC resource names change to per-MirrorTarget; proxy FQDN fix; tag@digest support. See [Migration Notes](#migration-notes-by-version). |
 | v0.0.6 | v0.0.7 | Heads-only operator filtering; head+N mode; TLS fallback; state persistence fixes. See [Migration Notes](#migration-notes-by-version). |
+| v0.0.7 | v0.0.8 | CI reliability improvements. No functional changes. |
+| v0.0.8 | v0.0.9 | Pre-commit hook, gofmt alignment fixes. No functional changes. |
+| v0.0.9 | v0.0.10 | Resource API ingress fix (`8081`); forced cache re-resolution on upgrade. |
+| v0.0.10 | v0.0.11 | OCI layout catalog builder; HTTP-first TLS fallback; polling & resource-leak fixes; ≥75% test coverage. See [Migration Notes](#migration-notes-by-version). |
 
 ---
 
@@ -127,6 +131,33 @@ kubectl get csv -n oc-mirror-operator -w
 
 ## Migration Notes by Version
 
+### v0.0.11 — OCI layout catalog builder & TLS fallback order change
+
+**Catalog builder refactored to OCI directory layout.** Source catalogs are now
+downloaded once to a local OCI directory layout via `regclient.ImageCopy`. Layer
+classification and FBC extraction happen via fast local disk I/O, eliminating
+redundant blob downloads. This is an internal change — no configuration changes
+are needed.
+
+**TLS fallback order changed for insecure registries.** When `insecure: true` is
+set on the MirrorTarget, the client now tries **plain HTTP first**, falling back
+to HTTPS without certificate verification. The previous behaviour (HTTPS first,
+then HTTP) caused ~60 s timeouts per registry request when the target registry
+only speaks HTTP (e.g. in-cluster `registry:5000`).
+
+**What this means for you:**
+- If your target registry is HTTP-only (common in air-gapped/internal setups),
+  catalog builds and image mirrors are dramatically faster — no more 60 s stalls.
+- If your target registry is HTTPS-only, the HTTP attempt fails instantly and
+  the fallback to HTTPS is transparent. No performance regression.
+- No configuration change is needed.
+
+**Bug fixes included:**
+- Fixed ImageSet polling getting stuck after resolution errors.
+- Fixed ConfigMap deletion detection (state no longer stays `Pending`).
+- Fixed HTTP body leak on successful mirror HEAD checks.
+- Added per-operation timeouts to catalog push steps.
+
 ### v0.0.7 — Heads-only operator filtering (behaviour change)
 
 **Operator catalog filtering now defaults to heads-only mode.** When a package is
@@ -154,8 +185,9 @@ were mirrored.
       previousVersions: 3    # head + 3 previous versions per channel
   ```
 
-**TLS fallback:** `insecure: true` now tries HTTPS without certificate verification
-before falling back to plain HTTP. No configuration change needed.
+**TLS fallback:** `insecure: true` now tries plain HTTP first, falling back to
+HTTPS without certificate verification (changed from HTTPS-first in v0.0.11).
+No configuration change needed.
 
 ### v0.0.6 — Per-MirrorTarget RBAC names
 

@@ -680,7 +680,7 @@ metadata:
 spec:
   registry: quay.example.com/mirror       # target registry (without https://)
   authSecret: mirror-creds                # secret name with registry credentials
-  insecure: false                         # true = TLS fallback: tries HTTPS without verification first, falls back to plain HTTP
+  insecure: false                         # true = TLS fallback: tries plain HTTP first, falls back to HTTPS without verification
   imageSets:
     - releases-4-14
     - operators-4-14
@@ -1269,7 +1269,7 @@ metadata:
 spec:
   registry: <registry-url>            # target registry (required, without https://)
   authSecret: <secret-name>           # secret with registry credentials (optional)
-  insecure: false                     # allow self-signed TLS
+  insecure: false                     # true = plain HTTP first, HTTPS-skip-verify fallback
 
   imageSets:                          # list of referenced ImageSet names
     - <imageset-name>
