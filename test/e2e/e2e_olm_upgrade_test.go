@@ -49,6 +49,7 @@ import (
 
 var _ = Describe("OLM Upgrade", Ordered, Label("olm-upgrade"), func() {
 	const olmNs = "oc-mirror-operator"
+	const mtName = "olm-upgrade-rbac-test"
 
 	var (
 		oldBundleImg string
@@ -78,15 +79,17 @@ var _ = Describe("OLM Upgrade", Ordered, Label("olm-upgrade"), func() {
 		sdkFlags = strings.Fields(rawFlags)
 
 		By("ensuring the operator namespace exists")
-		// ignore error — namespace may already exist
 		_, _ = utils.Run(exec.Command("kubectl", "create", "namespace", olmNs))
 	})
 
 	AfterAll(func() {
+		By("dumping OLM operator state for diagnostics")
+		dumpOLMDiagnostics(olmNs)
+
 		By("cleaning up OLM operator install")
 		_ = exec.Command(sdkBin, "cleanup", "oc-mirror",
 			"--namespace", olmNs, "--timeout", "4m").Run()
-		_ = exec.Command("kubectl", "delete", "mirrortarget", "olm-upgrade-rbac-test",
+		_ = exec.Command("kubectl", "delete", "mirrortarget", mtName,
 			"-n", olmNs, "--ignore-not-found=true", "--timeout=60s").Run()
 	})
 
@@ -110,6 +113,9 @@ var _ = Describe("OLM Upgrade", Ordered, Label("olm-upgrade"), func() {
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(strings.TrimSpace(out)).To(Equal("Succeeded"))
 		}, 6*time.Minute, 10*time.Second).Should(Succeed())
+
+		By("verifying operator deployment is running after install")
+		waitForOperatorReady(olmNs)
 	})
 
 	It("should upgrade to the new bundle without RBAC anti-escalation errors", func() {
@@ -132,6 +138,9 @@ var _ = Describe("OLM Upgrade", Ordered, Label("olm-upgrade"), func() {
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(out).To(ContainSubstring("Succeeded"))
 		}, 6*time.Minute, 10*time.Second).Should(Succeed())
+
+		By("verifying operator deployment is running after upgrade")
+		waitForOperatorReady(olmNs)
 	})
 
 	It("should grant PVC permissions to the controller-manager service account", func() {
@@ -157,25 +166,61 @@ var _ = Describe("OLM Upgrade", Ordered, Label("olm-upgrade"), func() {
 apiVersion: mirror.openshift.io/v1alpha1
 kind: MirrorTarget
 metadata:
-  name: olm-upgrade-rbac-test
+  name: %s
   namespace: %s
 spec:
   registry: registry.default.svc.cluster.local:5000/mirror
-  insecure: true`, olmNs)
+  insecure: true`, mtName, olmNs)
 
 		cmd := exec.Command("kubectl", "apply", "-f", "-")
 		cmd.Stdin = strings.NewReader(mtYAML)
 		out, err := utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "failed to create MirrorTarget:\n%s", out)
 
-		By("verifying coordinator Role is created with persistentvolumeclaims permission")
+		// The controller creates a Role named "<mirrortarget-name>-coordinator"
+		// when it reconciles a MirrorTarget.
+		coordinatorRoleName := mtName + "-coordinator"
+		By(fmt.Sprintf("verifying coordinator Role %s is created with persistentvolumeclaims permission", coordinatorRoleName))
 		Eventually(func(g Gomega) {
-			cmd := exec.Command("kubectl", "get", "role", "oc-mirror-coordinator",
+			cmd := exec.Command("kubectl", "get", "role", coordinatorRoleName,
 				"-n", olmNs,
 				"-o", "jsonpath={.rules[*].resources}")
 			out, err := utils.Run(cmd)
-			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(err).NotTo(HaveOccurred(),
+				"coordinator Role %s not found — check operator logs", coordinatorRoleName)
 			g.Expect(out).To(ContainSubstring("persistentvolumeclaims"))
-		}, 1*time.Minute, 5*time.Second).Should(Succeed())
+		}, 2*time.Minute, 5*time.Second).Should(Succeed())
 	})
 })
+
+// waitForOperatorReady waits for the OLM-deployed controller-manager to be
+// running. OLM creates a Deployment named "oc-mirror-controller-manager" in the
+// operator namespace; we poll for at least one Running pod.
+func waitForOperatorReady(ns string) {
+	Eventually(func(g Gomega) {
+		cmd := exec.Command("kubectl", "get", "pods",
+			"-l", "control-plane=controller-manager",
+			"-n", ns,
+			"-o", "jsonpath={.items[0].status.phase}")
+		out, err := utils.Run(cmd)
+		g.Expect(err).NotTo(HaveOccurred(), "no controller-manager pod found in %s", ns)
+		g.Expect(strings.TrimSpace(out)).To(Equal("Running"),
+			"controller-manager pod not running in %s, got: %s", ns, out)
+	}, 3*time.Minute, 10*time.Second).Should(Succeed())
+}
+
+// dumpOLMDiagnostics writes operator state to GinkgoWriter for post-mortem analysis.
+func dumpOLMDiagnostics(ns string) {
+	for _, args := range [][]string{
+		{"get", "pods", "-n", ns, "-o", "wide"},
+		{"get", "csv", "-n", ns, "-o", "wide"},
+		{"get", "deployments", "-n", ns, "-o", "wide"},
+		{"get", "roles,rolebindings", "-n", ns},
+		{"get", "mirrortargets", "-n", ns, "-o", "yaml"},
+		{"logs", "-l", "control-plane=controller-manager", "-n", ns, "--tail=80", "--all-containers"},
+	} {
+		cmd := exec.Command("kubectl", args...)
+		out, _ := utils.Run(cmd)
+		_, _ = fmt.Fprintf(GinkgoWriter, "--- kubectl %s ---\n%s\n", strings.Join(args, " "), out)
+	}
+}

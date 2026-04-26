@@ -275,12 +275,18 @@ jobs:
           kubectl get pods -A -o wide || true
           echo "=== Pod Events ==="
           kubectl get events -A --sort-by=.lastTimestamp | tail -80 || true
-          echo "=== Controller-Manager Logs ==="
+          echo "=== Controller-Manager Logs (oc-mirror-system) ==="
           kubectl logs -l control-plane=controller-manager -n oc-mirror-system --tail=100 --all-containers 2>/dev/null || true
+          echo "=== Controller-Manager Logs (oc-mirror-operator / OLM) ==="
+          kubectl logs -l control-plane=controller-manager -n oc-mirror-operator --tail=100 --all-containers 2>/dev/null || true
           echo "=== OLM Pods ==="
           kubectl get pods -n olm -o wide 2>/dev/null || true
           echo "=== CSVs ==="
           kubectl get csv -A 2>/dev/null || true
+          echo "=== Deployments in oc-mirror-operator ==="
+          kubectl get deployments -n oc-mirror-operator -o wide 2>/dev/null || true
+          echo "=== Roles in oc-mirror-operator ==="
+          kubectl get roles -n oc-mirror-operator 2>/dev/null || true
 
       - name: Cleanup
         if: always()
