@@ -37,8 +37,11 @@ const blobBufferDir = "/tmp/blob-buffer"
 
 // NewMirrorClient creates a new MirrorClient.
 // insecureHosts: registry hostnames where TLS verification is skipped. The
-// client first tries HTTPS without certificate validation (TLSInsecure) and
-// falls back to plain HTTP (TLSDisabled) if that fails.
+// primary client uses plain HTTP (TLSDisabled) because most insecure registries
+// are HTTP-only (e.g. in-cluster registry:5000). Trying HTTPS first would waste
+// ~60s per request on a TLS handshake that can never succeed. The fallback client
+// uses HTTPS without certificate validation (TLSInsecure) for registries that have
+// a self-signed certificate.
 // destHosts: registry hostnames of destination registries; configured with BlobMax=-1
 // to always use monolithic PUT (fast when blobs are pre-buffered by the reader hook).
 // authConfigPath: path to a Docker credential store directory (mounted secret).
@@ -48,9 +51,6 @@ func NewMirrorClient(insecureHosts []string, authConfigPath string, destHosts ..
 	hostMap := make(map[string]config.Host)
 
 	// Add destination hosts with BlobMax=-1 (monolithic PUT for all blob sizes).
-	// Large blobs are pre-buffered to disk (the worker pod mounts an emptyDir at
-	// /tmp/blob-buffer) by the ImageWithBlobReaderHook so the PUT streams fast
-	// from local disk, avoiding Quay upload-session expiry.
 	for _, h := range destHosts {
 		if h == "" {
 			continue
@@ -60,13 +60,17 @@ func NewMirrorClient(insecureHosts []string, authConfigPath string, destHosts ..
 			BlobMax: -1,
 		}
 	}
+	// Primary: plain HTTP for insecure hosts. An HTTP request to an HTTPS-only
+	// server fails immediately (TLS alert / connection reset), so the fallback
+	// triggers with negligible delay. Conversely, an HTTPS request to an
+	// HTTP-only server hangs for the full TCP/TLS timeout (~60s).
 	for _, h := range insecureHosts {
 		if h == "" {
 			continue
 		}
 		hostMap[h] = config.Host{
 			Name:    h,
-			TLS:     config.TLSInsecure,
+			TLS:     config.TLSDisabled,
 			BlobMax: -1,
 		}
 	}
@@ -78,12 +82,9 @@ func NewMirrorClient(insecureHosts []string, authConfigPath string, destHosts ..
 
 	// Add auth config path if provided (e.g. DOCKER_CONFIG or mounted secret)
 	if authConfigPath != "" {
-		// Try {path}/config.json first (Kubernetes secret mount convention),
-		// fall back to the path itself if it looks like a direct config file.
 		configFile := authConfigPath + "/config.json"
 		opts = append(opts, regclient.WithDockerCredsFile(configFile))
 	} else {
-		// Fall back to the default Docker credential store ($DOCKER_CONFIG or ~/.docker/config.json)
 		opts = append(opts, regclient.WithDockerCreds())
 	}
 
@@ -95,8 +96,8 @@ func NewMirrorClient(insecureHosts []string, authConfigPath string, destHosts ..
 		rc: regclient.New(opts...),
 	}
 
-	// Build a fallback client with TLSDisabled (plain HTTP) for insecure hosts.
-	// Used when the primary TLSInsecure (HTTPS skip-verify) attempt fails.
+	// Fallback: HTTPS skip-verify (TLSInsecure) for insecure hosts that have a
+	// self-signed certificate. Used when the primary HTTP attempt fails.
 	if len(insecureHosts) > 0 {
 		fallbackHostMap := make(map[string]config.Host)
 		for k, v := range hostMap {
@@ -108,7 +109,7 @@ func NewMirrorClient(insecureHosts []string, authConfigPath string, destHosts ..
 			}
 			fallbackHostMap[h] = config.Host{
 				Name:    h,
-				TLS:     config.TLSDisabled,
+				TLS:     config.TLSInsecure,
 				BlobMax: -1,
 			}
 		}
@@ -159,7 +160,7 @@ func (c *MirrorClient) DownloadToOCILayout(ctx context.Context, src string, ociD
 func (c *MirrorClient) CopyImage(ctx context.Context, src, dest string) (string, error) {
 	effectiveDest, err := c.copyImageWith(ctx, c.rc, src, dest)
 	if err != nil && c.rcFallback != nil {
-		fmt.Printf("HTTPS (skip-verify) failed for %s, falling back to HTTP: %v\n", dest, err)
+		fmt.Printf("HTTP failed for %s, falling back to HTTPS (skip-verify): %v\n", dest, err)
 		return c.copyImageWith(ctx, c.rcFallback, src, dest)
 	}
 	return effectiveDest, err
