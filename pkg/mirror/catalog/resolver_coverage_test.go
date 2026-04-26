@@ -1431,8 +1431,8 @@ func TestBlobCopyWithRetry_SucceedsOnFirstAttempt(t *testing.T) {
 	defer ts.Close()
 
 	mc := mirrorclient.NewMirrorClient(nil, "")
-	// We can't easily mock BlobCopy through the real client, so we test the
-	// retry logic structurally: with a very short timeout and cancelled parent.
+	// We can't easily mock BlobGet/BlobPut through the real client, so we test
+	// the retry logic structurally: with a cancelled context.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // immediately cancelled
 
@@ -1450,6 +1450,22 @@ func TestBlobCopyWithRetry_RespectsParentCancel(t *testing.T) {
 	err := blobCopyWithRetry(ctx, mc, ref.Ref{}, ref.Ref{}, descriptor.Descriptor{}, 3, time.Minute)
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("expected context.Canceled, got %v", err)
+	}
+}
+
+func TestBlobGetAndPut_InvalidSource(t *testing.T) {
+	mc := mirrorclient.NewMirrorClient(nil, "")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// Both src and dst are unreachable — blobGetAndPut returns an error from
+	// whichever operation fails first (BlobGet or BlobPut).
+	srcRef, _ := ref.New("localhost:1/src:latest")
+	dstRef, _ := ref.New("localhost:1/dst:latest")
+	d := descriptor.Descriptor{Digest: "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+	err := blobGetAndPut(ctx, mc, srcRef, dstRef, d)
+	if err == nil {
+		t.Error("expected error from blobGetAndPut with unreachable hosts")
 	}
 }
 

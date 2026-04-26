@@ -250,10 +250,12 @@ func classifyAndExtractFBC(r io.Reader, configFS fstest.MapFS) (skippable bool, 
 	return sawAny && fbcOnly, totalSize, firstReject, nil
 }
 
-// blobCopyWithRetry wraps BlobCopy with per-attempt timeouts and retries.
-// Each attempt is given its own context deadline so a stalled download does not
-// consume the entire parent context budget. Only context/network errors are
-// retried; other failures (auth, digest mismatch) are returned immediately.
+// blobCopyWithRetry transfers a blob from src to dst using BlobGet + BlobPut.
+// This explicit read-then-write approach is used instead of BlobCopy because
+// regclient's BlobCopy may attempt server-side blob mounts that hang when
+// copying between different schemes (e.g. ocidir:// → registry://).
+// Each attempt is given its own context deadline so a stalled transfer does not
+// consume the entire parent context budget.
 func blobCopyWithRetry(ctx context.Context, client *mirrorclient.MirrorClient, src, dst ref.Ref, d descriptor.Descriptor, maxAttempts int, perAttemptTimeout time.Duration) error {
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
@@ -264,21 +266,34 @@ func blobCopyWithRetry(ctx context.Context, client *mirrorclient.MirrorClient, s
 				return ctx.Err()
 			case <-time.After(backoff):
 			}
-			slog.Info("retrying blob copy",
+			slog.Info("retrying blob transfer",
 				"attempt", attempt, "digest", d.Digest.String(), "error", lastErr)
 		}
 		attemptCtx, cancel := context.WithTimeout(ctx, perAttemptTimeout)
-		lastErr = client.BlobCopy(attemptCtx, src, dst, d)
+		lastErr = blobGetAndPut(attemptCtx, client, src, dst, d)
 		cancel()
 		if lastErr == nil {
 			return nil
 		}
-		// Only retry on context deadline / network errors.
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 	}
 	return lastErr
+}
+
+// blobGetAndPut reads a blob from src and pushes it to dst.
+func blobGetAndPut(ctx context.Context, client *mirrorclient.MirrorClient, src, dst ref.Ref, d descriptor.Descriptor) error {
+	rdr, err := client.BlobGet(ctx, src, d)
+	if err != nil {
+		return fmt.Errorf("BlobGet %s: %w", d.Digest.String(), err)
+	}
+	defer func() { _ = rdr.Close() }()
+	_, err = client.BlobPut(ctx, dst, d, rdr)
+	if err != nil {
+		return fmt.Errorf("BlobPut %s: %w", d.Digest.String(), err)
+	}
+	return nil
 }
 
 type CatalogResolver struct {
