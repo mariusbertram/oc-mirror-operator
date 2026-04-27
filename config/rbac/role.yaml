@@ -8,41 +8,6 @@ rules:
   - ""
   resources:
   - configmaps
-  - pods
-  - serviceaccounts
-  - services
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - ""
-  resources:
-  - persistentvolumeclaims
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - watch
-- apiGroups:
-  - ""
-  resources:
-  - secrets
-  verbs:
-  - create
-  - get
-  - list
-  - update
-  - watch
-- apiGroups:
-  - apps
-  resources:
-  - deployments
   verbs:
   - create
   - delete
@@ -67,7 +32,6 @@ rules:
   - mirror.openshift.io
   resources:
   - imagesets
-  - mirrortargets
   verbs:
   - create
   - delete
@@ -80,7 +44,6 @@ rules:
   - mirror.openshift.io
   resources:
   - imagesets/finalizers
-  - mirrortargets/finalizers
   verbs:
   - update
 - apiGroups:
@@ -96,44 +59,8 @@ rules:
 - apiGroups:
   - mirror.openshift.io
   resources:
-  - mirrortargets/status
+  - mirrortargets
   verbs:
-  - get
-  - patch
-  - update
-- apiGroups:
-  - networking.k8s.io
-  resources:
-  - ingresses
-  - networkpolicies
-  verbs:
-  - create
-  - delete
   - get
   - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - rbac.authorization.k8s.io
-  resources:
-  - rolebindings
-  - roles
-  verbs:
-  - create
-  - get
-  - list
-  - update
-  - watch
-- apiGroups:
-  - route.openshift.io
-  resources:
-  - routes
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
   - watch

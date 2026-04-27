@@ -28,7 +28,6 @@ import (
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
 	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/imagestate"
-	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/resources"
 )
 
 // Image entry state constants used throughout the manager.
@@ -64,13 +63,12 @@ type MirrorManager struct {
 	workerToken string
 
 	// State in memory — protected by mu
-	mu              sync.RWMutex
-	inProgress      map[string]string                // dest → podName
-	mirrored        map[string]bool                  // dest → true once successfully mirrored
-	imageStates     map[string]imagestate.ImageState // imageSetName → ImageState
-	destToIS        map[string]string                // dest → imageSetName (reverse lookup)
-	lastDriftCheck  time.Time                        // last time we verified all mirrored images
-	dirtyStateNames map[string]bool                  // isNames that need a ConfigMap save (PermanentlyFailed newly set)
+	mu             sync.RWMutex
+	inProgress     map[string]string     // dest → podName
+	mirrored       map[string]bool       // dest → true once successfully mirrored
+	imageState     imagestate.ImageState // consolidated state across all ImageSets
+	lastDriftCheck time.Time             // last time we verified all mirrored images
+	stateDirty     bool                  // true if state needs a ConfigMap save
 }
 
 func New(targetName, namespace string, scheme *runtime.Scheme) (*MirrorManager, error) {
@@ -111,11 +109,9 @@ func NewWithClients(c client.Client, cs kubernetes.Interface, targetName, namesp
 		mirrorClient:   mc,
 		authConfigPath: authConfigPath,
 		// workerToken is populated lazily by ensureWorkerTokenSecret() in Run().
-		inProgress:      make(map[string]string),
-		mirrored:        make(map[string]bool),
-		imageStates:     make(map[string]imagestate.ImageState),
-		destToIS:        make(map[string]string),
-		dirtyStateNames: make(map[string]bool),
+		inProgress: make(map[string]string),
+		mirrored:   make(map[string]bool),
+		imageState: make(imagestate.ImageState),
 	}
 }
 
@@ -127,10 +123,7 @@ func (m *MirrorManager) workerTokenSecretName() string {
 
 // ensureWorkerTokenSecret loads the worker bearer token from a dedicated Secret
 // or creates the Secret with a freshly generated 32-byte token if it does not
-// yet exist. Persisting the token in a Secret avoids leaking it via plain
-// `env.value` in worker pod specs (which any user with `pods/get` could read)
-// and lets worker pods that survive a manager restart keep authenticating with
-// the same token.
+// yet exist.
 func (m *MirrorManager) ensureWorkerTokenSecret(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget) error {
 	name := m.workerTokenSecretName()
 
@@ -179,15 +172,17 @@ func (m *MirrorManager) ensureWorkerTokenSecret(ctx context.Context, mt *mirrorv
 func (m *MirrorManager) Run(ctx context.Context) error {
 	fmt.Printf("Starting Mirror Manager for %s in namespace %s\n", m.TargetName, m.Namespace)
 
-	// Load (or create) the worker bearer token from its Secret. We need the
-	// MirrorTarget object as the OwnerReference so the Secret is GC'd when the
-	// MirrorTarget is deleted.
 	mt := &mirrorv1alpha1.MirrorTarget{}
 	if err := m.Client.Get(ctx, client.ObjectKey{Name: m.TargetName, Namespace: m.Namespace}, mt); err != nil {
-		return fmt.Errorf("load MirrorTarget for token bootstrap: %w", err)
+		return fmt.Errorf("load MirrorTarget for bootstrap: %w", err)
 	}
 	if err := m.ensureWorkerTokenSecret(ctx, mt); err != nil {
 		return fmt.Errorf("worker token bootstrap: %w", err)
+	}
+
+	// Phase 3: Migrate old per-ImageSet ConfigMaps to the consolidated state.
+	if err := m.migrateOldConfigMaps(ctx, mt); err != nil {
+		fmt.Printf("Warning: state migration failed: %v\n", err)
 	}
 
 	// Rebuild in-progress state from any worker pods that survived a manager restart.
@@ -197,9 +192,6 @@ func (m *MirrorManager) Run(ctx context.Context) error {
 
 	// Start Status API Server (internal, port 8080)
 	go m.runStatusAPI(ctx)
-
-	// Start Resource Server (public, port 8081)
-	go resources.NewServer(m.Client, m.Namespace, m.TargetName, m.authConfigPath).Run(ctx)
 
 	// Run reconcile once immediately on startup, then every 30s.
 	if err := m.reconcile(ctx); err != nil {
@@ -221,9 +213,80 @@ func (m *MirrorManager) Run(ctx context.Context) error {
 	}
 }
 
-// syncInProgressFromPods rebuilds m.inProgress from existing worker pods so that
-// a manager restart does not re-dispatch images that are already being mirrored.
-// It also deletes any completed/failed worker pods left over from a previous run.
+// migrateOldConfigMaps converts per-IS state to consolidated target state.
+func (m *MirrorManager) migrateOldConfigMaps(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget) error {
+	consolidated, err := imagestate.LoadForTarget(ctx, m.Client, m.Namespace, m.TargetName)
+	if err != nil {
+		return fmt.Errorf("load consolidated state: %w", err)
+	}
+
+	migratedAny := false
+	for _, isName := range mt.Spec.ImageSets {
+		cmName := imagestate.ConfigMapName(isName)
+		cm := &corev1.ConfigMap{}
+		err := m.Client.Get(ctx, types.NamespacedName{Namespace: m.Namespace, Name: cmName}, cm)
+		if errors.IsNotFound(err) {
+			continue
+		}
+		if err != nil {
+			fmt.Printf("Warning: could not get ConfigMap %s: %v\n", cmName, err)
+			continue
+		}
+
+		if cm.Annotations != nil && cm.Annotations["mirror.openshift.io/migrated"] == "true" {
+			continue
+		}
+
+		fmt.Printf("Migrating old image state from %s to consolidated target state\n", cmName)
+		oldState, _, err := imagestate.LoadWithExistence(ctx, m.Client, m.Namespace, isName)
+		if err != nil {
+			fmt.Printf("Warning: could not load state from %s: %v\n", cmName, err)
+			continue
+		}
+
+		for dest, oldEntry := range oldState {
+			entry, ok := consolidated[dest]
+			if !ok {
+				entry = &imagestate.ImageEntry{
+					Source:            oldEntry.Source,
+					State:             oldEntry.State,
+					LastError:         oldEntry.LastError,
+					RetryCount:        oldEntry.RetryCount,
+					PermanentlyFailed: oldEntry.PermanentlyFailed,
+				}
+				consolidated[dest] = entry
+			}
+			entry.AddRef(imagestate.ImageRef{
+				ImageSet:  isName,
+				Origin:    oldEntry.Origin,
+				EntrySig:  oldEntry.EntrySig,
+				OriginRef: oldEntry.OriginRef,
+			})
+		}
+
+		if cm.Annotations == nil {
+			cm.Annotations = make(map[string]string)
+		}
+		cm.Annotations["mirror.openshift.io/migrated"] = "true"
+		if err := m.Client.Update(ctx, cm); err != nil {
+			fmt.Printf("Warning: could not mark %s as migrated: %v\n", cmName, err)
+		}
+		migratedAny = true
+	}
+
+	if migratedAny {
+		if err := imagestate.SaveForTarget(ctx, m.Client, m.Namespace, mt, consolidated); err != nil {
+			return fmt.Errorf("save migrated consolidated state: %w", err)
+		}
+		m.mu.Lock()
+		m.imageState = consolidated
+		m.mu.Unlock()
+		fmt.Printf("State migration completed successfully for MirrorTarget %s\n", mt.Name)
+	}
+
+	return nil
+}
+
 func (m *MirrorManager) syncInProgressFromPods(ctx context.Context) error {
 	pods, err := m.Clientset.CoreV1().Pods(m.Namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: fmt.Sprintf("app=oc-mirror-worker,mirrortarget=%s", m.TargetName),
@@ -239,7 +302,6 @@ func (m *MirrorManager) syncInProgressFromPods(ctx context.Context) error {
 			_ = m.Clientset.CoreV1().Pods(m.Namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{})
 			continue
 		}
-		// New multi-dest annotation (batch mode)
 		if destsJSON, ok := pod.Annotations["mirror.openshift.io/destinations"]; ok && destsJSON != "" {
 			var dests []string
 			if json.Unmarshal([]byte(destsJSON), &dests) == nil {
@@ -250,7 +312,6 @@ func (m *MirrorManager) syncInProgressFromPods(ctx context.Context) error {
 				continue
 			}
 		}
-		// Backward compat: legacy single-dest annotation
 		if dest, ok := pod.Annotations["mirror.openshift.io/destination"]; ok && dest != "" {
 			m.inProgress[dest] = pod.Name
 			fmt.Printf("Recovered in-progress worker %s for %s\n", pod.Name, dest)
@@ -293,8 +354,6 @@ func (m *MirrorManager) handleStatusUpdate(w http.ResponseWriter, r *http.Reques
 
 	authHeader := r.Header.Get("Authorization")
 	expected := "Bearer " + m.workerToken
-	// Constant-time comparison prevents timing side-channels that could leak
-	// the token byte-by-byte to an attacker probing the status endpoint.
 	if subtle.ConstantTimeCompare([]byte(authHeader), []byte(expected)) != 1 {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -320,30 +379,10 @@ func (m *MirrorManager) handleStatusUpdate(w http.ResponseWriter, r *http.Reques
 		m.setImageStateLocked(req.Destination, stateMirrored, "")
 	}
 
-	// Remove from in-progress tracking. The pod itself is cleaned up by
-	// cleanupFinishedWorkers() once it reaches Succeeded/Failed, so that
-	// other batch items in the same pod can continue reporting.
 	delete(m.inProgress, req.Destination)
-
 	w.WriteHeader(http.StatusOK)
 }
 
-// handleShouldMirror lets a worker check, just before mirroring an image,
-// whether the image is still required by any ImageSet on this MirrorTarget.
-// This prevents wasting work when the user shrinks an ImageSet (removed
-// operator, narrowed version range) while a worker batch is still in flight.
-//
-// Responses:
-//
-//	200 OK    — image is still pending or failed (worker should mirror it)
-//	410 Gone  — image is already Mirrored or no longer in any state
-//	            (worker MUST skip it)
-//	401 Unauthorized — bad/missing Bearer token
-//	400 Bad Request  — missing dest query parameter
-//
-// The decision is taken under the manager mutex against the most recently
-// reconciled state cache. Worst-case latency between user-edit and the
-// worker honouring it is one reconcile cycle (≈30 s).
 func (m *MirrorManager) handleShouldMirror(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -366,36 +405,20 @@ func (m *MirrorManager) handleShouldMirror(w http.ResponseWriter, r *http.Reques
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	for _, state := range m.imageStates {
-		entry, ok := state[dest]
-		if !ok {
-			continue
-		}
-		switch entry.State {
-		case stateMirrored:
-			// Already done — skip.
-			w.WriteHeader(http.StatusGone)
-			return
-		default:
-			// Pending / Failed / anything else — mirror it.
-			w.WriteHeader(http.StatusOK)
-			return
-		}
+	entry, ok := m.imageState[dest]
+	if !ok {
+		w.WriteHeader(http.StatusGone)
+		return
 	}
-
-	// Not present in any reconciled image state → image was removed from spec.
-	w.WriteHeader(http.StatusGone)
+	switch entry.State {
+	case stateMirrored:
+		w.WriteHeader(http.StatusGone)
+	default:
+		w.WriteHeader(http.StatusOK)
+	}
 }
 
-// cleanupFinishedWorkers removes completed/failed worker pods.
-// First it handles tracked pods in m.inProgress (resetting Failed images to
-// Pending), then it sweeps for any orphaned finished pods that fell out of
-// tracking (e.g. due to a manager restart).
-// API calls (Get/Delete/List) are intentionally performed *outside* m.mu so
-// network I/O does not block reconcile or status callbacks.
-// Caller must NOT hold m.mu.
 func (m *MirrorManager) cleanupFinishedWorkers(ctx context.Context) {
-	// 1. Snapshot tracked pods under the lock.
 	m.mu.Lock()
 	snapshot := make(map[string]string, len(m.inProgress))
 	for dest, podName := range m.inProgress {
@@ -413,9 +436,7 @@ func (m *MirrorManager) cleanupFinishedWorkers(ctx context.Context) {
 	for dest, podName := range snapshot {
 		pod, err := m.Clientset.CoreV1().Pods(m.Namespace).Get(ctx, podName, metav1.GetOptions{})
 		if err != nil {
-			// Pod is gone (or unreachable) – drop from tracking.
-			done = append(done, finished{dest: dest, podName: podName, phase: corev1.PodFailed})
-			done[len(done)-1].phase = "" // signal "missing"
+			done = append(done, finished{dest: dest, podName: podName})
 			continue
 		}
 		if pod.Status.Phase != corev1.PodSucceeded && pod.Status.Phase != corev1.PodFailed {
@@ -424,12 +445,9 @@ func (m *MirrorManager) cleanupFinishedWorkers(ctx context.Context) {
 		done = append(done, finished{dest: dest, podName: podName, phase: pod.Status.Phase})
 	}
 
-	// 2. Mutate state under the lock.
 	if len(done) > 0 {
 		m.mu.Lock()
 		for _, f := range done {
-			// Only drop if the entry still maps to the same pod (avoid
-			// racing with a freshly scheduled worker that reused the dest).
 			if cur, ok := m.inProgress[f.dest]; ok && cur == f.podName {
 				delete(m.inProgress, f.dest)
 				if f.phase == corev1.PodFailed {
@@ -441,11 +459,7 @@ func (m *MirrorManager) cleanupFinishedWorkers(ctx context.Context) {
 		m.mu.Unlock()
 	}
 
-	// 3. Delete finished pods (deduplicated, no lock held).
 	for _, f := range done {
-		if f.phase == "" {
-			continue // already missing
-		}
 		if _, already := deletedPods[f.podName]; already {
 			continue
 		}
@@ -453,7 +467,6 @@ func (m *MirrorManager) cleanupFinishedWorkers(ctx context.Context) {
 		deletedPods[f.podName] = struct{}{}
 	}
 
-	// 4. Sweep for any orphaned finished worker pods not in m.inProgress.
 	pods, err := m.Clientset.CoreV1().Pods(m.Namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: fmt.Sprintf("app=oc-mirror-worker,mirrortarget=%s", m.TargetName),
 	})
@@ -472,15 +485,14 @@ func (m *MirrorManager) cleanupFinishedWorkers(ctx context.Context) {
 	}
 }
 
-func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
+func (m *MirrorManager) reconcile(ctx context.Context) error {
 	m.cleanupFinishedWorkers(ctx)
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	mt := &mirrorv1alpha1.MirrorTarget{}
-	err := m.Client.Get(ctx, client.ObjectKey{Name: m.TargetName, Namespace: m.Namespace}, mt)
-	if err != nil {
+	if err := m.Client.Get(ctx, client.ObjectKey{Name: m.TargetName, Namespace: m.Namespace}, mt); err != nil {
 		return err
 	}
 
@@ -489,337 +501,213 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 		return err
 	}
 
-	// Default concurrency=1 (one worker pod at a time) to avoid Quay blob
-	// upload digest-mismatch errors. Quay's storage backend can corrupt
-	// concurrent uploads of the same blob to different repositories. With
-	// sequential processing, regclient's anonymous blob mount
-	// (POST ?mount=<digest>) finds blobs pushed by earlier images in Quay's
-	// global storage, skipping the upload entirely (zero-copy).
-	concurrency := mt.Spec.Concurrency
-	if concurrency <= 0 {
-		concurrency = 1
-	}
-	batchSize := mt.Spec.BatchSize
-	if batchSize <= 0 {
-		batchSize = 50
+	// 1. Load state if needed.
+	if len(m.imageState) == 0 {
+		loaded, loadErr := imagestate.LoadForTarget(ctx, m.Client, m.Namespace, m.TargetName)
+		if loadErr != nil {
+			fmt.Printf("Warning: failed to load consolidated image state: %v\n", loadErr)
+		} else {
+			m.imageState = loaded
+		}
 	}
 
-	for _, is := range imageSets.Items {
-		// Only process ImageSets listed in this MirrorTarget's spec.imageSets.
+	// 2. Reconcile ImageSets and identify active ones.
+	activeImageSets := m.reconcileImageSets(ctx, mt, imageSets)
+
+	// 3. Handle drift detection and identify pending images.
+	pendingImages := m.reconcileDriftAndPending(ctx, mt)
+
+	// 4. Dispatch batches.
+	m.dispatchWorkers(ctx, mt, pendingImages)
+
+	// 5. Finalize state and status.
+	if m.stateDirty {
+		if err := imagestate.SaveForTarget(ctx, m.Client, m.Namespace, mt, m.imageState); err != nil {
+			fmt.Printf("Warning: failed to save consolidated image state: %v\n", err)
+		} else {
+			m.stateDirty = false
+		}
+	}
+
+	m.updateStatusLocked(ctx, mt, activeImageSets)
+
+	// Phase 7a: Render and persist cluster resources to ConfigMaps.
+	if err := m.renderResources(ctx, mt, activeImageSets); err != nil {
+		fmt.Printf("Warning: failed to render resources: %v\n", err)
+	}
+
+	return nil
+}
+
+func (m *MirrorManager) reconcileImageSets(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget, imageSets *mirrorv1alpha1.ImageSetList) []*mirrorv1alpha1.ImageSet {
+	activeImageSets := make([]*mirrorv1alpha1.ImageSet, 0, len(imageSets.Items))
+	for i := range imageSets.Items {
+		is := &imageSets.Items[i]
 		if !containsString(mt.Spec.ImageSets, is.Name) {
 			continue
 		}
+		activeImageSets = append(activeImageSets, is)
 
-		// Use the cached in-memory state when it is already populated.
-		// Worker status callbacks update m.imageStates directly via
-		// setImageStateLocked, so reloading from the ConfigMap on every tick
-		// would overwrite their RetryCount / PermanentlyFailed changes before
-		// the stateChanged save at the end of the reconcile loop can persist
-		// them. On first access (or after a manager restart when the cache is
-		// empty) we load from the ConfigMap so accumulated state survives pod
-		// restarts.
-		isState, hasCached := m.imageStates[is.Name]
-		if !hasCached || len(isState) == 0 {
-			loaded, cmExists, loadErr := imagestate.LoadWithExistence(ctx, m.Client, m.Namespace, is.Name)
-			if loadErr != nil {
-				fmt.Printf("Warning: failed to load image state for %s: %v\n", is.Name, loadErr)
-				loaded = make(imagestate.ImageState)
-			}
-			// Only overwrite the in-memory cache from ConfigMap when the
-			// ConfigMap actually exists. If the ConfigMap was deleted
-			// externally while we have a populated cache, preserve the
-			// cache and mark dirty so it gets recreated on the next flush.
-			if hasCached && len(isState) > 0 && !cmExists {
-				fmt.Printf("ConfigMap for %s was deleted externally; preserving in-memory state and marking dirty\n", is.Name)
-				m.dirtyStateNames[is.Name] = true
-			} else {
-				isState = loaded
-				m.imageStates[is.Name] = isState
-			}
-		}
-
-		// Manager-side resolution: enumerate upstream images for this ImageSet
-		// (releases, operator catalogs, additional) using the manager's
-		// registry credentials, with per-entry digest caching via ImageSet
-		// annotations.
-		//
-		// The resolution does cheap network probes (manifest digest + Cincinnati
-		// graph) so we gate it via shouldResolve() — only on initial state,
-		// recollect annotation, spec change, or pollInterval elapsed.
-		//
-		// We release the manager mutex around the upstream fetches and merge
-		// concurrent worker callbacks back into the result before saving so
-		// status updates that fire during the unlock window are not lost.
-		justResolved := false
-		if shouldResolve(&is, mt, isState) {
+		if shouldResolve(is, mt, m.imageState) {
 			isCopy := is.DeepCopy()
-			stateSnap := cloneImageState(isState)
+			stateSnap := cloneImageState(m.imageState)
 			m.mu.Unlock()
 			newState, resolved, resolveErr := m.resolveImageSet(ctx, isCopy, mt, stateSnap)
 			m.mu.Lock()
 			if resolveErr != nil {
 				fmt.Printf("Warning: failed to resolve ImageSet %s: %v\n", is.Name, resolveErr)
 			} else if resolved {
-				live := m.imageStates[is.Name]
-				newState = mergeWorkerUpdates(newState, live)
-				// Resolution succeeded. Advance poll clock regardless of save outcome.
-				// The save can be retried via dirty-flag mechanism; poll timing should
-				// not depend on transient ConfigMap write errors.
-				justResolved = true
-				if err := imagestate.Save(ctx, m.Client, m.Namespace, &is, newState); err != nil {
-					fmt.Printf("Warning: failed to save resolved state for %s: %v\n", is.Name, err)
-					// Mark dirty so the next reconcile tick retries the save.
-					m.dirtyStateNames[is.Name] = true
-				}
-				// Update in-memory cache regardless of save outcome so the
-				// dirty-flag flush path can persist the resolved state, and
-				// worker dispatching sees the latest image list.
-				isState = newState
-				m.imageStates[is.Name] = isState
-			} else {
-				// State is byte-identical (no spec change) but we successfully
-				// polled — advance the poll clock.
-				justResolved = true
-				// If the current state in memory is empty, it may be because
-				// the state ConfigMap was deleted. If we just resolved, we
-				// must write the new state to a fresh ConfigMap, even if it's
-				// identical to the (empty) old state. This ensures an empty
-				// ConfigMap exists to signal that resolution has run.
-				if len(isState) == 0 {
-					if err := imagestate.Save(ctx, m.Client, m.Namespace, &is, newState); err != nil {
-						fmt.Printf("Warning: failed to save initial empty state for %s: %v\n", is.Name, err)
-						m.dirtyStateNames[is.Name] = true
-						// Still keep justResolved=true since resolution succeeded;
-						// poll clock should advance. Save will be retried on next reconcile.
-					}
-				}
+				m.imageState = mergeWorkerUpdates(newState, m.imageState)
+				m.stateDirty = true
+				fmt.Printf("Resolved ImageSet %s\n", is.Name)
 			}
 		}
-
-		// CheckExist interval: run immediately on startup (lastDriftCheck is zero),
-		// then every CheckExistInterval (default 6h, configurable per MirrorTarget).
-		checkExistInterval := 6 * time.Hour
-		if mt.Spec.CheckExistInterval != nil && mt.Spec.CheckExistInterval.Duration >= time.Hour {
-			checkExistInterval = mt.Spec.CheckExistInterval.Duration
-		}
-		driftCheckActive := time.Since(m.lastDriftCheck) > checkExistInterval
-		if driftCheckActive {
-			m.mirrored = make(map[string]bool)
-			m.lastDriftCheck = time.Now()
-			// Create a fresh regclient to avoid auth token scope accumulation.
-			// Quay's nginx proxy returns 400 when the Bearer token exceeds ~8 KB.
-			m.mirrorClient = mirrorclient.NewMirrorClient(nil, m.authConfigPath)
-			fmt.Println("CheckExist: verifying images in target registry")
-		}
-
-		stateChanged := false
-		// If setImageStateLocked just set PermanentlyFailed for this ImageSet,
-		// force a ConfigMap flush so the catalog-build gate sees the new flag.
-		if m.dirtyStateNames[is.Name] {
-			stateChanged = true
-			delete(m.dirtyStateNames, is.Name)
-		}
-		var pendingImages []BatchItem
-		checkClient := mirrorclient.NewMirrorClient(nil, m.authConfigPath)
-		checkCount := 0
-
-		for dest, entry := range isState {
-			m.destToIS[dest] = is.Name
-
-			// For images marked Mirrored in the ConfigMap but not yet verified
-			// in memory: check the registry during CheckExist windows to confirm
-			// they still exist (drift detection).
-			if entry.State == stateMirrored && !m.mirrored[dest] {
-				if !driftCheckActive {
-					// Outside check window: trust the ConfigMap state.
-					m.mirrored[dest] = true
-					continue
-				}
-				// Refresh the client every 20 checks to prevent auth token
-				// scope accumulation (Quay's nginx rejects tokens > ~8 KB).
-				checkCount++
-				if checkCount%20 == 0 {
-					checkClient = mirrorclient.NewMirrorClient(nil, m.authConfigPath)
-				}
-				// Release the manager lock while making the HTTP call so
-				// status callbacks from worker pods are not blocked on
-				// remote registry latency.
-				m.mu.Unlock()
-				exists, checkErr := checkClient.CheckExist(ctx, dest)
-				m.mu.Lock()
-				if checkErr != nil {
-					fmt.Printf("CheckExist error for %s: %v – assuming present\n", dest, checkErr)
-					m.mirrored[dest] = true
-					continue
-				}
-				if exists {
-					m.mirrored[dest] = true
-					continue
-				}
-				fmt.Printf("Image %s marked Mirrored but not found in registry; resetting to Pending\n", dest)
-				entry.State = statePending
-				entry.LastError = ""
-				entry.RetryCount = 0
-				stateChanged = true
-			}
-
-			if m.mirrored[dest] {
-				if entry.State != stateMirrored {
-					entry.State = stateMirrored
-					stateChanged = true
-				}
-				continue
-			}
-
-			if entry.State == stateFailed {
-				if entry.RetryCount < 10 {
-					// Transient failure: schedule immediate retry.
-					entry.State = statePending
-					stateChanged = true
-				} else {
-					// Permanently failed. Ensure the flag is persisted: it may
-					// be missing from the ConfigMap if the manager restarted
-					// before the dirty-flag flush ran (retryCount reached 10
-					// but permanentlyFailed=true was not yet written).
-					if !entry.PermanentlyFailed {
-						entry.PermanentlyFailed = true
-						stateChanged = true
-					}
-					if driftCheckActive {
-						// During CheckExist windows, verify the target registry.
-						// If not found, reset for a fresh retry cycle (handles
-						// transient upstream unavailability). PermanentlyFailed
-						// stays true so the catalog-build gate remains open.
-						checkCount++
-						if checkCount%20 == 0 {
-							checkClient = mirrorclient.NewMirrorClient(nil, m.authConfigPath)
-						}
-						m.mu.Unlock()
-						exists, checkErr := checkClient.CheckExist(ctx, dest)
-						m.mu.Lock()
-						if checkErr != nil {
-							fmt.Printf("CheckExist error for permanently-failed image %s: %v – keeping Failed\n", dest, checkErr)
-						} else if exists {
-							fmt.Printf("Permanently-failed image %s found in target; marking Mirrored\n", dest)
-							m.mirrored[dest] = true
-							entry.State = stateMirrored
-							entry.LastError = ""
-							stateChanged = true
-						} else {
-							fmt.Printf("Permanently-failed image %s not in target; resetting for retry\n", dest)
-							entry.State = statePending
-							entry.RetryCount = 0 // fresh 10-attempt window; PermanentlyFailed stays true
-							stateChanged = true
-						}
-					}
-				}
-				continue
-			}
-
-			if entry.State != statePending {
-				continue
-			}
-			if m.inProgress[dest] != "" {
-				continue
-			}
-
-			pendingImages = append(pendingImages, BatchItem{Source: entry.Source, Dest: dest})
-		}
-
-		// Dispatch batches up to concurrency limit (counted as distinct pods).
-		activePods := map[string]struct{}{}
-		for _, podName := range m.inProgress {
-			activePods[podName] = struct{}{}
-		}
-
-		for i := 0; i < len(pendingImages) && len(activePods) < concurrency; i += batchSize {
-			end := i + batchSize
-			if end > len(pendingImages) {
-				end = len(pendingImages)
-			}
-			batch := pendingImages[i:end]
-
-			podName, startErr := m.startWorkerBatch(ctx, mt, batch)
-			if startErr != nil {
-				fmt.Printf("Failed to start worker batch: %v\n", startErr)
-				continue
-			}
-			for _, item := range batch {
-				m.inProgress[item.Dest] = podName
-				m.destToIS[item.Dest] = is.Name
-			}
-			activePods[podName] = struct{}{}
-			stateChanged = true
-			fmt.Printf("Started worker pod %s for batch of %d images\n", podName, len(batch))
-		}
-
-		// Flush state changes to ConfigMap and update ImageSet status counts.
-		if stateChanged {
-			// Re-read the ConfigMap before saving to avoid overwriting changes
-			// made by the ImageSet controller (e.g., entries removed by partial
-			// cleanup). Only apply in-memory state transitions to entries that
-			// still exist in the current ConfigMap.
-			currentState, reloadErr := imagestate.Load(ctx, m.Client, m.Namespace, is.Name)
-			if reloadErr == nil && len(currentState) > 0 {
-				for dest, entry := range isState {
-					if _, exists := currentState[dest]; exists {
-						currentState[dest] = entry
-					}
-				}
-				isState = currentState
-				m.imageStates[is.Name] = isState
-			}
-			if err := imagestate.Save(ctx, m.Client, m.Namespace, &is, isState); err != nil {
-				fmt.Printf("Warning: failed to save image state for %s: %v\n", is.Name, err)
-				// Re-set the dirty flag so the next reconcile tick retries.
-				m.dirtyStateNames[is.Name] = true
-			}
-		}
-		m.updateImageSetStatusLocked(ctx, &is, isState, justResolved)
 	}
-
-	return nil
+	return activeImageSets
 }
 
-// setImageStateLocked updates the in-memory state for a single destination
-// and marks the ImageSet dirty so the next reconcile tick flushes the change
-// to the ConfigMap. Caller must hold m.mu.
+func (m *MirrorManager) reconcileDriftAndPending(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget) []BatchItem {
+	checkExistInterval := 6 * time.Hour
+	if mt.Spec.CheckExistInterval != nil && mt.Spec.CheckExistInterval.Duration >= time.Hour {
+		checkExistInterval = mt.Spec.CheckExistInterval.Duration
+	}
+	driftCheckActive := time.Since(m.lastDriftCheck) > checkExistInterval
+	if driftCheckActive {
+		m.mirrored = make(map[string]bool)
+		m.lastDriftCheck = time.Now()
+		m.mirrorClient = mirrorclient.NewMirrorClient(nil, m.authConfigPath)
+		fmt.Println("CheckExist: verifying images in target registry")
+	}
+
+	pendingImages := make([]BatchItem, 0, len(m.imageState))
+	checkClient := mirrorclient.NewMirrorClient(nil, m.authConfigPath)
+	checkCount := 0
+
+	for dest, entry := range m.imageState {
+		if m.checkDriftLocked(ctx, dest, entry, driftCheckActive, &checkCount, &checkClient) {
+			continue
+		}
+
+		if entry.State == stateFailed {
+			m.handleFailedEntryLocked(ctx, dest, entry, driftCheckActive, &checkCount, &checkClient)
+			continue
+		}
+
+		if entry.State == statePending && m.inProgress[dest] == "" {
+			pendingImages = append(pendingImages, BatchItem{Source: entry.Source, Dest: dest})
+		}
+	}
+	return pendingImages
+}
+
+func (m *MirrorManager) checkDriftLocked(ctx context.Context, dest string, entry *imagestate.ImageEntry, driftActive bool, checkCount *int, checkClient **mirrorclient.MirrorClient) bool {
+	if entry.State == stateMirrored && !m.mirrored[dest] {
+		if !driftActive {
+			m.mirrored[dest] = true
+			return true
+		}
+		*checkCount++
+		if *checkCount%20 == 0 {
+			*checkClient = mirrorclient.NewMirrorClient(nil, m.authConfigPath)
+		}
+		m.mu.Unlock()
+		exists, err := (*checkClient).CheckExist(ctx, dest)
+		m.mu.Lock()
+		if err != nil {
+			m.mirrored[dest] = true
+			return true
+		}
+		if exists {
+			m.mirrored[dest] = true
+			return true
+		}
+		entry.State, entry.LastError, entry.RetryCount = statePending, "", 0
+		m.stateDirty = true
+	}
+	if m.mirrored[dest] {
+		if entry.State != stateMirrored {
+			entry.State = stateMirrored
+			m.stateDirty = true
+		}
+		return true
+	}
+	return false
+}
+
+func (m *MirrorManager) handleFailedEntryLocked(ctx context.Context, dest string, entry *imagestate.ImageEntry, driftActive bool, checkCount *int, checkClient **mirrorclient.MirrorClient) {
+	if entry.RetryCount < 10 {
+		entry.State = statePending
+		m.stateDirty = true
+		return
+	}
+	if !entry.PermanentlyFailed {
+		entry.PermanentlyFailed = true
+		m.stateDirty = true
+	}
+	if driftActive {
+		*checkCount++
+		if *checkCount%20 == 0 {
+			*checkClient = mirrorclient.NewMirrorClient(nil, m.authConfigPath)
+		}
+		m.mu.Unlock()
+		exists, _ := (*checkClient).CheckExist(ctx, dest)
+		m.mu.Lock()
+		if exists {
+			m.mirrored[dest] = true
+			entry.State, entry.LastError = stateMirrored, ""
+			m.stateDirty = true
+		} else {
+			entry.State, entry.RetryCount = statePending, 0
+			m.stateDirty = true
+		}
+	}
+}
+
+func (m *MirrorManager) dispatchWorkers(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget, pendingImages []BatchItem) {
+	concurrency, batchSize := mt.Spec.Concurrency, mt.Spec.BatchSize
+	if concurrency <= 0 {
+		concurrency = 1
+	}
+	if batchSize <= 0 {
+		batchSize = 50
+	}
+
+	activePods := make(map[string]struct{})
+	for _, podName := range m.inProgress {
+		activePods[podName] = struct{}{}
+	}
+
+	for i := 0; i < len(pendingImages) && len(activePods) < concurrency; i += batchSize {
+		end := i + batchSize
+		if end > len(pendingImages) {
+			end = len(pendingImages)
+		}
+		batch := pendingImages[i:end]
+
+		podName, startErr := m.startWorkerBatch(ctx, mt, batch)
+		if startErr != nil {
+			fmt.Printf("Failed to start worker batch: %v\n", startErr)
+			continue
+		}
+		for _, item := range batch {
+			m.inProgress[item.Dest] = podName
+		}
+		activePods[podName] = struct{}{}
+		fmt.Printf("Started worker pod %s for batch of %d images\n", podName, len(batch))
+	}
+}
+
 func (m *MirrorManager) setImageStateLocked(dest, st, lastError string) {
-	isName, ok := m.destToIS[dest]
-	if !ok {
-		// Fallback: linear search through imageStates. This handles the
-		// startup race where a worker callback arrives before the first
-		// reconcile has populated destToIS.
-		for name, state := range m.imageStates {
-			if _, exists := state[dest]; exists {
-				isName = name
-				m.destToIS[dest] = name
-				ok = true
-				break
-			}
-		}
-		if !ok {
-			return
-		}
-	}
-	isState, ok := m.imageStates[isName]
+	entry, ok := m.imageState[dest]
 	if !ok {
 		return
 	}
-	entry, ok := isState[dest]
-	if !ok {
-		return
-	}
-	// Idempotency: skip if already in the desired state with the same
-	// error. Prevents duplicate HTTP retries from inflating RetryCount.
 	if entry.State == st && entry.LastError == lastError {
 		return
 	}
 	entry.State = st
 	entry.LastError = lastError
-	// Mark the ImageSet dirty so the next reconcile tick flushes the
-	// state change to the ConfigMap.
-	m.dirtyStateNames[isName] = true
+	m.stateDirty = true
 	if st == stateFailed {
 		entry.RetryCount++
 		if entry.RetryCount >= 10 && !entry.PermanentlyFailed {
@@ -828,83 +716,86 @@ func (m *MirrorManager) setImageStateLocked(dest, st, lastError string) {
 	}
 }
 
-// updateImageSetStatusLocked updates the ImageSet status with aggregate
-// counts, ObservedGeneration, and the Ready condition. The Manager is the
-// sole writer of these fields (the controller only writes the CatalogReady
-// condition).
-//
-// LastSuccessfulPollTime is updated only when justResolved is true, so the
-// pollInterval gate in shouldResolve() works correctly. Status churn from
-// worker callbacks does not reset the poll clock.
-//
-// Caller must hold m.mu.
-func (m *MirrorManager) updateImageSetStatusLocked(ctx context.Context, is *mirrorv1alpha1.ImageSet, state imagestate.ImageState, justResolved bool) {
-	total, mirrored, pending, failed := imagestate.Counts(state)
-	is.Status.TotalImages = total
-	is.Status.MirroredImages = mirrored
-	is.Status.PendingImages = pending
-	is.Status.FailedImages = failed
-	is.Status.ObservedGeneration = is.Generation
-	if justResolved {
-		now := metav1.Now()
-		is.Status.LastSuccessfulPollTime = &now
+func (m *MirrorManager) updateStatusLocked(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget, activeIS []*mirrorv1alpha1.ImageSet) {
+	total, mirrored, pending, failed := imagestate.Counts(m.imageState)
+	mt.Status.TotalImages = total
+	mt.Status.MirroredImages = mirrored
+	mt.Status.PendingImages = pending
+	mt.Status.FailedImages = failed
+
+	if err := m.Client.Status().Update(ctx, mt); err != nil {
+		fmt.Printf("Failed to update MirrorTarget status: %v\n", err)
 	}
 
-	// Collect permanently-failed image details (capped at 20 to bound status
-	// size). Shows images where PermanentlyFailed=true regardless of current
-	// retry state (Failed at rest or Pending while being retried). Mirrored
-	// images are excluded — they recovered successfully.
-	details := make([]mirrorv1alpha1.FailedImageDetail, 0)
-	for dest, entry := range state {
-		if entry == nil || !entry.PermanentlyFailed || entry.State == stateMirrored {
-			continue
+	for _, is := range activeIS {
+		isTotal, isMirrored, isPending, isFailed := imagestate.CountsForImageSet(m.imageState, is.Name)
+		is.Status.TotalImages = isTotal
+		is.Status.MirroredImages = isMirrored
+		is.Status.PendingImages = isPending
+		is.Status.FailedImages = isFailed
+		is.Status.ObservedGeneration = is.Generation
+
+		details := make([]mirrorv1alpha1.FailedImageDetail, 0)
+		for dest, entry := range m.imageState {
+			if entry == nil || !entry.PermanentlyFailed || entry.State == stateMirrored {
+				continue
+			}
+			if !entry.HasImageSet(is.Name) {
+				continue
+			}
+
+			var originRef string
+			for _, ref := range entry.Refs {
+				if ref.ImageSet == is.Name {
+					originRef = ref.OriginRef
+					break
+				}
+			}
+
+			details = append(details, mirrorv1alpha1.FailedImageDetail{
+				Source:      entry.Source,
+				Destination: dest,
+				Error:       entry.LastError,
+				Origin:      originRef,
+			})
 		}
-		details = append(details, mirrorv1alpha1.FailedImageDetail{
-			Source:      entry.Source,
-			Destination: dest,
-			Error:       entry.LastError,
-			Origin:      entry.OriginRef,
-		})
-	}
-	sort.Slice(details, func(i, j int) bool { return details[i].Destination < details[j].Destination })
-	if len(details) > 20 {
-		details = details[:20]
-	}
-	is.Status.FailedImageDetails = details
+		sort.Slice(details, func(i, j int) bool { return details[i].Destination < details[j].Destination })
+		if len(details) > 20 {
+			details = details[:20]
+		}
+		is.Status.FailedImageDetails = details
 
-	readyStatus := metav1.ConditionTrue
-	readyReason := "Collected"
-	readyMsg := fmt.Sprintf("Collected %d images (%d mirrored, %d pending, %d failed)", total, mirrored, pending, failed)
-	if total == 0 {
-		readyStatus = metav1.ConditionFalse
-		readyReason = "Empty"
-		readyMsg = "no images resolved yet"
-	}
-	setReadyCondition(&is.Status.Conditions, readyStatus, readyReason, readyMsg, is.Generation)
+		readyStatus := metav1.ConditionTrue
+		readyReason := "Collected"
+		readyMsg := fmt.Sprintf("Collected %d images (%d mirrored, %d pending, %d failed)", isTotal, isMirrored, isPending, isFailed)
+		if isTotal == 0 {
+			readyStatus = metav1.ConditionFalse
+			readyReason = "Empty"
+			readyMsg = "no images resolved yet"
+		}
+		setReadyCondition(&is.Status.Conditions, readyStatus, readyReason, readyMsg, is.Generation)
 
-	if err := m.Client.Status().Update(ctx, is); err != nil {
-		fmt.Printf("Failed to update ImageSet %s status: %v\n", is.Name, err)
+		if err := m.Client.Status().Update(ctx, is); err != nil {
+			fmt.Printf("Failed to update ImageSet %s status: %v\n", is.Name, err)
+		}
 	}
 }
 
-// setReadyCondition manages a "Ready" condition on the ImageSet. Local helper
-// to avoid importing the controller package.
 func setReadyCondition(conditions *[]metav1.Condition, status metav1.ConditionStatus, reason, message string, gen int64) {
 	if conditions == nil {
 		return
 	}
 	for i, c := range *conditions {
-		if c.Type != "Ready" {
-			continue
+		if c.Type == "Ready" {
+			if c.Status != status || c.Reason != reason || c.Message != message || c.ObservedGeneration != gen {
+				(*conditions)[i].Status = status
+				(*conditions)[i].Reason = reason
+				(*conditions)[i].Message = message
+				(*conditions)[i].ObservedGeneration = gen
+				(*conditions)[i].LastTransitionTime = metav1.Now()
+			}
+			return
 		}
-		if c.Status != status || c.Reason != reason || c.Message != message || c.ObservedGeneration != gen {
-			(*conditions)[i].Status = status
-			(*conditions)[i].Reason = reason
-			(*conditions)[i].Message = message
-			(*conditions)[i].ObservedGeneration = gen
-			(*conditions)[i].LastTransitionTime = metav1.Now()
-		}
-		return
 	}
 	*conditions = append(*conditions, metav1.Condition{
 		Type:               "Ready",
@@ -922,7 +813,6 @@ func (m *MirrorManager) startWorkerBatch(ctx context.Context, mt *mirrorv1alpha1
 		return "", fmt.Errorf("failed to encode batch: %w", err)
 	}
 
-	// Annotation stores just the destination refs for pod-recovery on manager restart.
 	dests := make([]string, len(items))
 	for i, item := range items {
 		dests[i] = item.Dest
@@ -966,14 +856,10 @@ func (m *MirrorManager) startWorkerBatch(ctx context.Context, mt *mirrorv1alpha1
 		containerArgs = append(containerArgs, "--insecure")
 	}
 
-	var volumeMounts []corev1.VolumeMount
 	var volumes []corev1.Volume
+	var mounts []corev1.VolumeMount
 
-	// Blob buffer volume for large image layers.  By default an emptyDir is
-	// used.  When WorkerStorage is configured, a generic ephemeral PVC is
-	// used instead — Kubernetes binds the PVC to the pod lifecycle so no
-	// explicit cleanup is needed.
-	volumeMounts = append(volumeMounts, corev1.VolumeMount{
+	mounts = append(mounts, corev1.VolumeMount{
 		Name:      "blob-buffer",
 		MountPath: "/tmp/blob-buffer",
 	})
@@ -1016,7 +902,7 @@ func (m *MirrorManager) startWorkerBatch(ctx context.Context, mt *mirrorv1alpha1
 			Name:  "DOCKER_CONFIG",
 			Value: "/run/secrets/dockerconfig",
 		})
-		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+		mounts = append(mounts, corev1.VolumeMount{
 			Name:      "dockerconfig",
 			MountPath: "/run/secrets/dockerconfig",
 			ReadOnly:  true,
@@ -1034,10 +920,8 @@ func (m *MirrorManager) startWorkerBatch(ctx context.Context, mt *mirrorv1alpha1
 		})
 	}
 
-	// Inject proxy env vars when a proxy is configured.
 	envVars = append(envVars, workerProxyEnvVars(mt.Spec.Proxy)...)
 
-	// Inject CA bundle when configured.
 	if mt.Spec.CABundle != nil {
 		caKey := mt.Spec.CABundle.Key
 		if caKey == "" {
@@ -1047,7 +931,7 @@ func (m *MirrorManager) startWorkerBatch(ctx context.Context, mt *mirrorv1alpha1
 			Name:  "SSL_CERT_FILE",
 			Value: "/run/secrets/ca/" + caKey,
 		})
-		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+		mounts = append(mounts, corev1.VolumeMount{
 			Name:      "ca-bundle",
 			MountPath: "/run/secrets/ca",
 			ReadOnly:  true,
@@ -1101,7 +985,7 @@ func (m *MirrorManager) startWorkerBatch(ctx context.Context, mt *mirrorv1alpha1
 					},
 					Args:         containerArgs,
 					Env:          envVars,
-					VolumeMounts: volumeMounts,
+					VolumeMounts: mounts,
 					Resources:    mt.Spec.Worker.Resources,
 				},
 			},
@@ -1126,29 +1010,11 @@ func pointerTo[T any](v T) *T {
 	return &v
 }
 
-// resourcePtr parses a resource quantity string and returns a pointer to it.
-// Used for EmptyDir size limits.
 func resourcePtr(q string) *resource.Quantity {
 	v := resource.MustParse(q)
 	return &v
 }
 
-// clusterNoProxy contains address patterns that always bypass the proxy so that
-// pod-to-service traffic via cluster-internal FQDNs is never routed through an
-// external proxy.  Kept in sync with the controller's clusterNoProxy.
-var clusterNoProxy = []string{
-	"localhost",
-	"127.0.0.1",
-	".svc",
-	".svc.cluster.local",
-}
-
-// workerProxyEnvVars returns HTTP/HTTPS/NO_PROXY environment variables (both
-// upper and lower case) for the given proxy configuration so that tools that
-// only check one variant still see the proxy.  Returns nil when cfg is nil.
-// When a proxy is configured, clusterNoProxy entries are automatically prepended
-// to NO_PROXY, and KUBERNETES_SERVICE_HOST is overridden to the FQDN so that
-// client-go's in-cluster config bypasses the proxy.
 func workerProxyEnvVars(cfg *mirrorv1alpha1.ProxyConfig) []corev1.EnvVar {
 	if cfg == nil {
 		return nil
@@ -1182,9 +1048,8 @@ func workerProxyEnvVars(cfg *mirrorv1alpha1.ProxyConfig) []corev1.EnvVar {
 	return env
 }
 
-// workerBuildEffectiveNoProxy prepends clusterNoProxy to userNoProxy.
 func workerBuildEffectiveNoProxy(userNoProxy string) string {
-	base := strings.Join(clusterNoProxy, ",")
+	base := strings.Join([]string{"localhost", "127.0.0.1", ".svc", ".svc.cluster.local"}, ",")
 	if userNoProxy == "" {
 		return base
 	}

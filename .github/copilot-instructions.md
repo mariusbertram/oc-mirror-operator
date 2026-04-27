@@ -35,6 +35,30 @@ make test-integration     # Integration tests without a cluster (labels: integra
 E2E environment variables: `SKIP_CLUSTER_SETUP=true`, `SKIP_OPERATOR_DEPLOY=true`, `CERT_MANAGER_INSTALL_SKIP=true`.
 E2E Ginkgo labels: `cluster`, `integration`, `release`, `catalog`, `catalog-cluster`, `olm-upgrade`.
 
+## Local Development with MicroShift (minc)
+
+`minc` (MicroShift in Container) runs a lightweight OpenShift cluster inside a container.
+
+### Create Cluster
+```bash
+# Run rootful podman machine (if on macOS/Windows)
+podman machine stop; podman machine rm -f
+podman machine init --rootful
+podman machine start
+
+# Create and start MicroShift cluster
+minc create
+```
+
+### Connect with kubectl
+The `minc` tool automatically updates your `~/.kube/config` with a `microshift` context.
+
+```bash
+kubectl config use-context microshift
+kubectl get nodes
+kubectl get pods -A
+```
+
 Container tool defaults to **podman** (`CONTAINER_TOOL ?= podman`). Override with `CONTAINER_TOOL=docker` if needed.
 
 ## Architecture
