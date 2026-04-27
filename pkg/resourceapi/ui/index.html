@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>oc-mirror Dashboard</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; color: #333; max-width: 1200px; margin: 0 auto; padding: 20px; background-color: #f4f7f6; }
+        h1 { color: #0066cc; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+        .card { background: white; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); padding: 20px; margin-bottom: 20px; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; }
+        .status-bar { height: 20px; background-color: #eee; border-radius: 10px; overflow: hidden; margin: 10px 0; display: flex; }
+        .status-mirrored { background-color: #28a745; height: 100%; }
+        .status-pending { background-color: #ffc107; height: 100%; }
+        .status-failed { background-color: #dc3545; height: 100%; }
+        .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.8em; font-weight: bold; }
+        .badge-ready { background-color: #d4edda; color: #155724; }
+        .badge-not-ready { background-color: #f8d7da; color: #721c24; }
+        a { color: #0066cc; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        .hidden { display: none; }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>oc-mirror Dashboard</h1>
+        <p>Resource API Aggregator</p>
+    </header>
+
+    <main id="main-content">
+        <section id="targets-section">
+            <h2>MirrorTargets</h2>
+            <div id="targets-grid" class="grid">
+                <p>Loading targets...</p>
+            </div>
+        </section>
+
+        <section id="detail-section" class="hidden">
+            <button onclick="showTargets()">← Back to List</button>
+            <h2 id="detail-title">Target Detail</h2>
+            <div id="detail-content"></div>
+        </section>
+    </main>
+
+    <script>
+        async function loadTargets() {
+            const resp = await fetch('/api/v1/targets');
+            const targets = await resp.json();
+            const grid = document.getElementById('targets-grid');
+            grid.innerHTML = '';
+
+            targets.forEach(mt => {
+                const card = document.createElement('div');
+                card.className = 'card';
+                const total = mt.status.totalImages || 0;
+                const mirrored = mt.status.mirroredImages || 0;
+                const pending = mt.status.pendingImages || 0;
+                const failed = mt.status.failedImages || 0;
+                const pct = total > 0 ? Math.round((mirrored / total) * 100) : 0;
+
+                card.innerHTML = `
+                    <h3><a href="#" onclick="showDetail('${mt.metadata.name}')">${mt.metadata.name}</a></h3>
+                    <p>Registry: <code>${mt.spec.registry}</code></p>
+                    <div class="status-bar">
+                        <div class="status-mirrored" style="width: ${(mirrored/total)*100}%" title="Mirrored"></div>
+                        <div class="status-pending" style="width: ${(pending/total)*100}%" title="Pending"></div>
+                        <div class="status-failed" style="width: ${(failed/total)*100}%" title="Failed"></div>
+                    </div>
+                    <p>${mirrored} / ${total} images mirrored (${pct}%)</p>
+                `;
+                grid.appendChild(card);
+            });
+        }
+
+        async function showDetail(name) {
+            document.getElementById('targets-section').className = 'hidden';
+            document.getElementById('detail-section').className = '';
+            document.getElementById('detail-title').innerText = `MirrorTarget: ${name}`;
+            const content = document.getElementById('detail-content');
+            content.innerHTML = '<p>Loading details...</p>';
+
+            const resp = await fetch(`/api/v1/targets/${name}`);
+            const data = await resp.json();
+            const mt = data.target;
+            const index = data.index;
+
+            let html = `
+                <div class="card">
+                    <h3>Summary</h3>
+                    <p>Namespace: ${mt.metadata.namespace}</p>
+                    <p>Status: ${mt.status.conditions?.find(c => c.type === 'Ready')?.message || 'Unknown'}</p>
+                </div>
+                <h3>ImageSets</h3>
+            `;
+
+            if (index && index.imageSets) {
+                index.imageSets.forEach(is => {
+                    html += `
+                        <div class="card">
+                            <h4>${is.name} ${is.ready ? '<span class="badge badge-ready">Ready</span>' : '<span class="badge badge-not-ready">Not Ready</span>'}</h4>
+                            <ul>
+                                ${is.resources.map(res => `<li><a href="${res}" target="_blank">${res.split('/').pop()}</a></li>`).join('')}
+                            </ul>
+                        </div>
+                    `;
+                });
+            } else {
+                html += '<p>No ImageSet resources available yet.</p>';
+            }
+
+            content.innerHTML = html;
+        }
+
+        function showTargets() {
+            document.getElementById('targets-section').className = '';
+            document.getElementById('detail-section').className = 'hidden';
+            loadTargets();
+        }
+
+        loadTargets();
+        setInterval(loadTargets, 30000);
+    </script>
+</body>
+</html>

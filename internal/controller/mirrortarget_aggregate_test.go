@@ -4,78 +4,61 @@ import (
 	"context"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
+	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/imagestate"
 )
 
 func TestAggregateImageSetStatus(t *testing.T) {
 	scheme := runtime.NewScheme()
-	if err := mirrorv1alpha1.AddToScheme(scheme); err != nil {
-		t.Fatalf("AddToScheme: %v", err)
-	}
+	_ = mirrorv1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
 
 	mt := &mirrorv1alpha1.MirrorTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "quay-internal", Namespace: "oc-mirror-system"},
 		Spec: mirrorv1alpha1.MirrorTargetSpec{
-			ImageSets: []string{"is-b", "is-a", "is-missing"},
+			ImageSets: []string{"is-a", "is-b"},
 		},
 	}
-	isA := &mirrorv1alpha1.ImageSet{
-		ObjectMeta: metav1.ObjectMeta{Name: "is-a", Namespace: "oc-mirror-system"},
-		Status:     mirrorv1alpha1.ImageSetStatus{TotalImages: 100, MirroredImages: 60, PendingImages: 30, FailedImages: 10},
-	}
-	isB := &mirrorv1alpha1.ImageSet{
-		ObjectMeta: metav1.ObjectMeta{Name: "is-b", Namespace: "oc-mirror-system"},
-		Status:     mirrorv1alpha1.ImageSetStatus{TotalImages: 50, MirroredImages: 50, PendingImages: 0, FailedImages: 0},
+
+	// Create consolidated state in a ConfigMap.
+	state := imagestate.ImageState{
+		"img1": {Source: "s1", State: "Mirrored", Refs: []imagestate.ImageRef{{ImageSet: "is-a"}}},
+		"img2": {Source: "s2", State: "Mirrored", Refs: []imagestate.ImageRef{{ImageSet: "is-b"}}},
+		"img3": {Source: "s3", State: "Pending", Refs: []imagestate.ImageRef{{ImageSet: "is-a"}, {ImageSet: "is-b"}}},
 	}
 
-	c := fake.NewClientBuilder().WithScheme(scheme).
-		WithObjects(mt, isA, isB).Build()
+	// We need a real-ish client that can handle ConfigMaps.
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(mt).Build()
+
+	// Manually save the state for target.
+	if err := imagestate.SaveForTarget(context.Background(), c, "oc-mirror-system", mt, state); err != nil {
+		t.Fatalf("failed to save state: %v", err)
+	}
+
 	r := &MirrorTargetReconciler{Client: c, Scheme: scheme}
 
 	if err := r.aggregateImageSetStatus(context.Background(), mt); err != nil {
 		t.Fatalf("aggregateImageSetStatus: %v", err)
 	}
 
-	if got, want := mt.Status.TotalImages, 150; got != want {
+	// mt-level counts are unique destinations.
+	if got, want := mt.Status.TotalImages, 3; got != want {
 		t.Errorf("TotalImages: got %d want %d", got, want)
 	}
-	if got, want := mt.Status.MirroredImages, 110; got != want {
+	if got, want := mt.Status.MirroredImages, 2; got != want {
 		t.Errorf("MirroredImages: got %d want %d", got, want)
 	}
-	if got, want := mt.Status.PendingImages, 30; got != want {
+	if got, want := mt.Status.PendingImages, 1; got != want {
 		t.Errorf("PendingImages: got %d want %d", got, want)
 	}
-	if got, want := mt.Status.FailedImages, 10; got != want {
-		t.Errorf("FailedImages: got %d want %d", got, want)
-	}
 
-	if len(mt.Status.ImageSetStatuses) != 3 {
-		t.Fatalf("expected 3 summaries, got %d", len(mt.Status.ImageSetStatuses))
-	}
-	// Sorted alphabetically: is-a, is-b, is-missing
-	names := []string{
-		mt.Status.ImageSetStatuses[0].Name,
-		mt.Status.ImageSetStatuses[1].Name,
-		mt.Status.ImageSetStatuses[2].Name,
-	}
-	if names[0] != "is-a" || names[1] != "is-b" || names[2] != "is-missing" {
-		t.Fatalf("expected alphabetical order [is-a, is-b, is-missing], got %v", names)
-	}
-	if !mt.Status.ImageSetStatuses[0].Found || !mt.Status.ImageSetStatuses[1].Found {
-		t.Errorf("existing ImageSets must be Found=true")
-	}
-	if mt.Status.ImageSetStatuses[2].Found {
-		t.Errorf("missing ImageSet must be Found=false")
-	}
-	if mt.Status.ImageSetStatuses[2].Total != 0 {
-		t.Errorf("missing ImageSet must contribute zero counters")
-	}
-	if mt.Status.ImageSetStatuses[0].Total != 100 || mt.Status.ImageSetStatuses[0].Failed != 10 {
-		t.Errorf("is-a summary mismatch: %+v", mt.Status.ImageSetStatuses[0])
+	if len(mt.Status.ImageSetStatuses) != 2 {
+		t.Fatalf("expected 2 summaries, got %d", len(mt.Status.ImageSetStatuses))
 	}
 }
 

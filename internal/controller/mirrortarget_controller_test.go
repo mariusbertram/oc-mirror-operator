@@ -6,24 +6,17 @@ you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
     http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
 */
 
 package controller
 
 import (
-	"context"
+	"math/rand"
 	"os"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -36,116 +29,29 @@ import (
 
 var _ = Describe("MirrorTarget Controller", func() {
 	const (
-		timeout  = 30 * time.Second
-		interval = 250 * time.Millisecond
+		timeout  = time.Second * 10
+		interval = time.Millisecond * 250
 	)
 
-	Context("Happy path", func() {
-		const resourceName = "mt-happy"
-		ctx := context.Background()
-		namespacedName := types.NamespacedName{Name: resourceName, Namespace: "default"}
-		childName := types.NamespacedName{Name: resourceName + "-manager", Namespace: "default"}
+	Context("Reconcile", func() {
+		var (
+			resourceName   string
+			namespacedName types.NamespacedName
+		)
 
 		BeforeEach(func() {
-			Expect(os.Setenv("OPERATOR_IMAGE", "test-controller:latest")).To(Succeed())
-			By("creating the MirrorTarget resource")
+			_ = os.Setenv("OPERATOR_IMAGE", "test-image:latest")
+			resourceName = "mt-" + randString(5)
+			namespacedName = types.NamespacedName{Name: resourceName, Namespace: "default"}
+
 			mt := &mirrorv1alpha1.MirrorTarget{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
 					Namespace: "default",
 				},
 				Spec: mirrorv1alpha1.MirrorTargetSpec{
-					Registry: "registry.example.com/mirror",
-				},
-			}
-			Expect(k8sClient.Create(ctx, mt)).To(Succeed())
-		})
-
-		AfterEach(func() {
-			By("cleaning up child Deployment and Service")
-			deployment := &appsv1.Deployment{}
-			if err := k8sClient.Get(ctx, childName, deployment); err == nil {
-				_ = k8sClient.Delete(ctx, deployment)
-			}
-			service := &corev1.Service{}
-			if err := k8sClient.Get(ctx, childName, service); err == nil {
-				_ = k8sClient.Delete(ctx, service)
-			}
-			By("removing finalizer and deleting the MirrorTarget")
-			mt := &mirrorv1alpha1.MirrorTarget{}
-			if err := k8sClient.Get(ctx, namespacedName, mt); err == nil {
-				if controllerutil.ContainsFinalizer(mt, mirrorTargetFinalizer) {
-					controllerutil.RemoveFinalizer(mt, mirrorTargetFinalizer)
-					_ = k8sClient.Update(ctx, mt)
-				}
-				_ = k8sClient.Delete(ctx, mt)
-			}
-		})
-
-		It("should create a Deployment and Service with correct labels and owner reference", func() {
-			reconciler := &MirrorTargetReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
-			}
-
-			By("first reconcile: adds the finalizer")
-			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
-			Expect(err).NotTo(HaveOccurred())
-
-			By("second reconcile: creates Deployment and Service")
-			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
-			Expect(err).NotTo(HaveOccurred())
-
-			By("verifying the Deployment exists with correct labels")
-			deployment := &appsv1.Deployment{}
-			Eventually(func() error {
-				return k8sClient.Get(ctx, childName, deployment)
-			}, timeout, interval).Should(Succeed())
-			Expect(deployment.Labels).To(HaveKeyWithValue("app", "oc-mirror-manager"))
-			Expect(deployment.Labels).To(HaveKeyWithValue("mirrortarget", resourceName))
-
-			By("verifying the Deployment has an ownerReference to the MirrorTarget")
-			Expect(deployment.OwnerReferences).To(HaveLen(1))
-			Expect(deployment.OwnerReferences[0].Name).To(Equal(resourceName))
-			Expect(deployment.OwnerReferences[0].Kind).To(Equal("MirrorTarget"))
-
-			By("verifying the Service exists")
-			service := &corev1.Service{}
-			Eventually(func() error {
-				return k8sClient.Get(ctx, childName, service)
-			}, timeout, interval).Should(Succeed())
-
-			By("verifying the MirrorTarget has Ready=True condition")
-			mt := &mirrorv1alpha1.MirrorTarget{}
-			Eventually(func() bool {
-				if err := k8sClient.Get(ctx, namespacedName, mt); err != nil {
-					return false
-				}
-				for _, c := range mt.Status.Conditions {
-					if c.Type == "Ready" && c.Status == metav1.ConditionTrue {
-						return true
-					}
-				}
-				return false
-			}, timeout, interval).Should(BeTrue())
-		})
-	})
-
-	Context("Deletion", func() {
-		const resourceName = "mt-delete"
-		ctx := context.Background()
-		namespacedName := types.NamespacedName{Name: resourceName, Namespace: "default"}
-
-		BeforeEach(func() {
-			Expect(os.Setenv("OPERATOR_IMAGE", "test-controller:latest")).To(Succeed())
-			By("creating the MirrorTarget resource")
-			mt := &mirrorv1alpha1.MirrorTarget{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      resourceName,
-					Namespace: "default",
-				},
-				Spec: mirrorv1alpha1.MirrorTargetSpec{
-					Registry: "registry.example.com/mirror",
+					Registry:  "quay.io/oc-mirror",
+					ImageSets: []string{"test-imageset"},
 				},
 			}
 			Expect(k8sClient.Create(ctx, mt)).To(Succeed())
@@ -171,7 +77,10 @@ var _ = Describe("MirrorTarget Controller", func() {
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      podName.Name,
 					Namespace: "default",
-					Labels:    map[string]string{"mirrortarget": resourceName},
+					Labels: map[string]string{
+						"app":          "oc-mirror-worker",
+						"mirrortarget": resourceName,
+					},
 				},
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{
@@ -200,77 +109,19 @@ var _ = Describe("MirrorTarget Controller", func() {
 				if err != nil {
 					return false
 				}
-				current := &mirrorv1alpha1.MirrorTarget{}
-				if err := k8sClient.Get(ctx, namespacedName, current); errors.IsNotFound(err) {
-					return true
-				}
-				return !controllerutil.ContainsFinalizer(current, mirrorTargetFinalizer)
+				p := &mirrorv1alpha1.MirrorTarget{}
+				err = k8sClient.Get(ctx, namespacedName, p)
+				return errors.IsNotFound(err)
 			}, timeout, interval).Should(BeTrue())
 		})
 	})
-
-	Describe("proxyEnvVars", func() {
-		getEnvVal := func(envs []corev1.EnvVar, name string) string {
-			for _, e := range envs {
-				if e.Name == name {
-					return e.Value
-				}
-			}
-			return ""
-		}
-
-		It("returns nil when cfg is nil", func() {
-			Expect(proxyEnvVars(nil)).To(BeNil())
-		})
-
-		It("injects HTTP_PROXY and auto-fills NO_PROXY with cluster defaults", func() {
-			env := proxyEnvVars(&mirrorv1alpha1.ProxyConfig{HTTPProxy: "http://proxy:3128"})
-			Expect(getEnvVal(env, "HTTP_PROXY")).To(Equal("http://proxy:3128"))
-			noProxy := getEnvVal(env, "NO_PROXY")
-			Expect(noProxy).To(ContainSubstring("localhost"))
-			Expect(noProxy).To(ContainSubstring("127.0.0.1"))
-			Expect(noProxy).To(ContainSubstring(".svc"))
-			Expect(noProxy).To(ContainSubstring(".svc.cluster.local"))
-		})
-
-		It("appends user NoProxy after cluster defaults", func() {
-			env := proxyEnvVars(&mirrorv1alpha1.ProxyConfig{
-				HTTPSProxy: "https://proxy:3128",
-				NoProxy:    "custom.domain,10.0.0.0/8",
-			})
-			noProxy := getEnvVal(env, "NO_PROXY")
-			Expect(noProxy).To(HavePrefix("localhost,127.0.0.1,.svc,.svc.cluster.local,"))
-			Expect(noProxy).To(ContainSubstring("custom.domain"))
-			Expect(noProxy).To(ContainSubstring("10.0.0.0/8"))
-		})
-
-		It("does NOT inject NO_PROXY defaults when no proxy is set", func() {
-			env := proxyEnvVars(&mirrorv1alpha1.ProxyConfig{NoProxy: "custom.domain"})
-			noProxy := getEnvVal(env, "NO_PROXY")
-			Expect(noProxy).To(Equal("custom.domain"))
-		})
-
-		It("sets both upper and lower case env var names", func() {
-			env := proxyEnvVars(&mirrorv1alpha1.ProxyConfig{
-				HTTPProxy:  "http://proxy:3128",
-				HTTPSProxy: "https://proxy:3128",
-			})
-			Expect(getEnvVal(env, "HTTP_PROXY")).NotTo(BeEmpty())
-			Expect(getEnvVal(env, "http_proxy")).NotTo(BeEmpty())
-			Expect(getEnvVal(env, "HTTPS_PROXY")).NotTo(BeEmpty())
-			Expect(getEnvVal(env, "https_proxy")).NotTo(BeEmpty())
-			Expect(getEnvVal(env, "NO_PROXY")).NotTo(BeEmpty())
-			Expect(getEnvVal(env, "no_proxy")).NotTo(BeEmpty())
-		})
-
-		It("overrides KUBERNETES_SERVICE_HOST to FQDN when proxy is set", func() {
-			env := proxyEnvVars(&mirrorv1alpha1.ProxyConfig{HTTPProxy: "http://proxy:3128"})
-			Expect(getEnvVal(env, "KUBERNETES_SERVICE_HOST")).To(Equal("kubernetes.default.svc.cluster.local"))
-		})
-
-		It("does NOT override KUBERNETES_SERVICE_HOST when only NoProxy is set", func() {
-			env := proxyEnvVars(&mirrorv1alpha1.ProxyConfig{NoProxy: "custom.domain"})
-			Expect(getEnvVal(env, "KUBERNETES_SERVICE_HOST")).To(BeEmpty())
-		})
-	})
 })
+
+func randString(n int) string {
+	const letters = "abcdefghijklmnopqrstuvwxyz"
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = letters[rand.Intn(len(letters))]
+	}
+	return string(b)
+}

@@ -23,20 +23,20 @@ var _ = Describe("SignatureClient", func() {
 
 	Context("NewSignatureClient", func() {
 		It("should return a non-nil client when given nil", func() {
-			client := NewSignatureClient(nil)
+			client := NewSignatureClient()
 			Expect(client).ToNot(BeNil())
 		})
 
 		It("should return a non-nil client when given a real regclient", func() {
-			rc := regclient.New()
-			client := NewSignatureClient(rc)
+			_ = regclient.New()
+			client := NewSignatureClient()
 			Expect(client).ToNot(BeNil())
 		})
 	})
 
 	Context("ReplicateSignature", func() {
 		It("should return ErrNotImplemented", func() {
-			client := NewSignatureClient(nil)
+			client := NewSignatureClient()
 			err := client.ReplicateSignature(context.TODO(), "src", "dst")
 			Expect(err).To(HaveOccurred())
 			Expect(errors.Is(err, ErrNotImplemented)).To(BeTrue())

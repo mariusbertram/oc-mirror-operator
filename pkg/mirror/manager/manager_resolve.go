@@ -17,7 +17,10 @@ import (
 	"strings"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -48,31 +51,8 @@ func operatorCacheHit(cached, digest string) bool {
 
 // resolveImageSet enumerates the upstream content (releases, operator
 // catalogs, additional images) referenced by an ImageSet, merges the result
-// into the per-ImageSet imagestate ConfigMap, and refreshes the digest cache
+// into the consolidated imagestate, and refreshes the digest cache
 // annotations.
-//
-// Caching: each spec entry has a stable signature (sig) computed via
-// api/v1alpha1.OperatorEntrySignature / ReleaseChannelSignature. The ImageSet
-// annotations "mirror.openshift.io/{catalog,release}-digest-<sig>" store the
-// last-resolved upstream digest (catalog) or resolved-payload-list signature
-// (release). On a cache hit the existing imagestate entries with matching
-// (Origin, EntrySig) are carried over without doing the expensive component
-// extraction or FBC parse.
-//
-// Partitioning: every entry written by this method records its EntrySig in
-// the ImageEntry. carry-over copies only entries whose EntrySig matches the
-// hit entry, so a cache-hit on op-A does NOT pull in stale entries that came
-// from op-B in a previous resolution.
-//
-// recollect annotation: "mirror.openshift.io/recollect" forces a full bypass
-// of all cache hits for this round; it is removed by this method as a
-// one-shot trigger.
-//
-// Concurrency: the caller releases the manager mutex around resolveImageSet
-// because cheap-but-non-zero network I/O happens here. State is merged with
-// the live in-memory imagestate after re-acquiring the lock; see
-// reconcile() in manager.go for the merge path that preserves concurrent
-// worker callbacks.
 func (m *MirrorManager) resolveImageSet(ctx context.Context, is *mirrorv1alpha1.ImageSet, mt *mirrorv1alpha1.MirrorTarget, currentState imagestate.ImageState) (imagestate.ImageState, bool, error) {
 	if currentState == nil {
 		currentState = make(imagestate.ImageState)
@@ -88,35 +68,21 @@ func (m *MirrorManager) resolveImageSet(ctx context.Context, is *mirrorv1alpha1.
 	annotationsChanged := false
 	newAnnotations := copyMap(annotations)
 
+	// Create a fresh state for this resolution run, carrying over existing entries.
 	newState := make(imagestate.ImageState, len(currentState))
-	// Pre-populate with entries this method does NOT own (legacy / unknown
-	// origins) so we don't accidentally drop them.
 	for dest, entry := range currentState {
-		if entry == nil {
-			continue
-		}
-		switch entry.Origin {
-		case imagestate.OriginRelease, imagestate.OriginOperator, imagestate.OriginAdditional:
-			// owned — handled below
-		default:
-			cp := *entry
-			newState[dest] = &cp
-		}
+		cp := *entry
+		newState[dest] = &cp
 	}
 
-	releaseChanged, err := m.resolveReleaseSection(ctx, collector, is, mt, currentState, newState, newAnnotations, recollect)
-	if err != nil {
-		return nil, false, fmt.Errorf("resolve releases: %w", err)
-	}
-	if releaseChanged {
+	// Track which destinations are still part of this ImageSet.
+	visitedDests := make(map[string]bool)
+
+	if m.resolveReleaseSection(ctx, collector, is, mt, currentState, newState, newAnnotations, recollect, visitedDests) {
 		annotationsChanged = true
 	}
 
-	operatorChanged, err := m.resolveOperatorSection(ctx, collector, resolver, is, mt, currentState, newState, newAnnotations, recollect)
-	if err != nil {
-		return nil, false, fmt.Errorf("resolve operators: %w", err)
-	}
-	if operatorChanged {
+	if m.resolveOperatorSection(ctx, collector, resolver, is, mt, currentState, newState, newAnnotations, recollect, visitedDests) {
 		annotationsChanged = true
 	}
 
@@ -125,7 +91,14 @@ func (m *MirrorManager) resolveImageSet(ctx context.Context, is *mirrorv1alpha1.
 	if err != nil {
 		return nil, false, fmt.Errorf("collect additional images: %w", err)
 	}
-	mergeIntoStateWithSig(newState, additional, imagestate.OriginAdditional, "", "additional", currentState)
+	mergeIntoStateWithSig(newState, additional, imagestate.OriginAdditional, "", "additional", is.Name, currentState, visitedDests)
+
+	// Post-process newState: remove refs for this IS from any destination NOT in visitedDests.
+	for dest, entry := range newState {
+		if entry.HasImageSet(is.Name) && !visitedDests[dest] {
+			entry.RemoveImageSet(is.Name)
+		}
+	}
 
 	// Drop any annotation whose sig is no longer in spec.
 	if pruneObsoleteCacheAnnotations(newAnnotations, is) {
@@ -162,7 +135,7 @@ func (m *MirrorManager) buildCollector(mt *mirrorv1alpha1.MirrorTarget) (*mirror
 	return mirror.NewCollector(mc), catalog.New(mc)
 }
 
-func (m *MirrorManager) resolveReleaseSection( //nolint:unparam
+func (m *MirrorManager) resolveReleaseSection(
 	ctx context.Context,
 	collector *mirror.Collector,
 	is *mirrorv1alpha1.ImageSet,
@@ -171,12 +144,16 @@ func (m *MirrorManager) resolveReleaseSection( //nolint:unparam
 	newState imagestate.ImageState,
 	annotations map[string]string,
 	recollect bool,
-) (bool, error) { //nolint:unparam
+	visited map[string]bool,
+) bool {
 	annoChanged := false
 	arch := is.Spec.Mirror.Platform.Architectures
 	if len(arch) == 0 {
 		arch = []string{"amd64"}
 	}
+
+	sigClient := release.NewSignatureClient()
+	signatures := make(map[string][]byte)
 
 	for _, ch := range is.Spec.Mirror.Platform.Channels {
 		sig := mirrorv1alpha1.ReleaseChannelSignature(ch, arch, is.Spec.Mirror.Platform.KubeVirtContainer)
@@ -187,32 +164,101 @@ func (m *MirrorManager) resolveReleaseSection( //nolint:unparam
 		payloadNodes, resolveErr := collector.ResolveReleasePayloadNodes(ctx, ch, arch)
 		if resolveErr != nil {
 			fmt.Printf("Warning: probe release channel %s: %v\n", ch.Name, resolveErr)
-			carryOverByOriginAndSig(currentState, newState, imagestate.OriginRelease, sig, originRef)
+			carryOverByOriginAndSig(currentState, newState, imagestate.OriginRelease, sig, originRef, is.Name, visited)
 			continue
 		}
+
+		// Download signatures for each resolved node.
+		for _, node := range payloadNodes {
+			parts := strings.Split(node.Image, "@")
+			if len(parts) != 2 {
+				continue
+			}
+			digest := parts[1]
+			if _, exists := signatures[digest]; !exists {
+				if sign, err := sigClient.DownloadSignature(ctx, digest); err == nil {
+					signatures[digest] = sign
+				} else {
+					fmt.Printf("Warning: failed to download signature for %s: %v\n", digest, err)
+				}
+			}
+		}
+
 		freshSig := release.ResolvedSignature(release.NodeImages(payloadNodes))
 		if !recollect && cached != "" && cached == freshSig {
-			carryOverByOriginAndSig(currentState, newState, imagestate.OriginRelease, sig, originRef)
+			carryOverByOriginAndSig(currentState, newState, imagestate.OriginRelease, sig, originRef, is.Name, visited)
 			continue
 		}
 
 		images, err := collector.CollectReleasesForChannel(ctx, &is.Spec, mt, ch, payloadNodes)
 		if err != nil {
 			fmt.Printf("Warning: collect release channel %s: %v\n", ch.Name, err)
-			carryOverByOriginAndSig(currentState, newState, imagestate.OriginRelease, sig, originRef)
+			carryOverByOriginAndSig(currentState, newState, imagestate.OriginRelease, sig, originRef, is.Name, visited)
 			continue
 		}
-		mergeIntoStateWithSig(newState, images, imagestate.OriginRelease, sig, originRef, currentState)
+		mergeIntoStateWithSig(newState, images, imagestate.OriginRelease, sig, originRef, is.Name, currentState, visited)
 
 		if annotations[annoKey] != freshSig {
 			annotations[annoKey] = freshSig
 			annoChanged = true
 		}
 	}
-	return annoChanged, nil
+
+	// Persist signatures in ConfigMap.
+	if len(signatures) > 0 {
+		if err := m.saveSignatures(ctx, mt, signatures); err != nil {
+			fmt.Printf("Warning: failed to save release signatures: %v\n", err)
+		}
+	}
+
+	return annoChanged
 }
 
-func (m *MirrorManager) resolveOperatorSection( //nolint:unparam
+func (m *MirrorManager) saveSignatures(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget, signatures map[string][]byte) error {
+	cmName := mt.Name + "-signatures"
+	existing := &corev1.ConfigMap{}
+	getErr := m.Client.Get(ctx, types.NamespacedName{Namespace: m.Namespace, Name: cmName}, existing)
+
+	binaryData := make(map[string][]byte)
+	if getErr == nil {
+		for k, v := range existing.BinaryData {
+			binaryData[k] = v
+		}
+	}
+
+	// Merge new signatures (digest sha256:hash -> key sha256-hash).
+	for digest, data := range signatures {
+		key := strings.Replace(digest, ":", "-", 1)
+		binaryData[key] = data
+	}
+
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      cmName,
+			Namespace: m.Namespace,
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion:         mirrorv1alpha1.GroupVersion.String(),
+				Kind:               "MirrorTarget",
+				Name:               mt.Name,
+				UID:                mt.UID,
+				Controller:         ptr(true),
+				BlockOwnerDeletion: ptr(false),
+			}},
+		},
+		BinaryData: binaryData,
+	}
+
+	if apierrors.IsNotFound(getErr) {
+		return m.Client.Create(ctx, cm)
+	}
+	if getErr != nil {
+		return getErr
+	}
+	cm.ResourceVersion = existing.ResourceVersion
+	return m.Client.Update(ctx, cm)
+}
+
+func (m *MirrorManager) resolveOperatorSection(
 	ctx context.Context,
 	collector *mirror.Collector,
 	resolver *catalog.CatalogResolver,
@@ -222,7 +268,8 @@ func (m *MirrorManager) resolveOperatorSection( //nolint:unparam
 	newState imagestate.ImageState,
 	annotations map[string]string,
 	recollect bool,
-) (bool, error) { //nolint:unparam
+	visited map[string]bool,
+) bool {
 	annoChanged := false
 
 	for _, op := range is.Spec.Mirror.Operators {
@@ -243,106 +290,138 @@ func (m *MirrorManager) resolveOperatorSection( //nolint:unparam
 		freshDigest, err := resolver.GetCatalogDigest(ctx, op.Catalog)
 		if err != nil {
 			fmt.Printf("Warning: probe catalog %s: %v\n", op.Catalog, err)
-			carryOverByOriginAndSig(currentState, newState, imagestate.OriginOperator, sig, originRef)
+			carryOverByOriginAndSig(currentState, newState, imagestate.OriginOperator, sig, originRef, is.Name, visited)
 			continue
 		}
 
 		cacheToken := operatorCacheValue(freshDigest)
 		if !recollect && operatorCacheHit(cached, freshDigest) {
-			carryOverByOriginAndSig(currentState, newState, imagestate.OriginOperator, sig, originRef)
+			carryOverByOriginAndSig(currentState, newState, imagestate.OriginOperator, sig, originRef, is.Name, visited)
 			continue
 		}
 
 		images, err := collector.CollectOperatorEntry(ctx, op, mt)
 		if err != nil {
 			fmt.Printf("Warning: collect catalog %s: %v\n", op.Catalog, err)
-			carryOverByOriginAndSig(currentState, newState, imagestate.OriginOperator, sig, originRef)
+			carryOverByOriginAndSig(currentState, newState, imagestate.OriginOperator, sig, originRef, is.Name, visited)
 			continue
 		}
-		mergeIntoStateWithSig(newState, images, imagestate.OriginOperator, sig, originRef, currentState)
+		mergeIntoStateWithSig(newState, images, imagestate.OriginOperator, sig, originRef, is.Name, currentState, visited)
 
 		if annotations[annoKey] != cacheToken {
 			annotations[annoKey] = cacheToken
 			annoChanged = true
 		}
 	}
-	return annoChanged, nil
+	return annoChanged
 }
 
-// mergeIntoStateWithSig writes entries into dst, tagging each with origin+sig.
-// When the same destination already exists in prev with the same Origin (any
-// EntrySig), prior State / RetryCount / LastError are preserved so
-// already-mirrored images stay mirrored.
-//
-// When two different sigs produce the same destination (e.g. two operator
-// entries that both depend on a shared bundle), the LAST writer wins for
-// EntrySig; the State is preserved across either writer because we look up
-// `prev` by destination only.
-func mergeIntoStateWithSig(dst imagestate.ImageState, images []mirror.TargetImage, origin imagestate.ImageOrigin, sig, originRef string, prev imagestate.ImageState) {
+// mergeIntoStateWithSig writes entries into dst, tagging each with origin+sig for the given imageSet.
+func mergeIntoStateWithSig(dst imagestate.ImageState, images []mirror.TargetImage, origin imagestate.ImageOrigin, sig, originRef, isName string, prev imagestate.ImageState, visited map[string]bool) {
 	for _, img := range images {
-		// Per-image bundle reference takes precedence over the spec-level
-		// catalog+packages label; fall back to originRef when not set.
+		visited[img.Destination] = true
 		ref := originRef
 		if img.BundleRef != "" {
 			ref = fmt.Sprintf("%s — %s", originRef, img.BundleRef)
 		}
-		entry := &imagestate.ImageEntry{
-			Source:    img.Source,
-			State:     "Pending",
+
+		entry, ok := dst[img.Destination]
+		if !ok {
+			entry = &imagestate.ImageEntry{
+				Source: img.Source,
+				State:  "Pending",
+			}
+			dst[img.Destination] = entry
+
+			if existing, exists := prev[img.Destination]; exists && existing != nil {
+				if existing.State == "Mirrored" && existing.Origin == origin {
+					entry.State = existing.State
+					entry.RetryCount = existing.RetryCount
+					entry.LastError = existing.LastError
+					entry.PermanentlyFailed = existing.PermanentlyFailed
+				}
+			}
+
+		}
+
+		entry.AddRef(imagestate.ImageRef{
+			ImageSet:  isName,
 			Origin:    origin,
 			EntrySig:  sig,
 			OriginRef: ref,
-		}
-		if existing, ok := prev[img.Destination]; ok && existing != nil && existing.Origin == origin {
-			// Only carry forward Mirrored state — work we've already done.
-			// Failed entries (including permanently-failed ones) are reset to
-			// Pending so they get a fresh attempt whenever the spec changes
-			// or recollect is triggered. Cache-hits bypass this function and
-			// go through carryOverByOriginAndSig which preserves all states.
-			if existing.State == "Mirrored" {
-				entry.State = existing.State
-				entry.RetryCount = existing.RetryCount
-				entry.LastError = existing.LastError
-			}
-		}
-		dst[img.Destination] = entry
+		})
+		// Backward compat
+		entry.Origin = origin
+		entry.EntrySig = sig
+		entry.OriginRef = ref
 	}
 }
 
-// carryOverByOriginAndSig copies entries from src into dst that match
-// (origin, sig) AND that don't already exist in dst (last writer wins).
-//
-// originRef is the current spec-level origin label; it is used to back-fill
-// any entry whose OriginRef is still empty (written by older controller
-// versions before per-image bundle enrichment was introduced).
-//
-// Backward-compat: entries with empty EntrySig are treated as legacy and
-// carried over for any sig matching their Origin so that older state is not
-// dropped on first migration. They will be re-tagged with a real sig the
-// next time their owning spec entry is re-resolved.
-func carryOverByOriginAndSig(src, dst imagestate.ImageState, origin imagestate.ImageOrigin, sig, originRef string) {
-	for dest, entry := range src {
-		if entry == nil || entry.Origin != origin {
+// carryOverByOriginAndSig copies references from src into dst that match (origin, sig) for the given imageSet.
+func carryOverByOriginAndSig(src, dst imagestate.ImageState, origin imagestate.ImageOrigin, sig, originRef, isName string, visited map[string]bool) {
+	for dest, srcEntry := range src {
+		if srcEntry == nil {
 			continue
 		}
-		if entry.EntrySig != "" && entry.EntrySig != sig {
+
+		// Find the reference in src that matches this IS and sig.
+		var foundRef *imagestate.ImageRef
+		for _, r := range srcEntry.Refs {
+			if r.ImageSet == isName && r.Origin == origin {
+				if r.EntrySig == "" || r.EntrySig == sig {
+					foundRef = &r
+					break
+				}
+			}
+		}
+
+		// Fallback for legacy entries (Phase 3 migration)
+		if foundRef == nil && srcEntry.Origin == origin && (srcEntry.EntrySig == "" || srcEntry.EntrySig == sig) {
+			foundRef = &imagestate.ImageRef{
+				ImageSet:  isName,
+				Origin:    srcEntry.Origin,
+				EntrySig:  srcEntry.EntrySig,
+				OriginRef: srcEntry.OriginRef,
+			}
+		}
+
+		if foundRef == nil {
 			continue
 		}
-		if _, exists := dst[dest]; exists {
-			continue
+
+		visited[dest] = true
+		dstEntry, ok := dst[dest]
+		if !ok {
+			dstEntry = &imagestate.ImageEntry{
+				Source:            srcEntry.Source,
+				State:             srcEntry.State,
+				LastError:         srcEntry.LastError,
+				RetryCount:        srcEntry.RetryCount,
+				PermanentlyFailed: srcEntry.PermanentlyFailed,
+				// Backward compat
+				Origin:    srcEntry.Origin,
+				EntrySig:  srcEntry.EntrySig,
+				OriginRef: srcEntry.OriginRef,
+			}
+			dst[dest] = dstEntry
 		}
-		cp := *entry
-		// Adopt the current sig for legacy entries so future cache hits work
-		// correctly.
-		if cp.EntrySig == "" {
-			cp.EntrySig = sig
+
+		ref := *foundRef
+		if ref.EntrySig == "" {
+			ref.EntrySig = sig
 		}
-		// Back-fill OriginRef for entries written before per-image bundle refs
-		// were introduced so that failedImageDetails.origin is never empty.
-		if cp.OriginRef == "" && originRef != "" {
-			cp.OriginRef = originRef
+		if ref.OriginRef == "" {
+			ref.OriginRef = originRef
 		}
-		dst[dest] = &cp
+		dstEntry.AddRef(ref)
+
+		// Backward compat update if needed
+		if dstEntry.EntrySig == "" {
+			dstEntry.EntrySig = ref.EntrySig
+		}
+		if dstEntry.OriginRef == "" {
+			dstEntry.OriginRef = ref.OriginRef
+		}
 	}
 }
 
@@ -418,15 +497,23 @@ func equalState(a, b imagestate.ImageState) bool {
 			}
 			continue
 		}
-		changed := va.Source != vb.Source ||
+		if va.Source != vb.Source ||
 			va.State != vb.State ||
-			va.Origin != vb.Origin ||
-			va.EntrySig != vb.EntrySig ||
 			va.RetryCount != vb.RetryCount ||
 			va.LastError != vb.LastError ||
-			va.OriginRef != vb.OriginRef
-		if changed {
+			va.Origin != vb.Origin ||
+			va.EntrySig != vb.EntrySig ||
+			va.OriginRef != vb.OriginRef ||
+			len(va.Refs) != len(vb.Refs) {
 			return false
+		}
+		for i := range va.Refs {
+			if va.Refs[i].ImageSet != vb.Refs[i].ImageSet ||
+				va.Refs[i].Origin != vb.Refs[i].Origin ||
+				va.Refs[i].EntrySig != vb.Refs[i].EntrySig ||
+				va.Refs[i].OriginRef != vb.Refs[i].OriginRef {
+				return false
+			}
 		}
 	}
 	return true
@@ -448,26 +535,14 @@ func cloneImageState(s imagestate.ImageState) imagestate.ImageState {
 			continue
 		}
 		entry := *v
+		entry.Refs = make([]imagestate.ImageRef, len(v.Refs))
+		copy(entry.Refs, v.Refs)
 		out[k] = &entry
 	}
 	return out
 }
 
-// mergeWorkerUpdates applies any State/RetryCount/LastError changes that
-// happened in `live` (the in-memory map mutated by worker callbacks during
-// the resolve unlock window) into `resolved` (the freshly-resolved state).
-//
-// Rules:
-//   - Only destinations present in `resolved` are updated. Destinations
-//     that no longer exist in `resolved` are dropped (resolution is the
-//     authoritative spec view).
-//   - For destinations in both, fields where `live` carries newer worker
-//     observations override `resolved`'s defaults: if `live` is "Mirrored"
-//     or "Failed" we adopt that state + retryCount + lastError. We do not
-//     downgrade Mirrored/Failed back to Pending from `live`.
-//
-// This guarantees worker pod status callbacks that fired during resolution
-// are not lost.
+// mergeWorkerUpdates applies any State/RetryCount/LastError changes from live into resolved.
 func mergeWorkerUpdates(resolved, live imagestate.ImageState) imagestate.ImageState {
 	if live == nil {
 		return resolved
@@ -490,14 +565,7 @@ func mergeWorkerUpdates(resolved, live imagestate.ImageState) imagestate.ImageSt
 	return resolved
 }
 
-// shouldResolve gates resolveImageSet calls so we don't hammer upstream
-// registries on every 30s reconcile loop. Resolution runs when:
-//   - imagestate is empty (initial resolution)
-//   - the recollect annotation is set
-//   - the spec has changed (Generation > Status.ObservedGeneration)
-//   - a cache annotation carries an outdated operatorCacheVersion (operator
-//     binary was upgraded and filtering logic changed)
-//   - the configured pollInterval has elapsed since LastSuccessfulPollTime
+// shouldResolve gates resolveImageSet calls.
 func shouldResolve(is *mirrorv1alpha1.ImageSet, mt *mirrorv1alpha1.MirrorTarget, currentState imagestate.ImageState) bool {
 	if len(currentState) == 0 {
 		return true
@@ -534,10 +602,7 @@ func shouldResolve(is *mirrorv1alpha1.ImageSet, mt *mirrorv1alpha1.MirrorTarget,
 	return time.Since(is.Status.LastSuccessfulPollTime.Time) >= pollInterval
 }
 
-// hasStaleCacheAnnotations returns true if any catalog-digest cache annotation
-// on the ImageSet was written with an older operatorCacheVersion. This forces
-// re-resolution after an operator binary upgrade that changed the filtering
-// logic (e.g. heads-only), even if the ImageSet spec itself hasn't changed.
+// hasStaleCacheAnnotations returns true if any catalog-digest cache annotation is outdated.
 func hasStaleCacheAnnotations(is *mirrorv1alpha1.ImageSet) bool {
 	if is.Annotations == nil {
 		return false
@@ -552,3 +617,5 @@ func hasStaleCacheAnnotations(is *mirrorv1alpha1.ImageSet) bool {
 	}
 	return false
 }
+
+func ptr[T any](v T) *T { return &v }

@@ -197,18 +197,6 @@ func GenerateITMS(name string, state imagestate.ImageState) ([]byte, error) {
 	return yaml.Marshal(itms)
 }
 
-// --- CatalogSource / ClusterCatalog Generation ---
-
-// CatalogInfo describes a mirrored operator catalog.
-type CatalogInfo struct {
-	// SourceCatalog is the original catalog reference (e.g. registry.redhat.io/redhat/redhat-operator-index:v4.21).
-	SourceCatalog string
-	// TargetImage is the filtered catalog image in the target registry.
-	TargetImage string
-	// DisplayName is a human-readable name for the catalog.
-	DisplayName string
-}
-
 // GenerateCatalogSource generates a CatalogSource YAML for OLM v0.
 func GenerateCatalogSource(name, namespace string, catalog CatalogInfo, pullSecretName string) ([]byte, error) {
 	cs := map[string]interface{}{

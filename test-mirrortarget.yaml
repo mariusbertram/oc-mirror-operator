@@ -1,0 +1,10 @@
+apiVersion: mirror.openshift.io/v1alpha1
+kind: MirrorTarget
+metadata:
+  name: test-target
+  namespace: default
+spec:
+  registry: registry.default.svc.cluster.local:5000
+  insecure: true
+  imageSets:
+    - test-imageset
