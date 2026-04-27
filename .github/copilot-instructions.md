@@ -41,13 +41,8 @@ E2E Ginkgo labels: `cluster`, `integration`, `release`, `catalog`, `catalog-clus
 
 ### Create Cluster
 ```bash
-# Run rootful podman machine (if on macOS/Windows)
-podman machine stop; podman machine rm -f
-podman machine init --rootful
-podman machine start
-
-# Create and start MicroShift cluster
-minc create
+# Create and start MicroShift cluster (defaults to podman)
+minc create -p podman
 ```
 
 ### Connect with kubectl
@@ -56,8 +51,36 @@ The `minc` tool automatically updates your `~/.kube/config` with a `microshift` 
 ```bash
 kubectl config use-context microshift
 kubectl get nodes
-kubectl get pods -A
 ```
+
+### Testing with a local Registry
+To test image mirroring without an external registry, deploy a local registry in the cluster and expose it:
+
+1. **Deploy Registry**:
+   ```bash
+   kubectl apply -f config/samples/registry_deploy.yaml
+   ```
+
+2. **Expose Registry via Route**:
+   `minc` supports OpenShift Routes. Expose the registry to push images from your host:
+   ```bash
+   # Create a Route to expose the registry service
+   oc expose svc/registry --name=registry-external
+   
+   # Get the external URL (usually registry-external-default.apps.nic.local)
+   REGISTRY_URL=$(kubectl get route registry-external -o jsonpath='{.spec.host}')
+   ```
+
+3. **Push Test Image**:
+   ```bash
+   podman build -t $REGISTRY_URL/oc-mirror-operator:test .
+   podman push $REGISTRY_URL/oc-mirror-operator:test --tls-verify=false
+   ```
+
+4. **Deploy Operator**:
+   ```bash
+   make deploy IMG=$REGISTRY_URL/oc-mirror-operator:test
+   ```
 
 Container tool defaults to **podman** (`CONTAINER_TOOL ?= podman`). Override with `CONTAINER_TOOL=docker` if needed.
 

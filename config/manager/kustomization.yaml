@@ -4,8 +4,8 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 images:
 - name: controller
-  newName: ghcr.io/mariusbertram/oc-mirror-operator
-  newTag: v0.0.3
+  newName: registry.default.svc.cluster.local:5000/oc-mirror-operator
+  newTag: test
 
 # Mirror the manager container image into OPERATOR_IMAGE so the env var
 # follows whatever `make bundle IMG=...` (or the OLM ClusterServiceVersion)
