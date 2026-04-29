@@ -248,7 +248,7 @@ func runCleanup() {
 	}
 	// Derive ConfigMap name from imageset if not explicitly set.
 	if configMapName == "" {
-		configMapName = imagestate.ConfigMapName(imageSetName)
+		configMapName = imagestate.ConfigMapName(imageSetName) //nolint:staticcheck // migration pending
 	}
 
 	cfg := ctrl.GetConfigOrDie()

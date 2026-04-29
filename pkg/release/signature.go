@@ -19,7 +19,8 @@ import (
 var ErrNotImplemented = errors.New("not implemented")
 
 // signatureBaseURL is the upstream source for OpenShift release GPG signatures.
-const signatureBaseURL = "https://mirror.openshift.com/pub/openshift-v4/signatures/openshift/release"
+// It is a var (not const) so tests can replace it with a local httptest server.
+var signatureBaseURL = "https://mirror.openshift.com/pub/openshift-v4/signatures/openshift/release"
 
 // SignatureClient downloads OpenShift release GPG signatures from the upstream
 // Red Hat mirror and can replicate them into a target registry.

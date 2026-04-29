@@ -381,7 +381,7 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs( //nolint:gocyclo
 // performed initial resolution); the gate is closed in that case so we don't
 // kick off a build with zero source data.
 func operatorImagesMirrored(ctx context.Context, c client.Client, is *mirrorv1alpha1.ImageSet) (bool, bool) {
-	state, err := imagestate.Load(ctx, c, is.Namespace, is.Name)
+	state, err := imagestate.Load(ctx, c, is.Namespace, is.Name) //nolint:staticcheck // migration pending
 	if err != nil || len(state) == 0 {
 		return false, false
 	}

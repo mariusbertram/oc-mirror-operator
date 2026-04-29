@@ -807,7 +807,7 @@ func (m *MirrorManager) loadConsolidatedState(ctx context.Context, mt *mirrorv1a
 		if !containsString(mt.Spec.ImageSets, is.Name) {
 			continue
 		}
-		isState, loadErr := imagestate.Load(ctx, m.Client, m.Namespace, is.Name)
+		isState, loadErr := imagestate.Load(ctx, m.Client, m.Namespace, is.Name) //nolint:staticcheck // migration pending
 		if loadErr != nil {
 			fmt.Printf("Warning: migration: failed to load state for %s: %v\n", is.Name, loadErr)
 			continue
