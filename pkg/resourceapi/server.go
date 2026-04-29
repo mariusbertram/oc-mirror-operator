@@ -2,14 +2,21 @@ package resourceapi
 
 import (
 	"context"
+	"embed"
+	"encoding/json"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"strings"
 
 	"github.com/gorilla/mux"
+	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+//go:embed ui
+var uiFS embed.FS
 
 type Server struct {
 	client    client.Client
@@ -23,23 +30,74 @@ func NewServer(c client.Client, namespace string) *Server {
 	}
 }
 
-func (s *Server) Run(ctx context.Context) {
-	r := mux.NewRouter()
+// TargetSummary is the JSON response for the targets list endpoint.
+type TargetSummary struct {
+	Name           string `json:"name"`
+	Registry       string `json:"registry"`
+	TotalImages    int    `json:"totalImages"`
+	MirroredImages int    `json:"mirroredImages"`
+	PendingImages  int    `json:"pendingImages"`
+	FailedImages   int    `json:"failedImages"`
+}
 
-	// Redirect handler for legacy /resources/{imageset}/... paths
+// TargetDetail is the JSON response for a single target detail endpoint.
+type TargetDetail struct {
+	Name           string                `json:"name"`
+	Registry       string                `json:"registry"`
+	TotalImages    int                   `json:"totalImages"`
+	MirroredImages int                   `json:"mirroredImages"`
+	PendingImages  int                   `json:"pendingImages"`
+	FailedImages   int                   `json:"failedImages"`
+	ImageSets      []ImageSetSummaryJSON `json:"imageSets"`
+	Resources      []ResourceLink        `json:"resources"`
+}
+
+// ImageSetSummaryJSON is the per-ImageSet status info returned in JSON.
+type ImageSetSummaryJSON struct {
+	Name      string         `json:"name"`
+	Found     bool           `json:"found"`
+	Total     int            `json:"total"`
+	Mirrored  int            `json:"mirrored"`
+	Pending   int            `json:"pending"`
+	Failed    int            `json:"failed"`
+	Resources []ResourceLink `json:"resources"`
+}
+
+// ResourceLink describes a downloadable resource.
+type ResourceLink struct {
+	Name string `json:"name"`
+	URL  string `json:"url"`
+	Type string `json:"type"`
+}
+
+func (s *Server) RegisterRoutes(r *mux.Router) {
+	// Serve embedded Web UI at root
+	uiSub, err := fs.Sub(uiFS, "ui")
+	if err == nil {
+		r.PathPrefix("/ui/").Handler(http.StripPrefix("/ui/", http.FileServer(http.FS(uiSub))))
+		r.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
+			http.Redirect(w, req, "/ui/", http.StatusMovedPermanently)
+		})
+	}
+
+	// Legacy redirect
 	r.PathPrefix("/resources/{imageset}/").HandlerFunc(s.handleLegacyRedirect)
 
-	// New API structure
-	// /api/v1/targets/{mt}/resources/idms
-	// /api/v1/targets/{mt}/resources/itms
-	// /api/v1/targets/{mt}/resources/catalogs/{slug}/catalogsource
-	// /api/v1/targets/{mt}/resources/catalogs/{slug}/packages
-
+	// API endpoints – JSON metadata
 	api := r.PathPrefix("/api/v1").Subrouter()
+	api.HandleFunc("/targets", s.handleTargetsList).Methods("GET")
+	api.HandleFunc("/targets/{mt}", s.handleTargetDetail).Methods("GET")
+
+	// API endpoints – raw resources from ConfigMaps
 	api.HandleFunc("/targets/{mt}/resources/idms", s.handleIDMS).Methods("GET")
 	api.HandleFunc("/targets/{mt}/resources/itms", s.handleITMS).Methods("GET")
 	api.HandleFunc("/targets/{mt}/resources/catalogs/{slug}/catalogsource", s.handleCatalogSource).Methods("GET")
 	api.HandleFunc("/targets/{mt}/resources/catalogs/{slug}/packages", s.handleCatalogPackages).Methods("GET")
+}
+
+func (s *Server) Run(ctx context.Context) {
+	r := mux.NewRouter()
+	s.RegisterRoutes(r)
 
 	srv := &http.Server{
 		Addr:    ":8081",
@@ -57,8 +115,78 @@ func (s *Server) Run(ctx context.Context) {
 	_ = srv.Shutdown(context.Background())
 }
 
+// --- JSON API handlers ---
+
+func (s *Server) handleTargetsList(w http.ResponseWriter, r *http.Request) {
+	list := &mirrorv1alpha1.MirrorTargetList{}
+	if err := s.client.List(r.Context(), list, client.InNamespace(s.namespace)); err != nil {
+		http.Error(w, fmt.Sprintf("failed to list MirrorTargets: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	targets := make([]TargetSummary, 0, len(list.Items))
+	for _, mt := range list.Items {
+		targets = append(targets, TargetSummary{
+			Name:           mt.Name,
+			Registry:       mt.Spec.Registry,
+			TotalImages:    mt.Status.TotalImages,
+			MirroredImages: mt.Status.MirroredImages,
+			PendingImages:  mt.Status.PendingImages,
+			FailedImages:   mt.Status.FailedImages,
+		})
+	}
+
+	writeJSON(w, targets)
+}
+
+func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	mtName := vars["mt"]
+
+	mt := &mirrorv1alpha1.MirrorTarget{}
+	if err := s.client.Get(r.Context(), client.ObjectKey{Name: mtName, Namespace: s.namespace}, mt); err != nil {
+		http.Error(w, "MirrorTarget not found", http.StatusNotFound)
+		return
+	}
+
+	// Build resource links from the resources ConfigMap
+	cmName := fmt.Sprintf("oc-mirror-%s-resources", mtName)
+	cm := &corev1.ConfigMap{}
+	var resources []ResourceLink
+	if err := s.client.Get(r.Context(), client.ObjectKey{Name: cmName, Namespace: s.namespace}, cm); err == nil {
+		resources = buildResourceLinks(mtName, cm)
+	}
+
+	imageSets := make([]ImageSetSummaryJSON, 0, len(mt.Status.ImageSetStatuses))
+	for _, iss := range mt.Status.ImageSetStatuses {
+		imageSets = append(imageSets, ImageSetSummaryJSON{
+			Name:      iss.Name,
+			Found:     iss.Found,
+			Total:     iss.Total,
+			Mirrored:  iss.Mirrored,
+			Pending:   iss.Pending,
+			Failed:    iss.Failed,
+			Resources: resources, // same resources apply to all image sets for now
+		})
+	}
+
+	detail := TargetDetail{
+		Name:           mt.Name,
+		Registry:       mt.Spec.Registry,
+		TotalImages:    mt.Status.TotalImages,
+		MirroredImages: mt.Status.MirroredImages,
+		PendingImages:  mt.Status.PendingImages,
+		FailedImages:   mt.Status.FailedImages,
+		ImageSets:      imageSets,
+		Resources:      resources,
+	}
+
+	writeJSON(w, detail)
+}
+
+// --- Raw resource handlers ---
+
 func (s *Server) handleLegacyRedirect(w http.ResponseWriter, r *http.Request) {
-	// Simple redirect for now - in production we would resolve the IS to its MT
 	w.WriteHeader(http.StatusGone)
 	_, _ = fmt.Fprintln(w, "Legacy /resources/ paths are no longer supported. Please use the new /api/v1/targets/{mt}/... API.")
 }
@@ -88,9 +216,9 @@ func (s *Server) handleCatalogPackages(w http.ResponseWriter, r *http.Request) {
 	s.serveConfigMapResource(w, r, fmt.Sprintf("oc-mirror-%s-packages", slug), "packages.json")
 }
 
-func (s *Server) serveConfigMapResource(w http.ResponseWriter, r *http.Request, cmName, key string) {
+func (s *Server) serveConfigMapResource(w http.ResponseWriter, _ *http.Request, cmName, key string) {
 	cm := &corev1.ConfigMap{}
-	err := s.client.Get(r.Context(), client.ObjectKey{Name: cmName, Namespace: s.namespace}, cm)
+	err := s.client.Get(context.Background(), client.ObjectKey{Name: cmName, Namespace: s.namespace}, cm)
 	if err != nil {
 		http.Error(w, "Resource not found", http.StatusNotFound)
 		return
@@ -108,4 +236,39 @@ func (s *Server) serveConfigMapResource(w http.ResponseWriter, r *http.Request, 
 		w.Header().Set("Content-Type", "text/yaml")
 	}
 	_, _ = w.Write([]byte(data))
+}
+
+// --- helpers ---
+
+func buildResourceLinks(mtName string, cm *corev1.ConfigMap) []ResourceLink {
+	var links []ResourceLink
+	base := fmt.Sprintf("/api/v1/targets/%s/resources", mtName)
+
+	if _, ok := cm.Data["idms.yaml"]; ok {
+		links = append(links, ResourceLink{Name: "IDMS", URL: base + "/idms", Type: "yaml"})
+	}
+	if _, ok := cm.Data["itms.yaml"]; ok {
+		links = append(links, ResourceLink{Name: "ITMS", URL: base + "/itms", Type: "yaml"})
+	}
+
+	// Detect catalog resources by key pattern catalogsource-<slug>.yaml
+	for key := range cm.Data {
+		if strings.HasPrefix(key, "catalogsource-") && strings.HasSuffix(key, ".yaml") {
+			slug := strings.TrimSuffix(strings.TrimPrefix(key, "catalogsource-"), ".yaml")
+			links = append(links, ResourceLink{
+				Name: fmt.Sprintf("CatalogSource (%s)", slug),
+				URL:  fmt.Sprintf("%s/catalogs/%s/catalogsource", base, slug),
+				Type: "yaml",
+			})
+		}
+	}
+
+	return links
+}
+
+func writeJSON(w http.ResponseWriter, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+	}
 }

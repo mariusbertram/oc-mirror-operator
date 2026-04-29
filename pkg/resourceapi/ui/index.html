@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>oc-mirror Dashboard</title>
+    <style>
+        :root {
+            --bg: #0f1114;
+            --surface: #1a1d23;
+            --surface-hover: #22262e;
+            --border: #2d3139;
+            --text: #e1e4e8;
+            --text-muted: #8b949e;
+            --accent: #58a6ff;
+            --green: #3fb950;
+            --yellow: #d29922;
+            --red: #f85149;
+            --radius: 8px;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.5;
+        }
+        header {
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            padding: 16px 24px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        header h1 {
+            font-size: 18px;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        header h1 .logo {
+            width: 28px;
+            height: 28px;
+            background: var(--accent);
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+            font-weight: 700;
+            color: var(--bg);
+        }
+        .refresh-info {
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+        nav {
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            padding: 0 24px;
+        }
+        nav a {
+            display: inline-block;
+            padding: 10px 16px;
+            color: var(--text-muted);
+            text-decoration: none;
+            font-size: 14px;
+            border-bottom: 2px solid transparent;
+            transition: color 0.15s, border-color 0.15s;
+        }
+        nav a:hover, nav a.active {
+            color: var(--text);
+            border-bottom-color: var(--accent);
+        }
+        main {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 24px;
+        }
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 20px;
+            margin-bottom: 16px;
+            transition: border-color 0.15s;
+        }
+        .card:hover {
+            border-color: var(--accent);
+        }
+        .card-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 16px;
+        }
+        .card-title {
+            font-size: 16px;
+            font-weight: 600;
+        }
+        .card-subtitle {
+            font-size: 13px;
+            color: var(--text-muted);
+        }
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+        .stat {
+            text-align: center;
+            padding: 12px;
+            background: var(--bg);
+            border-radius: var(--radius);
+        }
+        .stat-value {
+            font-size: 24px;
+            font-weight: 700;
+        }
+        .stat-label {
+            font-size: 11px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .stat-total .stat-value { color: var(--accent); }
+        .stat-mirrored .stat-value { color: var(--green); }
+        .stat-pending .stat-value { color: var(--yellow); }
+        .stat-failed .stat-value { color: var(--red); }
+        .progress-bar {
+            height: 6px;
+            background: var(--bg);
+            border-radius: 3px;
+            overflow: hidden;
+            display: flex;
+        }
+        .progress-segment {
+            height: 100%;
+            transition: width 0.3s ease;
+        }
+        .progress-mirrored { background: var(--green); }
+        .progress-pending { background: var(--yellow); }
+        .progress-failed { background: var(--red); }
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+        .badge-ok { background: rgba(63,185,80,0.15); color: var(--green); }
+        .badge-warn { background: rgba(210,153,34,0.15); color: var(--yellow); }
+        .badge-err { background: rgba(248,81,73,0.15); color: var(--red); }
+        .resource-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 12px;
+        }
+        .resource-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 6px 12px;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            color: var(--accent);
+            text-decoration: none;
+            font-size: 13px;
+            transition: background 0.15s, border-color 0.15s;
+        }
+        .resource-link:hover {
+            background: var(--surface-hover);
+            border-color: var(--accent);
+        }
+        .resource-link .icon {
+            font-size: 14px;
+        }
+        .imageset-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 12px;
+        }
+        .imageset-table th, .imageset-table td {
+            text-align: left;
+            padding: 10px 12px;
+            border-bottom: 1px solid var(--border);
+            font-size: 14px;
+        }
+        .imageset-table th {
+            color: var(--text-muted);
+            font-weight: 500;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .imageset-table tr:hover td {
+            background: var(--surface-hover);
+        }
+        .clickable { cursor: pointer; }
+        .back-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            color: var(--accent);
+            text-decoration: none;
+            font-size: 14px;
+            margin-bottom: 16px;
+        }
+        .back-link:hover { text-decoration: underline; }
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: var(--text-muted);
+        }
+        .empty-state .icon { font-size: 48px; margin-bottom: 16px; }
+        .empty-state p { font-size: 14px; }
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: var(--text-muted);
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .spinner {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 2px solid var(--border);
+            border-top-color: var(--accent);
+            border-radius: 50%;
+            animation: spin 0.6s linear infinite;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1><span class="logo">M</span> oc-mirror Dashboard</h1>
+        <span class="refresh-info" id="refresh-info">Auto-refresh: 30s</span>
+    </header>
+    <nav id="nav">
+        <a href="#/" class="active" data-view="dashboard">Dashboard</a>
+    </nav>
+    <main id="app">
+        <div class="loading"><span class="spinner"></span><p>Loading…</p></div>
+    </main>
+
+    <script>
+    (() => {
+        "use strict";
+
+        const REFRESH_INTERVAL = 30000;
+        const app = document.getElementById("app");
+        let refreshTimer = null;
+        let currentView = { name: "dashboard" };
+
+        // --- Routing ---
+        function navigate(view) {
+            currentView = view;
+            render();
+        }
+
+        function parseHash() {
+            const hash = location.hash.replace(/^#\/?/, "") || "";
+            if (!hash || hash === "/") return { name: "dashboard" };
+            const parts = hash.split("/");
+            if (parts.length === 1) return { name: "target", target: parts[0] };
+            return { name: "dashboard" };
+        }
+
+        window.addEventListener("hashchange", () => navigate(parseHash()));
+
+        // --- API ---
+        async function fetchJSON(url) {
+            const res = await fetch(url);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            return res.json();
+        }
+
+        // --- Render ---
+        async function render() {
+            try {
+                switch (currentView.name) {
+                    case "dashboard":
+                        await renderDashboard();
+                        break;
+                    case "target":
+                        await renderTargetDetail(currentView.target);
+                        break;
+                    default:
+                        await renderDashboard();
+                }
+            } catch (err) {
+                app.innerHTML = `<div class="empty-state"><div class="icon">⚠️</div><p>Error loading data: ${escapeHtml(err.message)}</p></div>`;
+            }
+            scheduleRefresh();
+        }
+
+        async function renderDashboard() {
+            const targets = await fetchJSON("/api/v1/targets");
+            updateNav("dashboard");
+
+            if (!targets || targets.length === 0) {
+                app.innerHTML = `<div class="empty-state"><div class="icon">📦</div><p>No MirrorTargets found in this namespace.</p><p style="margin-top:8px;font-size:12px">Create a MirrorTarget resource to get started.</p></div>`;
+                return;
+            }
+
+            let html = "";
+            for (const t of targets) {
+                const total = t.totalImages || 0;
+                const mirrored = t.mirroredImages || 0;
+                const pending = t.pendingImages || 0;
+                const failed = t.failedImages || 0;
+                const pctMirrored = total > 0 ? (mirrored / total * 100) : 0;
+                const pctPending = total > 0 ? (pending / total * 100) : 0;
+                const pctFailed = total > 0 ? (failed / total * 100) : 0;
+
+                let badge = "";
+                if (failed > 0) badge = `<span class="badge badge-err">${failed} failed</span>`;
+                else if (pending > 0) badge = `<span class="badge badge-warn">mirroring</span>`;
+                else if (mirrored > 0 && mirrored === total) badge = `<span class="badge badge-ok">complete</span>`;
+
+                html += `
+                <div class="card clickable" onclick="location.hash='#/${escapeAttr(t.name)}'">
+                    <div class="card-header">
+                        <div>
+                            <div class="card-title">${escapeHtml(t.name)}</div>
+                            <div class="card-subtitle">${escapeHtml(t.registry)}</div>
+                        </div>
+                        ${badge}
+                    </div>
+                    <div class="stats">
+                        <div class="stat stat-total"><div class="stat-value">${total}</div><div class="stat-label">Total</div></div>
+                        <div class="stat stat-mirrored"><div class="stat-value">${mirrored}</div><div class="stat-label">Mirrored</div></div>
+                        <div class="stat stat-pending"><div class="stat-value">${pending}</div><div class="stat-label">Pending</div></div>
+                        <div class="stat stat-failed"><div class="stat-value">${failed}</div><div class="stat-label">Failed</div></div>
+                    </div>
+                    <div class="progress-bar">
+                        <div class="progress-segment progress-mirrored" style="width:${pctMirrored}%"></div>
+                        <div class="progress-segment progress-pending" style="width:${pctPending}%"></div>
+                        <div class="progress-segment progress-failed" style="width:${pctFailed}%"></div>
+                    </div>
+                </div>`;
+            }
+            app.innerHTML = html;
+        }
+
+        async function renderTargetDetail(targetName) {
+            const detail = await fetchJSON(`/api/v1/targets/${encodeURIComponent(targetName)}`);
+            updateNav("target", targetName);
+
+            const total = detail.totalImages || 0;
+            const mirrored = detail.mirroredImages || 0;
+            const pending = detail.pendingImages || 0;
+            const failed = detail.failedImages || 0;
+            const pctMirrored = total > 0 ? (mirrored / total * 100) : 0;
+            const pctPending = total > 0 ? (pending / total * 100) : 0;
+            const pctFailed = total > 0 ? (failed / total * 100) : 0;
+
+            let html = `
+            <a href="#/" class="back-link">← Back to Dashboard</a>
+            <div class="card">
+                <div class="card-header">
+                    <div>
+                        <div class="card-title">${escapeHtml(detail.name)}</div>
+                        <div class="card-subtitle">${escapeHtml(detail.registry)}</div>
+                    </div>
+                </div>
+                <div class="stats">
+                    <div class="stat stat-total"><div class="stat-value">${total}</div><div class="stat-label">Total</div></div>
+                    <div class="stat stat-mirrored"><div class="stat-value">${mirrored}</div><div class="stat-label">Mirrored</div></div>
+                    <div class="stat stat-pending"><div class="stat-value">${pending}</div><div class="stat-label">Pending</div></div>
+                    <div class="stat stat-failed"><div class="stat-value">${failed}</div><div class="stat-label">Failed</div></div>
+                </div>
+                <div class="progress-bar">
+                    <div class="progress-segment progress-mirrored" style="width:${pctMirrored}%"></div>
+                    <div class="progress-segment progress-pending" style="width:${pctPending}%"></div>
+                    <div class="progress-segment progress-failed" style="width:${pctFailed}%"></div>
+                </div>
+            </div>`;
+
+            // Resources
+            if (detail.resources && detail.resources.length > 0) {
+                html += `<div class="card"><div class="card-title" style="margin-bottom:12px">Resources</div><div class="resource-list">`;
+                for (const r of detail.resources) {
+                    const icon = r.type === "yaml" ? "📄" : "📋";
+                    html += `<a href="${escapeAttr(r.url)}" class="resource-link" target="_blank"><span class="icon">${icon}</span>${escapeHtml(r.name)}</a>`;
+                }
+                html += `</div></div>`;
+            }
+
+            // ImageSets table
+            const sets = detail.imageSets || [];
+            if (sets.length > 0) {
+                html += `<div class="card"><div class="card-title" style="margin-bottom:12px">ImageSets</div>
+                <table class="imageset-table">
+                    <thead><tr><th>Name</th><th>Status</th><th>Total</th><th>Mirrored</th><th>Pending</th><th>Failed</th><th>Progress</th></tr></thead>
+                    <tbody>`;
+                for (const is of sets) {
+                    const isTotal = is.total || 0;
+                    const isMirrored = is.mirrored || 0;
+                    const isPending = is.pending || 0;
+                    const isFailed = is.failed || 0;
+                    const pm = isTotal > 0 ? (isMirrored / isTotal * 100) : 0;
+                    const pp = isTotal > 0 ? (isPending / isTotal * 100) : 0;
+                    const pf = isTotal > 0 ? (isFailed / isTotal * 100) : 0;
+
+                    let statusBadge = "";
+                    if (!is.found) statusBadge = `<span class="badge badge-err">not found</span>`;
+                    else if (isFailed > 0) statusBadge = `<span class="badge badge-err">${isFailed} failed</span>`;
+                    else if (isPending > 0) statusBadge = `<span class="badge badge-warn">mirroring</span>`;
+                    else if (isMirrored > 0 && isMirrored === isTotal) statusBadge = `<span class="badge badge-ok">complete</span>`;
+
+                    html += `<tr>
+                        <td><strong>${escapeHtml(is.name)}</strong></td>
+                        <td>${statusBadge}</td>
+                        <td>${isTotal}</td>
+                        <td>${isMirrored}</td>
+                        <td>${isPending}</td>
+                        <td>${isFailed}</td>
+                        <td style="min-width:120px"><div class="progress-bar">
+                            <div class="progress-segment progress-mirrored" style="width:${pm}%"></div>
+                            <div class="progress-segment progress-pending" style="width:${pp}%"></div>
+                            <div class="progress-segment progress-failed" style="width:${pf}%"></div>
+                        </div></td>
+                    </tr>`;
+                }
+                html += `</tbody></table></div>`;
+            } else {
+                html += `<div class="card"><div class="empty-state"><p>No ImageSets configured.</p></div></div>`;
+            }
+
+            app.innerHTML = html;
+        }
+
+        // --- Helpers ---
+        function updateNav(view, targetName) {
+            const nav = document.getElementById("nav");
+            let links = `<a href="#/" class="${view === "dashboard" ? "active" : ""}" data-view="dashboard">Dashboard</a>`;
+            if (view === "target" && targetName) {
+                links += `<a href="#/${escapeAttr(targetName)}" class="active">${escapeHtml(targetName)}</a>`;
+            }
+            nav.innerHTML = links;
+        }
+
+        function scheduleRefresh() {
+            if (refreshTimer) clearTimeout(refreshTimer);
+            refreshTimer = setTimeout(() => render(), REFRESH_INTERVAL);
+        }
+
+        function escapeHtml(str) {
+            const div = document.createElement("div");
+            div.textContent = str;
+            return div.innerHTML;
+        }
+
+        function escapeAttr(str) {
+            return str.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/'/g, "&#39;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        }
+
+        // --- Init ---
+        currentView = parseHash();
+        render();
+    })();
+    </script>
+</body>
+</html>
