@@ -190,11 +190,11 @@ func mirrorDiagnosticDump(namespace, imageSetName string) string {
 	}
 	for _, dc := range diagCmds {
 		out, err := exec.Command("kubectl", dc.args...).CombinedOutput()
-		diag.WriteString(fmt.Sprintf("\n--- %s ---\n", dc.label))
+		fmt.Fprintf(&diag, "\n--- %s ---\n", dc.label)
 		if err != nil {
-			diag.WriteString(fmt.Sprintf("ERROR: %v\n%s\n", err, string(out)))
+			fmt.Fprintf(&diag, "ERROR: %v\n%s\n", err, string(out))
 		} else {
-			diag.WriteString(fmt.Sprintf("%s\n", string(out)))
+			fmt.Fprintf(&diag, "%s\n", string(out))
 		}
 	}
 	return diag.String()
