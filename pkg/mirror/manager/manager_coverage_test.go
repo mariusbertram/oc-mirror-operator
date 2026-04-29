@@ -621,13 +621,12 @@ var _ = Describe("Manager Coverage", func() {
 	Context("handleStatusUpdate", func() {
 		BeforeEach(func() {
 			m.workerToken = "test-token"
-			m.imageStates[testImageSetName] = imagestate.ImageState{
+			m.imageState = imagestate.ImageState{
 				"reg.io/mirror/img:v1": &imagestate.ImageEntry{
 					Source: "quay.io/img:v1",
 					State:  statePending,
 				},
 			}
-			m.destToIS["reg.io/mirror/img:v1"] = testImageSetName
 		})
 
 		It("rejects non-POST methods", func() {
@@ -679,7 +678,7 @@ var _ = Describe("Manager Coverage", func() {
 			rr := httptest.NewRecorder()
 			m.handleStatusUpdate(rr, req)
 			Expect(rr.Code).To(Equal(http.StatusOK))
-			Expect(m.imageStates[testImageSetName]["reg.io/mirror/img:v1"].State).To(Equal(stateMirrored))
+			Expect(m.imageState["reg.io/mirror/img:v1"].State).To(Equal(stateMirrored))
 			Expect(m.mirrored["reg.io/mirror/img:v1"]).To(BeTrue())
 			Expect(m.inProgress).NotTo(HaveKey("reg.io/mirror/img:v1"))
 		})
@@ -696,7 +695,7 @@ var _ = Describe("Manager Coverage", func() {
 			rr := httptest.NewRecorder()
 			m.handleStatusUpdate(rr, req)
 			Expect(rr.Code).To(Equal(http.StatusOK))
-			entry := m.imageStates[testImageSetName]["reg.io/mirror/img:v1"]
+			entry := m.imageState["reg.io/mirror/img:v1"]
 			Expect(entry.State).To(Equal(stateFailed))
 			Expect(entry.RetryCount).To(Equal(1))
 		})
@@ -1095,7 +1094,7 @@ var _ = Describe("Manager Coverage", func() {
 
 			err := m.reconcile(context.TODO())
 			Expect(err).NotTo(HaveOccurred())
-			Expect(m.imageStates).NotTo(HaveKey("unrelated-is"))
+			Expect(m.imageState).To(BeEmpty())
 		})
 
 		It("handles dirty state flush", func() {
@@ -1121,10 +1120,10 @@ var _ = Describe("Manager Coverage", func() {
 				Build()
 			cs := k8sfake.NewSimpleClientset()
 			m = NewWithClients(c, cs, "test", "default", "test-image:latest", "", scheme)
-			m.imageStates[testImageSetName] = imagestate.ImageState{
+			m.imageState = imagestate.ImageState{
 				"reg.io/img:v1": &imagestate.ImageEntry{Source: "quay.io/img:v1", State: statePending},
 			}
-			m.dirtyStateNames[testImageSetName] = true
+			m.stateDirty = true
 
 			err := m.reconcile(context.TODO())
 			Expect(err).NotTo(HaveOccurred())
@@ -1275,10 +1274,9 @@ var _ = Describe("Manager Coverage", func() {
 			cs := k8sfake.NewSimpleClientset(failedPod)
 			m.Clientset = cs
 			m.inProgress["d1"] = "failed-worker"
-			m.imageStates[testImageSetName] = imagestate.ImageState{
+			m.imageState = imagestate.ImageState{
 				"d1": &imagestate.ImageEntry{Source: "s1", State: stateFailed},
 			}
-			m.destToIS["d1"] = testImageSetName
 
 			m.cleanupFinishedWorkers(context.TODO())
 			Expect(m.inProgress).NotTo(HaveKey("d1"))
@@ -1642,7 +1640,7 @@ var _ = Describe("Manager Coverage", func() {
 				Build()
 			cs := k8sfake.NewSimpleClientset()
 			m = NewWithClients(c, cs, "test", "default", "test-image:latest", "", scheme)
-			m.imageStates[testImageSetName] = imagestate.ImageState{
+			m.imageState = imagestate.ImageState{
 				"reg.io/img:v1": &imagestate.ImageEntry{
 					Source:     "quay.io/img:v1",
 					State:      stateFailed,
@@ -1654,7 +1652,7 @@ var _ = Describe("Manager Coverage", func() {
 			err := m.reconcile(context.TODO())
 			Expect(err).NotTo(HaveOccurred())
 			// After reconcile, failed with retryCount < 10 should be reset to Pending
-			entry := m.imageStates[testImageSetName]["reg.io/img:v1"]
+			entry := m.imageState["reg.io/img:v1"]
 			Expect(entry.State).To(Equal(statePending))
 		})
 
@@ -1681,7 +1679,7 @@ var _ = Describe("Manager Coverage", func() {
 				Build()
 			cs := k8sfake.NewSimpleClientset()
 			m = NewWithClients(c, cs, "test", "default", "test-image:latest", "", scheme)
-			m.imageStates[testImageSetName] = imagestate.ImageState{
+			m.imageState = imagestate.ImageState{
 				"reg.io/img:v1": &imagestate.ImageEntry{
 					Source:     "quay.io/img:v1",
 					State:      stateFailed,
@@ -1692,7 +1690,7 @@ var _ = Describe("Manager Coverage", func() {
 
 			err := m.reconcile(context.TODO())
 			Expect(err).NotTo(HaveOccurred())
-			entry := m.imageStates[testImageSetName]["reg.io/img:v1"]
+			entry := m.imageState["reg.io/img:v1"]
 			Expect(entry.PermanentlyFailed).To(BeTrue())
 		})
 
@@ -1719,7 +1717,7 @@ var _ = Describe("Manager Coverage", func() {
 				Build()
 			cs := k8sfake.NewSimpleClientset()
 			m = NewWithClients(c, cs, "test", "default", "test-image:latest", "", scheme)
-			m.imageStates[testImageSetName] = imagestate.ImageState{
+			m.imageState = imagestate.ImageState{
 				"reg.io/img:v1": &imagestate.ImageEntry{
 					Source: "quay.io/img:v1",
 					State:  stateMirrored,
@@ -1756,7 +1754,7 @@ var _ = Describe("Manager Coverage", func() {
 				Build()
 			cs := k8sfake.NewSimpleClientset()
 			m = NewWithClients(c, cs, "test", "default", "test-image:latest", "", scheme)
-			m.imageStates[testImageSetName] = imagestate.ImageState{
+			m.imageState = imagestate.ImageState{
 				"reg.io/img:v1": &imagestate.ImageEntry{
 					Source: "quay.io/img:v1",
 					State:  statePending,
@@ -1767,7 +1765,7 @@ var _ = Describe("Manager Coverage", func() {
 
 			err := m.reconcile(context.TODO())
 			Expect(err).NotTo(HaveOccurred())
-			Expect(m.imageStates[testImageSetName]["reg.io/img:v1"].State).To(Equal(stateMirrored))
+			Expect(m.imageState["reg.io/img:v1"].State).To(Equal(stateMirrored))
 		})
 
 		It("skips already in-progress pending images", func() {
@@ -1793,7 +1791,7 @@ var _ = Describe("Manager Coverage", func() {
 				Build()
 			cs := k8sfake.NewSimpleClientset()
 			m = NewWithClients(c, cs, "test", "default", "test-image:latest", "", scheme)
-			m.imageStates[testImageSetName] = imagestate.ImageState{
+			m.imageState = imagestate.ImageState{
 				"reg.io/img:v1": &imagestate.ImageEntry{
 					Source: "quay.io/img:v1",
 					State:  statePending,
@@ -1831,7 +1829,7 @@ var _ = Describe("Manager Coverage", func() {
 				Build()
 			cs := k8sfake.NewSimpleClientset()
 			m = NewWithClients(c, cs, "test", "default", "test-image:latest", "", scheme)
-			m.imageStates[testImageSetName] = imagestate.ImageState{
+			m.imageState = imagestate.ImageState{
 				"reg.io/img:v1": &imagestate.ImageEntry{
 					Source: "quay.io/img:v1",
 					State:  statePending,
@@ -1867,7 +1865,7 @@ var _ = Describe("Manager Coverage", func() {
 				Build()
 			cs := k8sfake.NewSimpleClientset()
 			m = NewWithClients(c, cs, "test", "default", "test-image:latest", "", scheme)
-			m.imageStates[testImageSetName] = imagestate.ImageState{
+			m.imageState = imagestate.ImageState{
 				"reg.io/img:v1": &imagestate.ImageEntry{
 					Source: "quay.io/img:v1",
 					State:  "UnknownState",
@@ -1934,7 +1932,7 @@ var _ = Describe("Manager Coverage", func() {
 				Build()
 			cs := k8sfake.NewSimpleClientset()
 			m = NewWithClients(c, cs, "test", "default", "test-image:latest", "", scheme)
-			m.imageStates[testImageSetName] = imagestate.ImageState{
+			m.imageState = imagestate.ImageState{
 				"reg.io/img:v1": &imagestate.ImageEntry{Source: "quay.io/img:v1", State: statePending},
 				"reg.io/img:v2": &imagestate.ImageEntry{Source: "quay.io/img:v2", State: statePending},
 				"reg.io/img:v3": &imagestate.ImageEntry{Source: "quay.io/img:v3", State: statePending},
@@ -1971,7 +1969,7 @@ var _ = Describe("Manager Coverage", func() {
 				Build()
 			cs := k8sfake.NewSimpleClientset()
 			m = NewWithClients(c, cs, "test", "default", "test-image:latest", "", scheme)
-			m.imageStates[testImageSetName] = imagestate.ImageState{
+			m.imageState = imagestate.ImageState{
 				"reg.io/img:v1": &imagestate.ImageEntry{
 					Source:            "quay.io/img:v1",
 					State:             stateFailed,
@@ -2055,7 +2053,7 @@ var _ = Describe("Manager Coverage", func() {
 			m = NewWithClients(c, cs, "test", "default", "test-image:latest", "", scheme)
 			// Pre-fill an existing in-progress entry → activePods already at 1
 			m.inProgress["reg.io/other:v9"] = "existing-worker-pod"
-			m.imageStates[testImageSetName] = imagestate.ImageState{
+			m.imageState = imagestate.ImageState{
 				"reg.io/img:v1": &imagestate.ImageEntry{Source: "quay.io/img:v1", State: statePending},
 				"reg.io/img:v2": &imagestate.ImageEntry{Source: "quay.io/img:v2", State: statePending},
 			}
@@ -2093,7 +2091,7 @@ var _ = Describe("Manager Coverage", func() {
 				Build()
 			cs := k8sfake.NewSimpleClientset()
 			m = NewWithClients(c, cs, "test", "default", "test-image:latest", "", scheme)
-			m.imageStates[testImageSetName] = imagestate.ImageState{
+			m.imageState = imagestate.ImageState{
 				"reg.io/img:v1": &imagestate.ImageEntry{
 					Source:     "quay.io/img:v1",
 					State:      stateFailed,
@@ -2110,7 +2108,7 @@ var _ = Describe("Manager Coverage", func() {
 			err := m.reconcile(context.TODO())
 			Expect(err).NotTo(HaveOccurred())
 			// Failed with retryCount < 10 should reset to Pending
-			Expect(m.imageStates[testImageSetName]["reg.io/img:v1"].State).To(Equal(statePending))
+			Expect(m.imageState["reg.io/img:v1"].State).To(Equal(statePending))
 			// Mirrored should be trusted
 			Expect(m.mirrored["reg.io/img:v2"]).To(BeTrue())
 		})
@@ -2139,7 +2137,7 @@ var _ = Describe("Manager Coverage", func() {
 				Build()
 			cs := k8sfake.NewSimpleClientset()
 			m = NewWithClients(c, cs, "test", "default", "test-image:latest", "", scheme)
-			m.imageStates[testImageSetName] = imagestate.ImageState{
+			m.imageState = imagestate.ImageState{
 				"reg.io/img:v1": &imagestate.ImageEntry{Source: "quay.io/img:v1", State: statePending},
 			}
 			// Set lastDriftCheck to recent (within CheckExistInterval)
@@ -2154,43 +2152,39 @@ var _ = Describe("Manager Coverage", func() {
 
 	Context("setImageStateLocked additional", func() {
 		It("sets PermanentlyFailed when retryCount reaches 10", func() {
-			m.imageStates[testImageSetName] = imagestate.ImageState{
+			m.imageState = imagestate.ImageState{
 				"reg.io/img:v1": &imagestate.ImageEntry{
 					Source:     "quay.io/img:v1",
 					State:      statePending,
 					RetryCount: 9,
 				},
 			}
-			m.destToIS["reg.io/img:v1"] = testImageSetName
 			m.setImageStateLocked("reg.io/img:v1", stateFailed, "final error")
-			entry := m.imageStates[testImageSetName]["reg.io/img:v1"]
+			entry := m.imageState["reg.io/img:v1"]
 			Expect(entry.RetryCount).To(Equal(10))
 			Expect(entry.PermanentlyFailed).To(BeTrue())
 		})
 
-		It("skips when isState does not exist", func() {
-			m.destToIS["reg.io/img:v1"] = "nonexistent-is"
+		It("skips when entry does not exist in imageState", func() {
+			// Should not panic when dest is unknown
+			m.setImageStateLocked("reg.io/img:v1", stateMirrored, "")
+		})
+
+		It("skips when imageState is empty", func() {
+			m.imageState = imagestate.ImageState{}
 			// Should not panic
 			m.setImageStateLocked("reg.io/img:v1", stateMirrored, "")
 		})
 
-		It("skips when entry not in isState", func() {
-			m.imageStates[testImageSetName] = imagestate.ImageState{}
-			m.destToIS["reg.io/img:v1"] = testImageSetName
-			// Should not panic
-			m.setImageStateLocked("reg.io/img:v1", stateMirrored, "")
-		})
-
-		It("marks dirty on state change", func() {
-			m.imageStates[testImageSetName] = imagestate.ImageState{
+		It("marks stateDirty on state change", func() {
+			m.imageState = imagestate.ImageState{
 				"reg.io/img:v1": &imagestate.ImageEntry{
 					Source: "quay.io/img:v1",
 					State:  statePending,
 				},
 			}
-			m.destToIS["reg.io/img:v1"] = testImageSetName
 			m.setImageStateLocked("reg.io/img:v1", stateMirrored, "")
-			Expect(m.dirtyStateNames[testImageSetName]).To(BeTrue())
+			Expect(m.stateDirty).To(BeTrue())
 		})
 	})
 

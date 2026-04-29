@@ -40,6 +40,16 @@ const (
 	OriginAdditional ImageOrigin = "additional"
 )
 
+// ImageRef holds per-ImageSet metadata for an entry in the consolidated state.
+// Multiple ImageSets can reference the same destination (shared image); each
+// gets its own Ref so Origin/EntrySig/OriginRef are tracked independently.
+type ImageRef struct {
+	ImageSet  string      `json:"imageSet"`
+	Origin    ImageOrigin `json:"origin,omitempty"`
+	EntrySig  string      `json:"entrySig,omitempty"`
+	OriginRef string      `json:"originRef,omitempty"`
+}
+
 // ImageEntry tracks the mirroring state of a single image.
 // The destination image reference is the map key in ImageState.
 type ImageEntry struct {
@@ -50,18 +60,13 @@ type ImageEntry struct {
 	// Origin records which collector produced this entry. Empty for entries
 	// written by older controller versions (treated as OriginRelease for
 	// backward compatibility during migration).
+	// Deprecated: use Refs for new code; kept for backward-compat deserialization.
 	Origin ImageOrigin `json:"origin,omitempty"`
-	// EntrySig is the per-spec-entry signature that produced this entry —
-	// e.g. the OperatorEntrySignature for OriginOperator or the
-	// ReleaseChannelSignature for OriginRelease. It allows the manager to
-	// carry forward only entries belonging to a cache-hit spec entry while
-	// dropping entries from removed/changed entries.
-	// Empty for OriginAdditional and for legacy entries; partition logic
-	// must treat empty as "any sig" to remain backward-compatible.
+	// EntrySig is the per-spec-entry signature that produced this entry.
+	// Deprecated: use Refs for new code; kept for backward-compat deserialization.
 	EntrySig string `json:"entrySig,omitempty"`
 	// OriginRef is a human-readable label describing which spec entry produced
-	// this entry, e.g. "registry.../redhat-operator-index:v4.21 [web-terminal]"
-	// or "stable-4.14 [amd64]". Used to surface failed-image details in status.
+	// this entry. Deprecated: use Refs for new code; kept for backward-compat.
 	OriginRef string `json:"originRef,omitempty"`
 	// PermanentlyFailed is set to true when the image has exhausted its initial
 	// retry budget (RetryCount >= 10). Once set it is never cleared — even when
@@ -69,6 +74,55 @@ type ImageEntry struct {
 	// is used to keep the catalog-build gate open and to surface the image in
 	// failedImageDetails regardless of the current retry state.
 	PermanentlyFailed bool `json:"permanentlyFailed,omitempty"`
+	// Refs holds per-ImageSet metadata. Multiple ImageSets can reference the
+	// same destination (shared image); each gets its own Ref with independent
+	// Origin/EntrySig/OriginRef. This replaces the flat Origin/EntrySig/OriginRef
+	// fields for the consolidated per-MirrorTarget state.
+	Refs []ImageRef `json:"refs,omitempty"`
+}
+
+// HasImageSet reports whether any Ref in e references the given ImageSet name.
+func (e *ImageEntry) HasImageSet(name string) bool {
+	for _, r := range e.Refs {
+		if r.ImageSet == name {
+			return true
+		}
+	}
+	return false
+}
+
+// AddRef adds a Ref to e, deduplicating by ImageSet name (last write wins for
+// Origin/EntrySig/OriginRef when the ImageSet already has a Ref).
+func (e *ImageEntry) AddRef(ref ImageRef) {
+	for i, r := range e.Refs {
+		if r.ImageSet == ref.ImageSet {
+			e.Refs[i] = ref
+			return
+		}
+	}
+	e.Refs = append(e.Refs, ref)
+}
+
+// RemoveImageSet removes the Ref for the given ImageSet from e.Refs.
+// Returns true if no Refs remain after removal (the entry is now orphaned).
+func (e *ImageEntry) RemoveImageSet(name string) bool {
+	out := e.Refs[:0]
+	for _, r := range e.Refs {
+		if r.ImageSet != name {
+			out = append(out, r)
+		}
+	}
+	e.Refs = out
+	return len(e.Refs) == 0
+}
+
+// ImageSetNames returns the names of all ImageSets that reference this entry.
+func (e *ImageEntry) ImageSetNames() []string {
+	names := make([]string, 0, len(e.Refs))
+	for _, r := range e.Refs {
+		names = append(names, r.ImageSet)
+	}
+	return names
 }
 
 // ImageState maps destination image reference → ImageEntry.
@@ -79,6 +133,13 @@ func ConfigMapName(imageSetName string) string {
 	return imageSetName + "-images"
 }
 
+// ConfigMapNameForTarget returns the consolidated ConfigMap name for a
+// MirrorTarget. This is the single per-MirrorTarget state store that replaces
+// the per-ImageSet "<imageset>-images" ConfigMaps.
+func ConfigMapNameForTarget(mtName string) string {
+	return mtName + "-images"
+}
+
 // Counts returns aggregate counts across the ImageState.
 //   - mirrored: State == "Mirrored"
 //   - failed:   PermanentlyFailed == true AND State != "Mirrored"
@@ -87,6 +148,30 @@ func ConfigMapName(imageSetName string) string {
 func Counts(state ImageState) (total, mirrored, pending, failed int) {
 	total = len(state)
 	for _, e := range state {
+		switch {
+		case e.State == "Mirrored":
+			mirrored++
+		case e.PermanentlyFailed:
+			failed++
+		default:
+			pending++
+		}
+	}
+	return
+}
+
+// CountsForImageSet returns aggregate counts filtered to entries that have a
+// Ref for the given ImageSet name. Entries without Refs are included if they
+// carry the legacy flat Origin/EntrySig fields (backward compat).
+func CountsForImageSet(state ImageState, isName string) (total, mirrored, pending, failed int) {
+	for _, e := range state {
+		if e == nil {
+			continue
+		}
+		if len(e.Refs) > 0 && !e.HasImageSet(isName) {
+			continue
+		}
+		total++
 		switch {
 		case e.State == "Mirrored":
 			mirrored++
@@ -136,6 +221,20 @@ func LoadByConfigMapName(ctx context.Context, c client.Client, namespace, cmName
 		return nil, fmt.Errorf("get image state configmap: %w", err)
 	}
 	return decode(cm)
+}
+
+// LoadForTarget reads the consolidated ImageState from the per-MirrorTarget
+// ConfigMap. Returns an empty ImageState (not nil) if the ConfigMap does not
+// exist yet.
+func LoadForTarget(ctx context.Context, c client.Client, namespace, mtName string) (ImageState, error) {
+	return LoadByConfigMapName(ctx, c, namespace, ConfigMapNameForTarget(mtName))
+}
+
+// SaveForTarget writes the consolidated ImageState to the per-MirrorTarget
+// ConfigMap "<mtName>-images". Owner references must be set by the caller via
+// controllerutil.SetControllerReference if garbage-collection is desired.
+func SaveForTarget(ctx context.Context, c client.Client, namespace, mtName string, state ImageState) error {
+	return SaveRaw(ctx, c, namespace, ConfigMapNameForTarget(mtName), state)
 }
 
 // Save writes the ImageState to the ConfigMap for the given ImageSet.

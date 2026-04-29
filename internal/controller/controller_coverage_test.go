@@ -794,19 +794,25 @@ var _ = Describe("Coverage tests", func() {
 			// Set KnownImageSets in memory (simulates previous reconcile state)
 			mt.Status.KnownImageSets = []string{"is-keep", removedIS}
 
-			// Create imagestate ConfigMap for the removed ImageSet
+			// Create consolidated per-MirrorTarget state with the removed IS's exclusive images
 			state := imagestate.ImageState{
-				"d1": {Source: "s1", State: "Mirrored", Origin: imagestate.OriginAdditional},
+				"d1": {Source: "s1", State: "Mirrored", Refs: []imagestate.ImageRef{{ImageSet: removedIS, Origin: imagestate.OriginAdditional}}},
 			}
-			cm := &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{Name: removedIS + "-images", Namespace: ns},
+			consolidatedCM := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: mtName + "-images", Namespace: ns},
 				BinaryData: map[string][]byte{"images.json.gz": mustGzipJSON(state)},
 			}
-			Expect(k8sClient.Create(localCtx, cm)).To(Succeed())
-			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, cm) })
+			Expect(k8sClient.Create(localCtx, consolidatedCM)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, consolidatedCM) })
 
 			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 			Expect(r.reconcileCleanup(localCtx, mt)).To(Succeed())
+
+			// Verify snapshot ConfigMap was created with the exclusive images
+			snapshotName := cleanupSnapshotCMName(mtName, removedIS)
+			snapshotCM := &corev1.ConfigMap{}
+			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: snapshotName, Namespace: ns}, snapshotCM)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, snapshotCM) })
 
 			// Verify cleanup job was created
 			jobName := cleanupJobName(mtName, removedIS)
@@ -969,7 +975,8 @@ var _ = Describe("Coverage tests", func() {
 			DeferCleanup(func() { cleanupMT(localCtx, mtName) })
 
 			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
-			Expect(r.createCleanupJob(localCtx, mt, isName)).To(Succeed())
+			snapshotCM := cleanupSnapshotCMName(mtName, isName)
+			Expect(r.createCleanupJob(localCtx, mt, isName, snapshotCM)).To(Succeed())
 
 			jobName := cleanupJobName(mtName, isName)
 			job := &batchv1.Job{}
@@ -981,7 +988,7 @@ var _ = Describe("Coverage tests", func() {
 
 			Expect(job.Labels).To(HaveKeyWithValue("mirror.openshift.io/cleanup", isName))
 			Expect(job.Labels).To(HaveKeyWithValue("mirrortarget", mtName))
-			Expect(job.Spec.Template.Spec.Containers[0].Args).To(ContainElements("cleanup", "--imageset", isName))
+			Expect(job.Spec.Template.Spec.Containers[0].Args).To(ContainElements("cleanup", "--configmap", snapshotCM))
 		})
 
 		It("is a no-op when the job already exists", func() {
@@ -999,9 +1006,10 @@ var _ = Describe("Coverage tests", func() {
 			DeferCleanup(func() { cleanupMT(localCtx, mtName) })
 
 			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
-			Expect(r.createCleanupJob(localCtx, mt, isName)).To(Succeed())
+			snapshotCM := cleanupSnapshotCMName(mtName, isName)
+			Expect(r.createCleanupJob(localCtx, mt, isName, snapshotCM)).To(Succeed())
 			// Call again — should be no-op
-			Expect(r.createCleanupJob(localCtx, mt, isName)).To(Succeed())
+			Expect(r.createCleanupJob(localCtx, mt, isName, snapshotCM)).To(Succeed())
 
 			DeferCleanup(func() {
 				jobName := cleanupJobName(mtName, isName)
@@ -1032,7 +1040,8 @@ var _ = Describe("Coverage tests", func() {
 			DeferCleanup(func() { cleanupMT(localCtx, mtName) })
 
 			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
-			Expect(r.createCleanupJob(localCtx, mt, isName)).To(Succeed())
+			snapshotCM := cleanupSnapshotCMName(mtName, isName)
+			Expect(r.createCleanupJob(localCtx, mt, isName, snapshotCM)).To(Succeed())
 
 			jobName := cleanupJobName(mtName, isName)
 			job := &batchv1.Job{}

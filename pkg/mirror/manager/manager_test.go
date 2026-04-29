@@ -55,34 +55,27 @@ var _ = Describe("Mirror Manager", func() {
 	})
 
 	Context("setImageStateLocked", func() {
-		It("should fall back to linear search when destToIS is empty", func() {
-			m.imageStates["my-imageset"] = imagestate.ImageState{
-				"reg.io/mirror/img:v1": &imagestate.ImageEntry{
-					Source: "quay.io/img:v1",
-					State:  statePending,
-				},
+		It("should update the consolidated imageState entry", func() {
+			m.imageState["reg.io/mirror/img:v1"] = &imagestate.ImageEntry{
+				Source: "quay.io/img:v1",
+				State:  statePending,
 			}
-			// destToIS is empty — fallback search should find the entry
 			m.setImageStateLocked("reg.io/mirror/img:v1", stateMirrored, "")
 
-			entry := m.imageStates["my-imageset"]["reg.io/mirror/img:v1"]
+			entry := m.imageState["reg.io/mirror/img:v1"]
 			Expect(entry.State).To(Equal(stateMirrored))
-			Expect(m.destToIS["reg.io/mirror/img:v1"]).To(Equal("my-imageset"))
-			Expect(m.dirtyStateNames["my-imageset"]).To(BeTrue())
+			Expect(m.stateDirty).To(BeTrue())
 		})
 
 		It("should be idempotent for duplicate callbacks", func() {
-			m.imageStates["my-imageset"] = imagestate.ImageState{
-				"reg.io/mirror/img:v1": &imagestate.ImageEntry{
-					Source: "quay.io/img:v1",
-					State:  statePending,
-				},
+			m.imageState["reg.io/mirror/img:v1"] = &imagestate.ImageEntry{
+				Source: "quay.io/img:v1",
+				State:  statePending,
 			}
-			m.destToIS["reg.io/mirror/img:v1"] = "my-imageset"
 
 			// First failure: should increment RetryCount
 			m.setImageStateLocked("reg.io/mirror/img:v1", stateFailed, "timeout")
-			entry := m.imageStates["my-imageset"]["reg.io/mirror/img:v1"]
+			entry := m.imageState["reg.io/mirror/img:v1"]
 			Expect(entry.RetryCount).To(Equal(1))
 
 			// Duplicate failure (HTTP retry): same state+error → no change
@@ -91,21 +84,18 @@ var _ = Describe("Mirror Manager", func() {
 		})
 
 		It("should increment RetryCount for different errors", func() {
-			m.imageStates["my-imageset"] = imagestate.ImageState{
-				"reg.io/mirror/img:v1": &imagestate.ImageEntry{
-					Source: "quay.io/img:v1",
-					State:  statePending,
-				},
+			m.imageState["reg.io/mirror/img:v1"] = &imagestate.ImageEntry{
+				Source: "quay.io/img:v1",
+				State:  statePending,
 			}
-			m.destToIS["reg.io/mirror/img:v1"] = "my-imageset"
 
 			m.setImageStateLocked("reg.io/mirror/img:v1", stateFailed, "timeout")
 			// Reset to Pending (as the reconcile loop does)
-			m.imageStates["my-imageset"]["reg.io/mirror/img:v1"].State = statePending
+			m.imageState["reg.io/mirror/img:v1"].State = statePending
 			// New failure with different error
 			m.setImageStateLocked("reg.io/mirror/img:v1", stateFailed, "connection refused")
 
-			entry := m.imageStates["my-imageset"]["reg.io/mirror/img:v1"]
+			entry := m.imageState["reg.io/mirror/img:v1"]
 			Expect(entry.RetryCount).To(Equal(2))
 		})
 

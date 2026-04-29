@@ -8,10 +8,10 @@ import (
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/imagestate"
 )
 
-func newTestManager(token string, states map[string]imagestate.ImageState) *MirrorManager {
+func newTestManager(token string, state imagestate.ImageState) *MirrorManager {
 	return &MirrorManager{
 		workerToken: token,
-		imageStates: states,
+		imageState:  state,
 	}
 }
 
@@ -28,14 +28,12 @@ func doShouldMirror(t *testing.T, m *MirrorManager, dest, token string) int {
 
 func TestHandleShouldMirror(t *testing.T) {
 	const tok = "secret-token"
-	states := map[string]imagestate.ImageState{
-		"is1": {
-			"reg/repo:pending":  {State: "Pending"},
-			"reg/repo:mirrored": {State: "Mirrored"},
-			"reg/repo:failed":   {State: "Failed"},
-		},
+	state := imagestate.ImageState{
+		"reg/repo:pending":  {State: "Pending"},
+		"reg/repo:mirrored": {State: "Mirrored"},
+		"reg/repo:failed":   {State: "Failed"},
 	}
-	m := newTestManager(tok, states)
+	m := newTestManager(tok, state)
 
 	cases := []struct {
 		name     string
