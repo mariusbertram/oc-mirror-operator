@@ -260,6 +260,13 @@ func GenerateClusterCatalog(name string, catalog CatalogInfo) ([]byte, error) {
 
 // SignatureData maps release digests to their signature bytes.
 // Key format: "sha256:abc123...", value: raw GPG signature data.
+// CatalogTargetImage builds the destination for a catalog image.
+func CatalogTargetImage(registry, source string) string {
+	return fmt.Sprintf("%s/%s", registry, repoOnly(source))
+}
+
+// --- Signature data type ---
+
 type SignatureData map[string][]byte
 
 // GenerateSignatureConfigMaps generates ConfigMap YAMLs in the OpenShift

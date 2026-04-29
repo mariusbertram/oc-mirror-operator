@@ -55,6 +55,7 @@ import (
 	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/imagestate"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/manager"
+	"github.com/mariusbertram/oc-mirror-operator/pkg/resourceapi"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -84,6 +85,10 @@ func main() {
 		case "cleanup":
 			ctrl.SetLogger(zap.New(zap.UseFlagOptions(&zap.Options{Development: true})))
 			runCleanup()
+			return
+		case "resource-api":
+			ctrl.SetLogger(zap.New(zap.UseFlagOptions(&zap.Options{Development: true})))
+			runResourceAPI()
 			return
 		}
 	}
@@ -453,6 +458,30 @@ func shouldMirror(dest string) bool {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	return resp.StatusCode != http.StatusGone
+}
+
+func runResourceAPI() {
+	var namespace string
+	fs := flag.NewFlagSet("resource-api", flag.ExitOnError)
+	fs.StringVar(&namespace, "namespace", "", "Namespace to watch")
+	if err := fs.Parse(os.Args[2:]); err != nil {
+		fmt.Fprintln(os.Stderr, "flag parse error:", err)
+		os.Exit(1)
+	}
+
+	if namespace == "" {
+		namespace = os.Getenv("POD_NAMESPACE")
+	}
+
+	cfg := ctrl.GetConfigOrDie()
+	c, err := client.New(cfg, client.Options{Scheme: scheme})
+	if err != nil {
+		setupLog.Error(err, "unable to create client")
+		os.Exit(1)
+	}
+
+	srv := resourceapi.NewServer(c, namespace)
+	srv.Run(ctrl.SetupSignalHandler())
 }
 
 func runController() {

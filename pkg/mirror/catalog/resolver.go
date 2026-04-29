@@ -1084,24 +1084,32 @@ func renderBundleRefs(names []string) string {
 	return fmt.Sprintf("%s (+%d more)", visible, len(names)-maxVisible)
 }
 
-// ResolveCatalogWithBundles is like ResolveCatalog but returns a map of image
-// reference → bundle-name string for use as per-image origin labels.
-func (r *CatalogResolver) ResolveCatalogWithBundles(ctx context.Context, catalogImage string, includes []mirrorv1alpha1.IncludePackage) (map[string]string, error) {
+// ResolveCatalogFull loads the FBC, filters it, and returns both the resulting
+// images and the filtered FBC config itself. Used by the manager to persist
+// package information in ConfigMaps (Phase 7a).
+func (r *CatalogResolver) ResolveCatalogFull(ctx context.Context, catalogImage string, includes []mirrorv1alpha1.IncludePackage) (map[string]string, *declcfg.DeclarativeConfig, error) {
 	if _, err := ref.New(catalogImage); err != nil {
-		return nil, fmt.Errorf("failed to parse catalog image reference: %w", err)
+		return nil, nil, fmt.Errorf("failed to parse catalog image reference: %w", err)
 	}
 	if r.client == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 	cfg, err := r.loadFBCFromImage(ctx, catalogImage)
 	if err != nil {
-		return nil, fmt.Errorf("failed to load FBC from %s: %w", catalogImage, err)
+		return nil, nil, fmt.Errorf("failed to load FBC from %s: %w", catalogImage, err)
 	}
 	filtered, err := r.FilterFBC(ctx, cfg, includes)
 	if err != nil {
-		return nil, fmt.Errorf("failed to filter FBC: %w", err)
+		return nil, nil, fmt.Errorf("failed to filter FBC: %w", err)
 	}
-	return r.ExtractImagesWithBundles(filtered), nil
+	return r.ExtractImagesWithBundles(filtered), filtered, nil
+}
+
+// ResolveCatalogWithBundles is like ResolveCatalog but returns a map of image
+// reference → bundle-name string for use as per-image origin labels.
+func (r *CatalogResolver) ResolveCatalogWithBundles(ctx context.Context, catalogImage string, includes []mirrorv1alpha1.IncludePackage) (map[string]string, error) {
+	images, _, err := r.ResolveCatalogFull(ctx, catalogImage, includes)
+	return images, err
 }
 
 // LoadFBC fetches the catalog image layers and parses the File-Based Catalog.

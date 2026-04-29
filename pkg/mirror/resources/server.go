@@ -119,7 +119,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 			},
 		}
 		for _, cat := range extractCatalogs(&is, mt.Spec.Registry) {
-			catName := catalogSlug(cat.SourceCatalog)
+			catName := CatalogSlug(cat.SourceCatalog)
 			entry.Catalogs = append(entry.Catalogs, catName)
 			entry.Resources = append(entry.Resources,
 				fmt.Sprintf("/resources/%s/catalogs/%s/catalogsource.yaml", is.Name, catName),
@@ -194,7 +194,7 @@ func (s *Server) handleCatalogSource(w http.ResponseWriter, r *http.Request) {
 	}
 
 	catalogs := extractCatalogs(is, mt.Spec.Registry)
-	cat, ok := findCatalog(catalogs, catSlug)
+	cat, ok := FindCatalog(catalogs, catSlug)
 	if !ok {
 		http.Error(w, fmt.Sprintf("catalog %q not found in ImageSet %s", catSlug, isName), http.StatusNotFound)
 		return
@@ -227,7 +227,7 @@ func (s *Server) handleClusterCatalog(w http.ResponseWriter, r *http.Request) {
 	}
 
 	catalogs := extractCatalogs(is, mt.Spec.Registry)
-	cat, ok := findCatalog(catalogs, catSlug)
+	cat, ok := FindCatalog(catalogs, catSlug)
 	if !ok {
 		http.Error(w, fmt.Sprintf("catalog %q not found in ImageSet %s", catSlug, isName), http.StatusNotFound)
 		return
@@ -268,7 +268,7 @@ func (s *Server) handleCatalogPackages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	catalogs := extractCatalogs(is, mt.Spec.Registry)
-	cat, ok := findCatalog(catalogs, catSlug)
+	cat, ok := FindCatalog(catalogs, catSlug)
 	if !ok {
 		http.Error(w, fmt.Sprintf("catalog %q not found in ImageSet %s", catSlug, isName), http.StatusNotFound)
 		return
@@ -292,7 +292,7 @@ func (s *Server) handleCatalogPackages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := buildCatalogPackagesResponse(cat, cfg)
+	resp := BuildCatalogPackagesResponse(cat, cfg)
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
@@ -318,7 +318,7 @@ func (s *Server) handleUpstreamCatalogPackages(w http.ResponseWriter, r *http.Re
 	}
 
 	catalogs := extractCatalogs(is, mt.Spec.Registry)
-	cat, ok := findCatalog(catalogs, catSlug)
+	cat, ok := FindCatalog(catalogs, catSlug)
 	if !ok {
 		http.Error(w, fmt.Sprintf("catalog %q not found in ImageSet %s", catSlug, isName), http.StatusNotFound)
 		return
@@ -334,7 +334,7 @@ func (s *Server) handleUpstreamCatalogPackages(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	resp := buildCatalogPackagesResponse(cat, cfg)
+	resp := BuildCatalogPackagesResponse(cat, cfg)
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
@@ -512,8 +512,8 @@ func catalogDisplayName(source string) string {
 	return "OC Mirror Catalog"
 }
 
-// catalogSlug creates a URL-safe short name from a catalog reference.
-func catalogSlug(source string) string {
+// CatalogSlug creates a URL-safe short name from a catalog reference.
+func CatalogSlug(source string) string {
 	repo := repoOnly(source)
 	parts := strings.Split(repo, "/")
 	if len(parts) > 0 {
@@ -522,9 +522,9 @@ func catalogSlug(source string) string {
 	return "unknown"
 }
 
-func findCatalog(catalogs []CatalogInfo, slug string) (CatalogInfo, bool) {
+func FindCatalog(catalogs []CatalogInfo, slug string) (CatalogInfo, bool) {
 	for _, c := range catalogs {
-		if catalogSlug(c.SourceCatalog) == slug {
+		if CatalogSlug(c.SourceCatalog) == slug {
 			return c, true
 		}
 	}
@@ -542,33 +542,33 @@ func isCatalogReady(is *mirrorv1alpha1.ImageSet) bool {
 
 // --- Catalog packages response types ---
 
-// catalogPackagesResponse is the JSON envelope for the packages endpoint.
-type catalogPackagesResponse struct {
+// CatalogPackagesResponse is the JSON envelope for the packages endpoint.
+type CatalogPackagesResponse struct {
 	Catalog     string           `json:"catalog"`
 	TargetImage string           `json:"targetImage"`
-	Packages    []packageSummary `json:"packages"`
+	Packages    []PackageSummary `json:"packages"`
 }
 
-// packageSummary describes a single operator package in the catalog.
-type packageSummary struct {
+// PackageSummary describes a single operator package in the catalog.
+type PackageSummary struct {
 	Name           string           `json:"name"`
 	DefaultChannel string           `json:"defaultChannel,omitempty"`
-	Channels       []channelSummary `json:"channels"`
+	Channels       []ChannelSummary `json:"channels"`
 }
 
-// channelSummary describes a single channel within an operator package.
-type channelSummary struct {
+// ChannelSummary describes a single channel within an operator package.
+type ChannelSummary struct {
 	Name    string        `json:"name"`
-	Entries []bundleEntry `json:"entries"`
+	Entries []BundleEntry `json:"entries"`
 }
 
-// bundleEntry describes a single bundle version within a channel.
-type bundleEntry struct {
+// BundleEntry describes a single bundle version within a channel.
+type BundleEntry struct {
 	Name    string `json:"name"`
 	Version string `json:"version,omitempty"`
 }
 
-func buildCatalogPackagesResponse(cat CatalogInfo, cfg *declcfg.DeclarativeConfig) catalogPackagesResponse {
+func BuildCatalogPackagesResponse(cat CatalogInfo, cfg *declcfg.DeclarativeConfig) CatalogPackagesResponse {
 	// Index bundles and channels by package.
 	channelsByPkg := make(map[string][]declcfg.Channel)
 	for _, ch := range cfg.Channels {
@@ -594,35 +594,35 @@ func buildCatalogPackagesResponse(cat CatalogInfo, cfg *declcfg.DeclarativeConfi
 	}
 	sort.Strings(pkgNames)
 
-	packages := make([]packageSummary, 0, len(pkgNames))
+	packages := make([]PackageSummary, 0, len(pkgNames))
 	for _, pkgName := range pkgNames {
 		channels := channelsByPkg[pkgName]
 		sort.Slice(channels, func(i, j int) bool { return channels[i].Name < channels[j].Name })
 
-		chSummaries := make([]channelSummary, 0, len(channels))
+		chSummaries := make([]ChannelSummary, 0, len(channels))
 		for _, ch := range channels {
-			entries := make([]bundleEntry, 0, len(ch.Entries))
+			entries := make([]BundleEntry, 0, len(ch.Entries))
 			for _, e := range ch.Entries {
-				entries = append(entries, bundleEntry{
+				entries = append(entries, BundleEntry{
 					Name:    e.Name,
 					Version: bundleVersions[e.Name],
 				})
 			}
 			sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
-			chSummaries = append(chSummaries, channelSummary{
+			chSummaries = append(chSummaries, ChannelSummary{
 				Name:    ch.Name,
 				Entries: entries,
 			})
 		}
 
-		packages = append(packages, packageSummary{
+		packages = append(packages, PackageSummary{
 			Name:           pkgName,
 			DefaultChannel: defaultChannels[pkgName],
 			Channels:       chSummaries,
 		})
 	}
 
-	return catalogPackagesResponse{
+	return CatalogPackagesResponse{
 		Catalog:     cat.SourceCatalog,
 		TargetImage: cat.TargetImage,
 		Packages:    packages,

@@ -122,6 +122,14 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, err
 	}
 
+	// Ensure global Resource API Deployment and Service (Phase 7d)
+	if err := r.ensureResourceAPI(ctx, mt.Namespace); err != nil {
+		l.Error(err, "Failed to ensure Resource API")
+		setCondition(&mt.Status.Conditions, "Ready", metav1.ConditionFalse, "ReconcileError", err.Error(), mt.Generation)
+		_ = r.Status().Update(ctx, mt)
+		return ctrl.Result{}, err
+	}
+
 	// Define the manager deployment
 	deployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -181,7 +189,6 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 							Resources:    mt.Spec.Manager.Resources,
 							Ports: []corev1.ContainerPort{
 								{Name: "status", ContainerPort: 8080, Protocol: corev1.ProtocolTCP},
-								{Name: "resources", ContainerPort: 8081, Protocol: corev1.ProtocolTCP},
 							},
 						},
 					},
@@ -235,6 +242,7 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	// Resource API Service (port 8081) — serves IDMS, ITMS, CatalogSource, etc.
+	// Point to the global oc-mirror-resource-api Deployment (Phase 7e)
 	resourceSvc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-resources", mt.Name),
@@ -246,11 +254,13 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			return err
 		}
 		resourceSvc.Labels = map[string]string{
-			"app":          "oc-mirror-manager",
+			"app":          "oc-mirror-resource-api",
 			"mirrortarget": mt.Name,
 		}
 		resourceSvc.Spec = corev1.ServiceSpec{
-			Selector: resourceSvc.Labels,
+			Selector: map[string]string{
+				"app": "oc-mirror-resource-api",
+			},
 			Ports: []corev1.ServicePort{
 				{
 					Name: "resources",
@@ -936,6 +946,110 @@ func cleanupSnapshotCMName(targetName, imageSetName string) string {
 //   - ImageSet status changes → enqueue every MirrorTarget that lists the
 //     ImageSet in spec.imageSets so the MirrorTarget's aggregated counters
 //     stay in sync with per-ImageSet progress.
+func (r *MirrorTargetReconciler) ensureResourceAPI(ctx context.Context, namespace string) error {
+	name := "oc-mirror-resource-api"
+
+	if err := r.ensureResourceRBAC(ctx, namespace); err != nil {
+		return err
+	}
+
+	deployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+	}
+
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, deployment, func() error {
+		labels := map[string]string{"app": name}
+		deployment.Labels = labels
+		replicas := int32(1)
+		deployment.Spec = appsv1.DeploymentSpec{
+			Replicas: &replicas,
+			Selector: &metav1.LabelSelector{MatchLabels: labels},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: labels},
+				Spec: corev1.PodSpec{
+					ServiceAccountName: name,
+					Containers: []corev1.Container{
+						{
+							Name:  "api",
+							Image: os.Getenv("OPERATOR_IMAGE"),
+							Args:  []string{"resource-api", "--namespace", namespace},
+							Ports: []corev1.ContainerPort{{ContainerPort: 8081}},
+							Env: []corev1.EnvVar{
+								{
+									Name: "POD_NAMESPACE",
+									ValueFrom: &corev1.EnvVarSource{
+										FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.namespace"},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("failed to ensure resource api deployment: %w", err)
+	}
+
+	svc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+	}
+	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error {
+		labels := map[string]string{"app": name}
+		svc.Labels = labels
+		svc.Spec = corev1.ServiceSpec{
+			Selector: labels,
+			Ports:    []corev1.ServicePort{{Port: 8081, TargetPort: intstr.FromInt(8081)}},
+		}
+		return nil
+	})
+	return err
+}
+
+func (r *MirrorTargetReconciler) ensureResourceRBAC(ctx context.Context, namespace string) error {
+	name := "oc-mirror-resource-api"
+	sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, sa, func() error { return nil }); err != nil {
+		return err
+	}
+
+	role := &rbacv1.Role{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, role, func() error {
+		role.Rules = []rbacv1.PolicyRule{
+			{
+				APIGroups: []string{""},
+				Resources: []string{"configmaps"},
+				Verbs:     []string{"get", "list", "watch"},
+			},
+			{
+				APIGroups: []string{"mirror.openshift.io"},
+				Resources: []string{"mirrortargets", "imagesets"},
+				Verbs:     []string{"get", "list", "watch"},
+			},
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	rb := &rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}
+	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, rb, func() error {
+		rb.RoleRef = rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "Role", Name: name}
+		rb.Subjects = []rbacv1.Subject{{Kind: "ServiceAccount", Name: name, Namespace: namespace}}
+		return nil
+	})
+	return err
+}
+
 func (r *MirrorTargetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mirrorv1alpha1.MirrorTarget{}).

@@ -28,3 +28,6 @@ go.work
 
 .gemini/
 gha-creds-*.json
+
+.claude
+.claude-flow

@@ -4,6 +4,7 @@ go 1.25.7
 
 require (
 	github.com/blang/semver/v4 v4.0.0
+	github.com/gorilla/mux v1.8.1
 	github.com/onsi/ginkgo/v2 v2.28.1
 	github.com/onsi/gomega v1.39.1
 	github.com/opencontainers/go-digest v1.0.0

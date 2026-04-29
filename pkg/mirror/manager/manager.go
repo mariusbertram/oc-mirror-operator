@@ -195,9 +195,6 @@ func (m *MirrorManager) Run(ctx context.Context) error {
 	// Start Status API Server (internal, port 8080)
 	go m.runStatusAPI(ctx)
 
-	// Start Resource Server (public, port 8081)
-	go resources.NewServer(m.Client, m.Namespace, m.TargetName, m.authConfigPath).Run(ctx)
-
 	// Run reconcile once immediately on startup, then every 30s.
 	if err := m.reconcile(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "Error reconciling: %v\n", err)
@@ -694,6 +691,11 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 		m.updateImageSetStatusLocked(ctx, &is, isView, justResolvedISes[is.Name])
 	}
 
+	// Phase H: Generate and save global resources (IDMS, ITMS, CatalogSource) to ConfigMap.
+	if err := m.saveGlobalResources(ctx, mt); err != nil {
+		fmt.Printf("Warning: failed to save global resources: %v\n", err)
+	}
+
 	return nil
 }
 
@@ -719,6 +721,75 @@ func (m *MirrorManager) setImageStateLocked(dest, st, lastError string) {
 			entry.PermanentlyFailed = true
 		}
 	}
+}
+
+func (m *MirrorManager) saveGlobalResources(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget) error {
+	idms, err := resources.GenerateIDMS(m.TargetName, m.imageState)
+	if err != nil {
+		return fmt.Errorf("generate IDMS: %w", err)
+	}
+
+	itms, err := resources.GenerateITMS(m.TargetName, m.imageState)
+	if err != nil {
+		return fmt.Errorf("generate ITMS: %w", err)
+	}
+
+	data := map[string]string{
+		"idms.yaml": string(idms),
+		"itms.yaml": string(itms),
+	}
+
+	// Generate CatalogSources for all unique catalogs in the state.
+	catalogs := make(map[string]resources.CatalogInfo)
+	for _, entry := range m.imageState {
+		if entry.Origin == imagestate.OriginOperator {
+			// Extract catalog from OriginRef (hacky, but we don't store it explicitly in entry)
+			// OriginRef format: "catalog [pkg1, pkg2]" or "catalog — bundle"
+			parts := strings.Split(entry.OriginRef, " ")
+			catSource := parts[0]
+			slug := resources.CatalogSlug(catSource)
+			if _, ok := catalogs[slug]; !ok {
+				catalogs[slug] = resources.CatalogInfo{
+					SourceCatalog: catSource,
+					TargetImage:   resources.CatalogTargetImage(mt.Spec.Registry, catSource),
+				}
+			}
+		}
+	}
+
+	for slug, cat := range catalogs {
+		cs, err := resources.GenerateCatalogSource(m.TargetName+"-"+slug, m.Namespace, cat, "pull-secret") // TODO: fix pull secret name
+		if err != nil {
+			fmt.Printf("Warning: failed to generate CatalogSource for %s: %v\n", slug, err)
+			continue
+		}
+		data[fmt.Sprintf("catalogsource-%s.yaml", slug)] = string(cs)
+	}
+
+	cmName := fmt.Sprintf("oc-mirror-%s-resources", m.TargetName)
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      cmName,
+			Namespace: m.Namespace,
+			Labels: map[string]string{
+				"oc-mirror.openshift.io/resource-config": m.TargetName,
+			},
+		},
+		Data: data,
+	}
+
+	existing := &corev1.ConfigMap{}
+	err = m.Client.Get(ctx, client.ObjectKey{Name: cmName, Namespace: m.Namespace}, existing)
+	if err != nil {
+		if client.IgnoreNotFound(err) != nil {
+			return err
+		}
+		return m.Client.Create(ctx, cm)
+	}
+
+	existing.Data = cm.Data
+	existing.Labels = cm.Labels
+	return m.Client.Update(ctx, existing)
 }
 
 // updateImageSetStatusLocked updates the ImageSet status with aggregate counts

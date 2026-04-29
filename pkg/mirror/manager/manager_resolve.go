@@ -12,6 +12,7 @@ package manager
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -30,7 +31,9 @@ import (
 	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/imagestate"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/release"
+	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/resources"
 	pkgrelease "github.com/mariusbertram/oc-mirror-operator/pkg/release"
+	"github.com/operator-framework/operator-registry/alpha/declcfg"
 )
 
 // operatorCacheVersion is bumped whenever the operator resolution or filtering
@@ -42,6 +45,42 @@ const operatorCacheVersion = "v4"
 // operatorCacheValue builds the cache token written to the ImageSet annotation.
 func operatorCacheValue(digest string) string {
 	return operatorCacheVersion + ":" + digest
+}
+
+func (m *MirrorManager) saveCatalogPackages(ctx context.Context, slug string, info resources.CatalogInfo, cfg *declcfg.DeclarativeConfig) error {
+	resp := resources.BuildCatalogPackagesResponse(info, cfg)
+	data, err := json.Marshal(resp)
+	if err != nil {
+		return fmt.Errorf("marshal catalog packages: %w", err)
+	}
+
+	cmName := fmt.Sprintf("oc-mirror-%s-packages", slug)
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      cmName,
+			Namespace: m.Namespace,
+			Labels: map[string]string{
+				"oc-mirror.openshift.io/catalog-packages": slug,
+			},
+		},
+		Data: map[string]string{
+			"packages.json": string(data),
+		},
+	}
+
+	// Use CreateOrUpdate for idempotency
+	existing := &corev1.ConfigMap{}
+	err = m.Client.Get(ctx, client.ObjectKey{Name: cmName, Namespace: m.Namespace}, existing)
+	if err != nil {
+		if client.IgnoreNotFound(err) != nil {
+			return err
+		}
+		return m.Client.Create(ctx, cm)
+	}
+
+	existing.Data = cm.Data
+	existing.Labels = cm.Labels
+	return m.Client.Update(ctx, existing)
 }
 
 // operatorCacheHit returns true if the cached annotation value matches the
@@ -297,7 +336,7 @@ func extractDigest(imageRef string) string {
 
 func (m *MirrorManager) resolveOperatorSection( //nolint:unparam
 	ctx context.Context,
-	collector *mirror.Collector,
+	_ *mirror.Collector,
 	resolver *catalog.CatalogResolver,
 	is *mirrorv1alpha1.ImageSet,
 	mt *mirrorv1alpha1.MirrorTarget,
@@ -336,13 +375,32 @@ func (m *MirrorManager) resolveOperatorSection( //nolint:unparam
 			continue
 		}
 
-		images, err := collector.CollectOperatorEntry(ctx, op, mt)
+		images, cfg, err := resolver.ResolveCatalogFull(ctx, op.Catalog, op.Packages)
 		if err != nil {
 			fmt.Printf("Warning: collect catalog %s: %v\n", op.Catalog, err)
 			carryOverByOriginAndSig(currentState, newState, imagestate.OriginOperator, sig, originRef)
 			continue
 		}
-		mergeIntoStateWithSig(newState, images, imagestate.OriginOperator, sig, originRef, currentState)
+
+		targetImages := make([]mirror.TargetImage, 0, len(images))
+		for dest, source := range images {
+			targetImages = append(targetImages, mirror.TargetImage{
+				Source:      source,
+				Destination: dest,
+			})
+		}
+		mergeIntoStateWithSig(newState, targetImages, imagestate.OriginOperator, sig, originRef, currentState)
+
+		// Phase 7a: Persist catalog package information in a ConfigMap for the Resource API.
+		catSlug := resources.CatalogSlug(op.Catalog)
+		targetImage := resources.CatalogTargetImage(mt.Spec.Registry, op.Catalog)
+		catInfo := resources.CatalogInfo{
+			SourceCatalog: op.Catalog,
+			TargetImage:   targetImage,
+		}
+		if err := m.saveCatalogPackages(ctx, catSlug, catInfo, cfg); err != nil {
+			fmt.Printf("Warning: failed to save catalog packages for %s: %v\n", catSlug, err)
+		}
 
 		if annotations[annoKey] != cacheToken {
 			annotations[annoKey] = cacheToken

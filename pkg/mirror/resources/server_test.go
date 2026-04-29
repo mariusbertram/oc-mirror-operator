@@ -238,41 +238,41 @@ var _ = Describe("catalogDisplayName", func() {
 	})
 })
 
-var _ = Describe("catalogSlug", func() {
+var _ = Describe("CatalogSlug", func() {
 	It("extracts last path segment as slug", func() {
-		Expect(catalogSlug("registry.redhat.io/redhat/redhat-operator-index:v4.21")).
+		Expect(CatalogSlug("registry.redhat.io/redhat/redhat-operator-index:v4.21")).
 			To(Equal("redhat-operator-index"))
 	})
 
 	It("handles single-segment path", func() {
-		Expect(catalogSlug("my-catalog:v1.0")).To(Equal("my-catalog"))
+		Expect(CatalogSlug("my-catalog:v1.0")).To(Equal("my-catalog"))
 	})
 })
 
-var _ = Describe("findCatalog", func() {
+var _ = Describe("FindCatalog", func() {
 	catalogs := []CatalogInfo{
 		{SourceCatalog: "registry.redhat.io/redhat/redhat-operator-index:v4.21"},
 		{SourceCatalog: "registry.redhat.io/redhat/certified-operator-index:v4.21"},
 	}
 
 	It("finds a catalog by slug", func() {
-		cat, ok := findCatalog(catalogs, "redhat-operator-index")
+		cat, ok := FindCatalog(catalogs, "redhat-operator-index")
 		Expect(ok).To(BeTrue())
 		Expect(cat.SourceCatalog).To(Equal("registry.redhat.io/redhat/redhat-operator-index:v4.21"))
 	})
 
 	It("returns false when slug not found", func() {
-		_, ok := findCatalog(catalogs, "nonexistent")
+		_, ok := FindCatalog(catalogs, "nonexistent")
 		Expect(ok).To(BeFalse())
 	})
 
 	It("returns false for empty catalog list", func() {
-		_, ok := findCatalog(nil, "anything")
+		_, ok := FindCatalog(nil, "anything")
 		Expect(ok).To(BeFalse())
 	})
 })
 
-var _ = Describe("buildCatalogPackagesResponse", func() {
+var _ = Describe("BuildCatalogPackagesResponse", func() {
 	It("builds complete response from DeclarativeConfig", func() {
 		cat := CatalogInfo{
 			SourceCatalog: "registry.redhat.io/redhat/redhat-operator-index:v4.21",
@@ -310,7 +310,7 @@ var _ = Describe("buildCatalogPackagesResponse", func() {
 			},
 		}
 
-		resp := buildCatalogPackagesResponse(cat, cfg)
+		resp := BuildCatalogPackagesResponse(cat, cfg)
 		Expect(resp.Catalog).To(Equal("registry.redhat.io/redhat/redhat-operator-index:v4.21"))
 		Expect(resp.TargetImage).To(Equal("mirror.example.com/redhat-operator-index:v4.21"))
 		Expect(resp.Packages).To(HaveLen(1))
@@ -327,7 +327,7 @@ var _ = Describe("buildCatalogPackagesResponse", func() {
 	})
 
 	It("handles empty DeclarativeConfig", func() {
-		resp := buildCatalogPackagesResponse(CatalogInfo{SourceCatalog: "src", TargetImage: "tgt"}, &declcfg.DeclarativeConfig{})
+		resp := BuildCatalogPackagesResponse(CatalogInfo{SourceCatalog: "src", TargetImage: "tgt"}, &declcfg.DeclarativeConfig{})
 		Expect(resp.Packages).To(BeEmpty())
 	})
 
@@ -338,7 +338,7 @@ var _ = Describe("buildCatalogPackagesResponse", func() {
 				{Name: "a-operator"},
 			},
 		}
-		resp := buildCatalogPackagesResponse(CatalogInfo{SourceCatalog: "src", TargetImage: "tgt"}, cfg)
+		resp := BuildCatalogPackagesResponse(CatalogInfo{SourceCatalog: "src", TargetImage: "tgt"}, cfg)
 		Expect(resp.Packages).To(HaveLen(2))
 		Expect(resp.Packages[0].Name).To(Equal("a-operator"))
 		Expect(resp.Packages[1].Name).To(Equal("z-operator"))
@@ -352,7 +352,7 @@ var _ = Describe("buildCatalogPackagesResponse", func() {
 				{Package: "op", Name: "alpha"},
 			},
 		}
-		resp := buildCatalogPackagesResponse(CatalogInfo{SourceCatalog: "s", TargetImage: "t"}, cfg)
+		resp := BuildCatalogPackagesResponse(CatalogInfo{SourceCatalog: "s", TargetImage: "t"}, cfg)
 		Expect(resp.Packages[0].Channels[0].Name).To(Equal("alpha"))
 		Expect(resp.Packages[0].Channels[1].Name).To(Equal("stable"))
 	})
