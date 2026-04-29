@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gorilla/mux"
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
@@ -89,10 +90,11 @@ func (s *Server) RegisterRoutes(r *mux.Router) {
 	api.HandleFunc("/targets/{mt}", s.handleTargetDetail).Methods("GET")
 
 	// API endpoints – raw resources from ConfigMaps
-	api.HandleFunc("/targets/{mt}/resources/idms", s.handleIDMS).Methods("GET")
-	api.HandleFunc("/targets/{mt}/resources/itms", s.handleITMS).Methods("GET")
-	api.HandleFunc("/targets/{mt}/resources/catalogs/{slug}/catalogsource", s.handleCatalogSource).Methods("GET")
-	api.HandleFunc("/targets/{mt}/resources/catalogs/{slug}/packages", s.handleCatalogPackages).Methods("GET")
+	api.HandleFunc("/targets/{mt}/imagesets/{is}/idms.yaml", s.handleIDMS).Methods("GET")
+	api.HandleFunc("/targets/{mt}/imagesets/{is}/itms.yaml", s.handleITMS).Methods("GET")
+	api.HandleFunc("/targets/{mt}/imagesets/{is}/catalogs/{slug}/catalogsource.yaml", s.handleCatalogSource).Methods("GET")
+	api.HandleFunc("/targets/{mt}/imagesets/{is}/catalogs/{slug}/upstream-packages.json", s.handleCatalogPackages).Methods("GET")
+	api.HandleFunc("/targets/{mt}/imagesets/{is}/catalogs/{slug}/packages.json", s.handleCatalogPackages).Methods("GET")
 }
 
 func (s *Server) Run(ctx context.Context) {
@@ -100,8 +102,12 @@ func (s *Server) Run(ctx context.Context) {
 	s.RegisterRoutes(r)
 
 	srv := &http.Server{
-		Addr:    ":8081",
-		Handler: r,
+		Addr:              ":8081",
+		Handler:           r,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	go func() {
@@ -112,7 +118,9 @@ func (s *Server) Run(ctx context.Context) {
 
 	fmt.Println("Resource API started on :8081")
 	<-ctx.Done()
-	_ = srv.Shutdown(context.Background())
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = srv.Shutdown(shutdownCtx)
 }
 
 // --- JSON API handlers ---
@@ -216,9 +224,9 @@ func (s *Server) handleCatalogPackages(w http.ResponseWriter, r *http.Request) {
 	s.serveConfigMapResource(w, r, fmt.Sprintf("oc-mirror-%s-packages", slug), "packages.json")
 }
 
-func (s *Server) serveConfigMapResource(w http.ResponseWriter, _ *http.Request, cmName, key string) {
+func (s *Server) serveConfigMapResource(w http.ResponseWriter, r *http.Request, cmName, key string) {
 	cm := &corev1.ConfigMap{}
-	err := s.client.Get(context.Background(), client.ObjectKey{Name: cmName, Namespace: s.namespace}, cm)
+	err := s.client.Get(r.Context(), client.ObjectKey{Name: cmName, Namespace: s.namespace}, cm)
 	if err != nil {
 		http.Error(w, "Resource not found", http.StatusNotFound)
 		return
@@ -242,13 +250,15 @@ func (s *Server) serveConfigMapResource(w http.ResponseWriter, _ *http.Request, 
 
 func buildResourceLinks(mtName string, cm *corev1.ConfigMap) []ResourceLink {
 	var links []ResourceLink
-	base := fmt.Sprintf("/api/v1/targets/%s/resources", mtName)
+	// Note: We use "latest" as a placeholder for {is} in the UI links for now,
+	// as the resource ConfigMap is per-target and contains the latest state.
+	base := fmt.Sprintf("/api/v1/targets/%s/imagesets/latest", mtName)
 
 	if _, ok := cm.Data["idms.yaml"]; ok {
-		links = append(links, ResourceLink{Name: "IDMS", URL: base + "/idms", Type: "yaml"})
+		links = append(links, ResourceLink{Name: "IDMS", URL: base + "/idms.yaml", Type: "yaml"})
 	}
 	if _, ok := cm.Data["itms.yaml"]; ok {
-		links = append(links, ResourceLink{Name: "ITMS", URL: base + "/itms", Type: "yaml"})
+		links = append(links, ResourceLink{Name: "ITMS", URL: base + "/itms.yaml", Type: "yaml"})
 	}
 
 	// Detect catalog resources by key pattern catalogsource-<slug>.yaml
@@ -257,7 +267,7 @@ func buildResourceLinks(mtName string, cm *corev1.ConfigMap) []ResourceLink {
 			slug := strings.TrimSuffix(strings.TrimPrefix(key, "catalogsource-"), ".yaml")
 			links = append(links, ResourceLink{
 				Name: fmt.Sprintf("CatalogSource (%s)", slug),
-				URL:  fmt.Sprintf("%s/catalogs/%s/catalogsource", base, slug),
+				URL:  fmt.Sprintf("%s/catalogs/%s/catalogsource.yaml", base, slug),
 				Type: "yaml",
 			})
 		}

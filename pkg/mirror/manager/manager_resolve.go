@@ -383,10 +383,11 @@ func (m *MirrorManager) resolveOperatorSection( //nolint:unparam
 		}
 
 		targetImages := make([]mirror.TargetImage, 0, len(images))
-		for dest, source := range images {
+		for img, label := range images {
 			targetImages = append(targetImages, mirror.TargetImage{
-				Source:      source,
-				Destination: dest,
+				Source:      img,
+				BundleRef:   label,
+				Destination: mirror.ComponentDestination(mt.Spec.Registry, img),
 			})
 		}
 		mergeIntoStateWithSig(newState, targetImages, imagestate.OriginOperator, sig, originRef, currentState)
@@ -435,6 +436,12 @@ func mergeIntoStateWithSig(dst imagestate.ImageState, images []mirror.TargetImag
 			OriginRef: ref,
 		}
 		if existing, ok := prev[img.Destination]; ok && existing != nil && existing.Origin == origin {
+			// Prefer the existing Source if it looks like a valid reference
+			// (i.e. doesn't contain a comma) and the new one might be a bundle list.
+			if strings.Contains(entry.Source, ",") && !strings.Contains(existing.Source, ",") {
+				entry.Source = existing.Source
+			}
+
 			// Only carry forward Mirrored state — work we've already done.
 			// Failed entries (including permanently-failed ones) are reset to
 			// Pending so they get a fresh attempt whenever the spec changes

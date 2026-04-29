@@ -1038,8 +1038,6 @@ func (r *CatalogResolver) ExtractImages(cfg *declcfg.DeclarativeConfig) []string
 
 // ExtractImagesWithBundles returns all image references found in the FBC mapped
 // to a human-readable string listing the bundle(s) that reference each image.
-// The bundle list is deduped, sorted, and capped at 3 visible names; any
-// additional bundles are summarised as "(+N more)".
 func (r *CatalogResolver) ExtractImagesWithBundles(cfg *declcfg.DeclarativeConfig) map[string]string {
 	// Collect per-image bundle name sets (deduplicated).
 	bundleSets := make(map[string]map[string]struct{})
@@ -1087,6 +1085,7 @@ func renderBundleRefs(names []string) string {
 // ResolveCatalogFull loads the FBC, filters it, and returns both the resulting
 // images and the filtered FBC config itself. Used by the manager to persist
 // package information in ConfigMaps (Phase 7a).
+// The map returned contains destination image reference → bundle-name label.
 func (r *CatalogResolver) ResolveCatalogFull(ctx context.Context, catalogImage string, includes []mirrorv1alpha1.IncludePackage) (map[string]string, *declcfg.DeclarativeConfig, error) {
 	if _, err := ref.New(catalogImage); err != nil {
 		return nil, nil, fmt.Errorf("failed to parse catalog image reference: %w", err)

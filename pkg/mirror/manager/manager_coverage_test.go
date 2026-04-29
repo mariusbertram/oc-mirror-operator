@@ -21,8 +21,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
-const condReady = "Ready"
-
 var _ = Describe("Manager Coverage", func() {
 	var (
 		m      *MirrorManager
@@ -797,7 +795,7 @@ var _ = Describe("Manager Coverage", func() {
 			conds := []metav1.Condition{}
 			setReadyCondition(&conds, metav1.ConditionTrue, "Collected", "msg", 1)
 			Expect(conds).To(HaveLen(1))
-			Expect(conds[0].Type).To(Equal(condReady))
+			Expect(conds[0].Type).To(Equal("Ready"))
 			Expect(conds[0].Status).To(Equal(metav1.ConditionTrue))
 			Expect(conds[0].Reason).To(Equal("Collected"))
 			Expect(conds[0].Message).To(Equal("msg"))
@@ -807,7 +805,7 @@ var _ = Describe("Manager Coverage", func() {
 		It("updates an existing Ready condition when it changes", func() {
 			conds := []metav1.Condition{
 				{
-					Type:               condReady,
+					Type:               "Ready",
 					Status:             metav1.ConditionFalse,
 					Reason:             "Empty",
 					Message:            "no images resolved yet",
@@ -827,7 +825,7 @@ var _ = Describe("Manager Coverage", func() {
 			oldTime := metav1.NewTime(time.Now().Add(-1 * time.Hour))
 			conds := []metav1.Condition{
 				{
-					Type:               condReady,
+					Type:               "Ready",
 					Status:             metav1.ConditionTrue,
 					Reason:             "Collected",
 					Message:            "10 images",
@@ -852,7 +850,7 @@ var _ = Describe("Manager Coverage", func() {
 			setReadyCondition(&conds, metav1.ConditionTrue, "Collected", "msg", 1)
 			Expect(conds).To(HaveLen(2))
 			Expect(conds[0].Type).To(Equal("CatalogReady"))
-			Expect(conds[1].Type).To(Equal(condReady))
+			Expect(conds[1].Type).To(Equal("Ready"))
 		})
 	})
 
@@ -1179,7 +1177,7 @@ var _ = Describe("Manager Coverage", func() {
 			Expect(is.Status.TotalImages).To(Equal(0))
 			found := false
 			for _, c := range is.Status.Conditions {
-				if c.Type == condReady {
+				if c.Type == conditionReady {
 					found = true
 					Expect(c.Status).To(Equal(metav1.ConditionFalse))
 					Expect(c.Reason).To(Equal("Empty"))
@@ -1239,7 +1237,7 @@ var _ = Describe("Manager Coverage", func() {
 			// Ready condition message should contain truncation summary.
 			var readyCond *metav1.Condition
 			for i := range is.Status.Conditions {
-				if is.Status.Conditions[i].Type == condReady {
+				if is.Status.Conditions[i].Type == conditionReady {
 					readyCond = &is.Status.Conditions[i]
 					break
 				}

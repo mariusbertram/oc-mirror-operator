@@ -21,6 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -36,6 +37,8 @@ const (
 	stateMirrored = "Mirrored"
 	statePending  = "Pending"
 	stateFailed   = "Failed"
+
+	conditionReady = "Ready"
 
 	// maxFailedImageDetails caps the number of FailedImageDetail entries
 	// written to ImageSet.status to bound the overall status object size.
@@ -751,8 +754,14 @@ func (m *MirrorManager) saveGlobalResources(ctx context.Context, mt *mirrorv1alp
 		if entry.Origin == imagestate.OriginOperator {
 			// Extract catalog from OriginRef (hacky, but we don't store it explicitly in entry)
 			// OriginRef format: "catalog [pkg1, pkg2]" or "catalog — bundle"
+			if entry.OriginRef == "" {
+				continue
+			}
 			parts := strings.Split(entry.OriginRef, " ")
 			catSource := parts[0]
+			if catSource == "" {
+				continue
+			}
 			slug := resources.CatalogSlug(catSource)
 			if _, ok := catalogs[slug]; !ok {
 				catalogs[slug] = resources.CatalogInfo{
@@ -809,53 +818,61 @@ func (m *MirrorManager) saveGlobalResources(ctx context.Context, mt *mirrorv1alp
 // Caller must hold m.mu.
 func (m *MirrorManager) updateImageSetStatusLocked(ctx context.Context, is *mirrorv1alpha1.ImageSet, isView imagestate.ImageState, justResolved bool) {
 	total, mirrored, pending, failed := imagestate.Counts(isView)
-	is.Status.TotalImages = total
-	is.Status.MirroredImages = mirrored
-	is.Status.PendingImages = pending
-	is.Status.FailedImages = failed
-	is.Status.ObservedGeneration = is.Generation
-	if justResolved {
-		now := metav1.Now()
-		is.Status.LastSuccessfulPollTime = &now
-	}
-
-	// Collect permanently-failed image details (capped at maxFailedImageDetails
-	// to bound status size). isView has IS-specific Origin/OriginRef promoted
-	// to flat fields.
-	details := make([]mirrorv1alpha1.FailedImageDetail, 0)
-	for dest, entry := range isView {
-		if entry == nil || !entry.PermanentlyFailed || entry.State == stateMirrored {
-			continue
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latestIS := &mirrorv1alpha1.ImageSet{}
+		if err := m.Client.Get(ctx, client.ObjectKeyFromObject(is), latestIS); err != nil {
+			return err
 		}
-		details = append(details, mirrorv1alpha1.FailedImageDetail{
-			Source:      entry.Source,
-			Destination: dest,
-			Error:       entry.LastError,
-			Origin:      entry.OriginRef,
-		})
-	}
-	sort.Slice(details, func(i, j int) bool { return details[i].Destination < details[j].Destination })
-	totalFailed := len(details)
-	if totalFailed > maxFailedImageDetails {
-		details = details[:maxFailedImageDetails]
-	}
-	is.Status.FailedImageDetails = details
 
-	readyStatus := metav1.ConditionTrue
-	readyReason := "Collected"
-	readyMsg := fmt.Sprintf("Collected %d images (%d mirrored, %d pending, %d failed)", total, mirrored, pending, failed)
-	if totalFailed > maxFailedImageDetails {
-		readyMsg += fmt.Sprintf(" — showing %d of %d permanently failed images", maxFailedImageDetails, totalFailed)
-	}
-	if total == 0 {
-		readyStatus = metav1.ConditionFalse
-		readyReason = "Empty"
-		readyMsg = "no images resolved yet"
-	}
-	setReadyCondition(&is.Status.Conditions, readyStatus, readyReason, readyMsg, is.Generation)
+		latestIS.Status.TotalImages = total
+		latestIS.Status.MirroredImages = mirrored
+		latestIS.Status.PendingImages = pending
+		latestIS.Status.FailedImages = failed
+		latestIS.Status.ObservedGeneration = latestIS.Generation
+		if justResolved {
+			now := metav1.Now()
+			latestIS.Status.LastSuccessfulPollTime = &now
+		}
 
-	if err := m.Client.Status().Update(ctx, is); err != nil {
-		fmt.Printf("Failed to update ImageSet %s status: %v\n", is.Name, err)
+		details := make([]mirrorv1alpha1.FailedImageDetail, 0)
+		for dest, entry := range isView {
+			if entry == nil || !entry.PermanentlyFailed || entry.State == stateMirrored {
+				continue
+			}
+			details = append(details, mirrorv1alpha1.FailedImageDetail{
+				Source:      entry.Source,
+				Destination: dest,
+				Error:       entry.LastError,
+				Origin:      entry.OriginRef,
+			})
+		}
+		sort.Slice(details, func(i, j int) bool { return details[i].Destination < details[j].Destination })
+		totalFailed := len(details)
+		if totalFailed > maxFailedImageDetails {
+			details = details[:maxFailedImageDetails]
+		}
+		latestIS.Status.FailedImageDetails = details
+
+		readyStatus := metav1.ConditionTrue
+		readyReason := "Collected"
+		readyMsg := fmt.Sprintf("Collected %d images (%d mirrored, %d pending, %d failed)", total, mirrored, pending, failed)
+		if totalFailed > maxFailedImageDetails {
+			readyMsg += fmt.Sprintf(" — showing %d of %d permanently failed images", maxFailedImageDetails, totalFailed)
+		}
+		if total == 0 {
+			readyStatus = metav1.ConditionFalse
+			readyReason = "Empty"
+			readyMsg = "no images resolved yet"
+		}
+		setReadyCondition(&latestIS.Status.Conditions, readyStatus, readyReason, readyMsg, latestIS.Generation)
+
+		// Update the passed-in object as well so that the caller sees the changes
+		is.Status = latestIS.Status
+
+		return m.Client.Status().Update(ctx, latestIS)
+	})
+	if err != nil {
+		fmt.Printf("Failed to update ImageSet %s status after retries: %v\n", is.Name, err)
 	}
 }
 
@@ -866,7 +883,7 @@ func setReadyCondition(conditions *[]metav1.Condition, status metav1.ConditionSt
 		return
 	}
 	for i, c := range *conditions {
-		if c.Type != "Ready" {
+		if c.Type != conditionReady {
 			continue
 		}
 		if c.Status != status || c.Reason != reason || c.Message != message || c.ObservedGeneration != gen {
@@ -879,7 +896,7 @@ func setReadyCondition(conditions *[]metav1.Condition, status metav1.ConditionSt
 		return
 	}
 	*conditions = append(*conditions, metav1.Condition{
-		Type:               "Ready",
+		Type:               conditionReady,
 		Status:             status,
 		Reason:             reason,
 		Message:            message,

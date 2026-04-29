@@ -224,10 +224,10 @@ var _ = Describe("Coverage Tests", func() {
 		})
 	})
 
-	// ── componentDestination without digest ───────────────────────────
-	Describe("componentDestination", func() {
+	// ── ComponentDestination without digest ───────────────────────────
+	Describe("ComponentDestination", func() {
 		It("returns path without tag when no digest present", func() {
-			dest := componentDestination("mirror.io", "quay.io/org/img:v1")
+			dest := ComponentDestination("mirror.io", "quay.io/org/img:v1")
 			Expect(dest).To(Equal("mirror.io/org/img"))
 		})
 	})

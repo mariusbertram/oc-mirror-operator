@@ -3,250 +3,248 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>oc-mirror Dashboard</title>
+    <title>OC-Mirror Operator</title>
+    <link rel="stylesheet" href="css/patternfly.min.css">
+    <link rel="stylesheet" href="css/patternfly-addons.css">
+    <link rel="stylesheet" href="css/all.min.css">
     <style>
         :root {
-            --bg: #0f1114;
-            --surface: #1a1d23;
-            --surface-hover: #22262e;
-            --border: #2d3139;
-            --text: #e1e4e8;
-            --text-muted: #8b949e;
-            --accent: #58a6ff;
-            --green: #3fb950;
-            --yellow: #d29922;
-            --red: #f85149;
-            --radius: 8px;
+            --pf-v5-global--FontFamily--redhat--display: "Red Hat Display", sans-serif;
+            --pf-v5-global--FontFamily--redhat--text: "Red Hat Text", sans-serif;
+            --oc-brand-color: #0066cc;
+            --oc-masthead-bg: #151515;
+            --oc-sidebar-bg: #212427;
+            --oc-accent-color: #ee0000;
         }
-        * { margin: 0; padding: 0; box-sizing: border-box; }
+        @font-face {
+            font-family: 'Red Hat Text';
+            src: url('fonts/RedHatText-Regular.woff2') format('woff2');
+            font-weight: 400;
+        }
+        @font-face {
+            font-family: 'Red Hat Text';
+            src: url('fonts/RedHatText-Medium.woff2') format('woff2');
+            font-weight: 500;
+        }
+        @font-face {
+            font-family: 'Red Hat Text';
+            src: url('fonts/RedHatText-Bold.woff2') format('woff2');
+            font-weight: 700;
+        }
+        @font-face {
+            font-family: 'Red Hat Display';
+            src: url('fonts/RedHatDisplay-Medium.woff2') format('woff2');
+            font-weight: 500;
+        }
+        @font-face {
+            font-family: 'Red Hat Display';
+            src: url('fonts/RedHatDisplay-Bold.woff2') format('woff2');
+            font-weight: 700;
+        }
+
         body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-            background: var(--bg);
-            color: var(--text);
-            line-height: 1.5;
+            background-color: var(--pf-v5-global--BackgroundColor--200);
+            border-top: 3px solid var(--oc-accent-color);
         }
-        header {
-            background: var(--surface);
-            border-bottom: 1px solid var(--border);
-            padding: 16px 24px;
+
+        /* Masthead (Always Dark) */
+        .pf-v5-c-masthead {
+            background-color: var(--oc-masthead-bg);
+            color: #fff;
+        }
+
+        .pf-v5-c-masthead__logo {
             display: flex;
             align-items: center;
-            justify-content: space-between;
-        }
-        header h1 {
-            font-size: 18px;
-            font-weight: 600;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        header h1 .logo {
-            width: 28px;
-            height: 28px;
-            background: var(--accent);
-            border-radius: 6px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 14px;
-            font-weight: 700;
-            color: var(--bg);
-        }
-        .refresh-info {
-            font-size: 12px;
-            color: var(--text-muted);
-        }
-        nav {
-            background: var(--surface);
-            border-bottom: 1px solid var(--border);
-            padding: 0 24px;
-        }
-        nav a {
-            display: inline-block;
-            padding: 10px 16px;
-            color: var(--text-muted);
-            text-decoration: none;
-            font-size: 14px;
-            border-bottom: 2px solid transparent;
-            transition: color 0.15s, border-color 0.15s;
-        }
-        nav a:hover, nav a.active {
-            color: var(--text);
-            border-bottom-color: var(--accent);
-        }
-        main {
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 24px;
-        }
-        .card {
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: var(--radius);
-            padding: 20px;
-            margin-bottom: 16px;
-            transition: border-color 0.15s;
-        }
-        .card:hover {
-            border-color: var(--accent);
-        }
-        .card-header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            margin-bottom: 16px;
-        }
-        .card-title {
-            font-size: 16px;
-            font-weight: 600;
-        }
-        .card-subtitle {
-            font-size: 13px;
-            color: var(--text-muted);
-        }
-        .stats {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
             gap: 12px;
-            margin-bottom: 16px;
+            text-decoration: none;
+            color: #fff;
         }
-        .stat {
-            text-align: center;
-            padding: 12px;
-            background: var(--bg);
-            border-radius: var(--radius);
+        .pf-v5-c-masthead__logo img {
+            height: 28px;
         }
-        .stat-value {
-            font-size: 24px;
+        .pf-v5-c-masthead__logo-text {
+            font-size: 1.15rem;
+            font-weight: 400;
+            color: #fff;
+        }
+
+        /* Sidebar (Always Dark) */
+        .pf-v5-c-page__sidebar {
+            background-color: var(--oc-sidebar-bg);
+            color: #d2d2d2;
+        }
+
+        .pf-v5-c-nav__link {
+            font-size: 0.9rem;
+            color: #d2d2d2 !important;
+        }
+        
+        .pf-v5-c-nav__link:hover {
+            color: #fff !important;
+        }
+
+        .pf-v5-c-nav__link.pf-m-current {
+            background-color: rgba(255, 255, 255, 0.05);
+            border-left: 3px solid var(--oc-brand-color);
+            color: #fff !important;
+            font-weight: 600;
+        }
+
+        .perspective-switcher {
+            padding: 12px 16px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            margin-bottom: 8px;
+            color: #fff;
+        }
+
+        /* Main Content (Light) */
+        .pf-v5-c-page__main-section {
+            background-color: transparent;
+        }
+
+        .pf-v5-c-page__main-section.pf-m-light {
+            background-color: var(--pf-v5-global--BackgroundColor--100);
+            border-bottom: 1px solid var(--pf-v5-global--BorderColor--100);
+            padding-bottom: 0;
+        }
+
+        /* Overview Page Layout */
+        .overview-grid {
+            display: grid;
+            grid-template-columns: repeat(12, 1fr);
+            gap: var(--pf-v5-global--spacer--lg);
+        }
+
+        .overview-column-main { grid-column: span 8; }
+        .overview-column-side { grid-column: span 4; }
+
+        @media (max-width: 1200px) {
+            .overview-column-main, .overview-column-side { grid-column: span 12; }
+        }
+
+        .status-complete { color: var(--pf-v5-global--success-color--100); }
+        .status-mirroring { color: var(--pf-v5-global--warning-color--100); }
+        .status-failed { color: var(--pf-v5-global--danger-color--100); }
+
+        .pf-v5-c-card {
+            box-shadow: var(--pf-v5-global--BoxShadow--sm);
+        }
+
+        .pf-v5-c-card__title {
+            font-size: 1rem;
             font-weight: 700;
-        }
-        .stat-label {
-            font-size: 11px;
-            color: var(--text-muted);
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-        .stat-total .stat-value { color: var(--accent); }
-        .stat-mirrored .stat-value { color: var(--green); }
-        .stat-pending .stat-value { color: var(--yellow); }
-        .stat-failed .stat-value { color: var(--red); }
-        .progress-bar {
-            height: 6px;
-            background: var(--bg);
-            border-radius: 3px;
-            overflow: hidden;
-            display: flex;
-        }
-        .progress-segment {
-            height: 100%;
-            transition: width 0.3s ease;
-        }
-        .progress-mirrored { background: var(--green); }
-        .progress-pending { background: var(--yellow); }
-        .progress-failed { background: var(--red); }
-        .badge {
-            display: inline-block;
-            padding: 2px 8px;
-            border-radius: 12px;
-            font-size: 12px;
-            font-weight: 500;
-        }
-        .badge-ok { background: rgba(63,185,80,0.15); color: var(--green); }
-        .badge-warn { background: rgba(210,153,34,0.15); color: var(--yellow); }
-        .badge-err { background: rgba(248,81,73,0.15); color: var(--red); }
-        .resource-list {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 8px;
-            margin-top: 12px;
-        }
-        .resource-link {
-            display: inline-flex;
-            align-items: center;
-            gap: 4px;
-            padding: 6px 12px;
-            background: var(--bg);
-            border: 1px solid var(--border);
-            border-radius: var(--radius);
-            color: var(--accent);
-            text-decoration: none;
-            font-size: 13px;
-            transition: background 0.15s, border-color 0.15s;
-        }
-        .resource-link:hover {
-            background: var(--surface-hover);
-            border-color: var(--accent);
-        }
-        .resource-link .icon {
-            font-size: 14px;
-        }
-        .imageset-table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-top: 12px;
-        }
-        .imageset-table th, .imageset-table td {
-            text-align: left;
-            padding: 10px 12px;
-            border-bottom: 1px solid var(--border);
-            font-size: 14px;
-        }
-        .imageset-table th {
-            color: var(--text-muted);
-            font-weight: 500;
-            font-size: 12px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-        .imageset-table tr:hover td {
-            background: var(--surface-hover);
-        }
-        .clickable { cursor: pointer; }
-        .back-link {
-            display: inline-flex;
-            align-items: center;
-            gap: 4px;
-            color: var(--accent);
-            text-decoration: none;
-            font-size: 14px;
+            border-bottom: 1px solid var(--pf-v5-global--BorderColor--100);
+            padding-bottom: 12px;
             margin-bottom: 16px;
         }
-        .back-link:hover { text-decoration: underline; }
-        .empty-state {
-            text-align: center;
-            padding: 60px 20px;
-            color: var(--text-muted);
+
+        .progress-stepper {
+            display: flex;
+            height: 10px;
+            border-radius: 5px;
+            overflow: hidden;
+            background: var(--pf-v5-global--BackgroundColor--200);
+            margin: 12px 0;
         }
-        .empty-state .icon { font-size: 48px; margin-bottom: 16px; }
-        .empty-state p { font-size: 14px; }
-        .loading {
-            text-align: center;
-            padding: 40px;
-            color: var(--text-muted);
+        .progress-stepper-item { height: 100%; transition: width 0.3s ease; }
+        .progress-stepper-item.complete { background: var(--pf-v5-global--success-color--100); }
+        .progress-stepper-item.pending { background: var(--pf-v5-global--warning-color--100); }
+        .progress-stepper-item.failed { background: var(--pf-v5-global--danger-color--100); }
+
+        .pf-v5-c-tabs__link {
+            padding: 12px 16px;
         }
-        @keyframes spin { to { transform: rotate(360deg); } }
-        .spinner {
-            display: inline-block;
-            width: 20px;
-            height: 20px;
-            border: 2px solid var(--border);
-            border-top-color: var(--accent);
-            border-radius: 50%;
-            animation: spin 0.6s linear infinite;
+
+        .pf-v5-u-color-200 {
+            color: var(--pf-v5-global--Color--200) !important;
         }
     </style>
 </head>
 <body>
-    <header>
-        <h1><span class="logo">M</span> oc-mirror Dashboard</h1>
-        <span class="refresh-info" id="refresh-info">Auto-refresh: 30s</span>
-    </header>
-    <nav id="nav">
-        <a href="#/" class="active" data-view="dashboard">Dashboard</a>
-    </nav>
-    <main id="app">
-        <div class="loading"><span class="spinner"></span><p>Loading…</p></div>
-    </main>
+    <div class="pf-v5-c-page" id="page">
+        <header class="pf-v5-c-masthead">
+            <div class="pf-v5-c-masthead__main">
+                <a class="pf-v5-c-masthead__logo" href="#/">
+                    <img src="logo.svg" alt="oc-mirror logo">
+                    <span class="pf-v5-c-masthead__logo-text">OC-Mirror <strong>Operator</strong></span>
+                </a>
+            </div>
+            <div class="pf-v5-c-masthead__content">
+                <div class="pf-v5-l-flex pf-m-align-items-center pf-m-justify-content-flex-end" style="width: 100%">
+                    <div class="pf-v5-l-flex__item">
+                        <span class="pf-v5-u-font-size-sm" id="refresh-info">Auto-refresh: 30s</span>
+                    </div>
+                    <div class="pf-v5-l-flex__item pf-v5-u-ml-md">
+                        <i class="fas fa-question-circle"></i>
+                    </div>
+                    <div class="pf-v5-l-flex__item pf-v5-u-ml-md">
+                        <i class="fas fa-bell"></i>
+                    </div>
+                    <div class="pf-v5-l-flex__item pf-v5-u-ml-md">
+                        <i class="fas fa-th"></i>
+                    </div>
+                    <div class="pf-v5-l-flex__item pf-v5-u-ml-md">
+                        <i class="fas fa-user-circle"></i>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <div class="pf-v5-c-page__sidebar pf-m-expanded" id="sidebar">
+            <div class="pf-v5-c-page__sidebar-body">
+                <div class="perspective-switcher">
+                    <button class="pf-v5-c-button pf-m-plain pf-v5-u-font-size-sm" style="color: #fff">
+                        <i class="fas fa-cog pf-v5-u-mr-sm"></i> Administrator
+                    </button>
+                </div>
+                <nav class="pf-v5-c-nav" aria-label="Global">
+                    <ul class="pf-v5-c-nav__list">
+                        <li class="pf-v5-c-nav__item">
+                            <a href="#/" class="pf-v5-c-nav__link pf-m-current" id="nav-dashboard">
+                                <i class="fas fa-tachometer-alt pf-v5-u-mr-md"></i> Overview
+                            </a>
+                        </li>
+                        <li class="pf-v5-c-nav__item">
+                            <a href="https://github.com/mariusbertram/oc-mirror-operator" class="pf-v5-c-nav__link" target="_blank">
+                                <i class="fas fa-book pf-v5-u-mr-md"></i> Documentation
+                            </a>
+                        </li>
+                    </ul>
+                </nav>
+            </div>
+        </div>
+
+        <main class="pf-v5-c-page__main" tabindex="-1">
+            <section class="pf-v5-c-page__main-section pf-m-light" id="header-section">
+                <div class="pf-v5-l-flex pf-m-justify-content-space-between pf-m-align-items-flex-end">
+                    <div class="pf-v5-l-flex__item">
+                        <h1 class="pf-v5-c-title pf-m-2xl pf-v5-u-mb-md" id="page-title">Overview</h1>
+                    </div>
+                </div>
+                <div class="pf-v5-c-tabs" id="tabs" style="display:none">
+                    <ul class="pf-v5-c-tabs__list">
+                        <li class="pf-v5-c-tabs__item pf-m-current">
+                            <button class="pf-v5-c-tabs__link" id="tab-overview">Overview</button>
+                        </li>
+                        <li class="pf-v5-c-tabs__item">
+                            <button class="pf-v5-c-tabs__link">YAML</button>
+                        </li>
+                    </ul>
+                </div>
+            </section>
+
+            <section class="pf-v5-c-page__main-section" id="app">
+                <div class="pf-v5-l-bullseye">
+                    <div class="pf-v5-c-spinner" role="progressbar" aria-label="Loading content">
+                        <span class="pf-v5-c-spinner__clipper"></span>
+                        <span class="pf-v5-c-spinner__lead"></span>
+                        <span class="pf-v5-c-spinner__tail"></span>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
 
     <script>
     (() => {
@@ -254,10 +252,11 @@
 
         const REFRESH_INTERVAL = 30000;
         const app = document.getElementById("app");
+        const pageTitle = document.getElementById("page-title");
+        const tabs = document.getElementById("tabs");
         let refreshTimer = null;
         let currentView = { name: "dashboard" };
 
-        // --- Routing ---
         function navigate(view) {
             currentView = view;
             render();
@@ -273,177 +272,224 @@
 
         window.addEventListener("hashchange", () => navigate(parseHash()));
 
-        // --- API ---
         async function fetchJSON(url) {
             const res = await fetch(url);
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             return res.json();
         }
 
-        // --- Render ---
         async function render() {
             try {
-                switch (currentView.name) {
-                    case "dashboard":
-                        await renderDashboard();
-                        break;
-                    case "target":
-                        await renderTargetDetail(currentView.target);
-                        break;
-                    default:
-                        await renderDashboard();
+                if (currentView.name === "dashboard") {
+                    pageTitle.textContent = "Overview";
+                    tabs.style.display = "none";
+                    await renderDashboard();
+                } else {
+                    pageTitle.innerHTML = `<span class="pf-v5-u-font-size-sm pf-v5-u-color-200" style="display:block">MirrorTarget</span> ${escapeHtml(currentView.target)}`;
+                    tabs.style.display = "flex";
+                    await renderTargetDetail(currentView.target);
                 }
             } catch (err) {
-                app.innerHTML = `<div class="empty-state"><div class="icon">⚠️</div><p>Error loading data: ${escapeHtml(err.message)}</p></div>`;
+                app.innerHTML = `
+                <div class="pf-v5-c-empty-state pf-m-lg">
+                    <div class="pf-v5-c-empty-state__content">
+                        <div class="pf-v5-c-empty-state__header">
+                            <div class="pf-v5-c-empty-state__icon status-failed">
+                                <i class="fas fa-exclamation-triangle" aria-hidden="true"></i>
+                            </div>
+                            <h1 class="pf-v5-c-title pf-m-lg">Error loading data</h1>
+                        </div>
+                        <div class="pf-v5-c-empty-state__body">
+                            ${escapeHtml(err.message)}
+                        </div>
+                    </div>
+                </div>`;
             }
             scheduleRefresh();
         }
 
         async function renderDashboard() {
             const targets = await fetchJSON("/api/v1/targets");
-            updateNav("dashboard");
-
             if (!targets || targets.length === 0) {
-                app.innerHTML = `<div class="empty-state"><div class="icon">📦</div><p>No MirrorTargets found in this namespace.</p><p style="margin-top:8px;font-size:12px">Create a MirrorTarget resource to get started.</p></div>`;
+                app.innerHTML = `
+                <div class="pf-v5-c-empty-state pf-m-lg">
+                    <div class="pf-v5-c-empty-state__content">
+                        <div class="pf-v5-c-empty-state__header">
+                            <div class="pf-v5-c-empty-state__icon">
+                                <i class="fas fa-cubes" aria-hidden="true"></i>
+                            </div>
+                            <h1 class="pf-v5-c-title pf-m-lg">No MirrorTargets found</h1>
+                        </div>
+                        <div class="pf-v5-c-empty-state__body">
+                            Create a MirrorTarget resource to get started mirroring images.
+                        </div>
+                    </div>
+                </div>`;
                 return;
             }
 
-            let html = "";
+            let html = '<div class="pf-v5-l-grid pf-m-all-12-col-on-md pf-m-all-6-col-on-lg pf-m-all-4-col-on-xl pf-m-gutter">';
             for (const t of targets) {
-                const total = t.totalImages || 0;
-                const mirrored = t.mirroredImages || 0;
-                const pending = t.pendingImages || 0;
-                const failed = t.failedImages || 0;
-                const pctMirrored = total > 0 ? (mirrored / total * 100) : 0;
-                const pctPending = total > 0 ? (pending / total * 100) : 0;
-                const pctFailed = total > 0 ? (failed / total * 100) : 0;
-
-                let badge = "";
-                if (failed > 0) badge = `<span class="badge badge-err">${failed} failed</span>`;
-                else if (pending > 0) badge = `<span class="badge badge-warn">mirroring</span>`;
-                else if (mirrored > 0 && mirrored === total) badge = `<span class="badge badge-ok">complete</span>`;
-
-                html += `
-                <div class="card clickable" onclick="location.hash='#/${escapeAttr(t.name)}'">
-                    <div class="card-header">
-                        <div>
-                            <div class="card-title">${escapeHtml(t.name)}</div>
-                            <div class="card-subtitle">${escapeHtml(t.registry)}</div>
-                        </div>
-                        ${badge}
-                    </div>
-                    <div class="stats">
-                        <div class="stat stat-total"><div class="stat-value">${total}</div><div class="stat-label">Total</div></div>
-                        <div class="stat stat-mirrored"><div class="stat-value">${mirrored}</div><div class="stat-label">Mirrored</div></div>
-                        <div class="stat stat-pending"><div class="stat-value">${pending}</div><div class="stat-label">Pending</div></div>
-                        <div class="stat stat-failed"><div class="stat-value">${failed}</div><div class="stat-label">Failed</div></div>
-                    </div>
-                    <div class="progress-bar">
-                        <div class="progress-segment progress-mirrored" style="width:${pctMirrored}%"></div>
-                        <div class="progress-segment progress-pending" style="width:${pctPending}%"></div>
-                        <div class="progress-segment progress-failed" style="width:${pctFailed}%"></div>
-                    </div>
-                </div>`;
+                html += renderTargetCard(t);
             }
+            html += '</div>';
             app.innerHTML = html;
+        }
+
+        function renderTargetCard(t) {
+            const total = t.totalImages || 0;
+            const mirrored = t.mirroredImages || 0;
+            const pending = t.pendingImages || 0;
+            const failed = t.failedImages || 0;
+            const pm = total > 0 ? (mirrored / total * 100) : 0;
+
+            let statusIcon = '<i class="fas fa-check-circle status-complete"></i>';
+            if (failed > 0) statusIcon = '<i class="fas fa-exclamation-circle status-failed"></i>';
+            else if (pending > 0) statusIcon = '<i class="fas fa-sync fa-spin status-mirroring"></i>';
+
+            return `
+            <div class="pf-v5-l-grid__item">
+                <article class="pf-v5-c-card pf-m-clickable pf-m-selectable" onclick="location.hash='#/${escapeAttr(t.name)}'">
+                    <div class="pf-v5-c-card__header">
+                        <div class="pf-v5-c-card__header-main">
+                            <h2 class="pf-v5-c-title pf-m-md">${statusIcon} ${escapeHtml(t.name)}</h2>
+                            <div class="pf-v5-u-font-size-xs pf-v5-u-color-200 pf-v5-u-mt-xs">${escapeHtml(t.registry)}</div>
+                        </div>
+                    </div>
+                    <div class="pf-v5-c-card__body">
+                        <div class="pf-v5-l-flex pf-m-justify-content-space-between pf-v5-u-mb-xs">
+                            <div class="pf-v5-u-font-size-sm">Progress</div>
+                            <div class="pf-v5-u-font-size-sm">${Math.round(pm)}%</div>
+                        </div>
+                        <div class="progress-stepper">
+                            <div class="progress-stepper-item complete" style="width:${pm}%"></div>
+                            <div class="progress-stepper-item pending" style="width:${total > 0 ? (pending/total*100) : 0}%"></div>
+                            <div class="progress-stepper-item failed" style="width:${total > 0 ? (failed/total*100) : 0}%"></div>
+                        </div>
+                        <div class="pf-v5-l-flex pf-m-space-items-lg pf-v5-u-mt-md">
+                            <div><div class="pf-v5-u-font-size-xl pf-v5-u-font-weight-bold">${total}</div><div class="pf-v5-u-font-size-xs pf-v5-u-color-200">Total</div></div>
+                            <div><div class="pf-v5-u-font-size-xl pf-v5-u-font-weight-bold status-complete">${mirrored}</div><div class="pf-v5-u-font-size-xs pf-v5-u-color-200">Mirrored</div></div>
+                            <div><div class="pf-v5-u-font-size-xl pf-v5-u-font-weight-bold status-failed">${failed}</div><div class="pf-v5-u-font-size-xs pf-v5-u-color-200">Failed</div></div>
+                        </div>
+                    </div>
+                </article>
+            </div>`;
         }
 
         async function renderTargetDetail(targetName) {
             const detail = await fetchJSON(`/api/v1/targets/${encodeURIComponent(targetName)}`);
-            updateNav("target", targetName);
-
+            
             const total = detail.totalImages || 0;
             const mirrored = detail.mirroredImages || 0;
             const pending = detail.pendingImages || 0;
             const failed = detail.failedImages || 0;
-            const pctMirrored = total > 0 ? (mirrored / total * 100) : 0;
-            const pctPending = total > 0 ? (pending / total * 100) : 0;
-            const pctFailed = total > 0 ? (failed / total * 100) : 0;
+            const pm = total > 0 ? (mirrored / total * 100) : 0;
+
+            let statusIcon = '<i class="fas fa-check-circle status-complete"></i> Healthy';
+            if (failed > 0) statusIcon = '<i class="fas fa-exclamation-circle status-failed"></i> Degraded';
+            else if (pending > 0) statusIcon = '<i class="fas fa-sync fa-spin status-mirroring"></i> Mirroring';
 
             let html = `
-            <a href="#/" class="back-link">← Back to Dashboard</a>
-            <div class="card">
-                <div class="card-header">
-                    <div>
-                        <div class="card-title">${escapeHtml(detail.name)}</div>
-                        <div class="card-subtitle">${escapeHtml(detail.registry)}</div>
-                    </div>
+            <div class="overview-grid">
+                <!-- Column Main -->
+                <div class="overview-column-main">
+                    <!-- Status Card -->
+                    <section class="pf-v5-c-card pf-v5-u-mb-lg">
+                        <div class="pf-v5-c-card__title">Status</div>
+                        <div class="pf-v5-c-card__body">
+                            <div class="pf-v5-l-flex pf-m-align-items-center pf-m-space-items-2xl">
+                                <div>
+                                    <div class="pf-v5-u-font-size-sm pf-v5-u-color-200 pf-v5-u-mb-xs">Overall Condition</div>
+                                    <div class="pf-v5-u-font-size-lg pf-v5-u-font-weight-bold">${statusIcon}</div>
+                                </div>
+                                <div style="flex-grow: 1">
+                                    <div class="pf-v5-u-font-size-sm pf-v5-u-color-200 pf-v5-u-mb-xs">Sync Progress (${Math.round(pm)}%)</div>
+                                    <div class="progress-stepper">
+                                        <div class="progress-stepper-item complete" style="width:${pm}%"></div>
+                                        <div class="progress-stepper-item pending" style="width:${total > 0 ? (pending/total*100) : 0}%"></div>
+                                        <div class="progress-stepper-item failed" style="width:${total > 0 ? (failed/total*100) : 0}%"></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </section>
+
+                    <!-- ImageSets Table -->
+                    <section class="pf-v5-c-card">
+                        <div class="pf-v5-c-card__title">ImageSets</div>
+                        <div class="pf-v5-c-card__body pf-m-no-fill">
+                            <table class="pf-v5-c-table pf-m-grid-md" role="grid">
+                                <thead>
+                                    <tr role="row">
+                                        <th role="columnheader" scope="col">Name</th>
+                                        <th role="columnheader" scope="col">Status</th>
+                                        <th role="columnheader" scope="col">Total</th>
+                                        <th role="columnheader" scope="col">Mirrored</th>
+                                        <th role="columnheader" scope="col">Failed</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${detail.imageSets.map(is => {
+                                        let badge = '<span class="pf-v5-u-font-size-sm status-complete"><i class="fas fa-check-circle"></i> Complete</span>';
+                                        if (!is.found) badge = '<span class="pf-v5-u-font-size-sm status-failed"><i class="fas fa-minus-circle"></i> Missing</span>';
+                                        else if (is.failed > 0) badge = `<span class="pf-v5-u-font-size-sm status-failed"><i class="fas fa-exclamation-circle"></i> ${is.failed} Failed</span>`;
+                                        else if (is.pending > 0) badge = '<span class="pf-v5-u-font-size-sm status-mirroring"><i class="fas fa-sync fa-spin"></i> Mirroring</span>';
+
+                                        return `
+                                        <tr role="row">
+                                            <td role="cell" data-label="Name"><strong>${escapeHtml(is.name)}</strong></td>
+                                            <td role="cell" data-label="Status">${badge}</td>
+                                            <td role="cell" data-label="Total">${is.total || 0}</td>
+                                            <td role="cell" data-label="Mirrored" class="status-complete">${is.mirrored || 0}</td>
+                                            <td role="cell" data-label="Failed" class="status-failed">${is.failed || 0}</td>
+                                        </tr>`;
+                                    }).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                    </section>
                 </div>
-                <div class="stats">
-                    <div class="stat stat-total"><div class="stat-value">${total}</div><div class="stat-label">Total</div></div>
-                    <div class="stat stat-mirrored"><div class="stat-value">${mirrored}</div><div class="stat-label">Mirrored</div></div>
-                    <div class="stat stat-pending"><div class="stat-value">${pending}</div><div class="stat-label">Pending</div></div>
-                    <div class="stat stat-failed"><div class="stat-value">${failed}</div><div class="stat-label">Failed</div></div>
-                </div>
-                <div class="progress-bar">
-                    <div class="progress-segment progress-mirrored" style="width:${pctMirrored}%"></div>
-                    <div class="progress-segment progress-pending" style="width:${pctPending}%"></div>
-                    <div class="progress-segment progress-failed" style="width:${pctFailed}%"></div>
+
+                <!-- Column Side -->
+                <div class="overview-column-side">
+                    <!-- Details Card -->
+                    <section class="pf-v5-c-card pf-v5-u-mb-lg">
+                        <div class="pf-v5-c-card__title">Details</div>
+                        <div class="pf-v5-c-card__body">
+                            <div class="pf-v5-u-mb-md">
+                                <div class="pf-v5-u-font-size-xs pf-v5-u-color-200">Name</div>
+                                <div class="pf-v5-u-font-size-sm">${escapeHtml(detail.name)}</div>
+                            </div>
+                            <div class="pf-v5-u-mb-md">
+                                <div class="pf-v5-u-font-size-xs pf-v5-u-color-200">Registry</div>
+                                <div class="pf-v5-u-font-size-sm">${escapeHtml(detail.registry)}</div>
+                            </div>
+                            <div class="pf-v5-u-mb-md">
+                                <div class="pf-v5-u-font-size-xs pf-v5-u-color-200">Inventory</div>
+                                <div class="pf-v5-u-font-size-sm">${detail.imageSets.length} ImageSets</div>
+                            </div>
+                        </div>
+                    </section>
+
+                    <!-- Resources Card -->
+                    <section class="pf-v5-c-card">
+                        <div class="pf-v5-c-card__title">Resources</div>
+                        <div class="pf-v5-c-card__body">
+                            <ul class="pf-v5-c-list pf-m-plain">
+                                ${detail.resources.map(r => `
+                                    <li class="pf-v5-u-mb-sm">
+                                        <a href="${escapeAttr(r.url)}" class="pf-v5-c-button pf-m-link pf-m-inline pf-v5-u-font-size-sm" target="_blank">
+                                            <i class="fas ${r.type === 'yaml' ? 'fa-file-code' : 'fa-copy'} pf-v5-u-mr-sm"></i>
+                                            ${escapeHtml(r.name)}
+                                        </a>
+                                    </li>
+                                `).join('')}
+                            </ul>
+                        </div>
+                    </section>
                 </div>
             </div>`;
-
-            // Resources
-            if (detail.resources && detail.resources.length > 0) {
-                html += `<div class="card"><div class="card-title" style="margin-bottom:12px">Resources</div><div class="resource-list">`;
-                for (const r of detail.resources) {
-                    const icon = r.type === "yaml" ? "📄" : "📋";
-                    html += `<a href="${escapeAttr(r.url)}" class="resource-link" target="_blank"><span class="icon">${icon}</span>${escapeHtml(r.name)}</a>`;
-                }
-                html += `</div></div>`;
-            }
-
-            // ImageSets table
-            const sets = detail.imageSets || [];
-            if (sets.length > 0) {
-                html += `<div class="card"><div class="card-title" style="margin-bottom:12px">ImageSets</div>
-                <table class="imageset-table">
-                    <thead><tr><th>Name</th><th>Status</th><th>Total</th><th>Mirrored</th><th>Pending</th><th>Failed</th><th>Progress</th></tr></thead>
-                    <tbody>`;
-                for (const is of sets) {
-                    const isTotal = is.total || 0;
-                    const isMirrored = is.mirrored || 0;
-                    const isPending = is.pending || 0;
-                    const isFailed = is.failed || 0;
-                    const pm = isTotal > 0 ? (isMirrored / isTotal * 100) : 0;
-                    const pp = isTotal > 0 ? (isPending / isTotal * 100) : 0;
-                    const pf = isTotal > 0 ? (isFailed / isTotal * 100) : 0;
-
-                    let statusBadge = "";
-                    if (!is.found) statusBadge = `<span class="badge badge-err">not found</span>`;
-                    else if (isFailed > 0) statusBadge = `<span class="badge badge-err">${isFailed} failed</span>`;
-                    else if (isPending > 0) statusBadge = `<span class="badge badge-warn">mirroring</span>`;
-                    else if (isMirrored > 0 && isMirrored === isTotal) statusBadge = `<span class="badge badge-ok">complete</span>`;
-
-                    html += `<tr>
-                        <td><strong>${escapeHtml(is.name)}</strong></td>
-                        <td>${statusBadge}</td>
-                        <td>${isTotal}</td>
-                        <td>${isMirrored}</td>
-                        <td>${isPending}</td>
-                        <td>${isFailed}</td>
-                        <td style="min-width:120px"><div class="progress-bar">
-                            <div class="progress-segment progress-mirrored" style="width:${pm}%"></div>
-                            <div class="progress-segment progress-pending" style="width:${pp}%"></div>
-                            <div class="progress-segment progress-failed" style="width:${pf}%"></div>
-                        </div></td>
-                    </tr>`;
-                }
-                html += `</tbody></table></div>`;
-            } else {
-                html += `<div class="card"><div class="empty-state"><p>No ImageSets configured.</p></div></div>`;
-            }
-
             app.innerHTML = html;
-        }
-
-        // --- Helpers ---
-        function updateNav(view, targetName) {
-            const nav = document.getElementById("nav");
-            let links = `<a href="#/" class="${view === "dashboard" ? "active" : ""}" data-view="dashboard">Dashboard</a>`;
-            if (view === "target" && targetName) {
-                links += `<a href="#/${escapeAttr(targetName)}" class="active">${escapeHtml(targetName)}</a>`;
-            }
-            nav.innerHTML = links;
         }
 
         function scheduleRefresh() {
@@ -461,7 +507,6 @@
             return str.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/'/g, "&#39;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
         }
 
-        // --- Init ---
         currentView = parseHash();
         render();
     })();
