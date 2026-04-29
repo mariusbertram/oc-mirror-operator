@@ -17,7 +17,10 @@ import (
 	"strings"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -27,6 +30,7 @@ import (
 	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/imagestate"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/release"
+	pkgrelease "github.com/mariusbertram/oc-mirror-operator/pkg/release"
 )
 
 // operatorCacheVersion is bumped whenever the operator resolution or filtering
@@ -204,12 +208,91 @@ func (m *MirrorManager) resolveReleaseSection( //nolint:unparam
 		}
 		mergeIntoStateWithSig(newState, images, imagestate.OriginRelease, sig, originRef, currentState)
 
+		// Download and persist GPG signatures for the resolved release nodes.
+		// Failures are best-effort — they do not block the main mirroring flow.
+		m.downloadSignaturesForNodes(ctx, payloadNodes)
+
 		if annotations[annoKey] != freshSig {
 			annotations[annoKey] = freshSig
 			annoChanged = true
 		}
 	}
 	return annoChanged, nil
+}
+
+// signatureConfigMapName returns the name of the ConfigMap that stores release
+// GPG signatures for this MirrorTarget.
+func (m *MirrorManager) signatureConfigMapName() string {
+	return m.TargetName + "-signatures"
+}
+
+// downloadSignaturesForNodes downloads the GPG signature for each release node
+// and persists them in the <mt>-signatures ConfigMap (BinaryData: sha256-<hash>
+// → raw GPG bytes). Missing or failed signatures are logged and skipped.
+func (m *MirrorManager) downloadSignaturesForNodes(ctx context.Context, nodes []release.Node) {
+	if len(nodes) == 0 {
+		return
+	}
+	sigClient := pkgrelease.NewSignatureClient(nil)
+
+	// Load existing signatures so we can skip already-downloaded ones.
+	cmName := m.signatureConfigMapName()
+	existing := &corev1.ConfigMap{}
+	_ = m.Client.Get(ctx, types.NamespacedName{Namespace: m.Namespace, Name: cmName}, existing)
+	if existing.BinaryData == nil {
+		existing.BinaryData = map[string][]byte{}
+	}
+
+	newSigs := map[string][]byte{}
+	for _, node := range nodes {
+		digest := extractDigest(node.Image)
+		if digest == "" {
+			continue
+		}
+		key := strings.ReplaceAll(digest, ":", "-")
+		if _, already := existing.BinaryData[key]; already {
+			continue
+		}
+		data, err := sigClient.DownloadSignature(ctx, digest)
+		if err != nil {
+			fmt.Printf("Warning: download signature for %s: %v\n", digest, err)
+			continue
+		}
+		newSigs[key] = data
+	}
+
+	if len(newSigs) == 0 {
+		return
+	}
+
+	// Merge new signatures into the ConfigMap.
+	for k, v := range newSigs {
+		existing.BinaryData[k] = v
+	}
+
+	if existing.Name == "" {
+		existing.Name = cmName
+		existing.Namespace = m.Namespace
+		existing.ObjectMeta = metav1.ObjectMeta{Name: cmName, Namespace: m.Namespace}
+		if err := m.Client.Create(ctx, existing); err != nil && !apierrors.IsAlreadyExists(err) {
+			fmt.Printf("Warning: create signatures ConfigMap: %v\n", err)
+		}
+		return
+	}
+	if err := m.Client.Update(ctx, existing); err != nil {
+		fmt.Printf("Warning: update signatures ConfigMap: %v\n", err)
+	}
+}
+
+// extractDigest extracts the sha256 digest from an image reference of the form
+// "registry/repo@sha256:<hex>" or "registry/repo:tag@sha256:<hex>".
+// Returns "" when no digest is found.
+func extractDigest(imageRef string) string {
+	idx := strings.Index(imageRef, "@sha256:")
+	if idx < 0 {
+		return ""
+	}
+	return imageRef[idx+1:] // "sha256:<hex>"
 }
 
 func (m *MirrorManager) resolveOperatorSection( //nolint:unparam
@@ -551,4 +634,152 @@ func hasStaleCacheAnnotations(is *mirrorv1alpha1.ImageSet) bool {
 		}
 	}
 	return false
+}
+
+// filterByImageSet returns a per-IS view of the consolidated state. Each entry
+// in the result has its IS-specific Ref's Origin/EntrySig/OriginRef promoted to
+// the flat fields so that resolveImageSet (which works with flat fields) sees the
+// correct per-IS metadata. The Refs slice is not included in the returned copies.
+//
+// Legacy entries (no Refs) are included unchanged — they belonged to a single IS
+// before the migration and are treated as belonging to all ISes.
+func filterByImageSet(state imagestate.ImageState, isName string) imagestate.ImageState {
+	result := make(imagestate.ImageState, len(state)/2)
+	for dest, entry := range state {
+		if entry == nil {
+			continue
+		}
+		if len(entry.Refs) == 0 {
+			// Legacy entry: include as-is (flat Origin/EntrySig/OriginRef already set).
+			cp := *entry
+			result[dest] = &cp
+			continue
+		}
+		var matchRef *imagestate.ImageRef
+		for i := range entry.Refs {
+			if entry.Refs[i].ImageSet == isName {
+				matchRef = &entry.Refs[i]
+				break
+			}
+		}
+		if matchRef == nil {
+			continue
+		}
+		// Promote IS-specific Ref fields to flat fields for resolveImageSet.
+		cp := *entry
+		cp.Origin = matchRef.Origin
+		cp.EntrySig = matchRef.EntrySig
+		cp.OriginRef = matchRef.OriginRef
+		cp.Refs = nil
+		result[dest] = &cp
+	}
+	return result
+}
+
+// mergeResolvedIntoConsolidated integrates a freshly-resolved per-IS state into
+// the consolidated MirrorTarget state. It:
+//   - Adds or updates the IS Ref on each destination present in perISState.
+//   - Removes the IS Ref from destinations no longer in perISState.
+//   - Deletes entries from consolidated when all Refs are gone (entry is orphaned).
+//
+// Global state fields (State, RetryCount, LastError, PermanentlyFailed) are
+// preserved for existing entries — only the IS Ref metadata is updated.
+// Source is updated if it changed.
+func mergeResolvedIntoConsolidated(consolidated imagestate.ImageState, perISState imagestate.ImageState, isName string) {
+	// Step 1: Upsert entries that exist in the new per-IS state.
+	for dest, newEntry := range perISState {
+		if newEntry == nil {
+			continue
+		}
+		ref := imagestate.ImageRef{
+			ImageSet:  isName,
+			Origin:    newEntry.Origin,
+			EntrySig:  newEntry.EntrySig,
+			OriginRef: newEntry.OriginRef,
+		}
+		if existing, ok := consolidated[dest]; ok {
+			existing.AddRef(ref)
+			if existing.Source != newEntry.Source {
+				existing.Source = newEntry.Source
+			}
+		} else {
+			e := *newEntry
+			e.Refs = []imagestate.ImageRef{ref}
+			// Clear flat fields — they live in Refs now.
+			e.Origin = ""
+			e.EntrySig = ""
+			e.OriginRef = ""
+			consolidated[dest] = &e
+		}
+	}
+
+	// Step 2: Remove stale IS refs for destinations no longer in perISState.
+	for dest, existing := range consolidated {
+		if _, inNew := perISState[dest]; inNew {
+			continue
+		}
+		if existing.HasImageSet(isName) {
+			orphaned := existing.RemoveImageSet(isName)
+			if orphaned {
+				delete(consolidated, dest)
+			}
+		}
+	}
+}
+
+// loadConsolidatedState initialises m.imageState from the per-MirrorTarget
+// ConfigMap. If the ConfigMap is missing or empty it falls back to importing
+// the legacy per-IS ConfigMaps so that existing installations survive the
+// upgrade without data loss (Phase 3 migration).
+// Caller must hold m.mu.
+func (m *MirrorManager) loadConsolidatedState(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget, imageSets *mirrorv1alpha1.ImageSetList) error {
+	state, err := imagestate.LoadForTarget(ctx, m.Client, m.Namespace, m.TargetName)
+	if err != nil {
+		return fmt.Errorf("load consolidated state: %w", err)
+	}
+	if len(state) > 0 {
+		m.imageState = state
+		fmt.Printf("Loaded %d entries from consolidated state ConfigMap\n", len(state))
+		return nil
+	}
+
+	// Consolidated CM is empty — migrate from legacy per-IS CMs.
+	migrated := make(imagestate.ImageState)
+	for _, is := range imageSets.Items {
+		if !containsString(mt.Spec.ImageSets, is.Name) {
+			continue
+		}
+		isState, loadErr := imagestate.Load(ctx, m.Client, m.Namespace, is.Name)
+		if loadErr != nil {
+			fmt.Printf("Warning: migration: failed to load state for %s: %v\n", is.Name, loadErr)
+			continue
+		}
+		for dest, entry := range isState {
+			if entry == nil {
+				continue
+			}
+			ref := imagestate.ImageRef{
+				ImageSet:  is.Name,
+				Origin:    entry.Origin,
+				EntrySig:  entry.EntrySig,
+				OriginRef: entry.OriginRef,
+			}
+			if existing, ok := migrated[dest]; ok {
+				existing.AddRef(ref)
+			} else {
+				e := *entry
+				e.Refs = []imagestate.ImageRef{ref}
+				e.Origin = ""
+				e.EntrySig = ""
+				e.OriginRef = ""
+				migrated[dest] = &e
+			}
+		}
+	}
+	m.imageState = migrated
+	if len(migrated) > 0 {
+		fmt.Printf("Migrated %d entries from per-IS ConfigMaps to consolidated state\n", len(migrated))
+		m.stateDirty = true
+	}
+	return nil
 }

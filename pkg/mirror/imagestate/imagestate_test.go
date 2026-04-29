@@ -401,3 +401,151 @@ func TestSaveRaw_UpdatesExisting(t *testing.T) {
 		t.Fatalf("unexpected state: %v", decoded)
 	}
 }
+
+// --- ImageRef helper methods ---
+
+func TestImageEntry_HasImageSet(t *testing.T) {
+	e := &ImageEntry{
+		Refs: []ImageRef{
+			{ImageSet: "is-a"},
+			{ImageSet: "is-b"},
+		},
+	}
+	if !e.HasImageSet("is-a") {
+		t.Fatal("expected HasImageSet(is-a) = true")
+	}
+	if !e.HasImageSet("is-b") {
+		t.Fatal("expected HasImageSet(is-b) = true")
+	}
+	if e.HasImageSet("is-c") {
+		t.Fatal("expected HasImageSet(is-c) = false")
+	}
+}
+
+func TestImageEntry_AddRef_Deduplicates(t *testing.T) {
+	e := &ImageEntry{}
+	e.AddRef(ImageRef{ImageSet: "is-a", Origin: OriginRelease})
+	e.AddRef(ImageRef{ImageSet: "is-b", Origin: OriginOperator})
+	if len(e.Refs) != 2 {
+		t.Fatalf("expected 2 refs, got %d", len(e.Refs))
+	}
+	// Update is-a ref
+	e.AddRef(ImageRef{ImageSet: "is-a", Origin: OriginAdditional})
+	if len(e.Refs) != 2 {
+		t.Fatalf("expected 2 refs after dedup, got %d", len(e.Refs))
+	}
+	var ref *ImageRef
+	for i := range e.Refs {
+		if e.Refs[i].ImageSet == "is-a" {
+			ref = &e.Refs[i]
+		}
+	}
+	if ref == nil || ref.Origin != OriginAdditional {
+		t.Fatal("AddRef should update existing ref")
+	}
+}
+
+func TestImageEntry_RemoveImageSet(t *testing.T) {
+	e := &ImageEntry{
+		Refs: []ImageRef{
+			{ImageSet: "is-a"},
+			{ImageSet: "is-b"},
+		},
+	}
+	orphaned := e.RemoveImageSet("is-a")
+	if orphaned {
+		t.Fatal("expected orphaned=false when one ref remains")
+	}
+	if len(e.Refs) != 1 || e.Refs[0].ImageSet != "is-b" {
+		t.Fatalf("unexpected refs: %v", e.Refs)
+	}
+	orphaned = e.RemoveImageSet("is-b")
+	if !orphaned {
+		t.Fatal("expected orphaned=true when no refs remain")
+	}
+	if len(e.Refs) != 0 {
+		t.Fatal("expected empty refs after removing last ref")
+	}
+}
+
+func TestImageEntry_ImageSetNames(t *testing.T) {
+	e := &ImageEntry{
+		Refs: []ImageRef{
+			{ImageSet: "is-a"},
+			{ImageSet: "is-b"},
+		},
+	}
+	names := e.ImageSetNames()
+	if len(names) != 2 {
+		t.Fatalf("expected 2 names, got %d", len(names))
+	}
+}
+
+// --- ConfigMapNameForTarget ---
+
+func TestConfigMapNameForTarget(t *testing.T) {
+	if got := ConfigMapNameForTarget("my-mt"); got != "my-mt-images" {
+		t.Fatalf("expected my-mt-images, got %s", got)
+	}
+}
+
+// --- CountsForImageSet ---
+
+func TestCountsForImageSet_FiltersCorrectly(t *testing.T) {
+	state := ImageState{
+		"img1": {
+			Source: "s1", State: testStateMirrored,
+			Refs: []ImageRef{{ImageSet: "is-a"}},
+		},
+		"img2": {
+			Source: "s2", State: "Pending",
+			Refs: []ImageRef{{ImageSet: "is-b"}},
+		},
+		"img3": {
+			Source: "s3", State: "Failed", PermanentlyFailed: true,
+			Refs: []ImageRef{{ImageSet: "is-a"}, {ImageSet: "is-b"}},
+		},
+	}
+	total, mirrored, pending, failed := CountsForImageSet(state, "is-a")
+	if total != 2 {
+		t.Fatalf("expected total=2, got %d", total)
+	}
+	if mirrored != 1 {
+		t.Fatalf("expected mirrored=1, got %d", mirrored)
+	}
+	if pending != 0 {
+		t.Fatalf("expected pending=0, got %d", pending)
+	}
+	if failed != 1 {
+		t.Fatalf("expected failed=1, got %d", failed)
+	}
+}
+
+func TestCountsForImageSet_LegacyNoRefs(t *testing.T) {
+	// Legacy entries without Refs are included for all ISes
+	state := ImageState{
+		"img1": {Source: "s1", State: testStateMirrored},
+		"img2": {Source: "s2", State: "Pending"},
+	}
+	total, mirrored, _, _ := CountsForImageSet(state, "any-is")
+	if total != 2 || mirrored != 1 {
+		t.Fatalf("expected total=2 mirrored=1, got total=%d mirrored=%d", total, mirrored)
+	}
+}
+
+// --- SaveForTarget / LoadForTarget ---
+
+func TestSaveForTarget_CreatesAndLoads(t *testing.T) {
+	c := newFakeClient().Build()
+	state := ImageState{"dest": {Source: "src", State: "Pending"}}
+	if err := SaveForTarget(context.Background(), c, "ns", "my-mt", state); err != nil {
+		t.Fatalf("SaveForTarget error: %v", err)
+	}
+	loaded, err := LoadForTarget(context.Background(), c, "ns", "my-mt")
+	if err != nil {
+		t.Fatalf("LoadForTarget error: %v", err)
+	}
+	if len(loaded) != 1 || loaded["dest"].State != "Pending" {
+		t.Fatalf("unexpected loaded state: %v", loaded)
+	}
+}
