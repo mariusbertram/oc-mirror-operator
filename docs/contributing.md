@@ -47,9 +47,8 @@ make controller-gen kustomize
 ```
 .
 ├── api/v1alpha1/          # CRD types (MirrorTarget, ImageSet)
-├── cmd/                   # main.go entry points
-│   ├── operator/          # operator main
-│   └── worker/            # worker pod main
+├── cmd/                   # main.go entry points (operator, manager, worker, resource-api, cleanup)
+│   └── catalog-builder/   # catalog-builder binary
 ├── config/                # Kustomize config (CRDs, RBAC, manifests)
 │   ├── crd/               # Generated CRD manifests
 │   ├── rbac/              # RBAC for the operator itself
@@ -62,11 +61,13 @@ make controller-gen kustomize
 ├── pkg/
 │   ├── mirror/
 │   │   ├── manager/       # Manager pod orchestration logic
-│   │   ├── worker/        # Worker pod mirroring logic
 │   │   ├── catalog/       # OLM catalog filtering and FBC building
 │   │   ├── client/        # OCI registry client (blob upload, image copy)
-│   │   ├── collector/     # Upstream content resolution (releases, catalogs)
-│   │   └── resourceserver/# HTTP resource server (IDMS, ITMS, CatalogSource)
+│   │   ├── imagestate/    # Gzip-compressed ConfigMap state management
+│   │   ├── resources/     # IDMS/ITMS/CatalogSource generation helpers
+│   │   └── release/       # Cincinnati graph resolution, version ranges
+│   ├── resourceapi/       # Standalone Resource API server (REST + Web UI)
+│   │   └── ui/            # Embedded Web UI Dashboard (HTML/CSS/JS)
 │   └── ...
 ├── test/e2e/              # End-to-end tests (Ginkgo)
 ├── hack/                  # Helper scripts
@@ -174,10 +175,10 @@ There are two test categories:
 - **In-memory catalog tests** — pure Go, no cluster needed (`make test` includes
   these via build tag).
 - **Cluster tests** — require a KinD cluster with the operator deployed.
-  - *Regular e2e* (`cluster` label): mirror lifecycle, catalog builds, resource
-    server tests.
+  - *Regular e2e* (`cluster` label): mirror lifecycle, Resource API Deployment/Service
+    verification, resource ConfigMap persistence, catalog builds.
   - *Catalog-cluster tests* (`catalog-cluster` label): require a reachable
-    upstream catalog image.
+    upstream catalog image, verify catalog resources in ConfigMaps.
   - *OLM upgrade tests* (`olm-upgrade` label): validate the full OLM upgrade
     path. Run as Phase 2 of the merged CI e2e job.
 

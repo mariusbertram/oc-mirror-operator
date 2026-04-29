@@ -10,231 +10,226 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-package controller
+package utils
 import (
-        "context"
+        "bufio"
+        "bytes"
+        "fmt"
         "os"
+        "os/exec"
+        "strings"
         "time"
-        . "github.com/onsi/ginkgo/v2"
-        . "github.com/onsi/gomega"
-        appsv1 "k8s.io/api/apps/v1"
-        corev1 "k8s.io/api/core/v1"
-        "k8s.io/apimachinery/pkg/api/errors"
-        metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-        "k8s.io/apimachinery/pkg/types"
-        "sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-        "sigs.k8s.io/controller-runtime/pkg/reconcile"
-        mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
+        . "github.com/onsi/ginkgo/v2" // nolint:revive,staticcheck
 )
-var _ = Describe("MirrorTarget Controller", func() {
-        const (
-                timeout  = 30 * time.Second
-                interval = 250 * time.Millisecond
-        )
-        Context("Happy path", func() {
-                const resourceName = "mt-happy"
-                ctx := context.Background()
-                namespacedName := types.NamespacedName{Name: resourceName, Namespace: "default"}
-                childName := types.NamespacedName{Name: resourceName + "-manager", Namespace: "default"}
-                BeforeEach(func() {
-                        Expect(os.Setenv("OPERATOR_IMAGE", "test-controller:latest")).To(Succeed())
-                        By("creating the MirrorTarget resource")
-                        mt := &mirrorv1alpha1.MirrorTarget{
-                                ObjectMeta: metav1.ObjectMeta{
-                                        Name:      resourceName,
-                                        Namespace: "default",
-                                },
-                                Spec: mirrorv1alpha1.MirrorTargetSpec{
-                                        Registry: "registry.example.com/mirror",
-                                },
+const (
+        prometheusOperatorVersion = "v0.77.1"
+        prometheusOperatorURL     = "https://github.com/prometheus-operator/prometheus-operator/" +
+                "releases/download/%s/bundle.yaml"
+        certmanagerVersion = "v1.16.3"
+        certmanagerURLTmpl = "https://github.com/cert-manager/cert-manager/releases/download/%s/cert-manager.yaml"
+)
+func warnError(err error) {
+        _, _ = fmt.Fprintf(GinkgoWriter, "warning: %v\n", err)
+}
+// Run executes the provided command within this context
+func Run(cmd *exec.Cmd) (string, error) {
+        dir, _ := GetProjectDir()
+        cmd.Dir = dir
+        if err := os.Chdir(cmd.Dir); err != nil {
+                _, _ = fmt.Fprintf(GinkgoWriter, "chdir dir: %q\n", err)
+        }
+        cmd.Env = append(os.Environ(), "GO111MODULE=on")
+        command := strings.Join(cmd.Args, " ")
+        _, _ = fmt.Fprintf(GinkgoWriter, "running: %q\n", command)
+        output, err := cmd.CombinedOutput()
+        if err != nil {
+                return string(output), fmt.Errorf("%q failed with error %q: %w", command, string(output), err)
+        }
+        return string(output), nil
+}
+// InstallPrometheusOperator installs the prometheus Operator to be used to export the enabled metrics.
+func InstallPrometheusOperator() error {
+        url := fmt.Sprintf(prometheusOperatorURL, prometheusOperatorVersion)
+        cmd := exec.Command("kubectl", "create", "-f", url)
+        _, err := Run(cmd)
+        return err
+}
+// UninstallPrometheusOperator uninstalls the prometheus
+func UninstallPrometheusOperator() {
+        url := fmt.Sprintf(prometheusOperatorURL, prometheusOperatorVersion)
+        cmd := exec.Command("kubectl", "delete", "-f", url)
+        if _, err := Run(cmd); err != nil {
+                warnError(err)
+        }
+}
+// IsPrometheusCRDsInstalled checks if any Prometheus CRDs are installed
+// by verifying the existence of key CRDs related to Prometheus.
+func IsPrometheusCRDsInstalled() bool {
+        // List of common Prometheus CRDs
+        prometheusCRDs := []string{
+                "prometheuses.monitoring.coreos.com",
+                "prometheusrules.monitoring.coreos.com",
+                "prometheusagents.monitoring.coreos.com",
+        }
+        cmd := exec.Command("kubectl", "get", "crds", "-o", "custom-columns=NAME:.metadata.name")
+        output, err := Run(cmd)
+        if err != nil {
+                return false
+        }
+        crdList := GetNonEmptyLines(output)
+        for _, crd := range prometheusCRDs {
+                for _, line := range crdList {
+                        if strings.Contains(line, crd) {
+                                return true
                         }
-                        Expect(k8sClient.Create(ctx, mt)).To(Succeed())
-                })
-                AfterEach(func() {
-                        By("cleaning up child Deployment and Service")
-                        deployment := &appsv1.Deployment{}
-                        if err := k8sClient.Get(ctx, childName, deployment); err == nil {
-                                _ = k8sClient.Delete(ctx, deployment)
-                        }
-                        service := &corev1.Service{}
-                        if err := k8sClient.Get(ctx, childName, service); err == nil {
-                                _ = k8sClient.Delete(ctx, service)
-                        }
-                        By("removing finalizer and deleting the MirrorTarget")
-                        mt := &mirrorv1alpha1.MirrorTarget{}
-                        if err := k8sClient.Get(ctx, namespacedName, mt); err == nil {
-                                if controllerutil.ContainsFinalizer(mt, mirrorTargetFinalizer) {
-                                        controllerutil.RemoveFinalizer(mt, mirrorTargetFinalizer)
-                                        _ = k8sClient.Update(ctx, mt)
-                                }
-                                _ = k8sClient.Delete(ctx, mt)
-                        }
-                })
-                It("should create a Deployment and Service with correct labels and owner reference", func() {
-                        reconciler := &MirrorTargetReconciler{
-                                Client: k8sClient,
-                                Scheme: k8sClient.Scheme(),
-                        }
-                        By("first reconcile: adds the finalizer")
-                        _, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
-                        Expect(err).NotTo(HaveOccurred())
-                        By("second reconcile: creates Deployment and Service")
-                        _, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
-                        Expect(err).NotTo(HaveOccurred())
-                        By("verifying the Deployment exists with correct labels")
-                        deployment := &appsv1.Deployment{}
-                        Eventually(func() error {
-                                return k8sClient.Get(ctx, childName, deployment)
-                        }, timeout, interval).Should(Succeed())
-                        Expect(deployment.Labels).To(HaveKeyWithValue("app", "oc-mirror-manager"))
-                        Expect(deployment.Labels).To(HaveKeyWithValue("mirrortarget", resourceName))
-                        By("verifying the Deployment has an ownerReference to the MirrorTarget")
-                        Expect(deployment.OwnerReferences).To(HaveLen(1))
-                        Expect(deployment.OwnerReferences[0].Name).To(Equal(resourceName))
-                        Expect(deployment.OwnerReferences[0].Kind).To(Equal("MirrorTarget"))
-                        By("verifying the Service exists")
-                        service := &corev1.Service{}
-                        Eventually(func() error {
-                                return k8sClient.Get(ctx, childName, service)
-                        }, timeout, interval).Should(Succeed())
-                        By("verifying the MirrorTarget has Ready=True condition")
-                        mt := &mirrorv1alpha1.MirrorTarget{}
-                        Eventually(func() bool {
-                                if err := k8sClient.Get(ctx, namespacedName, mt); err != nil {
-                                        return false
-                                }
-                                for _, c := range mt.Status.Conditions {
-                                        if c.Type == "Ready" && c.Status == metav1.ConditionTrue {
-                                                return true
-                                        }
-                                }
-                                return false
-                        }, timeout, interval).Should(BeTrue())
-                })
-        })
-        Context("Deletion", func() {
-                const resourceName = "mt-delete"
-                ctx := context.Background()
-                namespacedName := types.NamespacedName{Name: resourceName, Namespace: "default"}
-                BeforeEach(func() {
-                        Expect(os.Setenv("OPERATOR_IMAGE", "test-controller:latest")).To(Succeed())
-                        By("creating the MirrorTarget resource")
-                        mt := &mirrorv1alpha1.MirrorTarget{
-                                ObjectMeta: metav1.ObjectMeta{
-                                        Name:      resourceName,
-                                        Namespace: "default",
-                                },
-                                Spec: mirrorv1alpha1.MirrorTargetSpec{
-                                        Registry: "registry.example.com/mirror",
-                                },
-                        }
-                        Expect(k8sClient.Create(ctx, mt)).To(Succeed())
-                })
-                It("should delete worker pods and remove finalizer on deletion", func() {
-                        reconciler := &MirrorTargetReconciler{
-                                Client: k8sClient,
-                                Scheme: k8sClient.Scheme(),
-                        }
-                        By("first reconcile: adds the finalizer")
-                        _, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
-                        Expect(err).NotTo(HaveOccurred())
-                        mt := &mirrorv1alpha1.MirrorTarget{}
-                        Expect(k8sClient.Get(ctx, namespacedName, mt)).To(Succeed())
-                        Expect(controllerutil.ContainsFinalizer(mt, mirrorTargetFinalizer)).To(BeTrue())
-                        By("creating a fake worker pod labelled with the MirrorTarget name")
-                        podName := types.NamespacedName{Name: "worker-pod-" + resourceName, Namespace: "default"}
-                        pod := &corev1.Pod{
-                                ObjectMeta: metav1.ObjectMeta{
-                                        Name:      podName.Name,
-                                        Namespace: "default",
-                                        Labels:    map[string]string{"mirrortarget": resourceName},
-                                },
-                                Spec: corev1.PodSpec{
-                                        Containers: []corev1.Container{
-                                                {Name: "worker", Image: "busybox"},
-                                        },
-                                },
-                        }
-                        Expect(k8sClient.Create(ctx, pod)).To(Succeed())
-                        By("deleting the MirrorTarget (sets DeletionTimestamp)")
-                        Expect(k8sClient.Delete(ctx, mt)).To(Succeed())
-                        By("first reconcile: deletes the worker pod and requeues")
-                        _, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
-                        Expect(err).NotTo(HaveOccurred())
-                        By("verifying the worker pod was deleted")
-                        Eventually(func() bool {
-                                p := &corev1.Pod{}
-                                return errors.IsNotFound(k8sClient.Get(ctx, podName, p))
-                        }, timeout, interval).Should(BeTrue())
-                        By("second reconcile (after pods are gone): removes the finalizer")
-                        Eventually(func() bool {
-                                _, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
-                                if err != nil {
-                                        return false
-                                }
-                                current := &mirrorv1alpha1.MirrorTarget{}
-                                if err := k8sClient.Get(ctx, namespacedName, current); errors.IsNotFound(err) {
-                                        return true
-                                }
-                                return !controllerutil.ContainsFinalizer(current, mirrorTargetFinalizer)
-                        }, timeout, interval).Should(BeTrue())
-                })
-        })
-        Describe("proxyEnvVars", func() {
-                getEnvVal := func(envs []corev1.EnvVar, name string) string {
-                        for _, e := range envs {
-                                if e.Name == name {
-                                        return e.Value
-                                }
-                        }
-                        return ""
                 }
-                It("returns nil when cfg is nil", func() {
-                        Expect(proxyEnvVars(nil)).To(BeNil())
-                })
-                It("injects HTTP_PROXY and auto-fills NO_PROXY with cluster defaults", func() {
-                        env := proxyEnvVars(&mirrorv1alpha1.ProxyConfig{HTTPProxy: "http://proxy:3128"})
-                        Expect(getEnvVal(env, "HTTP_PROXY")).To(Equal("http://proxy:3128"))
-                        noProxy := getEnvVal(env, "NO_PROXY")
-                        Expect(noProxy).To(ContainSubstring("localhost"))
-                        Expect(noProxy).To(ContainSubstring("127.0.0.1"))
-                        Expect(noProxy).To(ContainSubstring(".svc"))
-                        Expect(noProxy).To(ContainSubstring(".svc.cluster.local"))
-                })
-                It("appends user NoProxy after cluster defaults", func() {
-                        env := proxyEnvVars(&mirrorv1alpha1.ProxyConfig{
-                                HTTPSProxy: "https://proxy:3128",
-                                NoProxy:    "custom.domain,10.0.0.0/8",
-                        })
-                        noProxy := getEnvVal(env, "NO_PROXY")
-                        Expect(noProxy).To(HavePrefix("localhost,127.0.0.1,.svc,.svc.cluster.local,"))
-                        Expect(noProxy).To(ContainSubstring("custom.domain"))
-                        Expect(noProxy).To(ContainSubstring("10.0.0.0/8"))
-                })
-                It("does NOT inject NO_PROXY defaults when no proxy is set", func() {
-                        env := proxyEnvVars(&mirrorv1alpha1.ProxyConfig{NoProxy: "custom.domain"})
-                        noProxy := getEnvVal(env, "NO_PROXY")
-                        Expect(noProxy).To(Equal("custom.domain"))
-                })
-                It("sets both upper and lower case env var names", func() {
-                        env := proxyEnvVars(&mirrorv1alpha1.ProxyConfig{
-                                HTTPProxy:  "http://proxy:3128",
-                                HTTPSProxy: "https://proxy:3128",
-                        })
-                        Expect(getEnvVal(env, "HTTP_PROXY")).NotTo(BeEmpty())
-                        Expect(getEnvVal(env, "http_proxy")).NotTo(BeEmpty())
-                        Expect(getEnvVal(env, "HTTPS_PROXY")).NotTo(BeEmpty())
-                        Expect(getEnvVal(env, "https_proxy")).NotTo(BeEmpty())
-                        Expect(getEnvVal(env, "NO_PROXY")).NotTo(BeEmpty())
-                        Expect(getEnvVal(env, "no_proxy")).NotTo(BeEmpty())
-                })
-                It("overrides KUBERNETES_SERVICE_HOST to FQDN when proxy is set", func() {
-                        env := proxyEnvVars(&mirrorv1alpha1.ProxyConfig{HTTPProxy: "http://proxy:3128"})
-                        Expect(getEnvVal(env, "KUBERNETES_SERVICE_HOST")).To(Equal("kubernetes.default.svc.cluster.local"))
-                })
-                It("does NOT override KUBERNETES_SERVICE_HOST when only NoProxy is set", func() {
-                        env := proxyEnvVars(&mirrorv1alpha1.ProxyConfig{NoProxy: "custom.domain"})
-                        Expect(getEnvVal(env, "KUBERNETES_SERVICE_HOST")).To(BeEmpty())
-                })
-        })
-})
+        }
+        return false
+}
+// UninstallCertManager uninstalls the cert manager
+func UninstallCertManager() {
+        url := fmt.Sprintf(certmanagerURLTmpl, certmanagerVersion)
+        cmd := exec.Command("kubectl", "delete", "-f", url)
+        if _, err := Run(cmd); err != nil {
+                warnError(err)
+        }
+}
+// InstallCertManager installs the cert manager bundle.
+func InstallCertManager() error {
+        url := fmt.Sprintf(certmanagerURLTmpl, certmanagerVersion)
+        cmd := exec.Command("kubectl", "apply", "-f", url)
+        if _, err := Run(cmd); err != nil {
+                return err
+        }
+        // Wait for cert-manager-webhook to be ready, which can take time if cert-manager
+        // was re-installed after uninstalling on a cluster.
+        cmd = exec.Command("kubectl", "wait", "deployment.apps/cert-manager-webhook",
+                "--for", "condition=Available",
+                "--namespace", "cert-manager",
+                "--timeout", "5m",
+        )
+        _, err := Run(cmd)
+        return err
+}
+// IsCertManagerCRDsInstalled checks if any Cert Manager CRDs are installed
+// by verifying the existence of key CRDs related to Cert Manager.
+func IsCertManagerCRDsInstalled() bool {
+        // List of common Cert Manager CRDs
+        certManagerCRDs := []string{
+                "certificates.cert-manager.io",
+                "issuers.cert-manager.io",
+                "clusterissuers.cert-manager.io",
+                "certificaterequests.cert-manager.io",
+                "orders.acme.cert-manager.io",
+                "challenges.acme.cert-manager.io",
+        }
+        // Execute the kubectl command to get all CRDs
+        cmd := exec.Command("kubectl", "get", "crds")
+        output, err := Run(cmd)
+        if err != nil {
+                return false
+        }
+        // Check if any of the Cert Manager CRDs are present
+        crdList := GetNonEmptyLines(output)
+        for _, crd := range certManagerCRDs {
+                for _, line := range crdList {
+                        if strings.Contains(line, crd) {
+                                return true
+                        }
+                }
+        }
+        return false
+}
+// LoadImageToKindClusterWithName loads a local docker/podman image to the kind cluster.
+// It supports podman as a kind provider via KIND_EXPERIMENTAL_PROVIDER=podman.
+func LoadImageToKindClusterWithName(name string) error {
+        cluster := "kind"
+        if v, ok := os.LookupEnv("KIND_CLUSTER"); ok {
+                cluster = v
+        }
+        // When using podman as the KIND provider, `kind load docker-image` does not have
+        // access to the podman image store.  Save the image to a temp archive first and
+        // load it via `kind load image-archive`.
+        if provider := os.Getenv("KIND_EXPERIMENTAL_PROVIDER"); provider == "podman" {
+                archive := fmt.Sprintf("/tmp/kind-load-%d.tar", time.Now().UnixNano())
+                defer os.Remove(archive) //nolint:errcheck
+                saveCmd := exec.Command("podman", "save", name, "-o", archive)
+                if _, err := Run(saveCmd); err != nil {
+                        return fmt.Errorf("podman save %s: %w", name, err)
+                }
+                loadCmd := exec.Command("kind", "load", "image-archive", archive, "--name", cluster)
+                loadCmd.Env = append(os.Environ(), "KIND_EXPERIMENTAL_PROVIDER="+provider)
+                _, err := Run(loadCmd)
+                return err
+        }
+        kindOptions := []string{"load", "docker-image", name, "--name", cluster}
+        cmd := exec.Command("kind", kindOptions...)
+        _, err := Run(cmd)
+        return err
+}
+// GetNonEmptyLines converts given command output string into individual objects
+// according to line breakers, and ignores the empty elements in it.
+func GetNonEmptyLines(output string) []string {
+        var res []string
+        elements := strings.Split(output, "\n")
+        for _, element := range elements {
+                if element != "" {
+                        res = append(res, element)
+                }
+        }
+        return res
+}
+// GetProjectDir will return the directory where the project is
+func GetProjectDir() (string, error) {
+        wd, err := os.Getwd()
+        if err != nil {
+                return wd, fmt.Errorf("failed to get current working directory: %w", err)
+        }
+        wd = strings.ReplaceAll(wd, "/test/e2e", "")
+        return wd, nil
+}
+// UncommentCode searches for target in the file and remove the comment prefix
+// of the target content. The target content may span multiple lines.
+func UncommentCode(filename, target, prefix string) error {
+        // false positive
+        // nolint:gosec
+        content, err := os.ReadFile(filename)
+        if err != nil {
+                return fmt.Errorf("failed to read file %q: %w", filename, err)
+        }
+        strContent := string(content)
+        idx := strings.Index(strContent, target)
+        if idx < 0 {
+                return fmt.Errorf("unable to find the code %q to be uncomment", target)
+        }
+        out := new(bytes.Buffer)
+        _, err = out.Write(content[:idx])
+        if err != nil {
+                return fmt.Errorf("failed to write to output: %w", err)
+        }
+        scanner := bufio.NewScanner(bytes.NewBufferString(target))
+        if !scanner.Scan() {
+                return nil
+        }
+        for {
+                if _, err = out.WriteString(strings.TrimPrefix(scanner.Text(), prefix)); err != nil {
+                        return fmt.Errorf("failed to write to output: %w", err)
+                }
+                // Avoid writing a newline in case the previous line was the last in target.
+                if !scanner.Scan() {
+                        break
+                }
+                if _, err = out.WriteString("\n"); err != nil {
+                        return fmt.Errorf("failed to write to output: %w", err)
+                }
+        }
+        if _, err = out.Write(content[idx+len(target):]); err != nil {
+                return fmt.Errorf("failed to write to output: %w", err)
+        }
+        // false positive
+        // nolint:gosec
+        if err = os.WriteFile(filename, out.Bytes(), 0644); err != nil {
+                return fmt.Errorf("failed to write file %q: %w", filename, err)
+        }
+        return nil
+}

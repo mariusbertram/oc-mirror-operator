@@ -232,6 +232,66 @@ GET /api/v1/targets/{target}/imagesets/{is}/catalogs/{cat}/packages.json
 - Deprecation-Kommentare für alte per-IS State Funktionen
 - `copilot-instructions.md` und Doku aktualisieren
 
+### Phase 11: E2E Tests anpassen
+**Dateien**: `test/e2e/`, `test/e2e_flow/`
+
+**11a: Resource API Deployment-Verifizierung (e2e_mirror_test.go)**
+- Nach erfolgreichem Mirroring: Prüfen, dass `oc-mirror-resource-api` Deployment im Namespace existiert und Ready ist
+- Prüfen, dass der zugehörige Service `<mt>-resources` existiert und auf Port 8081 konfiguriert ist
+- Resource-API Pod-Logs in Diagnostik-Dump aufnehmen (Label `app=oc-mirror-resource-api`)
+
+**11b: Resource-ConfigMap Verifizierung (e2e_mirror_test.go)**
+- Nach Mirroring: Prüfen, dass Resource-ConfigMap `oc-mirror-<mt>-resources` existiert
+- ConfigMap muss Keys für `idms.yaml` und `index.json` enthalten
+- IDMS-Inhalt muss `ImageDigestMirrorSet` YAML mit korrekter Source/Mirror-Zuordnung enthalten
+
+**11c: Catalog Resource-ConfigMap (e2e_catalog_cluster_test.go)**
+- Nach CatalogBuildJob Erfolg: Prüfen, dass Resource-ConfigMap CatalogSource- und Packages-Einträge enthält
+- Packages-JSON muss mindestens das gefilterte Paket (`ip-rule-operator`) enthalten
+
+**11d: Resource API Endpoint-Tests (e2e_mirror_test.go)**
+- Port-Forward zum Resource-API Service, HTTP GET auf `/api/v1/targets`
+- Antwort muss den MirrorTarget mit korrektem Status enthalten
+- HTTP GET auf `/api/v1/targets/<mt>/imagesets/<is>/idms.yaml` muss gültiges YAML liefern
+- Web UI unter `/ui/` muss HTTP 200 zurückgeben
+
+**11e: Lifecycle-Test aktualisieren (e2e_flow/lifecycle_test.go)**
+- Resource-ConfigMap-Erstellung nach Manager-Reconcile verifizieren
+- Prüfen, dass Manager-Reconcile keine `:8081`-bezogenen Ressourcen mehr erstellt
+
+### Phase 12: README und Dokumentation aktualisieren
+**Dateien**: `README.md`, `docs/user-guide.md`, `docs/contributing.md`, `docs/api-reference.md`
+
+**12a: README.md**
+- Architektur-Diagramm aktualisieren: Resource API als separates Deployment statt integriert im Manager
+- Feature-Tabelle: "Resource Server" → "Resource API + Web UI Dashboard"
+- Architektur-Abschnitt: Vier-Tier-Modell (Operator, Manager, Worker, Resource API)
+- "Resource Server (HTTP-API)"-Abschnitt komplett ersetzen:
+  - Neue Endpoint-Tabelle mit `/api/v1/...` Pfaden
+  - ConfigMap-basierte Architektur beschreiben
+  - Web UI Dashboard erwähnen (`/ui/`)
+  - Beispiele mit neuen URLs aktualisieren
+- Quick Start curl-Beispiele anpassen
+
+**12b: docs/user-guide.md**
+- Section 10 "Resource Server" komplett überarbeiten:
+  - Eigenständiges Deployment statt Manager-integriert
+  - Neue API-Pfade (`/api/v1/targets/{mt}/imagesets/{is}/...`)
+  - Web UI Dashboard Zugang beschreiben
+  - ConfigMap-basierte Datenhaltung erklären
+- Section 7.4 "Expose": Service zeigt auf Resource-API Deployment, nicht Manager-Pod
+- Manager-Beschreibung: Port 8081 entfernen, nur noch Port 8080 (Worker-Status API)
+
+**12c: docs/contributing.md**
+- Paketstruktur aktualisieren: `pkg/mirror/resources/server.go` → `pkg/resourceapi/`
+- Neues Paket `pkg/resourceapi/` in der Übersicht aufnehmen
+- E2E-Testbeschreibung um Resource-API Tests erweitern
+
+**12d: docs/api-reference.md**
+- Neue REST-API Endpoints dokumentieren (`/api/v1/targets`, `/api/v1/targets/{mt}`)
+- Web UI Endpoint (`/ui/`) aufnehmen
+- Redirect-Kompatibilität für alte `/resources/` Pfade dokumentieren
+
 ---
 
 ## Abhängigkeiten
@@ -252,6 +312,10 @@ Phase 8 (Web UI)
 Phase 9 (Tests)   [inkrementell mit jeder Phase]
   ↓
 Phase 10 (Aufräumen)
+  ↓
+Phase 11 (E2E Tests anpassen)
+  ↓
+Phase 12 (README + Docs)
 ```
 
 ## Risiken

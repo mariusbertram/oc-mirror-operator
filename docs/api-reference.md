@@ -25,7 +25,7 @@ kubectl get mirrortargets -n <namespace>
 | `batchSize` | `int` | no | Number of images per worker pod. Range: 1–100. Default: `10`. |
 | `pollInterval` | `duration` | no | How often to re-check upstream sources for new content. Minimum `1h`. Set `0s` to disable. Default: `24h`. |
 | `checkExistInterval` | `duration` | no | How often to verify mirrored images still exist in the target. Minimum `1h`. Default: `6h`. Also triggers retry for permanently-failed images. |
-| `expose` | `ExposeConfig` | no | How the resource server HTTP endpoint is exposed. Auto-creates a Route on OpenShift if omitted. |
+| `expose` | `ExposeConfig` | no | How the Resource API HTTP endpoint is exposed. Auto-creates a Route on OpenShift if omitted. |
 | `manager` | `PodConfig` | no | Resource requests/limits, node selector, and tolerations for the manager pod. |
 | `worker` | `PodConfig` | no | Resource requests/limits, node selector, and tolerations for worker pods. |
 | `proxy` | `ProxyConfig` | no | HTTP/HTTPS proxy for all pods. See [ProxyConfig](#proxyconfigspec). |
@@ -318,6 +318,49 @@ MirrorTarget is deleted.
 > ```
 > kubectl delete sa,role,rolebinding oc-mirror-coordinator oc-mirror-worker -n <namespace>
 > ```
+
+---
+
+## Resource API REST Endpoints
+
+The Resource API runs as a standalone Deployment (`oc-mirror-resource-api`, one per namespace) on port 8081. It reads generated resource ConfigMaps written by the Manager and serves them via HTTP.
+
+| Endpoint | Method | Response | Description |
+|---|---|---|---|
+| `/api/v1/targets` | GET | JSON | List of all MirrorTargets with status and ImageSets |
+| `/api/v1/targets/{mt}` | GET | JSON | Detail view of a MirrorTarget with ImageSet status and resource links |
+| `/api/v1/targets/{mt}/imagesets/{is}/idms.yaml` | GET | YAML | ImageDigestMirrorSet for the ImageSet |
+| `/api/v1/targets/{mt}/imagesets/{is}/itms.yaml` | GET | YAML | ImageTagMirrorSet for the ImageSet |
+| `/api/v1/targets/{mt}/imagesets/{is}/catalogs/{cat}/catalogsource.yaml` | GET | YAML | OLM v0 CatalogSource |
+| `/api/v1/targets/{mt}/imagesets/{is}/catalogs/{cat}/clustercatalog.yaml` | GET | YAML | OLM v1 ClusterCatalog |
+| `/api/v1/targets/{mt}/imagesets/{is}/catalogs/{cat}/packages.json` | GET | JSON | Filtered catalog packages |
+| `/api/v1/targets/{mt}/imagesets/{is}/signature-configmaps.yaml` | GET | YAML | Release signature ConfigMaps |
+| `/ui/` | GET | HTML | Web UI Dashboard |
+| `/resources/{is}/...` | GET | redirect | Legacy compatibility redirects to `/api/v1/...` |
+
+### ConfigMap Storage
+
+The Manager writes generated resources to a ConfigMap named `oc-mirror-<mirrortarget>-resources` in the same namespace. The Resource API reads these ConfigMaps to serve the endpoints above. Keys follow the pattern:
+
+| Key Pattern | Content |
+|---|---|
+| `index.json` | JSON index of all available resources |
+| `<imageset>-idms.yaml` | ImageDigestMirrorSet YAML |
+| `<imageset>-itms.yaml` | ImageTagMirrorSet YAML |
+| `<imageset>-<catalog>-catalogsource.yaml` | CatalogSource YAML |
+| `<imageset>-<catalog>-clustercatalog.yaml` | ClusterCatalog YAML |
+| `<imageset>-<catalog>-packages.json` | Filtered catalog packages JSON |
+| `<imageset>-signature-configmaps.yaml` | Release signature ConfigMaps YAML |
+
+### Resource API RBAC
+
+The operator creates the following RBAC resources for the Resource API (one set per namespace):
+
+| Resource | Name | Purpose |
+|---|---|---|
+| `ServiceAccount` | `oc-mirror-resource-api` | Identity for the Resource API pod |
+| `Role` | `oc-mirror-resource-api` | Read-only access to ConfigMaps, MirrorTargets, and ImageSets |
+| `RoleBinding` | `oc-mirror-resource-api` | Binds the Role to the ServiceAccount |
 
 ---
 
