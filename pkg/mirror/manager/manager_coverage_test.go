@@ -21,6 +21,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
+const condReady = "Ready"
+
 var _ = Describe("Manager Coverage", func() {
 	var (
 		m      *MirrorManager
@@ -795,7 +797,7 @@ var _ = Describe("Manager Coverage", func() {
 			conds := []metav1.Condition{}
 			setReadyCondition(&conds, metav1.ConditionTrue, "Collected", "msg", 1)
 			Expect(conds).To(HaveLen(1))
-			Expect(conds[0].Type).To(Equal("Ready"))
+			Expect(conds[0].Type).To(Equal(condReady))
 			Expect(conds[0].Status).To(Equal(metav1.ConditionTrue))
 			Expect(conds[0].Reason).To(Equal("Collected"))
 			Expect(conds[0].Message).To(Equal("msg"))
@@ -805,7 +807,7 @@ var _ = Describe("Manager Coverage", func() {
 		It("updates an existing Ready condition when it changes", func() {
 			conds := []metav1.Condition{
 				{
-					Type:               "Ready",
+					Type:               condReady,
 					Status:             metav1.ConditionFalse,
 					Reason:             "Empty",
 					Message:            "no images resolved yet",
@@ -825,7 +827,7 @@ var _ = Describe("Manager Coverage", func() {
 			oldTime := metav1.NewTime(time.Now().Add(-1 * time.Hour))
 			conds := []metav1.Condition{
 				{
-					Type:               "Ready",
+					Type:               condReady,
 					Status:             metav1.ConditionTrue,
 					Reason:             "Collected",
 					Message:            "10 images",
@@ -850,7 +852,7 @@ var _ = Describe("Manager Coverage", func() {
 			setReadyCondition(&conds, metav1.ConditionTrue, "Collected", "msg", 1)
 			Expect(conds).To(HaveLen(2))
 			Expect(conds[0].Type).To(Equal("CatalogReady"))
-			Expect(conds[1].Type).To(Equal("Ready"))
+			Expect(conds[1].Type).To(Equal(condReady))
 		})
 	})
 
@@ -1177,7 +1179,7 @@ var _ = Describe("Manager Coverage", func() {
 			Expect(is.Status.TotalImages).To(Equal(0))
 			found := false
 			for _, c := range is.Status.Conditions {
-				if c.Type == "Ready" {
+				if c.Type == condReady {
 					found = true
 					Expect(c.Status).To(Equal(metav1.ConditionFalse))
 					Expect(c.Reason).To(Equal("Empty"))
@@ -1207,7 +1209,7 @@ var _ = Describe("Manager Coverage", func() {
 			Expect(is.Status.LastSuccessfulPollTime).NotTo(BeNil())
 		})
 
-		It("caps failedImageDetails at 20", func() {
+		It("caps failedImageDetails at maxFailedImageDetails and adds summary", func() {
 			is := &mirrorv1alpha1.ImageSet{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:       "caps-is",
@@ -1222,7 +1224,7 @@ var _ = Describe("Manager Coverage", func() {
 			m = NewWithClients(c, m.Clientset, "test", "default", "test-image:latest", "", scheme)
 
 			state := make(imagestate.ImageState)
-			for i := 0; i < 25; i++ {
+			for i := range 25 {
 				dest := "d" + string(rune('A'+i))
 				state[dest] = &imagestate.ImageEntry{
 					Source:            "s",
@@ -1232,7 +1234,18 @@ var _ = Describe("Manager Coverage", func() {
 				}
 			}
 			m.updateImageSetStatusLocked(context.TODO(), is, state, false)
-			Expect(len(is.Status.FailedImageDetails)).To(BeNumerically("<=", 20))
+			Expect(is.Status.FailedImageDetails).To(HaveLen(maxFailedImageDetails))
+
+			// Ready condition message should contain truncation summary.
+			var readyCond *metav1.Condition
+			for i := range is.Status.Conditions {
+				if is.Status.Conditions[i].Type == condReady {
+					readyCond = &is.Status.Conditions[i]
+					break
+				}
+			}
+			Expect(readyCond).NotTo(BeNil())
+			Expect(readyCond.Message).To(ContainSubstring("showing 20 of 25 permanently failed images"))
 		})
 
 		It("excludes Mirrored entries from failedImageDetails", func() {

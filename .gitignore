@@ -26,6 +26,12 @@ go.work
 *.swo
 *~
 
+# OS artifacts
+.DS_Store
+
+# Temporary output
+.output.txt
+
 .gemini/
 gha-creds-*.json
 

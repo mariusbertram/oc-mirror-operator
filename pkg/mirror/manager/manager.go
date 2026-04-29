@@ -36,6 +36,12 @@ const (
 	stateMirrored = "Mirrored"
 	statePending  = "Pending"
 	stateFailed   = "Failed"
+
+	// maxFailedImageDetails caps the number of FailedImageDetail entries
+	// written to ImageSet.status to bound the overall status object size.
+	// When more images are permanently failed, a summary is appended to the
+	// Ready condition message.
+	maxFailedImageDetails = 20
 )
 
 type WorkerStatusRequest struct {
@@ -758,7 +764,7 @@ func (m *MirrorManager) saveGlobalResources(ctx context.Context, mt *mirrorv1alp
 	}
 
 	for slug, cat := range catalogs {
-		cs, err := resources.GenerateCatalogSource(m.TargetName+"-"+slug, m.Namespace, cat, "pull-secret") // TODO: fix pull secret name
+		cs, err := resources.GenerateCatalogSource(m.TargetName+"-"+slug, m.Namespace, cat, mt.Spec.AuthSecret)
 		if err != nil {
 			fmt.Printf("Warning: failed to generate CatalogSource for %s: %v\n", slug, err)
 			continue
@@ -813,8 +819,9 @@ func (m *MirrorManager) updateImageSetStatusLocked(ctx context.Context, is *mirr
 		is.Status.LastSuccessfulPollTime = &now
 	}
 
-	// Collect permanently-failed image details (capped at 20 to bound status
-	// size). isView has IS-specific Origin/OriginRef promoted to flat fields.
+	// Collect permanently-failed image details (capped at maxFailedImageDetails
+	// to bound status size). isView has IS-specific Origin/OriginRef promoted
+	// to flat fields.
 	details := make([]mirrorv1alpha1.FailedImageDetail, 0)
 	for dest, entry := range isView {
 		if entry == nil || !entry.PermanentlyFailed || entry.State == stateMirrored {
@@ -828,14 +835,18 @@ func (m *MirrorManager) updateImageSetStatusLocked(ctx context.Context, is *mirr
 		})
 	}
 	sort.Slice(details, func(i, j int) bool { return details[i].Destination < details[j].Destination })
-	if len(details) > 20 {
-		details = details[:20]
+	totalFailed := len(details)
+	if totalFailed > maxFailedImageDetails {
+		details = details[:maxFailedImageDetails]
 	}
 	is.Status.FailedImageDetails = details
 
 	readyStatus := metav1.ConditionTrue
 	readyReason := "Collected"
 	readyMsg := fmt.Sprintf("Collected %d images (%d mirrored, %d pending, %d failed)", total, mirrored, pending, failed)
+	if totalFailed > maxFailedImageDetails {
+		readyMsg += fmt.Sprintf(" — showing %d of %d permanently failed images", maxFailedImageDetails, totalFailed)
+	}
 	if total == 0 {
 		readyStatus = metav1.ConditionFalse
 		readyReason = "Empty"
