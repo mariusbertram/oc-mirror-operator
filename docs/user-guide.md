@@ -29,7 +29,7 @@ This document describes the complete configuration and operation of the `oc-mirr
    - [Basic Configuration](#71-basic-configuration)
    - [Performance Tuning](#72-performance-tuning)
    - [Polling and CheckExist Intervals](#73-polling-and-checkexist-intervals)
-   - [Expose (Resource Server)](#74-expose-resource-server)
+   - [Expose (Resource API)](#74-expose-resource-api)
    - [Pod Resources and Placement](#75-pod-resources-and-placement)
    - [Image Cleanup on Removal](#76-image-cleanup-on-removal)
    - [HTTP Proxy Configuration](#77-http-proxy-configuration)
@@ -44,7 +44,7 @@ This document describes the complete configuration and operation of the `oc-mirr
    - [Cleanup (Delete Images)](#92-cleanup-delete-images)
    - [ImageSet Changes](#93-imageset-changes)
    - [Image Retries and Permanent Failures](#94-image-retries-and-permanent-failures)
-10. [Resource Server](#10-resource-server)
+10. [Resource API + Web UI](#10-resource-api--web-ui)
     - [Retrieving IDMS and ITMS](#101-retrieving-idms-and-itms)
     - [CatalogSource and ClusterCatalog](#102-catalogsource-and-clustercatalog)
     - [Release Signatures](#103-release-signatures)
@@ -166,9 +166,9 @@ A `MirrorTarget` defines **where** to mirror to:
 - List of `ImageSet` objects to use
 - Performance parameters (concurrency, batchSize)
 - Polling and CheckExist intervals
-- Exposure of the Resource Server (IDMS/ITMS endpoint)
+- Exposure of the Resource API (IDMS/ITMS/Web UI endpoint)
 
-For each `MirrorTarget`, the operator starts **one manager pod** in the same namespace. This manager is responsible for worker orchestration, image state management, and the Resource Server.
+For each `MirrorTarget`, the operator starts **one manager pod** in the same namespace. This manager is responsible for worker orchestration, image state management, and writing generated resources to ConfigMaps. Additionally, the operator deploys a **Resource API** pod (one per namespace) that serves these resources via REST API and Web UI.
 
 #### Multiple MirrorTargets per Namespace
 
@@ -197,7 +197,7 @@ The manager pod is automatically started by the operator controller as a `Deploy
 - Manages the image state (which images are still pending, which have been mirrored)
 - Starts worker pods for the actual mirroring
 - Periodically checks whether mirrored images are still present in the target registry
-- Provides the Resource Server for IDMS/ITMS/CatalogSource
+- Writes generated resources (IDMS/ITMS/CatalogSource) to ConfigMaps for the Resource API
 
 ### 3.4 Worker Pods
 
@@ -721,9 +721,9 @@ spec:
 - **Mirrored images:** If an image has been deleted from the target registry, it will be automatically re-mirrored (drift detection)
 - **Permanently failed images** (`permanentlyFailed=true`): If the image is not yet in the target registry, a new mirroring attempt is started (handles transient upstream failures)
 
-### 7.4 Expose (Resource Server)
+### 7.4 Expose (Resource API)
 
-The Resource Server provides IDMS, ITMS, CatalogSource, and other resources via HTTP.
+The Resource API provides IDMS, ITMS, CatalogSource, Web UI Dashboard, and other resources via HTTP. It runs as a standalone Deployment (`oc-mirror-resource-api`, one per namespace).
 
 #### OpenShift Route (default on OpenShift)
 
@@ -752,7 +752,7 @@ spec:
     type: Service
 ```
 
-The Resource Server is then only accessible within the cluster at `http://<mirrortarget-name>-resources.<namespace>.svc.cluster.local:8081`.
+The Resource API is then only accessible within the cluster at `http://oc-mirror-resource-api.<namespace>.svc.cluster.local:8081`.
 
 #### Gateway API
 
@@ -1100,9 +1100,24 @@ When the spec of an `ImageSet` is modified (e.g., a new operator added, a packag
 
 ---
 
-## 10. Resource Server
+## 10. Resource API + Web UI
 
-The Resource Server runs in the manager pod on port 8081 and provides Kubernetes resources needed for configuring the mirrored cluster.
+The Resource API runs as a **standalone Deployment** (`oc-mirror-resource-api`, one per namespace) and provides Kubernetes resources via REST API and an embedded Web UI Dashboard. The Manager writes generated resources (IDMS, ITMS, CatalogSource, etc.) to ConfigMaps (`oc-mirror-<mirrortarget>-resources`) during each reconcile cycle; the Resource API reads these ConfigMaps and serves them over HTTP on port **8081**.
+
+### 10.0 Architecture
+
+```
+Manager Pod                          Resource API Pod
+┌──────────────────────┐             ┌─────────────────────────┐
+│ Reconcile loop:      │  writes     │ Reads ConfigMaps:       │
+│ • Generate IDMS/ITMS │──────────►  │ oc-mirror-<mt>-resources│
+│ • Generate CatSrc    │  ConfigMap  │                         │
+│ • Generate packages  │             │ Serves:                 │
+└──────────────────────┘             │ • REST API /api/v1/...  │
+                                     │ • Web UI /ui/           │
+                                     │ • Legacy /resources/... │
+                                     └─────────────────────────┘
+```
 
 **Determine the base URL:**
 
@@ -1110,74 +1125,86 @@ The Resource Server runs in the manager pod on port 8081 and provides Kubernetes
 # OpenShift Route
 MIRROR_URL=$(kubectl get route <mirrortarget-name>-resources \
   -n <namespace> -o jsonpath='{.spec.host}')
-echo "http://${MIRROR_URL}"
+echo "https://${MIRROR_URL}"
 
 # Kubernetes Ingress
 MIRROR_URL=$(kubectl get ingress <mirrortarget-name>-resources \
   -n <namespace> -o jsonpath='{.spec.rules[0].host}')
 
 # Service (cluster-internal)
-MIRROR_URL="<mirrortarget-name>-resources.<namespace>.svc.cluster.local:8081"
+MIRROR_URL="oc-mirror-resource-api.<namespace>.svc.cluster.local:8081"
 ```
 
-### 10.1 Retrieving IDMS and ITMS
+### 10.1 Web UI Dashboard
+
+The embedded dashboard provides a visual overview of all mirroring progress:
 
 ```bash
-# ImageDigestMirrorSet (for digest-based image refs)
-curl http://${MIRROR_URL}/resources/<imageset-name>/idms.yaml | kubectl apply -f -
-
-# ImageTagMirrorSet (for tag-based image refs)
-curl http://${MIRROR_URL}/resources/<imageset-name>/itms.yaml | kubectl apply -f -
-
-# List all available resources
-curl http://${MIRROR_URL}/resources/
+# Open in browser
+open https://${MIRROR_URL}/ui/
 ```
 
-### 10.2 CatalogSource and ClusterCatalog
+Features:
+- **Overview**: All MirrorTargets with progress bars (Total/Mirrored/Pending/Failed)
+- **Target Detail**: Click a target to see ImageSets with status and resource download links
+- Auto-refresh every 30 seconds
+- Dark theme, no external dependencies
+
+### 10.2 Retrieving IDMS and ITMS
+
+```bash
+# List all targets
+curl https://${MIRROR_URL}/api/v1/targets | jq .
+
+# Target detail with ImageSet status
+curl https://${MIRROR_URL}/api/v1/targets/<mirrortarget-name> | jq .
+
+# ImageDigestMirrorSet (for digest-based image refs)
+curl https://${MIRROR_URL}/api/v1/targets/<mirrortarget-name>/imagesets/<imageset-name>/idms.yaml \
+  | kubectl apply -f -
+
+# ImageTagMirrorSet (for tag-based image refs)
+curl https://${MIRROR_URL}/api/v1/targets/<mirrortarget-name>/imagesets/<imageset-name>/itms.yaml \
+  | kubectl apply -f -
+```
+
+### 10.3 CatalogSource and ClusterCatalog
 
 After a successful catalog build, the generated OLM resources are available:
 
 ```bash
 # OLM v0: CatalogSource
-curl http://${MIRROR_URL}/resources/<imageset-name>/catalogs/<catalog-name>/catalogsource.yaml \
+curl https://${MIRROR_URL}/api/v1/targets/<mirrortarget-name>/imagesets/<imageset-name>/catalogs/<catalog-name>/catalogsource.yaml \
   | kubectl apply -f -
 
 # OLM v1: ClusterCatalog
-curl http://${MIRROR_URL}/resources/<imageset-name>/catalogs/<catalog-name>/clustercatalog.yaml \
+curl https://${MIRROR_URL}/api/v1/targets/<mirrortarget-name>/imagesets/<imageset-name>/catalogs/<catalog-name>/clustercatalog.yaml \
   | kubectl apply -f -
 ```
 
 These resources reference the mirrored, filtered catalog image in the target registry.
 
-### 10.3 Catalog Packages
+### 10.4 Catalog Packages
 
 Browse the packages, channels, and versions available in a mirrored catalog:
 
 ```bash
-curl http://${MIRROR_URL}/resources/<imageset-name>/catalogs/<catalog-name>/packages.json | jq .
+curl https://${MIRROR_URL}/api/v1/targets/<mirrortarget-name>/imagesets/<imageset-name>/catalogs/<catalog-name>/packages.json | jq .
 ```
 
-> The endpoint returns HTTP 409 if the catalog has not been built yet
-> (`CatalogReady` condition not met).
-
-### 10.4 Upstream Catalog Packages
-
-Discover **all** operators, channels, and versions available in the upstream source catalog — useful for finding out what is available before configuring your ImageSet filter:
-
-```bash
-curl http://${MIRROR_URL}/resources/<imageset-name>/catalogs/<catalog-name>/upstream-packages.json | jq .
-```
-
-> This endpoint fetches the catalog directly from the upstream registry
-> (e.g. `registry.redhat.io`). No `CatalogReady` gate is required.
+> Resources are only served once the associated ImageSet has reached `Ready` status.
 
 ### 10.5 Release Signatures
 
 ```bash
 # ConfigMap with release signatures for the mirrored OCP release
-curl http://${MIRROR_URL}/resources/<imageset-name>/signature-configmaps.yaml \
+curl https://${MIRROR_URL}/api/v1/targets/<mirrortarget-name>/imagesets/<imageset-name>/signature-configmaps.yaml \
   | kubectl apply -f -
 ```
+
+### 10.6 Legacy Compatibility
+
+Old `/resources/{imageset}/...` URLs are redirected to the new `/api/v1/...` paths for backward compatibility. Existing scripts using the old paths will continue to work during the migration period.
 
 ---
 
@@ -1280,7 +1307,7 @@ spec:
   pollInterval: 24h                   # upstream polling interval (min: 1h, "0s": off)
   checkExistInterval: 6h              # registry verification interval (min: 1h)
 
-  expose:                             # Resource Server exposition
+  expose:                             # Resource API exposition
     type: Route                       # Route | Ingress | GatewayAPI | Service
     host: <hostname>                  # external hostname (optional for Route)
     ingressClassName: <class>         # only for type=Ingress

@@ -61,6 +61,7 @@ type MirrorTargetReconciler struct {
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=route.openshift.io,resources=routes,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=route.openshift.io,resources=routes/custom-host,verbs=create;update;patch
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 // persistentvolumeclaims: the operator must hold PVC verbs itself so that it
@@ -99,7 +100,8 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		l.Error(err, "Failed to reconcile cleanup")
 		setCondition(&mt.Status.Conditions, "Cleanup", metav1.ConditionFalse, "CleanupError", err.Error(), mt.Generation)
 		_ = r.Status().Update(ctx, mt)
-		// Continue with the rest of reconciliation — cleanup failures are not blocking.
+		// Return error so we retry and don't advance KnownImageSets prematurely.
+		return ctrl.Result{}, err
 	}
 
 	// Ensure the coordinator ServiceAccount, Role, and RoleBinding exist in the target namespace.
@@ -117,6 +119,14 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// stricter policies if needed.
 	if err := r.ensureNetworkPolicies(ctx, mt); err != nil {
 		l.Error(err, "Failed to ensure network policies")
+		setCondition(&mt.Status.Conditions, "Ready", metav1.ConditionFalse, "ReconcileError", err.Error(), mt.Generation)
+		_ = r.Status().Update(ctx, mt)
+		return ctrl.Result{}, err
+	}
+
+	// Ensure global Resource API Deployment and Service (Phase 7d)
+	if err := r.ensureResourceAPI(ctx, mt); err != nil {
+		l.Error(err, "Failed to ensure Resource API")
 		setCondition(&mt.Status.Conditions, "Ready", metav1.ConditionFalse, "ReconcileError", err.Error(), mt.Generation)
 		_ = r.Status().Update(ctx, mt)
 		return ctrl.Result{}, err
@@ -181,7 +191,6 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 							Resources:    mt.Spec.Manager.Resources,
 							Ports: []corev1.ContainerPort{
 								{Name: "status", ContainerPort: 8080, Protocol: corev1.ProtocolTCP},
-								{Name: "resources", ContainerPort: 8081, Protocol: corev1.ProtocolTCP},
 							},
 						},
 					},
@@ -235,6 +244,7 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	// Resource API Service (port 8081) — serves IDMS, ITMS, CatalogSource, etc.
+	// Point to the global oc-mirror-resource-api Deployment (Phase 7e)
 	resourceSvc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-resources", mt.Name),
@@ -246,11 +256,13 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			return err
 		}
 		resourceSvc.Labels = map[string]string{
-			"app":          "oc-mirror-manager",
+			"app":          "oc-mirror-resource-api",
 			"mirrortarget": mt.Name,
 		}
 		resourceSvc.Spec = corev1.ServiceSpec{
-			Selector: resourceSvc.Labels,
+			Selector: map[string]string{
+				"app": "oc-mirror-resource-api",
+			},
 			Ports: []corev1.ServicePort{
 				{
 					Name: "resources",
@@ -269,13 +281,13 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	// Create Route/Ingress for the resource server based on ExposeConfig.
 	if err := r.reconcileExposure(ctx, mt); err != nil {
-		l.Error(err, "Failed to reconcile resource server exposure")
-		setCondition(&mt.Status.Conditions, "Ready", metav1.ConditionFalse, "ReconcileError", err.Error(), mt.Generation)
-		_ = r.Status().Update(ctx, mt)
-		return ctrl.Result{}, err
+		l.Error(err, "Failed to reconcile resource server exposure; continuing with status aggregation")
+		setCondition(&mt.Status.Conditions, "Ready", metav1.ConditionFalse, "ExposureError", err.Error(), mt.Generation)
+		// We don't return here so that image counts are still aggregated and surfaced to the UI.
+	} else {
+		setCondition(&mt.Status.Conditions, "Ready", metav1.ConditionTrue, "DeploymentReady", "Manager deployment is active", mt.Generation)
 	}
 
-	setCondition(&mt.Status.Conditions, "Ready", metav1.ConditionTrue, "DeploymentReady", "Manager deployment is active", mt.Generation)
 	// Only advance KnownImageSets when no pending cleanups remain.
 	// This ensures that if a cleanup Job fails, the removal is re-detected
 	// and a new cleanup Job is created on the next reconcile cycle.
@@ -602,11 +614,10 @@ func (r *MirrorTargetReconciler) handleDeletion(ctx context.Context, mt *mirrorv
 	return ctrl.Result{}, nil
 }
 
+// reconcileCleanup detects ImageSets that were removed from spec.imageSets,
 // creates cleanup Jobs for them (if cleanup-policy annotation is "Delete"),
 // and tracks cleanup progress.
-func (r *MirrorTargetReconciler) reconcileCleanup(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget) error { //nolint:unparam
-	l := log.FromContext(ctx)
-
+func (r *MirrorTargetReconciler) reconcileCleanup(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget) error {
 	currentSet := make(map[string]bool, len(mt.Spec.ImageSets))
 	for _, name := range mt.Spec.ImageSets {
 		currentSet[name] = true
@@ -620,6 +631,48 @@ func (r *MirrorTargetReconciler) reconcileCleanup(ctx context.Context, mt *mirro
 	}
 
 	// Check pending cleanups — remove entries whose Jobs completed successfully.
+	r.checkPendingCleanups(ctx, mt)
+
+	// Load consolidated per-MirrorTarget state once for all removed ImageSets
+	// and to check for orphaned entries (partial removals).
+	consolidatedState, loadErr := imagestate.LoadForTarget(ctx, r.Client, mt.Namespace, mt.Name)
+	if loadErr != nil {
+		return fmt.Errorf("failed to load consolidated state for cleanup: %w", loadErr)
+	}
+
+	// Step 1: Detect and handle partial removals (orphaned entries with no Refs).
+	orphansDirty := r.reconcileOrphans(ctx, mt, consolidatedState)
+
+	// Step 2: Handle full ImageSet removals.
+	removedDirty, err := r.reconcileRemovedImageSets(ctx, mt, removed, consolidatedState)
+	if err != nil {
+		return err
+	}
+
+	if orphansDirty || removedDirty {
+		if err := imagestate.SaveForTarget(ctx, r.Client, mt.Namespace, mt.Name, consolidatedState); err != nil {
+			return fmt.Errorf("failed to save consolidated state after cleanup partitioning: %w", err)
+		}
+	}
+
+	if len(mt.Status.PendingCleanup) > 0 {
+		setCondition(&mt.Status.Conditions, "Cleanup", metav1.ConditionFalse, "CleanupInProgress",
+			fmt.Sprintf("Cleaning up images for: %s", strings.Join(mt.Status.PendingCleanup, ", ")), mt.Generation)
+	} else if len(removed) == 0 {
+		// No new removals and nothing pending — update condition if pending cleanups just finished.
+		for _, c := range mt.Status.Conditions {
+			if c.Type == "Cleanup" && c.Reason == "CleanupInProgress" {
+				setCondition(&mt.Status.Conditions, "Cleanup", metav1.ConditionTrue, "CleanupComplete", "No pending cleanups", mt.Generation)
+				break
+			}
+		}
+	}
+
+	return nil
+}
+
+// checkPendingCleanups removes entries from PendingCleanup whose Jobs completed successfully.
+func (r *MirrorTargetReconciler) checkPendingCleanups(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget) {
 	stillPending := make([]string, 0, len(mt.Status.PendingCleanup))
 	for _, name := range mt.Status.PendingCleanup {
 		if r.isPendingCleanup(ctx, mt, name) {
@@ -627,37 +680,64 @@ func (r *MirrorTargetReconciler) reconcileCleanup(ctx context.Context, mt *mirro
 		}
 	}
 	mt.Status.PendingCleanup = stillPending
+}
 
-	if len(removed) == 0 {
-		// No new removals — update condition if pending cleanups just finished.
-		if len(mt.Status.PendingCleanup) == 0 {
-			for _, c := range mt.Status.Conditions {
-				if c.Type == "Cleanup" && c.Reason == "CleanupInProgress" {
-					setCondition(&mt.Status.Conditions, "Cleanup", metav1.ConditionTrue, "CleanupComplete", "No pending cleanups", mt.Generation)
-					break
-				}
-			}
+// reconcileOrphans detects and handles partial removals (orphaned entries with no Refs).
+func (r *MirrorTargetReconciler) reconcileOrphans(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget, consolidatedState imagestate.ImageState) bool {
+	l := log.FromContext(ctx)
+	orphans := make(imagestate.ImageState)
+	for dest, entry := range consolidatedState {
+		if len(entry.Refs) == 0 && entry.Origin == "" {
+			orphans[dest] = entry
 		}
-		return nil
+	}
+
+	if len(orphans) == 0 {
+		return false
+	}
+
+	for _, p := range mt.Status.PendingCleanup {
+		if p == "orphans" {
+			return false
+		}
+	}
+
+	snapshotName := cleanupSnapshotCMName(mt.Name, "orphans")
+	if err := imagestate.SaveRaw(ctx, r.Client, mt.Namespace, snapshotName, orphans); err != nil {
+		l.Error(err, "Failed to create orphans cleanup snapshot")
+		return false
+	}
+
+	l.Info("Creating cleanup job for orphaned images", "count", len(orphans))
+	if err := r.createCleanupJob(ctx, mt, "orphans", snapshotName); err != nil {
+		l.Error(err, "Failed to create orphans cleanup job")
+		_ = r.Delete(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: snapshotName, Namespace: mt.Namespace}})
+		return false
+	}
+
+	mt.Status.PendingCleanup = append(mt.Status.PendingCleanup, "orphans")
+	for dest := range orphans {
+		delete(consolidatedState, dest)
+	}
+	return true
+}
+
+// reconcileRemovedImageSets handles full ImageSet removals.
+func (r *MirrorTargetReconciler) reconcileRemovedImageSets(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget, removed []string, consolidatedState imagestate.ImageState) (bool, error) {
+	l := log.FromContext(ctx)
+	if len(removed) == 0 {
+		return false, nil
 	}
 
 	cleanupPolicy := mt.Annotations[mirrorv1alpha1.CleanupPolicyAnnotation]
 	if cleanupPolicy != mirrorv1alpha1.CleanupPolicyDelete {
 		l.Info("ImageSets removed but cleanup-policy not set to Delete — skipping registry cleanup",
 			"removed", removed, "annotation", cleanupPolicy)
-		return nil
+		return false, nil
 	}
 
-	// Load consolidated per-MirrorTarget state once for all removed ImageSets.
-	consolidatedState, loadErr := imagestate.LoadForTarget(ctx, r.Client, mt.Namespace, mt.Name)
-	if loadErr != nil {
-		l.Error(loadErr, "Failed to load consolidated state for cleanup")
-		return nil
-	}
 	stateDirty := false
-
 	for _, isName := range removed {
-		// Skip if already pending cleanup.
 		alreadyPending := false
 		for _, p := range mt.Status.PendingCleanup {
 			if p == isName {
@@ -669,29 +749,19 @@ func (r *MirrorTargetReconciler) reconcileCleanup(ctx context.Context, mt *mirro
 			continue
 		}
 
-		created, dirty := r.partitionAndCreateCleanupJob(ctx, mt, isName, consolidatedState)
+		created, dirty, err := r.partitionAndCreateCleanupJob(ctx, mt, isName, consolidatedState)
 		if dirty {
 			stateDirty = true
+		}
+		if err != nil {
+			l.Error(err, "Failed to reconcile cleanup for ImageSet", "imageset", isName)
+			return false, err
 		}
 		if created {
 			mt.Status.PendingCleanup = append(mt.Status.PendingCleanup, isName)
 		}
 	}
-
-	if stateDirty {
-		if err := imagestate.SaveForTarget(ctx, r.Client, mt.Namespace, mt.Name, consolidatedState); err != nil {
-			l.Error(err, "Failed to save consolidated state after cleanup partitioning")
-		}
-	}
-
-	if len(mt.Status.PendingCleanup) > 0 {
-		setCondition(&mt.Status.Conditions, "Cleanup", metav1.ConditionFalse, "CleanupInProgress",
-			fmt.Sprintf("Cleaning up images for: %s", strings.Join(mt.Status.PendingCleanup, ", ")), mt.Generation)
-	} else {
-		setCondition(&mt.Status.Conditions, "Cleanup", metav1.ConditionTrue, "CleanupComplete", "No pending cleanups", mt.Generation)
-	}
-
-	return nil
+	return stateDirty, nil
 }
 
 // isPendingCleanup checks whether the cleanup Job for the given ImageSet is
@@ -733,13 +803,14 @@ func (r *MirrorTargetReconciler) isPendingCleanup(ctx context.Context, mt *mirro
 
 // partitionAndCreateCleanupJob partitions the consolidated state for isName
 // (exclusive vs shared), creates a snapshot ConfigMap, and launches a cleanup
-// Job. Returns (jobCreated, stateDirty). The consolidated map is modified in place.
+// Job. Returns (jobCreated, stateDirty, error). The consolidated map is
+// modified in place ONLY IF job creation succeeds.
 func (r *MirrorTargetReconciler) partitionAndCreateCleanupJob(
 	ctx context.Context,
 	mt *mirrorv1alpha1.MirrorTarget,
 	isName string,
 	consolidated imagestate.ImageState,
-) (created, dirty bool) {
+) (created, dirty bool, err error) {
 	l := log.FromContext(ctx)
 
 	exclusiveState := make(imagestate.ImageState)
@@ -749,49 +820,73 @@ func (r *MirrorTargetReconciler) partitionAndCreateCleanupJob(
 		}
 	}
 
-	// Remove IS ref from entries shared with other ImageSets.
-	for dest, entry := range consolidated {
-		if entry.HasImageSet(isName) && len(entry.Refs) > 1 {
-			entry.RemoveImageSet(isName)
-			consolidated[dest] = entry
-			dirty = true
-		}
-	}
-
 	if len(exclusiveState) == 0 {
-		l.Info("No exclusive images for removed ImageSet — skipping cleanup job", "imageset", isName)
-		return false, dirty
+		// Even if no exclusive images, we must remove the IS ref from shared entries.
+		sharedDirty := false
+		for dest, entry := range consolidated {
+			if entry.HasImageSet(isName) && len(entry.Refs) > 1 {
+				entry.RemoveImageSet(isName)
+				consolidated[dest] = entry
+				sharedDirty = true
+			}
+		}
+		if sharedDirty {
+			l.Info("Removed ImageSet ref from shared images; no exclusive images for cleanup", "imageset", isName)
+		} else {
+			l.Info("No images found for removed ImageSet — skipping cleanup job", "imageset", isName)
+		}
+		return false, sharedDirty, nil
 	}
 
 	snapshotName := cleanupSnapshotCMName(mt.Name, isName)
 	if err := imagestate.SaveRaw(ctx, r.Client, mt.Namespace, snapshotName, exclusiveState); err != nil {
-		l.Error(err, "Failed to create cleanup snapshot ConfigMap", "imageset", isName)
-		return false, dirty
+		return false, false, fmt.Errorf("failed to create cleanup snapshot ConfigMap for %s: %w", isName, err)
 	}
-
-	for dest := range exclusiveState {
-		delete(consolidated, dest)
-	}
-	dirty = true
 
 	l.Info("Creating cleanup job for removed ImageSet", "imageset", isName, "exclusiveImages", len(exclusiveState))
 	if err := r.createCleanupJob(ctx, mt, isName, snapshotName); err != nil {
-		l.Error(err, "Failed to create cleanup job", "imageset", isName)
-		_ = r.Delete(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: snapshotName, Namespace: mt.Namespace}})
-		return false, dirty
+		// Clean up the snapshot CM if job creation failed (except for the "stale job deleted" requeue signal).
+		if !strings.Contains(err.Error(), "stale cleanup job deleted") {
+			_ = r.Delete(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: snapshotName, Namespace: mt.Namespace}})
+		}
+		return false, false, fmt.Errorf("failed to create cleanup job for %s: %w", isName, err)
 	}
-	return true, dirty
+
+	// Job created successfully — now update the consolidated state.
+	for dest := range exclusiveState {
+		delete(consolidated, dest)
+	}
+	// Also handle shared entries now.
+	for dest, entry := range consolidated {
+		if entry.HasImageSet(isName) && len(entry.Refs) > 1 {
+			entry.RemoveImageSet(isName)
+			consolidated[dest] = entry
+		}
+	}
+
+	return true, true, nil
 }
 
 // createCleanupJob creates a Kubernetes Job that deletes all images listed in
 // the snapshot ConfigMap from the target registry and removes the snapshot.
 func (r *MirrorTargetReconciler) createCleanupJob(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget, imageSetName, snapshotCMName string) error {
+	l := log.FromContext(ctx)
 	jobName := cleanupJobName(mt.Name, imageSetName)
 
 	// Check if job already exists.
 	existing := &batchv1.Job{}
 	if err := r.Get(ctx, client.ObjectKey{Name: jobName, Namespace: mt.Namespace}, existing); err == nil {
-		return nil // already exists
+		if existing.Status.Succeeded > 0 || existing.Status.Failed > 0 {
+			l.Info("Deleting stale cleanup job", "job", jobName, "imageset", imageSetName)
+			propagation := metav1.DeletePropagationBackground
+			if delErr := r.Delete(ctx, existing, &client.DeleteOptions{PropagationPolicy: &propagation}); delErr != nil {
+				return fmt.Errorf("failed to delete stale cleanup job: %w", delErr)
+			}
+			// Return an error to trigger a requeue so we create the job in the next cycle.
+			// This avoids a race where we try to Create while the Delete is still processing.
+			return fmt.Errorf("stale cleanup job deleted; will recreate on next reconcile")
+		}
+		return nil // already exists and active
 	}
 
 	backoffLimit := int32(3)
@@ -936,6 +1031,148 @@ func cleanupSnapshotCMName(targetName, imageSetName string) string {
 //   - ImageSet status changes → enqueue every MirrorTarget that lists the
 //     ImageSet in spec.imageSets so the MirrorTarget's aggregated counters
 //     stay in sync with per-ImageSet progress.
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+
+func (r *MirrorTargetReconciler) ensureResourceAPI(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget) error {
+	name := "oc-mirror-resource-api"
+	namespace := mt.Namespace
+
+	if err := r.ensureResourceRBAC(ctx, mt); err != nil {
+		return err
+	}
+
+	deployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+	}
+
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, deployment, func() error {
+		// Set owner reference to the MirrorTarget. Since this deployment is
+		// shared per namespace, it will have multiple owner references (one for
+		// each MirrorTarget). Kubernetes will garbage collect it when ALL
+		// owners are gone.
+		if err := controllerutil.SetOwnerReference(mt, deployment, r.Scheme); err != nil {
+			return err
+		}
+
+		labels := map[string]string{"app": name}
+		deployment.Labels = labels
+		replicas := int32(1)
+		deployment.Spec = appsv1.DeploymentSpec{
+			Replicas: &replicas,
+			Selector: &metav1.LabelSelector{MatchLabels: labels},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: labels},
+				Spec: corev1.PodSpec{
+					ServiceAccountName: name,
+					SecurityContext: &corev1.PodSecurityContext{
+						RunAsNonRoot: pointerTo(true),
+						SeccompProfile: &corev1.SeccompProfile{
+							Type: corev1.SeccompProfileTypeRuntimeDefault,
+						},
+					},
+					Containers: []corev1.Container{
+						{
+							Name:  "api",
+							Image: os.Getenv("OPERATOR_IMAGE"),
+							SecurityContext: &corev1.SecurityContext{
+								AllowPrivilegeEscalation: pointerTo(false),
+								Capabilities: &corev1.Capabilities{
+									Drop: []corev1.Capability{"ALL"},
+								},
+							},
+							Args:  []string{"resource-api", "--namespace", namespace},
+							Ports: []corev1.ContainerPort{{ContainerPort: 8081}},
+							Env: []corev1.EnvVar{
+								{
+									Name: "POD_NAMESPACE",
+									ValueFrom: &corev1.EnvVarSource{
+										FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.namespace"},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("failed to ensure resource api deployment: %w", err)
+	}
+
+	svc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+	}
+	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error {
+		if err := controllerutil.SetOwnerReference(mt, svc, r.Scheme); err != nil {
+			return err
+		}
+		labels := map[string]string{"app": name}
+		svc.Labels = labels
+		svc.Spec = corev1.ServiceSpec{
+			Selector: labels,
+			Ports:    []corev1.ServicePort{{Port: 8081, TargetPort: intstr.FromInt(8081)}},
+		}
+		return nil
+	})
+	return err
+}
+
+func (r *MirrorTargetReconciler) ensureResourceRBAC(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget) error {
+	name := "oc-mirror-resource-api"
+	namespace := mt.Namespace
+	sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, sa, func() error {
+		return controllerutil.SetOwnerReference(mt, sa, r.Scheme)
+	}); err != nil {
+		return err
+	}
+
+	role := &rbacv1.Role{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, role, func() error {
+		if err := controllerutil.SetOwnerReference(mt, role, r.Scheme); err != nil {
+			return err
+		}
+		role.Rules = []rbacv1.PolicyRule{
+			{
+				APIGroups: []string{""},
+				Resources: []string{"configmaps"},
+				Verbs:     []string{"get", "list", "watch"},
+			},
+			{
+				APIGroups: []string{"mirror.openshift.io"},
+				Resources: []string{"mirrortargets", "imagesets"},
+				Verbs:     []string{"get", "list", "watch"},
+			},
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	rb := &rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}
+	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, rb, func() error {
+		if err := controllerutil.SetOwnerReference(mt, rb, r.Scheme); err != nil {
+			return err
+		}
+		rb.RoleRef = rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "Role", Name: name}
+		rb.Subjects = []rbacv1.Subject{{Kind: "ServiceAccount", Name: name, Namespace: namespace}}
+		return nil
+	})
+	return err
+}
+
 func (r *MirrorTargetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mirrorv1alpha1.MirrorTarget{}).
@@ -1106,23 +1343,33 @@ func (r *MirrorTargetReconciler) ensureRoute(ctx context.Context, mt *mirrorv1al
 			"mirrortarget": mt.Name,
 		})
 
-		spec := map[string]interface{}{
-			"to": map[string]interface{}{
-				"kind": "Service",
-				"name": svcName,
-			},
-			"port": map[string]interface{}{
-				"targetPort": "resources",
-			},
-			"tls": map[string]interface{}{
-				"termination":                   "edge",
-				"insecureEdgeTerminationPolicy": "Redirect",
-			},
+		spec, ok := route.Object["spec"].(map[string]interface{})
+		if !ok {
+			spec = make(map[string]interface{})
 		}
-		// Only set host when user explicitly provides it.
+
+		spec["to"] = map[string]interface{}{
+			"kind": "Service",
+			"name": svcName,
+		}
+		spec["port"] = map[string]interface{}{
+			"targetPort": "resources",
+		}
+		spec["tls"] = map[string]interface{}{
+			"termination":                   "edge",
+			"insecureEdgeTerminationPolicy": "Redirect",
+		}
+
+		// Only set host when user explicitly provides it. If host is empty or unset,
+		// we remove the field from our update map entirely. This allows OpenShift
+		// to maintain the auto-generated host without triggering a "custom host"
+		// permission check on the operator's service account.
 		if mt.Spec.Expose != nil && mt.Spec.Expose.Host != "" {
 			spec["host"] = mt.Spec.Expose.Host
+		} else {
+			delete(spec, "host")
 		}
+
 		route.Object["spec"] = spec
 		return nil
 	})

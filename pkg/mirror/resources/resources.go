@@ -5,11 +5,13 @@ package resources
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
 
 	confv1 "github.com/openshift/api/config/v1"
+	"github.com/operator-framework/operator-registry/alpha/declcfg"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/yaml"
@@ -260,6 +262,13 @@ func GenerateClusterCatalog(name string, catalog CatalogInfo) ([]byte, error) {
 
 // SignatureData maps release digests to their signature bytes.
 // Key format: "sha256:abc123...", value: raw GPG signature data.
+// CatalogTargetImage builds the destination for a catalog image.
+func CatalogTargetImage(registry, source string) string {
+	return fmt.Sprintf("%s/%s", registry, repoOnly(source))
+}
+
+// --- Signature data type ---
+
 type SignatureData map[string][]byte
 
 // GenerateSignatureConfigMaps generates ConfigMap YAMLs in the OpenShift
@@ -326,4 +335,208 @@ func GenerateSignatureConfigMapsBase64(signatures map[string]string) ([]byte, er
 		raw[digest] = data
 	}
 	return GenerateSignatureConfigMaps(raw)
+}
+
+// --- Catalog helpers ---
+
+// CatalogSlug creates a URL-safe short name from a catalog reference.
+func CatalogSlug(source string) string {
+	repo := repoOnly(source)
+	parts := strings.Split(repo, "/")
+	if len(parts) > 0 {
+		return parts[len(parts)-1]
+	}
+	return "unknown"
+}
+
+// FindCatalog returns the CatalogInfo matching the given slug.
+func FindCatalog(catalogs []CatalogInfo, slug string) (CatalogInfo, bool) {
+	for _, c := range catalogs {
+		if CatalogSlug(c.SourceCatalog) == slug {
+			return c, true
+		}
+	}
+	return CatalogInfo{}, false
+}
+
+// --- Catalog packages response types ---
+
+// CatalogPackagesResponse is the JSON envelope for the packages endpoint.
+type CatalogPackagesResponse struct {
+	Catalog     string           `json:"catalog"`
+	TargetImage string           `json:"targetImage"`
+	Packages    []PackageSummary `json:"packages"`
+}
+
+// PackageSummary describes a single operator package in the catalog.
+type PackageSummary struct {
+	Name           string           `json:"name"`
+	DefaultChannel string           `json:"defaultChannel,omitempty"`
+	Channels       []ChannelSummary `json:"channels"`
+}
+
+// ChannelSummary describes a single channel within an operator package.
+type ChannelSummary struct {
+	Name    string        `json:"name"`
+	Entries []BundleEntry `json:"entries"`
+}
+
+// BundleEntry describes a single bundle version within a channel.
+type BundleEntry struct {
+	Name    string `json:"name"`
+	Version string `json:"version,omitempty"`
+}
+
+// BuildUpstreamCatalogPackagesResponse builds a compact packages response from
+// the full upstream FBC. To stay within the ConfigMap 1 MB limit, each channel
+// only includes the channel-head bundle (the bundle not replaced by any other).
+func BuildUpstreamCatalogPackagesResponse(cat CatalogInfo, cfg *declcfg.DeclarativeConfig) CatalogPackagesResponse {
+	channelsByPkg := make(map[string][]declcfg.Channel)
+	for _, ch := range cfg.Channels {
+		channelsByPkg[ch.Package] = append(channelsByPkg[ch.Package], ch)
+	}
+
+	bundleVersions := make(map[string]string, len(cfg.Bundles))
+	for _, b := range cfg.Bundles {
+		bundleVersions[b.Name] = bundleVersion(b)
+	}
+
+	defaultChannels := make(map[string]string, len(cfg.Packages))
+	for _, p := range cfg.Packages {
+		defaultChannels[p.Name] = p.DefaultChannel
+	}
+
+	pkgNames := make([]string, 0, len(cfg.Packages))
+	for _, p := range cfg.Packages {
+		pkgNames = append(pkgNames, p.Name)
+	}
+	sort.Strings(pkgNames)
+
+	packages := make([]PackageSummary, 0, len(pkgNames))
+	for _, pkgName := range pkgNames {
+		channels := channelsByPkg[pkgName]
+		sort.Slice(channels, func(i, j int) bool { return channels[i].Name < channels[j].Name })
+
+		chSummaries := make([]ChannelSummary, 0, len(channels))
+		for _, ch := range channels {
+			heads := channelHeadNames(ch)
+			entries := make([]BundleEntry, 0, len(heads))
+			for _, h := range heads {
+				entries = append(entries, BundleEntry{Name: h, Version: bundleVersions[h]})
+			}
+			sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
+			chSummaries = append(chSummaries, ChannelSummary{Name: ch.Name, Entries: entries})
+		}
+
+		packages = append(packages, PackageSummary{
+			Name:           pkgName,
+			DefaultChannel: defaultChannels[pkgName],
+			Channels:       chSummaries,
+		})
+	}
+
+	return CatalogPackagesResponse{
+		Catalog:     cat.SourceCatalog,
+		TargetImage: cat.TargetImage,
+		Packages:    packages,
+	}
+}
+
+// channelHeadNames returns the names of head bundles in a channel — bundles
+// whose name does not appear in any other entry's Replaces or Skips list.
+func channelHeadNames(ch declcfg.Channel) []string {
+	replaced := make(map[string]bool, len(ch.Entries))
+	for _, e := range ch.Entries {
+		if e.Replaces != "" {
+			replaced[e.Replaces] = true
+		}
+		for _, s := range e.Skips {
+			replaced[s] = true
+		}
+	}
+	var heads []string
+	for _, e := range ch.Entries {
+		if !replaced[e.Name] {
+			heads = append(heads, e.Name)
+		}
+	}
+	if len(heads) == 0 && len(ch.Entries) > 0 {
+		// Fallback: channel has no clear head (cycle or missing data) — return last entry.
+		heads = []string{ch.Entries[len(ch.Entries)-1].Name}
+	}
+	return heads
+}
+
+// BuildCatalogPackagesResponse builds a structured packages response from catalog info and FBC config.
+func BuildCatalogPackagesResponse(cat CatalogInfo, cfg *declcfg.DeclarativeConfig) CatalogPackagesResponse {
+	channelsByPkg := make(map[string][]declcfg.Channel)
+	for _, ch := range cfg.Channels {
+		channelsByPkg[ch.Package] = append(channelsByPkg[ch.Package], ch)
+	}
+
+	bundleVersions := make(map[string]string, len(cfg.Bundles))
+	for _, b := range cfg.Bundles {
+		bundleVersions[b.Name] = bundleVersion(b)
+	}
+
+	defaultChannels := make(map[string]string, len(cfg.Packages))
+	for _, p := range cfg.Packages {
+		defaultChannels[p.Name] = p.DefaultChannel
+	}
+
+	pkgNames := make([]string, 0, len(cfg.Packages))
+	for _, p := range cfg.Packages {
+		pkgNames = append(pkgNames, p.Name)
+	}
+	sort.Strings(pkgNames)
+
+	packages := make([]PackageSummary, 0, len(pkgNames))
+	for _, pkgName := range pkgNames {
+		channels := channelsByPkg[pkgName]
+		sort.Slice(channels, func(i, j int) bool { return channels[i].Name < channels[j].Name })
+
+		chSummaries := make([]ChannelSummary, 0, len(channels))
+		for _, ch := range channels {
+			entries := make([]BundleEntry, 0, len(ch.Entries))
+			for _, e := range ch.Entries {
+				entries = append(entries, BundleEntry{
+					Name:    e.Name,
+					Version: bundleVersions[e.Name],
+				})
+			}
+			sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
+			chSummaries = append(chSummaries, ChannelSummary{
+				Name:    ch.Name,
+				Entries: entries,
+			})
+		}
+
+		packages = append(packages, PackageSummary{
+			Name:           pkgName,
+			DefaultChannel: defaultChannels[pkgName],
+			Channels:       chSummaries,
+		})
+	}
+
+	return CatalogPackagesResponse{
+		Catalog:     cat.SourceCatalog,
+		TargetImage: cat.TargetImage,
+		Packages:    packages,
+	}
+}
+
+// bundleVersion extracts the version from a bundle's olm.package property.
+func bundleVersion(b declcfg.Bundle) string {
+	for _, prop := range b.Properties {
+		if prop.Type != "olm.package" {
+			continue
+		}
+		var v struct {
+			Version string `json:"version"`
+		}
+		if json.Unmarshal(prop.Value, &v) == nil && v.Version != "" {
+			return v.Version
+		}
+	}
+	return ""
 }

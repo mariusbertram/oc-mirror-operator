@@ -121,33 +121,81 @@ spec:
 			}
 			// Give the manager pod time to resolve and mirror the image.
 			Eventually(verifyMirroring, 8*time.Minute, 10*time.Second).Should(Succeed(), func() string {
-				var diag strings.Builder
-				diag.WriteString("\n=== Mirror test diagnostic dump ===\n")
-
-				if out, err := utils.Run(exec.Command("kubectl", "get", "imageset", imageSetName,
-					"-n", mirrorNamespace, "-o", "yaml")); err == nil {
-					diag.WriteString("\n--- ImageSet YAML ---\n")
-					diag.WriteString(out)
-				}
-				if out, err := utils.Run(exec.Command("kubectl", "get", "pods",
-					"-n", mirrorNamespace, "-o", "wide")); err == nil {
-					diag.WriteString("\n--- Pods ---\n")
-					diag.WriteString(out)
-				}
-				if out, err := utils.Run(exec.Command("kubectl", "logs",
-					"-l", "app=oc-mirror-manager",
-					"-n", operatorNamespace, "--tail=80", "--all-containers")); err == nil {
-					diag.WriteString("\n--- Manager logs (last 80 lines) ---\n")
-					diag.WriteString(out)
-				}
-				if out, err := utils.Run(exec.Command("kubectl", "get", "events",
-					"-n", mirrorNamespace, "--sort-by=.lastTimestamp")); err == nil {
-					diag.WriteString("\n--- Events ---\n")
-					diag.WriteString(out)
-				}
-				return diag.String()
+				return mirrorDiagnosticDump(mirrorNamespace, imageSetName)
 			})
+		})
 
+		It("should create the Resource API Deployment and Service", func() {
+			By("verifying the oc-mirror-resource-api Deployment exists and is ready")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "deployment", "oc-mirror-resource-api",
+					"-n", mirrorNamespace,
+					"-o", "jsonpath={.status.readyReplicas}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("1"), "Resource API Deployment not ready (readyReplicas=%s)", output)
+			}, 3*time.Minute, 10*time.Second).Should(Succeed())
+
+			By("verifying the per-target Resource Service exists on port 8081")
+			cmd := exec.Command("kubectl", "get", "service", targetName+"-resources",
+				"-n", mirrorNamespace,
+				"-o", "jsonpath={.spec.ports[0].port}")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(output).To(Equal("8081"), "Resource Service port mismatch: %s", output)
+		})
+
+		It("should persist generated resources in a ConfigMap", func() {
+			By("verifying the Resource ConfigMap exists with expected keys")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "configmap",
+					fmt.Sprintf("oc-mirror-%s-resources", targetName),
+					"-n", mirrorNamespace,
+					"-o", "jsonpath={.data}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(ContainSubstring("index.json"),
+					"ConfigMap missing index.json key")
+				g.Expect(output).To(ContainSubstring("idms.yaml"),
+					"ConfigMap missing idms.yaml key")
+			}, 3*time.Minute, 10*time.Second).Should(Succeed())
+
+			By("verifying IDMS content contains ImageDigestMirrorSet")
+			cmd := exec.Command("kubectl", "get", "configmap",
+				fmt.Sprintf("oc-mirror-%s-resources", targetName),
+				"-n", mirrorNamespace,
+				"-o", "jsonpath={.data.idms\\.yaml}")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(output).To(ContainSubstring("ImageDigestMirrorSet"),
+				"IDMS YAML does not contain ImageDigestMirrorSet")
 		})
 	})
 })
+
+// mirrorDiagnosticDump collects diagnostic info when mirror tests fail.
+func mirrorDiagnosticDump(namespace, imageSetName string) string {
+	var diag strings.Builder
+	diag.WriteString("\n=== Mirror test diagnostic dump ===\n")
+
+	diagCmds := []struct {
+		label string
+		args  []string
+	}{
+		{"ImageSet YAML", []string{"get", "imageset", imageSetName, "-n", namespace, "-o", "yaml"}},
+		{"Pods", []string{"get", "pods", "-n", namespace, "-o", "wide"}},
+		{"Manager logs (last 80 lines)", []string{"logs", "-l", "app=oc-mirror-manager", "-n", namespace, "--tail=80", "--all-containers"}},
+		{"Resource API logs (last 40 lines)", []string{"logs", "-l", "app=oc-mirror-resource-api", "-n", namespace, "--tail=40", "--all-containers"}},
+		{"Events", []string{"get", "events", "-n", namespace, "--sort-by=.lastTimestamp"}},
+	}
+	for _, dc := range diagCmds {
+		out, err := exec.Command("kubectl", dc.args...).CombinedOutput()
+		fmt.Fprintf(&diag, "\n--- %s ---\n", dc.label)
+		if err != nil {
+			fmt.Fprintf(&diag, "ERROR: %v\n%s\n", err, string(out))
+		} else {
+			fmt.Fprintf(&diag, "%s\n", string(out))
+		}
+	}
+	return diag.String()
+}

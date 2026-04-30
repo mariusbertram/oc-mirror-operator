@@ -30,8 +30,8 @@ Unlike the static `oc-mirror` CLI tool, this operator works cloud-natively and d
 | **Cosign Signatures** | ✅ | ✅ | Tag-based `.sig` signatures are automatically copied along |
 | **OCI Referrers** | ✅ | ✅ | Attestations, SBOMs via `regclient.ImageWithReferrers()` |
 | **Release Signatures** | ✅ | ✅ | Download from mirror.openshift.com/pub/openshift-v4/signatures |
-| **IDMS/ITMS Generation** | ✅ | ✅ | ImageDigestMirrorSet and ImageTagMirrorSet — provided via Resource Server HTTP API |
-| **Incremental Mirroring** | ✅ | ✅ | Already mirrored images are skipped (ConfigMap state) |
+| **IDMS/ITMS Generation** | ✅ | ✅ | ImageDigestMirrorSet and ImageTagMirrorSet — provided via Resource API |
+| **Incremental Mirroring** | ✅ | ✅ | Already mirrored images are skipped (consolidated per-MirrorTarget state) |
 | **Registry Drift Detection** | ✗ | ✅ | Manager verifies every 5 min whether mirrored images still exist in the registry; missing ones are automatically re-mirrored. Auth token refresh every 20 checks prevents Quay nginx 8KB header limit |
 | **Per-Image Timeout** | ✗ | ✅ | 20 min timeout per image mirror prevents stalled uploads from blocking the worker |
 | **Automatic Retries** | ✗ | ✅ | Up to 10 retries per image on failure |
@@ -43,7 +43,7 @@ Unlike the static `oc-mirror` CLI tool, this operator works cloud-natively and d
 | **Ephemeral Volume Blob Buffering** | ✗ | ✅ | Large blobs (>100 MiB) are buffered on emptyDir — no OOM with multi-GB layers |
 | **Blob Replication Planning** | ✗ | ✅ | Greedy set cover algorithm optimizes mirror order for maximum blob reuse |
 | **Automatic Catalog Rebuild** | ✗ | ✅ | Build signature detects changes to packages/catalogs and triggers automatic rebuild |
-| **Resource Server (HTTP API)** | ✗ | ✅ | IDMS, ITMS, CatalogSource, ClusterCatalog and signature ConfigMaps retrievable via HTTP — with OpenShift Route, Ingress or Service |
+| **Resource API + Web UI** | ✗ | ✅ | IDMS, ITMS, CatalogSource, ClusterCatalog and signature ConfigMaps retrievable via REST API + Web Dashboard — with OpenShift Route, Ingress or Service |
 | **Worker Pod Lifecycle** | ✗ | ✅ | Automatic cleanup of completed/failed worker and orphan pods |
 | **KubeVirt Container Disk** | ✅ | ✅ | `platform.kubeVirtContainer: true` extracts KubeVirt disk images from the release payload (RHCOS per architecture) |
 
@@ -81,7 +81,7 @@ Unlike the static `oc-mirror` CLI tool, this operator works cloud-natively and d
 | **Auth Token Refresh** | Automatic registry client reset every 20 operations in drift detection, worker batches and cleanup jobs — prevents Quay nginx 8KB header overflow |
 | **Blob Replication Planning** | Greedy set cover optimizes mirror order: shared layers are pushed first → subsequent images use blob mount (zero-copy) |
 | **Catalog Build Signature** | SHA256 hash over operator image + catalog + package list automatically detects when a rebuild is needed |
-| **Resource Server (HTTP API)** | Provides IDMS/ITMS, CatalogSource, ClusterCatalog and signature ConfigMaps via REST — Route (OpenShift), Ingress or Service |
+| **Resource API + Web UI** | Provides IDMS/ITMS, CatalogSource, ClusterCatalog and signature ConfigMaps via REST API + Web Dashboard — Route (OpenShift), Ingress or Service |
 | **HTTP Proxy Support** | Configurable `spec.proxy` injects HTTP/HTTPS/NO_PROXY into all pods for corporate proxy environments |
 | **Custom CA Bundle** | `spec.caBundle` mounts a ConfigMap-based CA into all pods and sets `SSL_CERT_FILE` — supports private registries with custom CAs |
 | **Ephemeral PVC for Large Images** | `spec.workerStorage` replaces the default emptyDir with a dynamically-provisioned PVC (generic ephemeral volume) for LLMs and other oversized images |
@@ -90,7 +90,7 @@ Unlike the static `oc-mirror` CLI tool, this operator works cloud-natively and d
 
 ## Architecture
 
-The architecture follows a scalable **three-layer model** with a **Catalog Build System** and **Resource Server**:
+The architecture follows a scalable **four-layer model** with a **Catalog Build System** and **Resource API**:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -101,42 +101,35 @@ The architecture follows a scalable **three-layer model** with a **Catalog Build
 │  │  MirrorTarget CR │           │   Operator (Control Plane)   │    │
 │  └──────────────────┘  reconcile│   internal/controller/       │    │
 │                         ───────►│                              │    │
-│                                 └──────┬──────────────┬────────┘    │
-│                                        │ creates      │ creates     │
-│                                        │ Deployment   │ Job         │
-│                                        │ Service ×2   │ (Catalog/   │
-│                                        │ Route/Ingress│  Cleanup)   │
-│                                        ▼              ▼             │
-│                  ┌────────────────────────┐  ┌────────────────────┐ │
-│                  │ Manager Pod            │  │ Catalog-Builder /  │ │
-│                  │ pkg/mirror/manager/    │  │ Cleanup Job        │ │
-│                  │                        │  │ cmd/catalog-builder│ │
-│                  │ • Loads image state    │  │ cmd/main.go        │ │
-│                  │ • Manages worker queue │  │ • Filters FBC      │ │
-│                  │ • HTTP Status-API :8080│  │ • Resolves deps    │ │
-│                  │ • Resource Server :8081│  │ • Builds OCI image │ │
-│                  │ • Registry verification│  │ • Pushes catalog   │ │
-│                  │ • Worker pod cleanup   │  │ • Deletes images   │ │
-│                  └──────┬────────┬───┬────┘  └────────────────────┘ │
-│                         │creates │   │ :8081                        │
-│                         │Pods    │   ▼                              │
-│                         │     ┌──┴──────────────────────┐           │
-│                         │     │ Route / Ingress / Svc   │           │
-│                         │     │ → /resources/           │           │
-│                         │     │ IDMS, ITMS, CatalogSrc  │           │
-│                         │     │ ClusterCatalog, Sigs    │           │
-│                         │     └─────────────────────────┘           │
-│                         │ receives POST /status                     │
-│                  ┌──────▼───────┐                                   │
-│                  │ Worker Pod 1 │                                   │
-│                  │ Worker Pod 2 │                                   │
-│                  │ Worker Pod N │                                   │
-│                  └──────┬───────┘                                   │
-│                         │ regclient + emptyDir                      │
-│                         ▼                                           │
-│                  ┌──────────────────────────────┐                   │
-│                  │   Target Registry            │                   │
-│                  └──────────────────────────────┘                   │
+│                                 └──┬──────────────┬────────┬───┘    │
+│                                    │ creates      │ creates│creates │
+│                                    │ Deployment   │ Job    │Deploy  │
+│                                    │ Service      │(Cat/   │+Svc    │
+│                                    │ Route/Ingress│Cleanup)│(1/ns)  │
+│                                    ▼              ▼        ▼        │
+│          ┌────────────────────────┐ ┌──────────┐ ┌───────────────┐  │
+│          │ Manager Pod            │ │ Catalog- │ │ Resource API  │  │
+│          │ pkg/mirror/manager/    │ │ Builder /│ │ pkg/resource- │  │
+│          │                        │ │ Cleanup  │ │ api/          │  │
+│          │ • Loads image state    │ │ Job      │ │               │  │
+│          │ • Manages worker queue │ │          │ │ • REST API    │  │
+│          │ • HTTP Status-API :8080│ │ • FBC    │ │ • Web UI /ui/ │  │
+│          │ • Writes Resource CMs  │ │ • OCI    │ │ • Reads CMs   │  │
+│          │ • Registry verification│ │ • Push   │ │ • Port :8081  │  │
+│          │ • Worker pod cleanup   │ │ • Delete │ │               │  │
+│          └──────┬─────────────────┘ └──────────┘ └───────┬───────┘  │
+│                 │creates Pods                            │          │
+│                 │ receives POST /status    ┌─────────────┴───────┐  │
+│          ┌──────▼───────┐                  │ Route / Ingress /   │  │
+│          │ Worker Pod 1 │                  │ Svc → :8081         │  │
+│          │ Worker Pod 2 │                  │ /api/v1/targets/... │  │
+│          │ Worker Pod N │                  │ /ui/ (Dashboard)    │  │
+│          └──────┬───────┘                  └─────────────────────┘  │
+│                 │ regclient + emptyDir                              │
+│                 ▼                                                   │
+│          ┌──────────────────────────────┐                           │
+│          │   Target Registry            │                           │
+│          └──────────────────────────────┘                           │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -144,9 +137,9 @@ The architecture follows a scalable **three-layer model** with a **Catalog Build
 
 | Layer | Component | Description |
 |---------|------------|-------------|
-| **Control Plane** | `Operator` (`internal/controller/`) | Monitors CRs, computes target image lists via Cincinnati API and FBC parsing, creates catalog build jobs and cleanup jobs, periodic upstream polling, sets status conditions |
-| **Orchestration** | `Manager` (`pkg/mirror/manager/`) | One Deployment per `MirrorTarget`. Loads image state, plans mirror order (blob planner), starts worker pods, receives results via authenticated HTTP API (:8080), verifies registry state, cleans up completed pods |
-| **Resource Server** | `Resource Server` (`pkg/mirror/resources/`) | Integrated in the manager pod on port :8081. Provides IDMS, ITMS, CatalogSource, ClusterCatalog and signature ConfigMaps via HTTP REST. Exposed via Route (OpenShift), Ingress or Service |
+| **Control Plane** | `Operator` (`internal/controller/`) | Monitors CRs, computes target image lists via Cincinnati API and FBC parsing, creates catalog build jobs and cleanup jobs, deploys Resource API, periodic upstream polling, sets status conditions |
+| **Orchestration** | `Manager` (`pkg/mirror/manager/`) | One Deployment per `MirrorTarget`. Loads image state, plans mirror order (blob planner), starts worker pods, receives results via authenticated HTTP API (:8080), verifies registry state, writes generated resources (IDMS/ITMS/CatalogSource) to ConfigMaps, cleans up completed pods |
+| **Resource API** | `Resource API` (`pkg/resourceapi/`) | Standalone Deployment (one per namespace). Reads resource ConfigMaps and serves IDMS, ITMS, CatalogSource, ClusterCatalog, packages and signature ConfigMaps via REST API. Includes an embedded Web UI Dashboard (`/ui/`). Exposed via Route (OpenShift), Ingress or Service |
 | **Execution** | `Worker` (short-lived pods) | Copies image batches with `regclient`, buffers large blobs on emptyDir, copies signatures, asks the manager via `GET /should-mirror` before each image whether the target is still needed, reports status via `POST /status` |
 | **Catalog Build** | `Catalog-Builder` (K8s Job) | One job per source catalog: filters FBC, resolves dependencies, builds OCI image with source layers + FBC overlay, pushes to target registry |
 | **State** | ConfigMap (gzip-JSON) | Per-image mirroring status in Kubernetes ConfigMaps — no PV/PVC needed, ~30 bytes per image |
@@ -160,7 +153,7 @@ The architecture follows a scalable **three-layer model** with a **Catalog Build
 5. **Manager** loads the image state, plans the mirror order via blob planner, checks whether mirrored images still exist in the target registry and starts worker pods
 6. **Worker** copies images (incl. signatures and referrers), buffers large blobs on ephemeral volume and reports results to the manager via `POST /status`
 7. Manager cleans up completed/failed worker pods and updates image state and `ImageSet.Status`
-8. **Resource Server** (port 8081 in the manager pod) provides cluster resources via HTTP — IDMS, ITMS, CatalogSource, ClusterCatalog and signature ConfigMaps are only served once the respective ImageSet has reached `Ready` status
+8. **Resource API** (standalone Deployment, port 8081) reads generated resource ConfigMaps and serves IDMS, ITMS, CatalogSource, ClusterCatalog and signature ConfigMaps via REST API — resources are only available once the respective ImageSet has reached `Ready` status. A Web UI Dashboard is available at `/ui/`
 9. **Periodic Polling**: Operator checks at a configurable interval (`pollInterval`, default: 24h) whether upstream sources (Cincinnati, catalogs) contain new images and triggers re-collection + catalog rebuild as needed
 10. **Image Cleanup**: When removing an ImageSet from the MirrorTarget or on spec changes (e.g. operator removed), the operator creates cleanup jobs that delete images no longer needed from the target registry (annotation-controlled)
 11. **Live-Skip of Obsolete Images**: If the user reduces an ImageSet (operator removed, version range restricted) while workers are already running, each worker queries the manager via `GET /should-mirror?dest=...` before copying. If the manager responds with `410 Gone` (image no longer in current state or already mirrored), the worker skips the image. This avoids consuming bandwidth and registry storage for now-obsolete images. Worst-case latency until skip: one manager reconcile cycle (~30 s).
@@ -270,26 +263,54 @@ When `platform.kubeVirtContainer: true` is set, the operator extracts the **Kube
 
 ---
 
-## Resource Server (HTTP-API)
+## Resource API (HTTP + Web UI)
 
-The manager pod hosts an HTTP server on port **8081** that provides cluster resources in YAML format. These resources can be applied directly to the cluster with `kubectl apply` or via GitOps.
+The Resource API runs as a **standalone Deployment** (`oc-mirror-resource-api`, one per namespace) and provides cluster resources via REST API and an embedded Web UI Dashboard. The Manager writes generated resources (IDMS, ITMS, CatalogSource, etc.) to ConfigMaps during each reconcile cycle; the Resource API reads these ConfigMaps and serves them over HTTP on port **8081**.
+
+### Architecture
+
+```
+Manager Pod                          Resource API Pod
+┌──────────────────────┐             ┌─────────────────────────┐
+│ Reconcile loop:      │  writes     │ Reads ConfigMaps:       │
+│ • Generate IDMS/ITMS │──────────►  │ oc-mirror-<mt>-resources│
+│ • Generate CatSrc    │  ConfigMap  │                         │
+│ • Generate packages  │             │ Serves:                 │
+└──────────────────────┘             │ • REST API /api/v1/...  │
+                                     │ • Web UI /ui/           │
+                                     │ • Legacy /resources/... │
+                                     └─────────────────────────┘
+```
 
 ### Endpoints
 
 | Endpoint | Resource | Description |
 |----------|-----------|-------------|
-| `GET /resources/` | JSON index | Overview of all ImageSets with their available resources and catalogs |
-| `GET /resources/{imageset}/idms.yaml` | `ImageDigestMirrorSet` | Digest-based mirror rules for all mirrored images |
-| `GET /resources/{imageset}/itms.yaml` | `ImageTagMirrorSet` | Tag-based mirror rules (if tag-based images are present) |
-| `GET /resources/{imageset}/catalogs/{name}/catalogsource.yaml` | `CatalogSource` | OLM v0-compatible CatalogSource (gRPC) for the filtered catalog |
-| `GET /resources/{imageset}/catalogs/{name}/clustercatalog.yaml` | `ClusterCatalog` | OLM v1-compatible ClusterCatalog resource |
-| `GET /resources/{imageset}/catalogs/{name}/packages.json` | JSON | All packages, channels, and versions from the filtered catalog |
-| `GET /resources/{imageset}/catalogs/{name}/upstream-packages.json` | JSON | All packages, channels, and versions from the **upstream source** catalog (unfiltered) |
-| `GET /resources/{imageset}/signature-configmaps.yaml` | ConfigMaps | Release signature ConfigMaps in OpenShift verification format |
+| `GET /api/v1/targets` | JSON | List of all MirrorTargets with status and ImageSets |
+| `GET /api/v1/targets/{mt}` | JSON | Detail view of a MirrorTarget with ImageSet status and resource links |
+| `GET /api/v1/targets/{mt}/imagesets/{is}/idms.yaml` | `ImageDigestMirrorSet` | Digest-based mirror rules for all mirrored images |
+| `GET /api/v1/targets/{mt}/imagesets/{is}/itms.yaml` | `ImageTagMirrorSet` | Tag-based mirror rules (if tag-based images are present) |
+| `GET /api/v1/targets/{mt}/imagesets/{is}/catalogs/{name}/catalogsource.yaml` | `CatalogSource` | OLM v0-compatible CatalogSource (gRPC) for the filtered catalog |
+| `GET /api/v1/targets/{mt}/imagesets/{is}/catalogs/{name}/clustercatalog.yaml` | `ClusterCatalog` | OLM v1-compatible ClusterCatalog resource |
+| `GET /api/v1/targets/{mt}/imagesets/{is}/catalogs/{name}/packages.json` | JSON | All packages, channels, and versions from the filtered catalog |
+| `GET /api/v1/targets/{mt}/imagesets/{is}/signature-configmaps.yaml` | ConfigMaps | Release signature ConfigMaps in OpenShift verification format |
+| `GET /ui/` | HTML | Web UI Dashboard with mirroring progress and resource download links |
+
+### Legacy Compatibility
+
+Old `/resources/{imageset}/...` URLs are redirected to the new `/api/v1/...` paths for backward compatibility during migration.
 
 ### Ready-Gating
 
-Resources are only served once the associated ImageSet has reached `Ready` status. Requests before mirroring completes receive HTTP `409 Conflict`. The JSON index (`/resources/`) shows the `ready` status for each ImageSet.
+Resources are only served once the associated ImageSet has reached `Ready` status. The target list endpoint (`/api/v1/targets`) shows the `ready` status for each ImageSet.
+
+### Web UI Dashboard
+
+The embedded dashboard at `/ui/` provides:
+- **Overview**: All MirrorTargets with progress bars (Total/Mirrored/Pending/Failed)
+- **Target Detail**: ImageSets with status and available resources as download links
+- Auto-refresh every 30 seconds
+- Dark theme, plain HTML + CSS + Vanilla JS (no framework dependencies)
 
 ### Exposure Options
 
@@ -307,14 +328,20 @@ When switching the exposure type (e.g. Route → Ingress), stale objects are aut
 ### Example Usage
 
 ```bash
-# Fetch index
-curl -sk https://<route-host>/resources/ | jq .
+# List all targets
+curl -sk https://<route-host>/api/v1/targets | jq .
+
+# Target detail with ImageSet status
+curl -sk https://<route-host>/api/v1/targets/internal-registry | jq .
 
 # Apply IDMS directly
-curl -sk https://<route-host>/resources/ocp-release-4-21/idms.yaml | kubectl apply -f -
+curl -sk https://<route-host>/api/v1/targets/internal-registry/imagesets/ocp-release-4-21/idms.yaml | kubectl apply -f -
 
 # CatalogSource for filtered operator catalog
-curl -sk https://<route-host>/resources/ocp-release-4-21/catalogs/redhat-operator-index/catalogsource.yaml | kubectl apply -f -
+curl -sk https://<route-host>/api/v1/targets/internal-registry/imagesets/ocp-release-4-21/catalogs/redhat-operator-index/catalogsource.yaml | kubectl apply -f -
+
+# Open Web UI Dashboard
+open https://<route-host>/ui/
 ```
 
 ---
@@ -707,7 +734,7 @@ The operator runs with a **namespace-scoped `Role`** (not `ClusterRole`). Each l
 
 | Service Account | Permissions |
 |-----------------|----------------|
-| `oc-mirror-operator-controller-manager` | CRD management, Deployments, Services, ConfigMaps, Secrets (read), Routes, Ingresses, Roles/RoleBindings (`get;create;update` — no `delete`/`patch`/`escalate`/`bind` verbs to prevent privilege escalation), PersistentVolumeClaims (`get;list;watch;create;delete` — needed so the controller can grant the same to the coordinator Role) |
+| `oc-mirror-operator-controller-manager` | CRD management, Deployments, Services, ConfigMaps, Secrets (read), Routes (including `custom-host`), Ingresses, Roles/RoleBindings (`get;create;update` — no `delete`/`patch`/`escalate`/`bind` verbs to prevent privilege escalation), PersistentVolumeClaims (`get;list;watch;create;delete` — needed so the controller can grant the same to the coordinator Role) |
 | `{mt.Name}-coordinator` | ImageSets/ImageSets status (`get;list;watch;update;patch`), MirrorTargets (only `get;list;watch`), Pods (`get;list;watch;create;delete`), ConfigMaps (`get;list;watch;create;update;patch;delete`), worker token secret (`get;list;watch;create;update`), PersistentVolumeClaims (`get;list;create;delete` — for generic ephemeral volumes on worker pods) |
 | `{mt.Name}-worker` | No cluster permissions |
 

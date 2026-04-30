@@ -137,7 +137,7 @@ func (c *Collector) CollectReleasesForChannel(
 			continue
 		}
 		for _, compImg := range componentImages {
-			compDest := componentDestination(target.Spec.Registry, compImg)
+			compDest := ComponentDestination(target.Spec.Registry, compImg)
 			results = append(results, c.toTargetImage(compImg, compDest, nil))
 		}
 
@@ -147,7 +147,7 @@ func (c *Collector) CollectReleasesForChannel(
 				fmt.Printf("Warning: failed to extract KubeVirt images from %s: %v\n", node.Image, kvErr)
 			} else {
 				for _, kvImg := range kvImages {
-					kvDest := componentDestination(target.Spec.Registry, kvImg)
+					kvDest := ComponentDestination(target.Spec.Registry, kvImg)
 					results = append(results, c.toTargetImage(kvImg, kvDest, nil))
 				}
 			}
@@ -186,7 +186,7 @@ func (c *Collector) CollectOperatorEntry(ctx context.Context, op mirrorv1alpha1.
 	}
 	results := make([]TargetImage, 0, len(imagesWithBundles))
 	for img, bundleRef := range imagesWithBundles {
-		dest := componentDestination(target.Spec.Registry, img)
+		dest := ComponentDestination(target.Spec.Registry, img)
 		ti := c.toTargetImage(img, dest, nil)
 		ti.BundleRef = bundleRef
 		results = append(results, ti)
@@ -258,13 +258,13 @@ func releasePayloadDestination(registry, releaseVersion, img string) string {
 	return fmt.Sprintf("%s/%s:%s", registry, imageNamePath(img), tag)
 }
 
-// componentDestination builds the destination for a component image (release or
+// ComponentDestination builds the destination for a component image (release or
 // operator bundle). The source digest is encoded as the tag so each distinct
 // image gets a unique, deterministic destination.
 //
 //	e.g. quay.io/openshift-release-dev/ocp-v4.0-art-dev@sha256:184844… →
 //	     registry/openshift-release-dev/ocp-v4.0-art-dev:sha256-184844…
-func componentDestination(registry, img string) string {
+func ComponentDestination(registry, img string) string {
 	namePath := imageNamePath(img)
 	// Derive a stable tag from the digest so each component gets a unique destination.
 	if idx := strings.Index(img, "@sha256:"); idx >= 0 {

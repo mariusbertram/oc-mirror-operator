@@ -174,12 +174,12 @@ var _ = Describe("Collector", func() {
 		)
 	})
 
-	Describe("componentDestination", func() {
+	Describe("ComponentDestination", func() {
 		const reg = "mirror.example.com"
 
 		DescribeTable("builds deterministic destination from digest",
 			func(src, expected string) {
-				Expect(componentDestination(reg, src)).To(Equal(expected))
+				Expect(ComponentDestination(reg, src)).To(Equal(expected))
 			},
 			Entry("digest-only",
 				"quay.io/org/bundle@sha256:abc123",

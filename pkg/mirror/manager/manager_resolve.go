@@ -12,6 +12,7 @@ package manager
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -30,7 +31,9 @@ import (
 	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/imagestate"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/release"
+	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/resources"
 	pkgrelease "github.com/mariusbertram/oc-mirror-operator/pkg/release"
+	"github.com/operator-framework/operator-registry/alpha/declcfg"
 )
 
 // operatorCacheVersion is bumped whenever the operator resolution or filtering
@@ -42,6 +45,89 @@ const operatorCacheVersion = "v4"
 // operatorCacheValue builds the cache token written to the ImageSet annotation.
 func operatorCacheValue(digest string) string {
 	return operatorCacheVersion + ":" + digest
+}
+
+// saveCatalogPackages persists catalog package information in two ConfigMaps:
+//   - oc-mirror-<target>-<slug>-packages: filtered packages (all selected bundles)
+//   - oc-mirror-<target>-<slug>-upstream-packages: upstream packages (channel heads only)
+func (m *MirrorManager) saveCatalogPackages(ctx context.Context, slug string, info resources.CatalogInfo, filtered *declcfg.DeclarativeConfig, upstream *declcfg.DeclarativeConfig) error {
+	if err := m.writeCatalogPackagesCM(ctx, slug, info, filtered, false); err != nil {
+		return fmt.Errorf("filtered packages: %w", err)
+	}
+	if err := m.writeCatalogPackagesCM(ctx, slug, info, upstream, true); err != nil {
+		return fmt.Errorf("upstream packages: %w", err)
+	}
+	return nil
+}
+
+// ensureUpstreamCatalogPackages loads and saves the upstream catalog package CM
+// when a cache hit skips ResolveCatalogFull. Only pulls the catalog image if
+// the upstream CM does not yet exist.
+func (m *MirrorManager) ensureUpstreamCatalogPackages(ctx context.Context, resolver *catalog.CatalogResolver, slug string, info resources.CatalogInfo) error {
+	cmName := fmt.Sprintf("oc-mirror-%s-%s-upstream-packages", m.TargetName, slug)
+	existing := &corev1.ConfigMap{}
+	err := m.Client.Get(ctx, client.ObjectKey{Name: cmName, Namespace: m.Namespace}, existing)
+	if err == nil {
+		return nil // already populated
+	}
+	if client.IgnoreNotFound(err) != nil {
+		return err
+	}
+	upstream, err := resolver.LoadFBC(ctx, info.SourceCatalog)
+	if err != nil {
+		return fmt.Errorf("load upstream FBC: %w", err)
+	}
+	return m.writeCatalogPackagesCM(ctx, slug, info, upstream, true)
+}
+
+func (m *MirrorManager) writeCatalogPackagesCM(ctx context.Context, slug string, info resources.CatalogInfo, cfg *declcfg.DeclarativeConfig, isUpstream bool) error {
+	var resp resources.CatalogPackagesResponse
+	if isUpstream {
+		resp = resources.BuildUpstreamCatalogPackagesResponse(info, cfg)
+	} else {
+		resp = resources.BuildCatalogPackagesResponse(info, cfg)
+	}
+
+	data, err := json.Marshal(resp)
+	if err != nil {
+		return fmt.Errorf("marshal: %w", err)
+	}
+
+	var cmName string
+	if isUpstream {
+		cmName = fmt.Sprintf("oc-mirror-%s-%s-upstream-packages", m.TargetName, slug)
+	} else {
+		cmName = fmt.Sprintf("oc-mirror-%s-%s-packages", m.TargetName, slug)
+	}
+
+	labelKey := "oc-mirror.openshift.io/catalog-packages"
+	if isUpstream {
+		labelKey = "oc-mirror.openshift.io/catalog-upstream-packages"
+	}
+
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      cmName,
+			Namespace: m.Namespace,
+			Labels: map[string]string{
+				labelKey:                              slug,
+				"oc-mirror.openshift.io/mirrortarget": m.TargetName,
+			},
+		},
+		Data: map[string]string{"packages.json": string(data)},
+	}
+
+	existing := &corev1.ConfigMap{}
+	err = m.Client.Get(ctx, client.ObjectKey{Name: cmName, Namespace: m.Namespace}, existing)
+	if err != nil {
+		if client.IgnoreNotFound(err) != nil {
+			return err
+		}
+		return m.Client.Create(ctx, cm)
+	}
+	existing.Data = cm.Data
+	existing.Labels = cm.Labels
+	return m.Client.Update(ctx, existing)
 }
 
 // operatorCacheHit returns true if the cached annotation value matches the
@@ -297,7 +383,7 @@ func extractDigest(imageRef string) string {
 
 func (m *MirrorManager) resolveOperatorSection( //nolint:unparam
 	ctx context.Context,
-	collector *mirror.Collector,
+	_ *mirror.Collector,
 	resolver *catalog.CatalogResolver,
 	is *mirrorv1alpha1.ImageSet,
 	mt *mirrorv1alpha1.MirrorTarget,
@@ -330,19 +416,45 @@ func (m *MirrorManager) resolveOperatorSection( //nolint:unparam
 			continue
 		}
 
+		catSlug := resources.CatalogSlug(op.Catalog)
+		targetImage := resources.CatalogTargetImage(mt.Spec.Registry, op.Catalog)
+		catInfo := resources.CatalogInfo{
+			SourceCatalog: op.Catalog,
+			TargetImage:   targetImage,
+			DisplayName:   catSlug,
+		}
+
 		cacheToken := operatorCacheValue(freshDigest)
 		if !recollect && operatorCacheHit(cached, freshDigest) {
 			carryOverByOriginAndSig(currentState, newState, imagestate.OriginOperator, sig, originRef)
+			// Ensure upstream packages CM exists even on a cache hit. This handles
+			// the first run after the feature was added (existing clusters).
+			if err := m.ensureUpstreamCatalogPackages(ctx, resolver, catSlug, catInfo); err != nil {
+				fmt.Printf("Warning: failed to ensure upstream catalog packages for %s: %v\n", catSlug, err)
+			}
 			continue
 		}
 
-		images, err := collector.CollectOperatorEntry(ctx, op, mt)
+		images, filtered, upstream, err := resolver.ResolveCatalogFull(ctx, op.Catalog, op.Packages)
 		if err != nil {
 			fmt.Printf("Warning: collect catalog %s: %v\n", op.Catalog, err)
 			carryOverByOriginAndSig(currentState, newState, imagestate.OriginOperator, sig, originRef)
 			continue
 		}
-		mergeIntoStateWithSig(newState, images, imagestate.OriginOperator, sig, originRef, currentState)
+
+		targetImages := make([]mirror.TargetImage, 0, len(images))
+		for img, label := range images {
+			targetImages = append(targetImages, mirror.TargetImage{
+				Source:      img,
+				BundleRef:   label,
+				Destination: mirror.ComponentDestination(mt.Spec.Registry, img),
+			})
+		}
+		mergeIntoStateWithSig(newState, targetImages, imagestate.OriginOperator, sig, originRef, currentState)
+
+		if err := m.saveCatalogPackages(ctx, catSlug, catInfo, filtered, upstream); err != nil {
+			fmt.Printf("Warning: failed to save catalog packages for %s: %v\n", catSlug, err)
+		}
 
 		if annotations[annoKey] != cacheToken {
 			annotations[annoKey] = cacheToken
@@ -376,7 +488,13 @@ func mergeIntoStateWithSig(dst imagestate.ImageState, images []mirror.TargetImag
 			EntrySig:  sig,
 			OriginRef: ref,
 		}
-		if existing, ok := prev[img.Destination]; ok && existing != nil && existing.Origin == origin {
+		if existing, ok := prev[img.Destination]; ok && existing != nil && (existing.Origin == origin || existing.Origin == "") {
+			// Prefer the existing Source if it looks like a valid reference
+			// (i.e. doesn't contain a comma) and the new one might be a bundle list.
+			if strings.Contains(entry.Source, ",") && !strings.Contains(existing.Source, ",") {
+				entry.Source = existing.Source
+			}
+
 			// Only carry forward Mirrored state — work we've already done.
 			// Failed entries (including permanently-failed ones) are reset to
 			// Pending so they get a fresh attempt whenever the spec changes
@@ -719,10 +837,11 @@ func mergeResolvedIntoConsolidated(consolidated imagestate.ImageState, perISStat
 			continue
 		}
 		if existing.HasImageSet(isName) {
-			orphaned := existing.RemoveImageSet(isName)
-			if orphaned {
-				delete(consolidated, dest)
-			}
+			_ = existing.RemoveImageSet(isName)
+			// We no longer delete orphaned entries here. Instead, we leave them
+			// in the consolidated state with len(Refs) == 0. The MirrorTarget
+			// controller's reconcileCleanup loop will detect these orphans and
+			// trigger a cleanup Job for them.
 		}
 	}
 }
@@ -749,7 +868,7 @@ func (m *MirrorManager) loadConsolidatedState(ctx context.Context, mt *mirrorv1a
 		if !containsString(mt.Spec.ImageSets, is.Name) {
 			continue
 		}
-		isState, loadErr := imagestate.Load(ctx, m.Client, m.Namespace, is.Name)
+		isState, loadErr := imagestate.Load(ctx, m.Client, m.Namespace, is.Name) //nolint:staticcheck // migration pending
 		if loadErr != nil {
 			fmt.Printf("Warning: migration: failed to load state for %s: %v\n", is.Name, loadErr)
 			continue

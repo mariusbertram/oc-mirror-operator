@@ -214,69 +214,69 @@ var _ = Describe("Coverage tests", func() {
 		It("returns (false, false) when no ConfigMap exists", func() {
 			c := fake.NewClientBuilder().WithScheme(fakeScheme).Build()
 			is := &mirrorv1alpha1.ImageSet{ObjectMeta: metav1.ObjectMeta{Name: "no-cm", Namespace: ns}}
-			complete, know := operatorImagesMirrored(bgCtx, c, is)
+			complete, know := operatorImagesMirrored(bgCtx, c, is, "target")
 			Expect(complete).To(BeFalse())
 			Expect(know).To(BeFalse())
 		})
 
 		It("returns (true, true) when all operator images are Mirrored", func() {
 			state := imagestate.ImageState{
-				"d1": {Source: "s1", State: "Mirrored", Origin: imagestate.OriginOperator},
-				"d2": {Source: "s2", State: "Mirrored", Origin: imagestate.OriginOperator},
+				"d1": {Source: "s1", State: "Mirrored", Refs: []imagestate.ImageRef{{ImageSet: "all-mirrored", Origin: imagestate.OriginOperator}}},
+				"d2": {Source: "s2", State: "Mirrored", Refs: []imagestate.ImageRef{{ImageSet: "all-mirrored", Origin: imagestate.OriginOperator}}},
 			}
 			cm := &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{Name: "all-mirrored-images", Namespace: ns},
+				ObjectMeta: metav1.ObjectMeta{Name: "target-images", Namespace: ns},
 				BinaryData: map[string][]byte{"images.json.gz": mustGzipJSON(state)},
 			}
 			c := fake.NewClientBuilder().WithScheme(fakeScheme).WithObjects(cm).Build()
 			is := &mirrorv1alpha1.ImageSet{ObjectMeta: metav1.ObjectMeta{Name: "all-mirrored", Namespace: ns}}
-			complete, know := operatorImagesMirrored(bgCtx, c, is)
+			complete, know := operatorImagesMirrored(bgCtx, c, is, "target")
 			Expect(complete).To(BeTrue())
 			Expect(know).To(BeTrue())
 		})
 
 		It("returns (false, true) when some operator images are pending", func() {
 			state := imagestate.ImageState{
-				"d1": {Source: "s1", State: "Mirrored", Origin: imagestate.OriginOperator},
-				"d2": {Source: "s2", State: "Pending", Origin: imagestate.OriginOperator},
+				"d1": {Source: "s1", State: "Mirrored", Refs: []imagestate.ImageRef{{ImageSet: "partial", Origin: imagestate.OriginOperator}}},
+				"d2": {Source: "s2", State: "Pending", Refs: []imagestate.ImageRef{{ImageSet: "partial", Origin: imagestate.OriginOperator}}},
 			}
 			cm := &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{Name: "partial-images", Namespace: ns},
+				ObjectMeta: metav1.ObjectMeta{Name: "target-images", Namespace: ns},
 				BinaryData: map[string][]byte{"images.json.gz": mustGzipJSON(state)},
 			}
 			c := fake.NewClientBuilder().WithScheme(fakeScheme).WithObjects(cm).Build()
 			is := &mirrorv1alpha1.ImageSet{ObjectMeta: metav1.ObjectMeta{Name: "partial", Namespace: ns}}
-			complete, know := operatorImagesMirrored(bgCtx, c, is)
+			complete, know := operatorImagesMirrored(bgCtx, c, is, "target")
 			Expect(complete).To(BeFalse())
 			Expect(know).To(BeTrue())
 		})
 
 		It("returns (false, true) when no operator-origin entries exist", func() {
 			state := imagestate.ImageState{
-				"d1": {Source: "s1", State: "Mirrored", Origin: imagestate.OriginRelease},
+				"d1": {Source: "s1", State: "Mirrored", Refs: []imagestate.ImageRef{{ImageSet: "no-ops", Origin: imagestate.OriginRelease}}},
 			}
 			cm := &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{Name: "no-ops-images", Namespace: ns},
+				ObjectMeta: metav1.ObjectMeta{Name: "target-images", Namespace: ns},
 				BinaryData: map[string][]byte{"images.json.gz": mustGzipJSON(state)},
 			}
 			c := fake.NewClientBuilder().WithScheme(fakeScheme).WithObjects(cm).Build()
 			is := &mirrorv1alpha1.ImageSet{ObjectMeta: metav1.ObjectMeta{Name: "no-ops", Namespace: ns}}
-			complete, know := operatorImagesMirrored(bgCtx, c, is)
+			complete, know := operatorImagesMirrored(bgCtx, c, is, "target")
 			Expect(complete).To(BeFalse())
 			Expect(know).To(BeTrue())
 		})
 
 		It("treats PermanentlyFailed operator images as done", func() {
 			state := imagestate.ImageState{
-				"d1": {Source: "s1", State: "Failed", Origin: imagestate.OriginOperator, PermanentlyFailed: true},
+				"d1": {Source: "s1", State: "Failed", Refs: []imagestate.ImageRef{{ImageSet: "permfail", Origin: imagestate.OriginOperator}}, PermanentlyFailed: true},
 			}
 			cm := &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{Name: "permfail-images", Namespace: ns},
+				ObjectMeta: metav1.ObjectMeta{Name: "target-images", Namespace: ns},
 				BinaryData: map[string][]byte{"images.json.gz": mustGzipJSON(state)},
 			}
 			c := fake.NewClientBuilder().WithScheme(fakeScheme).WithObjects(cm).Build()
 			is := &mirrorv1alpha1.ImageSet{ObjectMeta: metav1.ObjectMeta{Name: "permfail", Namespace: ns}}
-			complete, know := operatorImagesMirrored(bgCtx, c, is)
+			complete, know := operatorImagesMirrored(bgCtx, c, is, "target")
 			Expect(complete).To(BeTrue())
 			Expect(know).To(BeTrue())
 		})

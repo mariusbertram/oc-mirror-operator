@@ -128,7 +128,8 @@ func (e *ImageEntry) ImageSetNames() []string {
 // ImageState maps destination image reference → ImageEntry.
 type ImageState map[string]*ImageEntry
 
-// ConfigMapName returns the ConfigMap name for a given ImageSet.
+// Deprecated: ConfigMapName returns the per-ImageSet ConfigMap name.
+// Use ConfigMapNameForTarget for the consolidated per-MirrorTarget state store.
 func ConfigMapName(imageSetName string) string {
 	return imageSetName + "-images"
 }
@@ -184,15 +185,14 @@ func CountsForImageSet(state ImageState, isName string) (total, mirrored, pendin
 	return
 }
 
-// Load reads the ImageState from the ConfigMap for the given ImageSet.
-// Returns an empty ImageState (not nil) if the ConfigMap does not exist.
+// Deprecated: Load reads from a per-ImageSet ConfigMap.
+// Use LoadForTarget for the consolidated per-MirrorTarget state store.
 func Load(ctx context.Context, c client.Client, namespace, imageSetName string) (ImageState, error) {
 	return LoadByConfigMapName(ctx, c, namespace, ConfigMapName(imageSetName))
 }
 
-// LoadWithExistence reads the ImageState and reports whether the ConfigMap
-// actually exists in the cluster. This allows callers to distinguish "ConfigMap
-// was deleted" from "ConfigMap exists but is empty".
+// Deprecated: LoadWithExistence reads from a per-ImageSet ConfigMap.
+// Use LoadForTarget for the consolidated per-MirrorTarget state store.
 func LoadWithExistence(ctx context.Context, c client.Client, namespace, imageSetName string) (state ImageState, exists bool, err error) {
 	cm := &corev1.ConfigMap{}
 	getErr := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: ConfigMapName(imageSetName)}, cm)
@@ -237,8 +237,8 @@ func SaveForTarget(ctx context.Context, c client.Client, namespace, mtName strin
 	return SaveRaw(ctx, c, namespace, ConfigMapNameForTarget(mtName), state)
 }
 
-// Save writes the ImageState to the ConfigMap for the given ImageSet.
-// The ConfigMap is owned by the ImageSet and is deleted when the ImageSet is deleted.
+// Deprecated: Save writes to a per-ImageSet ConfigMap.
+// Use SaveForTarget for the consolidated per-MirrorTarget state store.
 func Save(ctx context.Context, c client.Client, namespace string, is *mirrorv1alpha1.ImageSet, state ImageState) error {
 	data, err := encode(state)
 	if err != nil {

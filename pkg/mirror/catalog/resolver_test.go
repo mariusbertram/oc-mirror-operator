@@ -820,9 +820,10 @@ func TestFilterFBC_VersionFilterAllowsAllChannels(t *testing.T) {
 		t.Fatalf("FilterFBC: %v", err)
 	}
 
-	// Both channels should be present since version filter keeps allowAllChannels.
-	if len(filtered.Channels) != 2 {
-		t.Errorf("expected 2 channels (version filter keeps all), got %d", len(filtered.Channels))
+	// Only 'preview' channel has a bundle matching >= 1.5.0.
+	// 'stable' channel has only v1.0.0 and should be excluded.
+	if len(filtered.Channels) != 1 {
+		t.Errorf("expected 1 channel (matching version filter), got %d", len(filtered.Channels))
 	}
 	// Only v2.0.0 matches >= 1.5.0.
 	if len(filtered.Bundles) != 1 {

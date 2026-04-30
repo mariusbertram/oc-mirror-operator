@@ -184,7 +184,7 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs( //nolint:gocyclo
 	// bundle images are present in the target registry would produce a catalog
 	// that references unresolved digests.
 	_, recollectRequested := is.Annotations[mirrorv1alpha1.RecollectAnnotation]
-	operatorMirroringComplete, knowState := operatorImagesMirrored(ctx, r.Client, is)
+	operatorMirroringComplete, knowState := operatorImagesMirrored(ctx, r.Client, is, mt.Name)
 	gateOpen := recollectRequested || operatorMirroringComplete || alreadyBuilt
 
 	// If the gate is otherwise closed, keep it open while a catalog build job
@@ -373,23 +373,30 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs( //nolint:gocyclo
 
 // operatorImagesMirrored returns (complete, knowState).
 // complete = true when every operator-origin entry in the imagestate ConfigMap
-// is either "Mirrored" or has PermanentlyFailed=true. PermanentlyFailed images
-// are treated as done so that a single unavailable upstream image does not
-// block the catalog build indefinitely, even while the manager periodically
-// retries them. The failure is surfaced via ImageSet.status.failedImageDetails.
-// knowState = false when no imagestate ConfigMap exists yet (manager hasn't
-// performed initial resolution); the gate is closed in that case so we don't
-// kick off a build with zero source data.
-func operatorImagesMirrored(ctx context.Context, c client.Client, is *mirrorv1alpha1.ImageSet) (bool, bool) {
-	state, err := imagestate.Load(ctx, c, is.Namespace, is.Name)
+// is either "Mirrored" or has PermanentlyFailed=true.
+// knowState = false when no imagestate ConfigMap exists yet.
+func operatorImagesMirrored(ctx context.Context, c client.Client, is *mirrorv1alpha1.ImageSet, mtName string) (bool, bool) {
+	state, err := imagestate.LoadForTarget(ctx, c, is.Namespace, mtName)
 	if err != nil || len(state) == 0 {
 		return false, false
 	}
 	hasOperator := false
 	for _, e := range state {
-		if e == nil || e.Origin != imagestate.OriginOperator {
+		if e == nil || !e.HasImageSet(is.Name) {
 			continue
 		}
+		// Find the Ref for this ImageSet to check the Origin.
+		var origin imagestate.ImageOrigin
+		for _, ref := range e.Refs {
+			if ref.ImageSet == is.Name {
+				origin = ref.Origin
+				break
+			}
+		}
+		if origin != imagestate.OriginOperator {
+			continue
+		}
+
 		hasOperator = true
 		if e.State != "Mirrored" && !e.PermanentlyFailed {
 			return false, true
@@ -468,7 +475,7 @@ func (r *ImageSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				return requests
 			}),
 		).
-		// Watch the per-ImageSet imagestate ConfigMap (suffixed "-images")
+		// Watch the per-MirrorTarget imagestate ConfigMap (suffixed "-images")
 		// owned by the manager pod. When the manager flips the last
 		// operator-origin entry to Mirrored we want to immediately re-evaluate
 		// the catalog-build gate instead of waiting for the next pollInterval.
@@ -480,12 +487,22 @@ func (r *ImageSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				if !strings.HasSuffix(name, suffix) {
 					return nil
 				}
-				return []reconcile.Request{{
-					NamespacedName: types.NamespacedName{
-						Name:      strings.TrimSuffix(name, suffix),
-						Namespace: obj.GetNamespace(),
-					},
-				}}
+				mtName := strings.TrimSuffix(name, suffix)
+				// Find MirrorTarget to get associated ImageSets
+				mt := &mirrorv1alpha1.MirrorTarget{}
+				if err := r.Get(ctx, client.ObjectKey{Namespace: obj.GetNamespace(), Name: mtName}, mt); err != nil {
+					return nil
+				}
+				var requests []reconcile.Request
+				for _, isName := range mt.Spec.ImageSets {
+					requests = append(requests, reconcile.Request{
+						NamespacedName: types.NamespacedName{
+							Name:      isName,
+							Namespace: obj.GetNamespace(),
+						},
+					})
+				}
+				return requests
 			}),
 		).
 		Complete(r)

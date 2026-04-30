@@ -196,5 +196,32 @@ spec:
 					"CatalogReady condition is not True (got %q)", output)
 			}, 2*time.Minute, 10*time.Second).Should(Succeed())
 		})
+
+		It("should persist catalog resources in the Resource ConfigMap", func() {
+			cmName := fmt.Sprintf("oc-mirror-%s-resources", targetName)
+			slug := "catalog" // derived from ghcr.io/mariusbertram/brtrm-dev-catalog/catalog:latest
+
+			By("verifying the Resource ConfigMap contains CatalogSource entries")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "configmap", cmName,
+					"-n", ns,
+					"-o", "jsonpath={.data}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(ContainSubstring("catalogsource-catalog.yaml"),
+					"ConfigMap missing catalogsource-catalog.yaml key")
+			}, 3*time.Minute, 10*time.Second).Should(Succeed())
+
+			By("verifying packages.json contains the filtered package")
+			Eventually(func(g Gomega) {
+				pkgCMName := fmt.Sprintf("oc-mirror-%s-%s-packages", targetName, slug)
+				cmd := exec.Command("kubectl", "get", "configmap", pkgCMName,
+					"-n", ns, "-o", "jsonpath={.data.packages\\.json}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(ContainSubstring(catalogPackage),
+					"packages.json does not contain expected package %q", catalogPackage)
+			}, 3*time.Minute, 10*time.Second).Should(Succeed())
+		})
 	})
 })

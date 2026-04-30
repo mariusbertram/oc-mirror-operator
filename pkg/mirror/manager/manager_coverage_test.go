@@ -1177,7 +1177,7 @@ var _ = Describe("Manager Coverage", func() {
 			Expect(is.Status.TotalImages).To(Equal(0))
 			found := false
 			for _, c := range is.Status.Conditions {
-				if c.Type == "Ready" {
+				if c.Type == conditionReady {
 					found = true
 					Expect(c.Status).To(Equal(metav1.ConditionFalse))
 					Expect(c.Reason).To(Equal("Empty"))
@@ -1207,7 +1207,7 @@ var _ = Describe("Manager Coverage", func() {
 			Expect(is.Status.LastSuccessfulPollTime).NotTo(BeNil())
 		})
 
-		It("caps failedImageDetails at 20", func() {
+		It("caps failedImageDetails at maxFailedImageDetails and adds summary", func() {
 			is := &mirrorv1alpha1.ImageSet{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:       "caps-is",
@@ -1222,7 +1222,7 @@ var _ = Describe("Manager Coverage", func() {
 			m = NewWithClients(c, m.Clientset, "test", "default", "test-image:latest", "", scheme)
 
 			state := make(imagestate.ImageState)
-			for i := 0; i < 25; i++ {
+			for i := range 25 {
 				dest := "d" + string(rune('A'+i))
 				state[dest] = &imagestate.ImageEntry{
 					Source:            "s",
@@ -1232,7 +1232,18 @@ var _ = Describe("Manager Coverage", func() {
 				}
 			}
 			m.updateImageSetStatusLocked(context.TODO(), is, state, false)
-			Expect(len(is.Status.FailedImageDetails)).To(BeNumerically("<=", 20))
+			Expect(is.Status.FailedImageDetails).To(HaveLen(maxFailedImageDetails))
+
+			// Ready condition message should contain truncation summary.
+			var readyCond *metav1.Condition
+			for i := range is.Status.Conditions {
+				if is.Status.Conditions[i].Type == conditionReady {
+					readyCond = &is.Status.Conditions[i]
+					break
+				}
+			}
+			Expect(readyCond).NotTo(BeNil())
+			Expect(readyCond.Message).To(ContainSubstring("showing 20 of 25 permanently failed images"))
 		})
 
 		It("excludes Mirrored entries from failedImageDetails", func() {
