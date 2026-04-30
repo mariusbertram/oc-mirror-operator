@@ -54,13 +54,14 @@ func (m *MirrorManager) saveCatalogPackages(ctx context.Context, slug string, in
 		return fmt.Errorf("marshal catalog packages: %w", err)
 	}
 
-	cmName := fmt.Sprintf("oc-mirror-%s-packages", slug)
+	cmName := fmt.Sprintf("oc-mirror-%s-%s-packages", m.TargetName, slug)
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      cmName,
 			Namespace: m.Namespace,
 			Labels: map[string]string{
 				"oc-mirror.openshift.io/catalog-packages": slug,
+				"oc-mirror.openshift.io/mirrortarget":     m.TargetName,
 			},
 		},
 		Data: map[string]string{

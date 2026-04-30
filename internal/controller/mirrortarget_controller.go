@@ -279,13 +279,13 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	// Create Route/Ingress for the resource server based on ExposeConfig.
 	if err := r.reconcileExposure(ctx, mt); err != nil {
-		l.Error(err, "Failed to reconcile resource server exposure")
-		setCondition(&mt.Status.Conditions, "Ready", metav1.ConditionFalse, "ReconcileError", err.Error(), mt.Generation)
-		_ = r.Status().Update(ctx, mt)
-		return ctrl.Result{}, err
+		l.Error(err, "Failed to reconcile resource server exposure; continuing with status aggregation")
+		setCondition(&mt.Status.Conditions, "Ready", metav1.ConditionFalse, "ExposureError", err.Error(), mt.Generation)
+		// We don't return here so that image counts are still aggregated and surfaced to the UI.
+	} else {
+		setCondition(&mt.Status.Conditions, "Ready", metav1.ConditionTrue, "DeploymentReady", "Manager deployment is active", mt.Generation)
 	}
 
-	setCondition(&mt.Status.Conditions, "Ready", metav1.ConditionTrue, "DeploymentReady", "Manager deployment is active", mt.Generation)
 	// Only advance KnownImageSets when no pending cleanups remain.
 	// This ensures that if a cleanup Job fails, the removal is re-detected
 	// and a new cleanup Job is created on the next reconcile cycle.
@@ -1258,30 +1258,33 @@ func (r *MirrorTargetReconciler) ensureRoute(ctx context.Context, mt *mirrorv1al
 			"mirrortarget": mt.Name,
 		})
 
-		spec := map[string]interface{}{
-			"to": map[string]interface{}{
-				"kind": "Service",
-				"name": svcName,
-			},
-			"port": map[string]interface{}{
-				"targetPort": "resources",
-			},
-			"tls": map[string]interface{}{
-				"termination":                   "edge",
-				"insecureEdgeTerminationPolicy": "Redirect",
-			},
-		}
-		existingSpec, hasSpec := route.Object["spec"].(map[string]interface{})
-		if hasSpec {
-			if h, ok := existingSpec["host"].(string); ok && h != "" {
-				spec["host"] = h
-			}
+		spec, ok := route.Object["spec"].(map[string]interface{})
+		if !ok {
+			spec = make(map[string]interface{})
 		}
 
-		// Only set host when user explicitly provides it (overrides existing auto-generated host).
+		spec["to"] = map[string]interface{}{
+			"kind": "Service",
+			"name": svcName,
+		}
+		spec["port"] = map[string]interface{}{
+			"targetPort": "resources",
+		}
+		spec["tls"] = map[string]interface{}{
+			"termination":                   "edge",
+			"insecureEdgeTerminationPolicy": "Redirect",
+		}
+
+		// Only set host when user explicitly provides it. If host is empty or unset,
+		// we remove the field from our update map entirely. This allows OpenShift
+		// to maintain the auto-generated host without triggering a "custom host"
+		// permission check on the operator's service account.
 		if mt.Spec.Expose != nil && mt.Spec.Expose.Host != "" {
 			spec["host"] = mt.Spec.Expose.Host
+		} else {
+			delete(spec, "host")
 		}
+
 		route.Object["spec"] = spec
 		return nil
 	})

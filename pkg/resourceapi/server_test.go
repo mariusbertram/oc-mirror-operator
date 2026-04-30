@@ -66,7 +66,7 @@ var _ = Describe("ResourceAPI Server", func() {
 
 		packagesCm := &corev1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      "oc-mirror-test-slug-packages",
+				Name:      fmt.Sprintf("oc-mirror-%s-test-slug-packages", mtName),
 				Namespace: ns,
 			},
 			Data: map[string]string{
@@ -153,7 +153,7 @@ var _ = Describe("ResourceAPI Server", func() {
 
 		It("serves Catalog Packages", func() {
 			// slug is used for CM lookup
-			url := "/api/v1/targets/any/imagesets/any/catalogs/test-slug/packages.json"
+			url := fmt.Sprintf("/api/v1/targets/%s/imagesets/any/catalogs/test-slug/packages.json", mtName)
 			req := httptest.NewRequest("GET", url, nil)
 			rr := httptest.NewRecorder()
 			router.ServeHTTP(rr, req)

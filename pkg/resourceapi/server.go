@@ -196,7 +196,7 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleLegacyRedirect(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusGone)
-	_, _ = fmt.Fprintln(w, "Legacy /resources/ paths are no longer supported. Please use the new /api/v1/targets/{mt}/... API.")
+	_, _ = fmt.Fprintln(w, "Legacy /resources/ paths are deprecated. Please use the new /api/v1/targets/{mt}/imagesets/{is}/... API.")
 }
 
 func (s *Server) handleIDMS(w http.ResponseWriter, r *http.Request) {
@@ -220,8 +220,9 @@ func (s *Server) handleCatalogSource(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCatalogPackages(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
+	mtName := vars["mt"]
 	slug := vars["slug"]
-	s.serveConfigMapResource(w, r, fmt.Sprintf("oc-mirror-%s-packages", slug), "packages.json")
+	s.serveConfigMapResource(w, r, fmt.Sprintf("oc-mirror-%s-%s-packages", mtName, slug), "packages.json")
 }
 
 func (s *Server) serveConfigMapResource(w http.ResponseWriter, r *http.Request, cmName, key string) {
@@ -250,8 +251,6 @@ func (s *Server) serveConfigMapResource(w http.ResponseWriter, r *http.Request, 
 
 func buildResourceLinks(mtName string, cm *corev1.ConfigMap) []ResourceLink {
 	var links []ResourceLink
-	// Note: We use "latest" as a placeholder for {is} in the UI links for now,
-	// as the resource ConfigMap is per-target and contains the latest state.
 	base := fmt.Sprintf("/api/v1/targets/%s/imagesets/latest", mtName)
 
 	if _, ok := cm.Data["idms.yaml"]; ok {
