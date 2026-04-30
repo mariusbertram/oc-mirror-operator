@@ -164,7 +164,7 @@ spec:
 			cmd := exec.Command("kubectl", "get", "configmap",
 				fmt.Sprintf("oc-mirror-%s-resources", targetName),
 				"-n", mirrorNamespace,
-				"-o", fmt.Sprintf("jsonpath={.data.%s}", imageSetName+"-idms\\.yaml"))
+				"-o", "jsonpath={.data.idms\\.yaml}")
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(output).To(ContainSubstring("ImageDigestMirrorSet"),

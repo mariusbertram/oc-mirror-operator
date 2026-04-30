@@ -487,7 +487,7 @@ func mergeIntoStateWithSig(dst imagestate.ImageState, images []mirror.TargetImag
 			EntrySig:  sig,
 			OriginRef: ref,
 		}
-		if existing, ok := prev[img.Destination]; ok && existing != nil && existing.Origin == origin {
+		if existing, ok := prev[img.Destination]; ok && existing != nil && (existing.Origin == origin || existing.Origin == "") {
 			// Prefer the existing Source if it looks like a valid reference
 			// (i.e. doesn't contain a comma) and the new one might be a bundle list.
 			if strings.Contains(entry.Source, ",") && !strings.Contains(existing.Source, ",") {

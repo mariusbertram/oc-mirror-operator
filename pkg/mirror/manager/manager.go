@@ -781,6 +781,20 @@ func (m *MirrorManager) saveGlobalResources(ctx context.Context, mt *mirrorv1alp
 		data[fmt.Sprintf("catalogsource-%s.yaml", slug)] = string(cs)
 	}
 
+	// Generate index.json listing all resources.
+	index := map[string][]string{
+		"resources": {"idms.yaml", "itms.yaml"},
+	}
+	for key := range data {
+		if strings.HasPrefix(key, "catalogsource-") {
+			index["resources"] = append(index["resources"], key)
+		}
+	}
+	sort.Strings(index["resources"])
+	if indexData, err := json.MarshalIndent(index, "", "  "); err == nil {
+		data["index.json"] = string(indexData)
+	}
+
 	cmName := fmt.Sprintf("oc-mirror-%s-resources", m.TargetName)
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
