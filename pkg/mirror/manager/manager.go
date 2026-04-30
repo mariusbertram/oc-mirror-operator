@@ -778,6 +778,7 @@ func (m *MirrorManager) saveGlobalResources(ctx context.Context, mt *mirrorv1alp
 					catalogs[slug] = resources.CatalogInfo{
 						SourceCatalog: catSource,
 						TargetImage:   resources.CatalogTargetImage(mt.Spec.Registry, catSource),
+						DisplayName:   slug,
 					}
 				}
 			}
@@ -791,6 +792,13 @@ func (m *MirrorManager) saveGlobalResources(ctx context.Context, mt *mirrorv1alp
 			continue
 		}
 		data[fmt.Sprintf("catalogsource-%s.yaml", slug)] = string(cs)
+
+		cc, err := resources.GenerateClusterCatalog(m.TargetName+"-"+slug, cat)
+		if err != nil {
+			fmt.Printf("Warning: failed to generate ClusterCatalog for %s: %v\n", slug, err)
+			continue
+		}
+		data[fmt.Sprintf("clustercatalog-%s.yaml", slug)] = string(cc)
 	}
 
 	// Generate index.json listing all resources.
@@ -798,7 +806,7 @@ func (m *MirrorManager) saveGlobalResources(ctx context.Context, mt *mirrorv1alp
 		"resources": {"idms.yaml", "itms.yaml"},
 	}
 	for key := range data {
-		if strings.HasPrefix(key, "catalogsource-") {
+		if strings.HasPrefix(key, "catalogsource-") || strings.HasPrefix(key, "clustercatalog-") {
 			index["resources"] = append(index["resources"], key)
 		}
 	}

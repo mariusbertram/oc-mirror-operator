@@ -121,6 +121,7 @@ func (s *Server) RegisterRoutes(r *mux.Router) {
 	api.HandleFunc("/targets/{mt}/imagesets/{is}/idms.yaml", s.handleIDMS).Methods("GET")
 	api.HandleFunc("/targets/{mt}/imagesets/{is}/itms.yaml", s.handleITMS).Methods("GET")
 	api.HandleFunc("/targets/{mt}/imagesets/{is}/catalogs/{slug}/catalogsource.yaml", s.handleCatalogSource).Methods("GET")
+	api.HandleFunc("/targets/{mt}/imagesets/{is}/catalogs/{slug}/clustercatalog.yaml", s.handleClusterCatalog).Methods("GET")
 	api.HandleFunc("/targets/{mt}/imagesets/{is}/catalogs/{slug}/upstream-packages.json", s.handleUpstreamCatalogPackages).Methods("GET")
 	api.HandleFunc("/targets/{mt}/imagesets/{is}/catalogs/{slug}/packages.json", s.handleFilteredCatalogPackages).Methods("GET")
 }
@@ -300,6 +301,13 @@ func (s *Server) handleCatalogSource(w http.ResponseWriter, r *http.Request) {
 	s.serveConfigMapResource(w, r, fmt.Sprintf("oc-mirror-%s-resources", mtName), fmt.Sprintf("catalogsource-%s.yaml", slug))
 }
 
+func (s *Server) handleClusterCatalog(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	mtName := vars["mt"]
+	slug := vars["slug"]
+	s.serveConfigMapResource(w, r, fmt.Sprintf("oc-mirror-%s-resources", mtName), fmt.Sprintf("clustercatalog-%s.yaml", slug))
+}
+
 func (s *Server) handleFilteredCatalogPackages(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	mtName := vars["mt"]
@@ -377,15 +385,24 @@ func buildResourceLinks(mtName string, cm *corev1.ConfigMap) []ResourceLink {
 		links = append(links, ResourceLink{Name: "ITMS", URL: base + "/itms.yaml", Type: "yaml"})
 	}
 
-	// Detect catalog resources by key pattern catalogsource-<slug>.yaml
+	// Detect catalog resources by key pattern catalogsource-<slug>.yaml or clustercatalog-<slug>.yaml
 	for key := range cm.Data {
-		if strings.HasPrefix(key, "catalogsource-") && strings.HasSuffix(key, ".yaml") {
-			slug := strings.TrimSuffix(strings.TrimPrefix(key, "catalogsource-"), ".yaml")
-			links = append(links, ResourceLink{
-				Name: fmt.Sprintf("CatalogSource (%s)", slug),
-				URL:  fmt.Sprintf("%s/catalogs/%s/catalogsource.yaml", base, slug),
-				Type: "yaml",
-			})
+		if strings.HasSuffix(key, ".yaml") {
+			if strings.HasPrefix(key, "catalogsource-") {
+				slug := strings.TrimSuffix(strings.TrimPrefix(key, "catalogsource-"), ".yaml")
+				links = append(links, ResourceLink{
+					Name: fmt.Sprintf("CatalogSource (%s)", slug),
+					URL:  fmt.Sprintf("%s/catalogs/%s/catalogsource.yaml", base, slug),
+					Type: "yaml",
+				})
+			} else if strings.HasPrefix(key, "clustercatalog-") {
+				slug := strings.TrimSuffix(strings.TrimPrefix(key, "clustercatalog-"), ".yaml")
+				links = append(links, ResourceLink{
+					Name: fmt.Sprintf("ClusterCatalog (%s)", slug),
+					URL:  fmt.Sprintf("%s/catalogs/%s/clustercatalog.yaml", base, slug),
+					Type: "yaml",
+				})
+			}
 		}
 	}
 

@@ -421,6 +421,7 @@ func (m *MirrorManager) resolveOperatorSection( //nolint:unparam
 		catInfo := resources.CatalogInfo{
 			SourceCatalog: op.Catalog,
 			TargetImage:   targetImage,
+			DisplayName:   catSlug,
 		}
 
 		cacheToken := operatorCacheValue(freshDigest)

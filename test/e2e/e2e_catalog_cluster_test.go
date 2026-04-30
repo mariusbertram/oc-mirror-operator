@@ -199,7 +199,7 @@ spec:
 
 		It("should persist catalog resources in the Resource ConfigMap", func() {
 			cmName := fmt.Sprintf("oc-mirror-%s-resources", targetName)
-			slug := "brtrm-dev-catalog" // derived from quay.io/mariusbertram/brtrm-dev-catalog
+			slug := "catalog" // derived from ghcr.io/mariusbertram/brtrm-dev-catalog/catalog:latest
 
 			By("verifying the Resource ConfigMap contains CatalogSource entries")
 			Eventually(func(g Gomega) {

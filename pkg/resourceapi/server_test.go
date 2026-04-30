@@ -58,9 +58,10 @@ var _ = Describe("ResourceAPI Server", func() {
 				Namespace: ns,
 			},
 			Data: map[string]string{
-				"idms.yaml":               "kind: ImageDigestMirrorSet\nmetadata:\n  name: test",
-				"itms.yaml":               "kind: ImageTagMirrorSet\nmetadata:\n  name: test",
-				"catalogsource-test.yaml": "kind: CatalogSource\nmetadata:\n  name: test",
+				"idms.yaml":                "kind: ImageDigestMirrorSet\nmetadata:\n  name: test",
+				"itms.yaml":                "kind: ImageTagMirrorSet\nmetadata:\n  name: test",
+				"catalogsource-test.yaml":  "kind: CatalogSource\nmetadata:\n  name: test",
+				"clustercatalog-test.yaml": "kind: ClusterCatalog\nmetadata:\n  name: test",
 			},
 		}
 
@@ -119,8 +120,8 @@ var _ = Describe("ResourceAPI Server", func() {
 			var detail resourceapi.TargetDetail
 			Expect(json.Unmarshal(rr.Body.Bytes(), &detail)).To(Succeed())
 			Expect(detail.Name).To(Equal(mtName))
-			// IDMS + ITMS + CatalogSource-test + Packages(test-slug) + Signatures
-			Expect(detail.Resources).To(HaveLen(5))
+			// IDMS + ITMS + CatalogSource-test + ClusterCatalog-test + Packages(test-slug) + Signatures
+			Expect(detail.Resources).To(HaveLen(6))
 			// Verify UI link format for static resources
 			Expect(detail.Resources[0].URL).To(ContainSubstring("/imagesets/latest/"))
 		})
@@ -177,6 +178,16 @@ var _ = Describe("ResourceAPI Server", func() {
 
 			Expect(rr.Code).To(Equal(http.StatusOK))
 			Expect(rr.Body.String()).To(ContainSubstring("kind: CatalogSource"))
+		})
+
+		It("serves ClusterCatalog", func() {
+			url := fmt.Sprintf("/api/v1/targets/%s/imagesets/is-one/catalogs/test/clustercatalog.yaml", mtName)
+			req := httptest.NewRequest("GET", url, nil)
+			rr := httptest.NewRecorder()
+			router.ServeHTTP(rr, req)
+
+			Expect(rr.Code).To(Equal(http.StatusOK))
+			Expect(rr.Body.String()).To(ContainSubstring("kind: ClusterCatalog"))
 		})
 
 		It("serves Catalog Packages", func() {
