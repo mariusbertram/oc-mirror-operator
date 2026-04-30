@@ -31,7 +31,7 @@ Unlike the static `oc-mirror` CLI tool, this operator works cloud-natively and d
 | **OCI Referrers** | ✅ | ✅ | Attestations, SBOMs via `regclient.ImageWithReferrers()` |
 | **Release Signatures** | ✅ | ✅ | Download from mirror.openshift.com/pub/openshift-v4/signatures |
 | **IDMS/ITMS Generation** | ✅ | ✅ | ImageDigestMirrorSet and ImageTagMirrorSet — provided via Resource API |
-| **Incremental Mirroring** | ✅ | ✅ | Already mirrored images are skipped (ConfigMap state) |
+| **Incremental Mirroring** | ✅ | ✅ | Already mirrored images are skipped (consolidated per-MirrorTarget state) |
 | **Registry Drift Detection** | ✗ | ✅ | Manager verifies every 5 min whether mirrored images still exist in the registry; missing ones are automatically re-mirrored. Auth token refresh every 20 checks prevents Quay nginx 8KB header limit |
 | **Per-Image Timeout** | ✗ | ✅ | 20 min timeout per image mirror prevents stalled uploads from blocking the worker |
 | **Automatic Retries** | ✗ | ✅ | Up to 10 retries per image on failure |
@@ -734,7 +734,7 @@ The operator runs with a **namespace-scoped `Role`** (not `ClusterRole`). Each l
 
 | Service Account | Permissions |
 |-----------------|----------------|
-| `oc-mirror-operator-controller-manager` | CRD management, Deployments, Services, ConfigMaps, Secrets (read), Routes, Ingresses, Roles/RoleBindings (`get;create;update` — no `delete`/`patch`/`escalate`/`bind` verbs to prevent privilege escalation), PersistentVolumeClaims (`get;list;watch;create;delete` — needed so the controller can grant the same to the coordinator Role) |
+| `oc-mirror-operator-controller-manager` | CRD management, Deployments, Services, ConfigMaps, Secrets (read), Routes (including `custom-host`), Ingresses, Roles/RoleBindings (`get;create;update` — no `delete`/`patch`/`escalate`/`bind` verbs to prevent privilege escalation), PersistentVolumeClaims (`get;list;watch;create;delete` — needed so the controller can grant the same to the coordinator Role) |
 | `{mt.Name}-coordinator` | ImageSets/ImageSets status (`get;list;watch;update;patch`), MirrorTargets (only `get;list;watch`), Pods (`get;list;watch;create;delete`), ConfigMaps (`get;list;watch;create;update;patch;delete`), worker token secret (`get;list;watch;create;update`), PersistentVolumeClaims (`get;list;create;delete` — for generic ephemeral volumes on worker pods) |
 | `{mt.Name}-worker` | No cluster permissions |
 
