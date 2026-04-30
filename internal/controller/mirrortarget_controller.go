@@ -99,7 +99,8 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		l.Error(err, "Failed to reconcile cleanup")
 		setCondition(&mt.Status.Conditions, "Cleanup", metav1.ConditionFalse, "CleanupError", err.Error(), mt.Generation)
 		_ = r.Status().Update(ctx, mt)
-		// Continue with the rest of reconciliation — cleanup failures are not blocking.
+		// Return error so we retry and don't advance KnownImageSets prematurely.
+		return ctrl.Result{}, err
 	}
 
 	// Ensure the coordinator ServiceAccount, Role, and RoleBinding exist in the target namespace.
@@ -612,11 +613,10 @@ func (r *MirrorTargetReconciler) handleDeletion(ctx context.Context, mt *mirrorv
 	return ctrl.Result{}, nil
 }
 
+// reconcileCleanup detects ImageSets that were removed from spec.imageSets,
 // creates cleanup Jobs for them (if cleanup-policy annotation is "Delete"),
 // and tracks cleanup progress.
-func (r *MirrorTargetReconciler) reconcileCleanup(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget) error { //nolint:unparam
-	l := log.FromContext(ctx)
-
+func (r *MirrorTargetReconciler) reconcileCleanup(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget) error {
 	currentSet := make(map[string]bool, len(mt.Spec.ImageSets))
 	for _, name := range mt.Spec.ImageSets {
 		currentSet[name] = true
@@ -630,6 +630,48 @@ func (r *MirrorTargetReconciler) reconcileCleanup(ctx context.Context, mt *mirro
 	}
 
 	// Check pending cleanups — remove entries whose Jobs completed successfully.
+	r.checkPendingCleanups(ctx, mt)
+
+	// Load consolidated per-MirrorTarget state once for all removed ImageSets
+	// and to check for orphaned entries (partial removals).
+	consolidatedState, loadErr := imagestate.LoadForTarget(ctx, r.Client, mt.Namespace, mt.Name)
+	if loadErr != nil {
+		return fmt.Errorf("failed to load consolidated state for cleanup: %w", loadErr)
+	}
+
+	// Step 1: Detect and handle partial removals (orphaned entries with no Refs).
+	orphansDirty := r.reconcileOrphans(ctx, mt, consolidatedState)
+
+	// Step 2: Handle full ImageSet removals.
+	removedDirty, err := r.reconcileRemovedImageSets(ctx, mt, removed, consolidatedState)
+	if err != nil {
+		return err
+	}
+
+	if orphansDirty || removedDirty {
+		if err := imagestate.SaveForTarget(ctx, r.Client, mt.Namespace, mt.Name, consolidatedState); err != nil {
+			return fmt.Errorf("failed to save consolidated state after cleanup partitioning: %w", err)
+		}
+	}
+
+	if len(mt.Status.PendingCleanup) > 0 {
+		setCondition(&mt.Status.Conditions, "Cleanup", metav1.ConditionFalse, "CleanupInProgress",
+			fmt.Sprintf("Cleaning up images for: %s", strings.Join(mt.Status.PendingCleanup, ", ")), mt.Generation)
+	} else if len(removed) == 0 {
+		// No new removals and nothing pending — update condition if pending cleanups just finished.
+		for _, c := range mt.Status.Conditions {
+			if c.Type == "Cleanup" && c.Reason == "CleanupInProgress" {
+				setCondition(&mt.Status.Conditions, "Cleanup", metav1.ConditionTrue, "CleanupComplete", "No pending cleanups", mt.Generation)
+				break
+			}
+		}
+	}
+
+	return nil
+}
+
+// checkPendingCleanups removes entries from PendingCleanup whose Jobs completed successfully.
+func (r *MirrorTargetReconciler) checkPendingCleanups(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget) {
 	stillPending := make([]string, 0, len(mt.Status.PendingCleanup))
 	for _, name := range mt.Status.PendingCleanup {
 		if r.isPendingCleanup(ctx, mt, name) {
@@ -637,37 +679,64 @@ func (r *MirrorTargetReconciler) reconcileCleanup(ctx context.Context, mt *mirro
 		}
 	}
 	mt.Status.PendingCleanup = stillPending
+}
 
-	if len(removed) == 0 {
-		// No new removals — update condition if pending cleanups just finished.
-		if len(mt.Status.PendingCleanup) == 0 {
-			for _, c := range mt.Status.Conditions {
-				if c.Type == "Cleanup" && c.Reason == "CleanupInProgress" {
-					setCondition(&mt.Status.Conditions, "Cleanup", metav1.ConditionTrue, "CleanupComplete", "No pending cleanups", mt.Generation)
-					break
-				}
-			}
+// reconcileOrphans detects and handles partial removals (orphaned entries with no Refs).
+func (r *MirrorTargetReconciler) reconcileOrphans(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget, consolidatedState imagestate.ImageState) bool {
+	l := log.FromContext(ctx)
+	orphans := make(imagestate.ImageState)
+	for dest, entry := range consolidatedState {
+		if len(entry.Refs) == 0 && entry.Origin == "" {
+			orphans[dest] = entry
 		}
-		return nil
+	}
+
+	if len(orphans) == 0 {
+		return false
+	}
+
+	for _, p := range mt.Status.PendingCleanup {
+		if p == "orphans" {
+			return false
+		}
+	}
+
+	snapshotName := cleanupSnapshotCMName(mt.Name, "orphans")
+	if err := imagestate.SaveRaw(ctx, r.Client, mt.Namespace, snapshotName, orphans); err != nil {
+		l.Error(err, "Failed to create orphans cleanup snapshot")
+		return false
+	}
+
+	l.Info("Creating cleanup job for orphaned images", "count", len(orphans))
+	if err := r.createCleanupJob(ctx, mt, "orphans", snapshotName); err != nil {
+		l.Error(err, "Failed to create orphans cleanup job")
+		_ = r.Delete(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: snapshotName, Namespace: mt.Namespace}})
+		return false
+	}
+
+	mt.Status.PendingCleanup = append(mt.Status.PendingCleanup, "orphans")
+	for dest := range orphans {
+		delete(consolidatedState, dest)
+	}
+	return true
+}
+
+// reconcileRemovedImageSets handles full ImageSet removals.
+func (r *MirrorTargetReconciler) reconcileRemovedImageSets(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget, removed []string, consolidatedState imagestate.ImageState) (bool, error) {
+	l := log.FromContext(ctx)
+	if len(removed) == 0 {
+		return false, nil
 	}
 
 	cleanupPolicy := mt.Annotations[mirrorv1alpha1.CleanupPolicyAnnotation]
 	if cleanupPolicy != mirrorv1alpha1.CleanupPolicyDelete {
 		l.Info("ImageSets removed but cleanup-policy not set to Delete — skipping registry cleanup",
 			"removed", removed, "annotation", cleanupPolicy)
-		return nil
+		return false, nil
 	}
 
-	// Load consolidated per-MirrorTarget state once for all removed ImageSets.
-	consolidatedState, loadErr := imagestate.LoadForTarget(ctx, r.Client, mt.Namespace, mt.Name)
-	if loadErr != nil {
-		l.Error(loadErr, "Failed to load consolidated state for cleanup")
-		return nil
-	}
 	stateDirty := false
-
 	for _, isName := range removed {
-		// Skip if already pending cleanup.
 		alreadyPending := false
 		for _, p := range mt.Status.PendingCleanup {
 			if p == isName {
@@ -679,29 +748,19 @@ func (r *MirrorTargetReconciler) reconcileCleanup(ctx context.Context, mt *mirro
 			continue
 		}
 
-		created, dirty := r.partitionAndCreateCleanupJob(ctx, mt, isName, consolidatedState)
+		created, dirty, err := r.partitionAndCreateCleanupJob(ctx, mt, isName, consolidatedState)
 		if dirty {
 			stateDirty = true
+		}
+		if err != nil {
+			l.Error(err, "Failed to reconcile cleanup for ImageSet", "imageset", isName)
+			return false, err
 		}
 		if created {
 			mt.Status.PendingCleanup = append(mt.Status.PendingCleanup, isName)
 		}
 	}
-
-	if stateDirty {
-		if err := imagestate.SaveForTarget(ctx, r.Client, mt.Namespace, mt.Name, consolidatedState); err != nil {
-			l.Error(err, "Failed to save consolidated state after cleanup partitioning")
-		}
-	}
-
-	if len(mt.Status.PendingCleanup) > 0 {
-		setCondition(&mt.Status.Conditions, "Cleanup", metav1.ConditionFalse, "CleanupInProgress",
-			fmt.Sprintf("Cleaning up images for: %s", strings.Join(mt.Status.PendingCleanup, ", ")), mt.Generation)
-	} else {
-		setCondition(&mt.Status.Conditions, "Cleanup", metav1.ConditionTrue, "CleanupComplete", "No pending cleanups", mt.Generation)
-	}
-
-	return nil
+	return stateDirty, nil
 }
 
 // isPendingCleanup checks whether the cleanup Job for the given ImageSet is
@@ -743,13 +802,14 @@ func (r *MirrorTargetReconciler) isPendingCleanup(ctx context.Context, mt *mirro
 
 // partitionAndCreateCleanupJob partitions the consolidated state for isName
 // (exclusive vs shared), creates a snapshot ConfigMap, and launches a cleanup
-// Job. Returns (jobCreated, stateDirty). The consolidated map is modified in place.
+// Job. Returns (jobCreated, stateDirty, error). The consolidated map is
+// modified in place ONLY IF job creation succeeds.
 func (r *MirrorTargetReconciler) partitionAndCreateCleanupJob(
 	ctx context.Context,
 	mt *mirrorv1alpha1.MirrorTarget,
 	isName string,
 	consolidated imagestate.ImageState,
-) (created, dirty bool) {
+) (created, dirty bool, err error) {
 	l := log.FromContext(ctx)
 
 	exclusiveState := make(imagestate.ImageState)
@@ -759,49 +819,73 @@ func (r *MirrorTargetReconciler) partitionAndCreateCleanupJob(
 		}
 	}
 
-	// Remove IS ref from entries shared with other ImageSets.
-	for dest, entry := range consolidated {
-		if entry.HasImageSet(isName) && len(entry.Refs) > 1 {
-			entry.RemoveImageSet(isName)
-			consolidated[dest] = entry
-			dirty = true
-		}
-	}
-
 	if len(exclusiveState) == 0 {
-		l.Info("No exclusive images for removed ImageSet — skipping cleanup job", "imageset", isName)
-		return false, dirty
+		// Even if no exclusive images, we must remove the IS ref from shared entries.
+		sharedDirty := false
+		for dest, entry := range consolidated {
+			if entry.HasImageSet(isName) && len(entry.Refs) > 1 {
+				entry.RemoveImageSet(isName)
+				consolidated[dest] = entry
+				sharedDirty = true
+			}
+		}
+		if sharedDirty {
+			l.Info("Removed ImageSet ref from shared images; no exclusive images for cleanup", "imageset", isName)
+		} else {
+			l.Info("No images found for removed ImageSet — skipping cleanup job", "imageset", isName)
+		}
+		return false, sharedDirty, nil
 	}
 
 	snapshotName := cleanupSnapshotCMName(mt.Name, isName)
 	if err := imagestate.SaveRaw(ctx, r.Client, mt.Namespace, snapshotName, exclusiveState); err != nil {
-		l.Error(err, "Failed to create cleanup snapshot ConfigMap", "imageset", isName)
-		return false, dirty
+		return false, false, fmt.Errorf("failed to create cleanup snapshot ConfigMap for %s: %w", isName, err)
 	}
-
-	for dest := range exclusiveState {
-		delete(consolidated, dest)
-	}
-	dirty = true
 
 	l.Info("Creating cleanup job for removed ImageSet", "imageset", isName, "exclusiveImages", len(exclusiveState))
 	if err := r.createCleanupJob(ctx, mt, isName, snapshotName); err != nil {
-		l.Error(err, "Failed to create cleanup job", "imageset", isName)
-		_ = r.Delete(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: snapshotName, Namespace: mt.Namespace}})
-		return false, dirty
+		// Clean up the snapshot CM if job creation failed (except for the "stale job deleted" requeue signal).
+		if !strings.Contains(err.Error(), "stale cleanup job deleted") {
+			_ = r.Delete(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: snapshotName, Namespace: mt.Namespace}})
+		}
+		return false, false, fmt.Errorf("failed to create cleanup job for %s: %w", isName, err)
 	}
-	return true, dirty
+
+	// Job created successfully — now update the consolidated state.
+	for dest := range exclusiveState {
+		delete(consolidated, dest)
+	}
+	// Also handle shared entries now.
+	for dest, entry := range consolidated {
+		if entry.HasImageSet(isName) && len(entry.Refs) > 1 {
+			entry.RemoveImageSet(isName)
+			consolidated[dest] = entry
+		}
+	}
+
+	return true, true, nil
 }
 
 // createCleanupJob creates a Kubernetes Job that deletes all images listed in
 // the snapshot ConfigMap from the target registry and removes the snapshot.
 func (r *MirrorTargetReconciler) createCleanupJob(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget, imageSetName, snapshotCMName string) error {
+	l := log.FromContext(ctx)
 	jobName := cleanupJobName(mt.Name, imageSetName)
 
 	// Check if job already exists.
 	existing := &batchv1.Job{}
 	if err := r.Get(ctx, client.ObjectKey{Name: jobName, Namespace: mt.Namespace}, existing); err == nil {
-		return nil // already exists
+		if existing.Status.Succeeded > 0 || existing.Status.Failed > 0 {
+			l.Info("Deleting stale cleanup job", "job", jobName, "imageset", imageSetName)
+			propagation := metav1.DeletePropagationBackground
+			if delErr := r.Delete(ctx, existing, &client.DeleteOptions{PropagationPolicy: &propagation}); delErr != nil {
+				return fmt.Errorf("failed to delete stale cleanup job: %w", delErr)
+			}
+			// Return an error to trigger a requeue so we create the job in the next cycle.
+			// This avoids a race where we try to Create while the Delete is still processing.
+			return fmt.Errorf("stale cleanup job deleted; will recreate on next reconcile")
+		}
+		return nil // already exists and active
 	}
 
 	backoffLimit := int32(3)

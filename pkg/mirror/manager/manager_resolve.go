@@ -836,10 +836,11 @@ func mergeResolvedIntoConsolidated(consolidated imagestate.ImageState, perISStat
 			continue
 		}
 		if existing.HasImageSet(isName) {
-			orphaned := existing.RemoveImageSet(isName)
-			if orphaned {
-				delete(consolidated, dest)
-			}
+			_ = existing.RemoveImageSet(isName)
+			// We no longer delete orphaned entries here. Instead, we leave them
+			// in the consolidated state with len(Refs) == 0. The MirrorTarget
+			// controller's reconcileCleanup loop will detect these orphans and
+			// trigger a cleanup Job for them.
 		}
 	}
 }
