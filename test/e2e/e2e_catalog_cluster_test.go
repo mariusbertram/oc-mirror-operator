@@ -208,8 +208,8 @@ spec:
 					"-o", "jsonpath={.data}")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(ContainSubstring("catalogsource-"+slug+".yaml"),
-					"ConfigMap missing catalogsource.yaml key")
+				g.Expect(output).To(ContainSubstring("catalogsource-catalog.yaml"),
+					"ConfigMap missing catalogsource-catalog.yaml key")
 			}, 3*time.Minute, 10*time.Second).Should(Succeed())
 
 			By("verifying packages.json contains the filtered package")
