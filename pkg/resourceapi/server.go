@@ -41,6 +41,14 @@ type TargetSummary struct {
 	FailedImages   int    `json:"failedImages"`
 }
 
+// ConditionSummary is a condensed view of a metav1.Condition for the API.
+type ConditionSummary struct {
+	Type    string `json:"type"`
+	Status  string `json:"status"`
+	Reason  string `json:"reason"`
+	Message string `json:"message"`
+}
+
 // TargetDetail is the JSON response for a single target detail endpoint.
 type TargetDetail struct {
 	Name           string                `json:"name"`
@@ -49,6 +57,7 @@ type TargetDetail struct {
 	MirroredImages int                   `json:"mirroredImages"`
 	PendingImages  int                   `json:"pendingImages"`
 	FailedImages   int                   `json:"failedImages"`
+	Conditions     []ConditionSummary    `json:"conditions"`
 	ImageSets      []ImageSetSummaryJSON `json:"imageSets"`
 	Resources      []ResourceLink        `json:"resources"`
 }
@@ -165,6 +174,36 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
 		resources = buildResourceLinks(mtName, cm)
 	}
 
+	// Append packages links from per-catalog ConfigMaps (labelled by mirrortarget + catalog-packages).
+	packageCMs := &corev1.ConfigMapList{}
+	if err := s.client.List(r.Context(), packageCMs,
+		client.InNamespace(s.namespace),
+		client.MatchingLabels{"oc-mirror.openshift.io/mirrortarget": mtName},
+	); err == nil {
+		base := fmt.Sprintf("/api/v1/targets/%s/imagesets/latest", mtName)
+		for _, pcm := range packageCMs.Items {
+			slug, ok := pcm.Labels["oc-mirror.openshift.io/catalog-packages"]
+			if ok && slug != "" {
+				resources = append(resources, ResourceLink{
+					Name: fmt.Sprintf("Packages (%s)", slug),
+					URL:  fmt.Sprintf("%s/catalogs/%s/packages.json", base, slug),
+					Type: "json",
+				})
+			}
+		}
+	}
+
+	// Map CRD conditions to summary structs.
+	conditions := make([]ConditionSummary, 0, len(mt.Status.Conditions))
+	for _, c := range mt.Status.Conditions {
+		conditions = append(conditions, ConditionSummary{
+			Type:    c.Type,
+			Status:  string(c.Status),
+			Reason:  c.Reason,
+			Message: c.Message,
+		})
+	}
+
 	imageSets := make([]ImageSetSummaryJSON, 0, len(mt.Status.ImageSetStatuses))
 	for _, iss := range mt.Status.ImageSetStatuses {
 		imageSets = append(imageSets, ImageSetSummaryJSON{
@@ -174,7 +213,7 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
 			Mirrored:  iss.Mirrored,
 			Pending:   iss.Pending,
 			Failed:    iss.Failed,
-			Resources: resources, // same resources apply to all image sets for now
+			Resources: resources,
 		})
 	}
 
@@ -185,6 +224,7 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
 		MirroredImages: mt.Status.MirroredImages,
 		PendingImages:  mt.Status.PendingImages,
 		FailedImages:   mt.Status.FailedImages,
+		Conditions:     conditions,
 		ImageSets:      imageSets,
 		Resources:      resources,
 	}

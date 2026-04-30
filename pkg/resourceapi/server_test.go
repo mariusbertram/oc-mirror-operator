@@ -68,6 +68,10 @@ var _ = Describe("ResourceAPI Server", func() {
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      fmt.Sprintf("oc-mirror-%s-test-slug-packages", mtName),
 				Namespace: ns,
+				Labels: map[string]string{
+					"oc-mirror.openshift.io/mirrortarget":     mtName,
+					"oc-mirror.openshift.io/catalog-packages": "test-slug",
+				},
 			},
 			Data: map[string]string{
 				"packages.json": `{"catalog":"test","packages":[]}`,
@@ -105,9 +109,23 @@ var _ = Describe("ResourceAPI Server", func() {
 			var detail resourceapi.TargetDetail
 			Expect(json.Unmarshal(rr.Body.Bytes(), &detail)).To(Succeed())
 			Expect(detail.Name).To(Equal(mtName))
-			Expect(detail.Resources).To(HaveLen(3))
-			// Verify UI link format
+			// IDMS + ITMS + CatalogSource-test + Packages(test-slug)
+			Expect(detail.Resources).To(HaveLen(4))
+			// Verify UI link format for static resources
 			Expect(detail.Resources[0].URL).To(ContainSubstring("/imagesets/latest/"))
+		})
+
+		It("returns conditions in target detail", func() {
+			req := httptest.NewRequest("GET", fmt.Sprintf("/api/v1/targets/%s", mtName), nil)
+			rr := httptest.NewRecorder()
+			router.ServeHTTP(rr, req)
+
+			Expect(rr.Code).To(Equal(http.StatusOK))
+
+			var detail resourceapi.TargetDetail
+			Expect(json.Unmarshal(rr.Body.Bytes(), &detail)).To(Succeed())
+			// MirrorTarget in test has no conditions set — field must be present but empty
+			Expect(detail.Conditions).NotTo(BeNil())
 		})
 
 		It("returns 404 for nonexistent target", func() {

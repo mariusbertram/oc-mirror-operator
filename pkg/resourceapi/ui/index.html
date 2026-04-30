@@ -79,7 +79,7 @@
             font-size: 0.9rem;
             color: #d2d2d2 !important;
         }
-        
+
         .pf-v5-c-nav__link:hover {
             color: #fff !important;
         }
@@ -159,6 +159,50 @@
         .pf-v5-u-color-200 {
             color: var(--pf-v5-global--Color--200) !important;
         }
+
+        /* YAML tab code blocks */
+        .yaml-resource-block {
+            margin-bottom: var(--pf-v5-global--spacer--lg);
+        }
+        .yaml-resource-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: var(--pf-v5-global--BackgroundColor--200);
+            padding: 8px 12px;
+            border-radius: 4px 4px 0 0;
+            border: 1px solid var(--pf-v5-global--BorderColor--100);
+            border-bottom: none;
+            font-weight: 600;
+            font-size: 0.875rem;
+        }
+        .yaml-resource-pre {
+            margin: 0;
+            padding: 12px;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            font-family: "Red Hat Text", monospace;
+            font-size: 0.8rem;
+            line-height: 1.5;
+            overflow-x: auto;
+            border-radius: 0 0 4px 4px;
+            border: 1px solid var(--pf-v5-global--BorderColor--100);
+            white-space: pre;
+        }
+
+        /* Condition rows */
+        .condition-row {
+            display: flex;
+            align-items: flex-start;
+            gap: 8px;
+            padding: 6px 0;
+            border-bottom: 1px solid var(--pf-v5-global--BorderColor--100);
+        }
+        .condition-row:last-child { border-bottom: none; }
+        .condition-row__icon { min-width: 16px; margin-top: 2px; }
+        .condition-row__body { flex: 1; min-width: 0; }
+        .condition-row__title { font-weight: 600; font-size: 0.875rem; }
+        .condition-row__sub { font-size: 0.75rem; color: var(--pf-v5-global--Color--200); word-break: break-word; }
     </style>
 </head>
 <body>
@@ -224,11 +268,11 @@
                 </div>
                 <div class="pf-v5-c-tabs" id="tabs" style="display:none">
                     <ul class="pf-v5-c-tabs__list">
-                        <li class="pf-v5-c-tabs__item pf-m-current">
+                        <li class="pf-v5-c-tabs__item pf-m-current" id="tab-item-overview">
                             <button class="pf-v5-c-tabs__link" id="tab-overview">Overview</button>
                         </li>
-                        <li class="pf-v5-c-tabs__item">
-                            <button class="pf-v5-c-tabs__link">YAML</button>
+                        <li class="pf-v5-c-tabs__item" id="tab-item-yaml">
+                            <button class="pf-v5-c-tabs__link" id="tab-yaml">YAML</button>
                         </li>
                     </ul>
                 </div>
@@ -254,10 +298,20 @@
         const app = document.getElementById("app");
         const pageTitle = document.getElementById("page-title");
         const tabs = document.getElementById("tabs");
+        const tabItemOverview = document.getElementById("tab-item-overview");
+        const tabItemYaml = document.getElementById("tab-item-yaml");
+        const tabOverview = document.getElementById("tab-overview");
+        const tabYaml = document.getElementById("tab-yaml");
         let refreshTimer = null;
         let currentView = { name: "dashboard" };
 
         function navigate(view) {
+            // Preserve the active tab when refreshing the same target; reset when navigating away.
+            if (view.name !== currentView.name || view.target !== currentView.target) {
+                view.tab = "overview";
+            } else {
+                view.tab = currentView.tab || "overview";
+            }
             currentView = view;
             render();
         }
@@ -272,10 +326,39 @@
 
         window.addEventListener("hashchange", () => navigate(parseHash()));
 
+        tabOverview.addEventListener("click", () => {
+            currentView.tab = "overview";
+            setActiveTab("overview");
+            if (currentView.cachedDetail) {
+                renderTabOverview(currentView.cachedDetail);
+            }
+        });
+
+        tabYaml.addEventListener("click", () => {
+            currentView.tab = "yaml";
+            setActiveTab("yaml");
+            if (currentView.target) {
+                renderTabYaml(currentView.target, currentView.cachedDetail);
+            }
+        });
+
+        function setActiveTab(tab) {
+            tabItemOverview.classList.toggle("pf-m-current", tab === "overview");
+            tabItemYaml.classList.toggle("pf-m-current", tab === "yaml");
+        }
+
         async function fetchJSON(url) {
             const res = await fetch(url);
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             return res.json();
+        }
+
+        // Returns text content or null on 404; throws on other errors.
+        async function fetchText(url) {
+            const res = await fetch(url);
+            if (res.status === 404) return null;
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            return res.text();
         }
 
         async function render() {
@@ -287,6 +370,7 @@
                 } else {
                     pageTitle.innerHTML = `<span class="pf-v5-u-font-size-sm pf-v5-u-color-200" style="display:block">MirrorTarget</span> ${escapeHtml(currentView.target)}`;
                     tabs.style.display = "flex";
+                    setActiveTab(currentView.tab || "overview");
                     await renderTargetDetail(currentView.target);
                 }
             } catch (err) {
@@ -369,6 +453,7 @@
                         <div class="pf-v5-l-flex pf-m-space-items-lg pf-v5-u-mt-md">
                             <div><div class="pf-v5-u-font-size-xl pf-v5-u-font-weight-bold">${total}</div><div class="pf-v5-u-font-size-xs pf-v5-u-color-200">Total</div></div>
                             <div><div class="pf-v5-u-font-size-xl pf-v5-u-font-weight-bold status-complete">${mirrored}</div><div class="pf-v5-u-font-size-xs pf-v5-u-color-200">Mirrored</div></div>
+                            <div><div class="pf-v5-u-font-size-xl pf-v5-u-font-weight-bold status-mirroring">${pending}</div><div class="pf-v5-u-font-size-xs pf-v5-u-color-200">Pending</div></div>
                             <div><div class="pf-v5-u-font-size-xl pf-v5-u-font-weight-bold status-failed">${failed}</div><div class="pf-v5-u-font-size-xs pf-v5-u-color-200">Failed</div></div>
                         </div>
                     </div>
@@ -378,7 +463,16 @@
 
         async function renderTargetDetail(targetName) {
             const detail = await fetchJSON(`/api/v1/targets/${encodeURIComponent(targetName)}`);
-            
+            currentView.cachedDetail = detail;
+
+            if ((currentView.tab || "overview") === "yaml") {
+                renderTabYaml(targetName, detail);
+            } else {
+                renderTabOverview(detail);
+            }
+        }
+
+        function renderTabOverview(detail) {
             const total = detail.totalImages || 0;
             const mirrored = detail.mirroredImages || 0;
             const pending = detail.pendingImages || 0;
@@ -389,7 +483,33 @@
             if (failed > 0) statusIcon = '<i class="fas fa-exclamation-circle status-failed"></i> Degraded';
             else if (pending > 0) statusIcon = '<i class="fas fa-sync fa-spin status-mirroring"></i> Mirroring';
 
-            let html = `
+            let conditionsHtml = '';
+            if (detail.conditions && detail.conditions.length > 0) {
+                const rows = detail.conditions.map(c => {
+                    const isTrue = c.status === "True";
+                    const isFalse = c.status === "False";
+                    const icon = isTrue
+                        ? '<i class="fas fa-check-circle status-complete"></i>'
+                        : isFalse
+                            ? '<i class="fas fa-times-circle status-failed"></i>'
+                            : '<i class="fas fa-minus-circle pf-v5-u-color-200"></i>';
+                    return `
+                    <div class="condition-row">
+                        <div class="condition-row__icon">${icon}</div>
+                        <div class="condition-row__body">
+                            <div class="condition-row__title">${escapeHtml(c.type)} &middot; <span class="pf-v5-u-font-weight-normal">${escapeHtml(c.reason)}</span></div>
+                            ${c.message ? `<div class="condition-row__sub">${escapeHtml(c.message)}</div>` : ''}
+                        </div>
+                    </div>`;
+                }).join('');
+                conditionsHtml = `
+                    <section class="pf-v5-c-card pf-v5-u-mt-lg">
+                        <div class="pf-v5-c-card__title">Conditions</div>
+                        <div class="pf-v5-c-card__body">${rows}</div>
+                    </section>`;
+            }
+
+            app.innerHTML = `
             <div class="overview-grid">
                 <!-- Column Main -->
                 <div class="overview-column-main">
@@ -425,11 +545,12 @@
                                         <th role="columnheader" scope="col">Status</th>
                                         <th role="columnheader" scope="col">Total</th>
                                         <th role="columnheader" scope="col">Mirrored</th>
+                                        <th role="columnheader" scope="col">Pending</th>
                                         <th role="columnheader" scope="col">Failed</th>
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    ${detail.imageSets.map(is => {
+                                    ${(detail.imageSets || []).map(is => {
                                         let badge = '<span class="pf-v5-u-font-size-sm status-complete"><i class="fas fa-check-circle"></i> Complete</span>';
                                         if (!is.found) badge = '<span class="pf-v5-u-font-size-sm status-failed"><i class="fas fa-minus-circle"></i> Missing</span>';
                                         else if (is.failed > 0) badge = `<span class="pf-v5-u-font-size-sm status-failed"><i class="fas fa-exclamation-circle"></i> ${is.failed} Failed</span>`;
@@ -441,6 +562,7 @@
                                             <td role="cell" data-label="Status">${badge}</td>
                                             <td role="cell" data-label="Total">${is.total || 0}</td>
                                             <td role="cell" data-label="Mirrored" class="status-complete">${is.mirrored || 0}</td>
+                                            <td role="cell" data-label="Pending" class="status-mirroring">${is.pending || 0}</td>
                                             <td role="cell" data-label="Failed" class="status-failed">${is.failed || 0}</td>
                                         </tr>`;
                                     }).join('')}
@@ -466,15 +588,16 @@
                             </div>
                             <div class="pf-v5-u-mb-md">
                                 <div class="pf-v5-u-font-size-xs pf-v5-u-color-200">Inventory</div>
-                                <div class="pf-v5-u-font-size-sm">${detail.imageSets.length} ImageSets</div>
+                                <div class="pf-v5-u-font-size-sm">${(detail.imageSets || []).length} ImageSets</div>
                             </div>
                         </div>
                     </section>
 
                     <!-- Resources Card -->
-                    <section class="pf-v5-c-card">
+                    <section class="pf-v5-c-card pf-v5-u-mb-lg">
                         <div class="pf-v5-c-card__title">Resources</div>
                         <div class="pf-v5-c-card__body">
+                            ${(detail.resources && detail.resources.length > 0) ? `
                             <ul class="pf-v5-c-list pf-m-plain">
                                 ${detail.resources.map(r => `
                                     <li class="pf-v5-u-mb-sm">
@@ -484,12 +607,80 @@
                                         </a>
                                     </li>
                                 `).join('')}
-                            </ul>
+                            </ul>` : '<div class="pf-v5-u-font-size-sm pf-v5-u-color-200">No resources available yet.</div>'}
                         </div>
                     </section>
+
+                    ${conditionsHtml}
                 </div>
             </div>`;
+        }
+
+        async function renderTabYaml(targetName, detail) {
+            app.innerHTML = `<div class="pf-v5-l-bullseye" style="min-height:200px">
+                <div class="pf-v5-c-spinner" role="progressbar" aria-label="Loading YAML"></div>
+            </div>`;
+
+            // Collect YAML resource links from the detail
+            const yamlResources = (detail && detail.resources || []).filter(r => r.type === "yaml");
+
+            if (yamlResources.length === 0) {
+                app.innerHTML = `
+                <div class="pf-v5-c-empty-state pf-m-lg">
+                    <div class="pf-v5-c-empty-state__content">
+                        <div class="pf-v5-c-empty-state__header">
+                            <div class="pf-v5-c-empty-state__icon pf-v5-u-color-200">
+                                <i class="fas fa-file-code" aria-hidden="true"></i>
+                            </div>
+                            <h1 class="pf-v5-c-title pf-m-lg">No YAML resources available</h1>
+                        </div>
+                        <div class="pf-v5-c-empty-state__body">
+                            IDMS, ITMS, and CatalogSource resources will appear here once mirroring has run.
+                        </div>
+                    </div>
+                </div>`;
+                return;
+            }
+
+            // Fetch all YAML resources in parallel; null means 404
+            const contents = await Promise.all(yamlResources.map(r => fetchText(r.url)));
+
+            let html = '';
+            for (let i = 0; i < yamlResources.length; i++) {
+                const r = yamlResources[i];
+                const content = contents[i];
+                if (content === null) continue;
+                html += `
+                <div class="yaml-resource-block">
+                    <div class="yaml-resource-header">
+                        <span><i class="fas fa-file-code pf-v5-u-mr-sm"></i>${escapeHtml(r.name)}</span>
+                        <button class="pf-v5-c-button pf-m-plain pf-v5-u-font-size-sm" id="yaml-copy-${i}">
+                            <i class="fas fa-copy pf-v5-u-mr-xs"></i> Copy
+                        </button>
+                    </div>
+                    <pre class="yaml-resource-pre">${escapeHtml(content)}</pre>
+                </div>`;
+            }
+
+            if (!html) {
+                html = `<div class="pf-v5-u-font-size-sm pf-v5-u-color-200">Resources exist but returned no content.</div>`;
+            }
+
             app.innerHTML = html;
+
+            yamlResources.forEach((r, i) => {
+                const content = contents[i];
+                if (content === null) return;
+                const btn = document.getElementById(`yaml-copy-${i}`);
+                if (btn) btn.addEventListener("click", () => copyYaml(btn, content));
+            });
+        }
+
+        function copyYaml(btn, text) {
+            navigator.clipboard.writeText(text).then(() => {
+                btn.innerHTML = '<i class="fas fa-check pf-v5-u-mr-xs"></i> Copied';
+                setTimeout(() => { btn.innerHTML = '<i class="fas fa-copy pf-v5-u-mr-xs"></i> Copy'; }, 2000);
+            });
         }
 
         function scheduleRefresh() {
@@ -499,15 +690,16 @@
 
         function escapeHtml(str) {
             const div = document.createElement("div");
-            div.textContent = str;
+            div.textContent = String(str || '');
             return div.innerHTML;
         }
 
         function escapeAttr(str) {
-            return str.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/'/g, "&#39;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+            return String(str || '').replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/'/g, "&#39;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
         }
 
         currentView = parseHash();
+        currentView.tab = "overview";
         render();
     })();
     </script>
