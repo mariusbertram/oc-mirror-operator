@@ -3,6 +3,7 @@ package resourceapi
 import (
 	"context"
 	"embed"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/gorilla/mux"
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
+	mirrorresources "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/resources"
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -112,6 +114,9 @@ func (s *Server) RegisterRoutes(r *mux.Router) {
 	api.HandleFunc("/targets/{mt}/catalogs/{slug}/packages.json", s.handleFilteredCatalogPackages).Methods("GET")
 	api.HandleFunc("/targets/{mt}/catalogs/{slug}/upstream-packages.json", s.handleUpstreamCatalogPackages).Methods("GET")
 
+	// Release GPG signatures
+	api.HandleFunc("/targets/{mt}/signatures.yaml", s.handleSignatures).Methods("GET")
+
 	// Raw resource endpoints – YAML/JSON from ConfigMaps (legacy {is} segment kept for compat)
 	api.HandleFunc("/targets/{mt}/imagesets/{is}/idms.yaml", s.handleIDMS).Methods("GET")
 	api.HandleFunc("/targets/{mt}/imagesets/{is}/itms.yaml", s.handleITMS).Methods("GET")
@@ -186,6 +191,16 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
 	var resources []ResourceLink
 	if err := s.client.Get(r.Context(), client.ObjectKey{Name: cmName, Namespace: s.namespace}, cm); err == nil {
 		resources = buildResourceLinks(mtName, cm)
+	}
+
+	// Add signature resource link if the signatures ConfigMap exists and has data.
+	sigCM := &corev1.ConfigMap{}
+	if err := s.client.Get(r.Context(), client.ObjectKey{Name: mtName + "-signatures", Namespace: s.namespace}, sigCM); err == nil && len(sigCM.BinaryData) > 0 {
+		resources = append(resources, ResourceLink{
+			Name: fmt.Sprintf("Signatures (%d releases)", len(sigCM.BinaryData)),
+			URL:  fmt.Sprintf("/api/v1/targets/%s/signatures.yaml", mtName),
+			Type: "yaml",
+		})
 	}
 
 	// Discover per-catalog ConfigMaps to build catalog summaries.
@@ -297,6 +312,34 @@ func (s *Server) handleUpstreamCatalogPackages(w http.ResponseWriter, r *http.Re
 	mtName := vars["mt"]
 	slug := vars["slug"]
 	s.serveConfigMapResource(w, r, fmt.Sprintf("oc-mirror-%s-%s-upstream-packages", mtName, slug), "packages.json")
+}
+
+func (s *Server) handleSignatures(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	mtName := vars["mt"]
+
+	cm := &corev1.ConfigMap{}
+	if err := s.client.Get(r.Context(), client.ObjectKey{Name: mtName + "-signatures", Namespace: s.namespace}, cm); err != nil {
+		http.Error(w, "Signatures not found", http.StatusNotFound)
+		return
+	}
+
+	// BinaryData keys are stored as "sha256-<hex>" (colon replaced for ConfigMap compatibility).
+	// GenerateSignatureConfigMapsBase64 expects "sha256:<hex>" keys and base64-encoded values.
+	b64sigs := make(map[string]string, len(cm.BinaryData))
+	for k, v := range cm.BinaryData {
+		digest := strings.Replace(k, "sha256-", "sha256:", 1)
+		b64sigs[digest] = base64.StdEncoding.EncodeToString(v)
+	}
+
+	out, err := mirrorresources.GenerateSignatureConfigMapsBase64(b64sigs)
+	if err != nil {
+		http.Error(w, "Failed to generate signatures YAML", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/yaml")
+	_, _ = w.Write(out)
 }
 
 func (s *Server) serveConfigMapResource(w http.ResponseWriter, r *http.Request, cmName, key string) {

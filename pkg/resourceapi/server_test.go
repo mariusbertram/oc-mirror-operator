@@ -78,7 +78,17 @@ var _ = Describe("ResourceAPI Server", func() {
 			},
 		}
 
-		c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(mt, cm, packagesCm).Build()
+		sigCM := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      fmt.Sprintf("%s-signatures", mtName),
+				Namespace: ns,
+			},
+			BinaryData: map[string][]byte{
+				"sha256-aabbccddee112233445566778899aabbccddee112233445566778899aabbccdd": []byte("fake-gpg-signature"),
+			},
+		}
+
+		c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(mt, cm, packagesCm, sigCM).Build()
 		s := resourceapi.NewServer(c, ns)
 
 		router = mux.NewRouter()
@@ -109,8 +119,8 @@ var _ = Describe("ResourceAPI Server", func() {
 			var detail resourceapi.TargetDetail
 			Expect(json.Unmarshal(rr.Body.Bytes(), &detail)).To(Succeed())
 			Expect(detail.Name).To(Equal(mtName))
-			// IDMS + ITMS + CatalogSource-test + Packages(test-slug)
-			Expect(detail.Resources).To(HaveLen(4))
+			// IDMS + ITMS + CatalogSource-test + Packages(test-slug) + Signatures
+			Expect(detail.Resources).To(HaveLen(5))
 			// Verify UI link format for static resources
 			Expect(detail.Resources[0].URL).To(ContainSubstring("/imagesets/latest/"))
 		})
@@ -179,6 +189,27 @@ var _ = Describe("ResourceAPI Server", func() {
 			Expect(rr.Code).To(Equal(http.StatusOK))
 			Expect(rr.Body.String()).To(ContainSubstring(`{"catalog":"test","packages":[]}`))
 			Expect(rr.Header().Get("Content-Type")).To(Equal("application/json"))
+		})
+
+		It("serves signatures as multi-document ConfigMap YAML", func() {
+			url := fmt.Sprintf("/api/v1/targets/%s/signatures.yaml", mtName)
+			req := httptest.NewRequest("GET", url, nil)
+			rr := httptest.NewRecorder()
+			router.ServeHTTP(rr, req)
+
+			Expect(rr.Code).To(Equal(http.StatusOK))
+			Expect(rr.Header().Get("Content-Type")).To(Equal("text/yaml"))
+			Expect(rr.Body.String()).To(ContainSubstring("kind: ConfigMap"))
+			Expect(rr.Body.String()).To(ContainSubstring("release.openshift.io/verification-signatures"))
+		})
+
+		It("returns 404 for signatures when target has no signatures CM", func() {
+			url := "/api/v1/targets/nonexistent/signatures.yaml"
+			req := httptest.NewRequest("GET", url, nil)
+			rr := httptest.NewRecorder()
+			router.ServeHTTP(rr, req)
+
+			Expect(rr.Code).To(Equal(http.StatusNotFound))
 		})
 
 		It("returns 410 Gone for legacy redirects", func() {

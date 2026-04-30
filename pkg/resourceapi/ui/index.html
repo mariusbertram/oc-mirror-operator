@@ -403,6 +403,7 @@
         function navigate(view) {
             if (view.name !== currentView.name || view.target !== currentView.target) {
                 view.tab = "overview";
+                window.__catalogViews = {};
             } else {
                 view.tab = currentView.tab || "overview";
             }
@@ -741,9 +742,13 @@
                 filtered: cat.filteredPackagesUrl,
                 upstream: cat.upstreamPackagesUrl,
             }));
+            // Preserve view state across auto-refreshes; only reset when navigating to a new target.
+            if (!window.__catalogViews) window.__catalogViews = {};
 
-            // Render skeleton cards first, then load package data per catalog.
-            app.innerHTML = catalogs.map((cat, i) => `
+            // Render skeleton cards first, restoring the last active view per catalog.
+            app.innerHTML = catalogs.map((cat, i) => {
+                const view = window.__catalogViews[i] || 'filtered';
+                return `
             <div class="pf-v5-c-card catalog-card" id="catalog-card-${i}">
                 <div class="pf-v5-c-card__header">
                     <div class="catalog-card__header">
@@ -755,8 +760,8 @@
                             <input class="catalog-search" type="search" placeholder="Filter packages…"
                                 id="search-${i}" oninput="filterPkgTable(${i})" />
                             <div class="catalog-view-toggle" id="toggle-${i}">
-                                <button class="active" onclick="switchCatalogView(${i}, 'filtered')">Filtered</button>
-                                <button onclick="switchCatalogView(${i}, 'upstream')">Upstream</button>
+                                <button class="${view === 'filtered' ? 'active' : ''}" onclick="switchCatalogView(${i}, 'filtered')">Filtered</button>
+                                <button class="${view === 'upstream' ? 'active' : ''}" onclick="switchCatalogView(${i}, 'upstream')">Upstream</button>
                             </div>
                         </div>
                     </div>
@@ -766,16 +771,19 @@
                         <div class="pf-v5-c-spinner pf-m-sm" role="progressbar"></div>
                     </div>
                 </div>
-            </div>`).join('');
+            </div>`;
+            }).join('');
 
-            // Load filtered packages for all catalogs in parallel.
+            // Load packages for all catalogs in parallel, restoring the last active view.
             await Promise.all(catalogs.map(async (cat, i) => {
+                const view = window.__catalogViews[i] || 'filtered';
+                const url = view === 'upstream' ? cat.upstreamPackagesUrl : cat.filteredPackagesUrl;
                 try {
-                    const data = await fetchJSON(cat.filteredPackagesUrl);
-                    renderPackageTable(i, data, 'filtered');
+                    const data = await fetchJSON(url);
+                    renderPackageTable(i, data, view);
                 } catch (e) {
                     document.getElementById(`catalog-body-${i}`).innerHTML =
-                        `<div class="pf-v5-u-font-size-sm pf-v5-u-color-200">No filtered package data available yet.</div>`;
+                        `<div class="pf-v5-u-font-size-sm pf-v5-u-color-200">No ${view} package data available yet.</div>`;
                 }
             }));
         }
@@ -783,6 +791,8 @@
         // Switches a catalog card between filtered and upstream view.
         // URLs are read from window.__catalogUrls to avoid embedding them in HTML attributes.
         window.switchCatalogView = async function(idx, view) {
+            if (!window.__catalogViews) window.__catalogViews = {};
+            window.__catalogViews[idx] = view;
             const urls = (window.__catalogUrls || [])[idx] || {};
             const toggle = document.getElementById(`toggle-${idx}`);
             if (toggle) {
