@@ -739,6 +739,32 @@ func (r *CatalogResolver) FilterFBC(ctx context.Context, cfg *declcfg.Declarativ
 		defaultChannelByPkg[p.Name] = p.DefaultChannel
 	}
 
+	// Build the set of explicitly requested packages and auto-discover companions.
+	// Companions are treated as explicit so they get heads-only filtering by default.
+	pkgSet := make(map[string]bool, len(includes))
+	allIncludes := make([]mirrorv1alpha1.IncludePackage, 0, len(includes)*2)
+	for _, inc := range includes {
+		if !pkgSet[inc.Name] {
+			pkgSet[inc.Name] = true
+			allIncludes = append(allIncludes, inc)
+		}
+	}
+	for _, inc := range includes {
+		candidates := []string{inc.Name + "-dependencies", inc.Name + "-dependency", inc.Name + "-deps"}
+		if strings.HasSuffix(inc.Name, "-operator") {
+			base := strings.TrimSuffix(inc.Name, "-operator")
+			candidates = append(candidates, base+"-dependencies")
+		}
+		for _, c := range candidates {
+			if catalogPkgs[c] && !pkgSet[c] {
+				pkgSet[c] = true
+				allIncludes = append(allIncludes, mirrorv1alpha1.IncludePackage{Name: c})
+				fmt.Printf("Including companion dependency package: %s (for %s)\n", c, inc.Name)
+				break
+			}
+		}
+	}
+
 	bundlesByPkg := make(map[string][]declcfg.Bundle)
 	bundlesByName := make(map[string]declcfg.Bundle, len(cfg.Bundles))
 	for _, b := range cfg.Bundles {
@@ -775,21 +801,35 @@ func (r *CatalogResolver) FilterFBC(ctx context.Context, cfg *declcfg.Declarativ
 		}
 	}
 
-	// Build per-package filter structs from user config.
-	explicitFilters := make(map[string]pkgIncludeFilter, len(includes))
-	pkgSet := make(map[string]bool, len(includes))
-	prevVersionsByPkg := make(map[string]int, len(includes))
-	for _, inc := range includes {
-		pkgSet[inc.Name] = true
+	// Build per-package filter structs from the expanded include list.
+	explicitFilters := make(map[string]pkgIncludeFilter, len(allIncludes))
+	prevVersionsByPkg := make(map[string]int, len(allIncludes))
+	for _, inc := range allIncludes {
 		explicitFilters[inc.Name] = buildPkgIncludeFilter(inc)
 		prevVersionsByPkg[inc.Name] = inc.PreviousVersions
 	}
 
-	// Identify "heads-only" packages: no channels, no version filters.
+	// Pre-calculate channel heads for all packages.
+	allHeads := make(map[string]map[string][]string) // pkg -> channel -> head bundle names
+	allHeadSet := make(map[string]bool)              // bundleName -> isHead
+	for pkgName := range catalogPkgs {
+		allHeads[pkgName] = make(map[string][]string)
+		for _, ch := range channelsByPkg[pkgName] {
+			// For transitively discovered packages, we use prev=0 (head only).
+			// For explicit packages, we'll use inc.PreviousVersions later.
+			heads := channelHeadPlusN(ch, 0)
+			allHeads[pkgName][ch.Name] = heads
+			for _, h := range heads {
+				allHeadSet[h] = true
+			}
+		}
+	}
+
+	// Identify "heads-only" explicit packages: no channels, no version filters.
 	// These include the channel head plus PreviousVersions older entries
 	// of every channel (oc-mirror v2 behaviour).
-	headsOnlyPkgs := make(map[string]bool)
-	channelHeadsByPkg := make(map[string]map[string][]string) // pkg → channel → selected bundle names
+	headsOnlyExplicit := make(map[string]bool)
+	explicitHeadBundles := make(map[string]bool) // bundleName -> allowed (for BFS and final)
 	for pkgName, f := range explicitFilters {
 		if !f.allowAllChannels || f.pkgHasMinVer || f.pkgHasMaxVer || len(f.channelFilters) > 0 {
 			continue
@@ -806,81 +846,123 @@ func (r *CatalogResolver) FilterFBC(ctx context.Context, cfg *declcfg.Declarativ
 		if allEmpty {
 			continue
 		}
-		headsOnlyPkgs[pkgName] = true
-		channelHeadsByPkg[pkgName] = make(map[string][]string)
+		headsOnlyExplicit[pkgName] = true
 		prev := prevVersionsByPkg[pkgName]
 		for _, ch := range channelsByPkg[pkgName] {
 			selected := channelHeadPlusN(ch, prev)
-			channelHeadsByPkg[pkgName][ch.Name] = selected
+			for _, s := range selected {
+				explicitHeadBundles[s] = true
+			}
 			fmt.Printf("Package %s channel %s: head+%d → %v\n", pkgName, ch.Name, prev, selected)
 		}
 	}
 
-	// Auto-discover companion dependency packages (Red Hat convention).
-	for _, inc := range includes {
-		candidates := []string{inc.Name + "-dependencies", inc.Name + "-dependency", inc.Name + "-deps"}
-		if strings.HasSuffix(inc.Name, "-operator") {
-			base := strings.TrimSuffix(inc.Name, "-operator")
-			candidates = append(candidates, base+"-dependencies")
-		}
-		for _, c := range candidates {
-			if catalogPkgs[c] && !pkgSet[c] {
-				pkgSet[c] = true
-				fmt.Printf("Including companion dependency package: %s (for %s)\n", c, inc.Name)
-				break
-			}
-		}
-	}
+	// Resolve transitive dependencies via BFS.
+	// explicitHeadBundles tracks allowed bundles for heads-only explicit packages.
+	// For other explicit packages, we use their channel/version filters.
+	// For transitively discovered packages, we default to heads-only (prev=0).
+	allowedBundles := make(map[string]bool)
+	allowedChannels := make(map[string]map[string]bool) // pkgName -> channelName set
 
-	// Build the set of bundles reachable from allowed channels for explicit
-	// packages that have channel restrictions. Only these bundles are walked
-	// during dependency BFS so that bundles from excluded channels do not
-	// pull in unwanted dependencies.
-	explicitBundleSet := make(map[string]bool)
-	// Track which explicit packages actually have channel restrictions.
-	hasChannelRestriction := make(map[string]bool)
-	for pkgName, f := range explicitFilters {
-		// Heads-only packages: restrict BFS to head bundles only.
-		if headsOnlyPkgs[pkgName] {
-			hasChannelRestriction[pkgName] = true
-			for _, heads := range channelHeadsByPkg[pkgName] {
-				for _, h := range heads {
-					explicitBundleSet[h] = true
-				}
-			}
-			continue
-		}
-		if f.allowAllChannels {
-			continue // no channel restriction, all bundles allowed for BFS
-		}
-		hasChannelRestriction[pkgName] = true
-		for _, ch := range channelsByPkg[pkgName] {
-			if !f.allowedChannels[ch.Name] {
-				continue
-			}
-			for _, entry := range ch.Entries {
-				explicitBundleSet[entry.Name] = true
-			}
-		}
-	}
-
-	// Resolve transitive dependencies via BFS. For explicitly requested
-	// packages with channel restrictions walk only bundles reachable from
-	// their allowed channels; for all others walk all bundles.
 	queue := make([]string, 0, len(pkgSet))
 	for p := range pkgSet {
 		queue = append(queue, p)
 	}
+
+	// We use a separate loop to populate allowedBundles for initial pkgSet,
+	// then BFS continues adding to it.
+	processedPkgs := make(map[string]bool)
+
 	for len(queue) > 0 {
 		current := queue[0]
 		queue = queue[1:]
 
-		for _, b := range bundlesByPkg[current] {
-			// For explicit packages with channel restrictions, skip
-			// bundles not reachable from allowed channels.
-			if hasChannelRestriction[current] && !explicitBundleSet[b.Name] {
-				continue
+		if processedPkgs[current] {
+			continue
+		}
+		processedPkgs[current] = true
+
+		f, isExplicit := explicitFilters[current]
+
+		// Determine allowed bundles for this package.
+		var currentAllowed []string
+
+		// Check if the package has any entries in its channels.
+		pkgHasEntries := false
+		for _, ch := range channelsByPkg[current] {
+			if len(ch.Entries) > 0 {
+				pkgHasEntries = true
+				break
 			}
+		}
+
+		if isExplicit && !pkgHasEntries {
+			// Explicit package but no channel entries found: include all its bundles.
+			for _, b := range bundlesByPkg[current] {
+				allowedBundles[b.Name] = true
+				currentAllowed = append(currentAllowed, b.Name)
+			}
+		} else if isExplicit && headsOnlyExplicit[current] {
+			// Heads-only explicit: use pre-calculated heads.
+			for _, ch := range channelsByPkg[current] {
+				selected := channelHeadPlusN(ch, prevVersionsByPkg[current])
+				for _, h := range selected {
+					allowedBundles[h] = true
+					currentAllowed = append(currentAllowed, h)
+					if allowedChannels[current] == nil {
+						allowedChannels[current] = make(map[string]bool)
+					}
+					allowedChannels[current][ch.Name] = true
+				}
+			}
+		} else if isExplicit {
+			// Explicit with channel/version filters.
+			for _, ch := range channelsByPkg[current] {
+				if !f.allowAllChannels && !f.allowedChannels[ch.Name] {
+					continue
+				}
+				// Liberally mark channel as allowed. Final loop will trim it.
+				if allowedChannels[current] == nil {
+					allowedChannels[current] = make(map[string]bool)
+				}
+				allowedChannels[current][ch.Name] = true
+
+				vf := f.effectiveVersionFilter(ch.Name)
+				for _, entry := range ch.Entries {
+					b, ok := bundlesByName[entry.Name]
+					if !ok {
+						continue
+					}
+					if bundleMatchesVersionFilter(b, vf) {
+						allowedBundles[entry.Name] = true
+						currentAllowed = append(currentAllowed, entry.Name)
+					}
+				}
+			}
+		} else if !pkgHasEntries {
+			// Transitive dependency with no channel entries: include all its bundles.
+			for _, b := range bundlesByPkg[current] {
+				allowedBundles[b.Name] = true
+				currentAllowed = append(currentAllowed, b.Name)
+			}
+		} else {
+			// Transitive dependency: default to heads-only (prev=0).
+			for _, ch := range channelsByPkg[current] {
+				heads := allHeads[current][ch.Name]
+				for _, h := range heads {
+					allowedBundles[h] = true
+					currentAllowed = append(currentAllowed, h)
+					if allowedChannels[current] == nil {
+						allowedChannels[current] = make(map[string]bool)
+					}
+					allowedChannels[current][ch.Name] = true
+				}
+			}
+		}
+
+		// BFS walk from allowed bundles.
+		for _, bName := range currentAllowed {
+			b := bundlesByName[bName]
 			for _, prop := range b.Properties {
 				switch prop.Type {
 				case olmPackageRequired:
@@ -910,55 +992,6 @@ func (r *CatalogResolver) FilterFBC(ctx context.Context, cfg *declcfg.Declarativ
 		}
 	}
 
-	// For each explicitly requested package, compute the set of allowed
-	// channel names and allowed bundle names (after version filtering).
-	// Transitively discovered packages always include all channels/bundles.
-	allowedChannels := make(map[string]map[string]bool) // pkgName → channelName set
-	allowedBundles := make(map[string]bool)             // bundleName → allowed
-
-	for pkgName, f := range explicitFilters {
-		if !catalogPkgs[pkgName] {
-			continue
-		}
-
-		// Heads-only: include all channels but only head bundles.
-		if headsOnlyPkgs[pkgName] {
-			headSet := make(map[string]bool)
-			for chName, heads := range channelHeadsByPkg[pkgName] {
-				if allowedChannels[pkgName] == nil {
-					allowedChannels[pkgName] = make(map[string]bool)
-				}
-				allowedChannels[pkgName][chName] = true
-				for _, h := range heads {
-					headSet[h] = true
-					allowedBundles[h] = true
-				}
-			}
-			continue
-		}
-
-		for _, ch := range channelsByPkg[pkgName] {
-			if !f.allowAllChannels && !f.allowedChannels[ch.Name] {
-				continue // channel not in the allowed list
-			}
-			if allowedChannels[pkgName] == nil {
-				allowedChannels[pkgName] = make(map[string]bool)
-			}
-			allowedChannels[pkgName][ch.Name] = true
-
-			vf := f.effectiveVersionFilter(ch.Name)
-			for _, entry := range ch.Entries {
-				b, ok := bundlesByName[entry.Name]
-				if !ok {
-					continue
-				}
-				if bundleMatchesVersionFilter(b, vf) {
-					allowedBundles[entry.Name] = true
-				}
-			}
-		}
-	}
-
 	filtered := &declcfg.DeclarativeConfig{
 		Packages: make([]declcfg.Package, 0),
 		Channels: make([]declcfg.Channel, 0),
@@ -975,49 +1008,29 @@ func (r *CatalogResolver) FilterFBC(ctx context.Context, cfg *declcfg.Declarativ
 		if !pkgSet[ch.Package] {
 			continue
 		}
-		// Transitively discovered packages: include all channels.
-		if _, isExplicit := explicitFilters[ch.Package]; !isExplicit {
-			filtered.Channels = append(filtered.Channels, ch)
+		// Check if this channel was allowed.
+		if allowedChannels[ch.Package] == nil || !allowedChannels[ch.Package][ch.Name] {
 			continue
 		}
-		// Heads-only packages: include the channel but trim entries to heads.
-		if headsOnlyPkgs[ch.Package] {
-			headNames := channelHeadsByPkg[ch.Package][ch.Name]
-			if len(headNames) == 0 {
-				continue
+
+		// Trim entries to allowed bundles.
+		trimmed := ch
+		trimmed.Entries = nil
+		for _, e := range ch.Entries {
+			if allowedBundles[e.Name] {
+				// We keep the original entry structure (Replaces/Skips) but OLM
+				// will handle missing references by treating them as new roots.
+				// This is better than clearing them because if we included a
+				// version range, we want to keep the graph between them.
+				trimmed.Entries = append(trimmed.Entries, e)
 			}
-			headSet := make(map[string]bool, len(headNames))
-			for _, h := range headNames {
-				headSet[h] = true
-			}
-			trimmed := ch
-			trimmed.Entries = nil
-			for _, e := range ch.Entries {
-				if headSet[e.Name] {
-					trimmed.Entries = append(trimmed.Entries, declcfg.ChannelEntry{Name: e.Name})
-				}
-			}
-			if len(trimmed.Entries) > 0 {
-				filtered.Channels = append(filtered.Channels, trimmed)
-			}
-			continue
 		}
-		// Check allowed channels map.
-		if allowedChannels[ch.Package] != nil && allowedChannels[ch.Package][ch.Name] {
-			filtered.Channels = append(filtered.Channels, ch)
+		if len(trimmed.Entries) > 0 {
+			filtered.Channels = append(filtered.Channels, trimmed)
 		}
 	}
 
 	for _, b := range cfg.Bundles {
-		if !pkgSet[b.Package] {
-			continue
-		}
-		// Transitively discovered packages: include all bundles.
-		if _, isExplicit := explicitFilters[b.Package]; !isExplicit {
-			filtered.Bundles = append(filtered.Bundles, b)
-			continue
-		}
-		// Check allowed bundles set (populated per-channel above).
 		if allowedBundles[b.Name] {
 			filtered.Bundles = append(filtered.Bundles, b)
 		}
