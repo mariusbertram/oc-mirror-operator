@@ -49,6 +49,15 @@ type ConditionSummary struct {
 	Message string `json:"message"`
 }
 
+// CatalogSummary describes a single operator catalog tracked by a MirrorTarget.
+type CatalogSummary struct {
+	Slug                string `json:"slug"`
+	Source              string `json:"source"`
+	TargetImage         string `json:"targetImage"`
+	FilteredPackagesURL string `json:"filteredPackagesUrl"`
+	UpstreamPackagesURL string `json:"upstreamPackagesUrl"`
+}
+
 // TargetDetail is the JSON response for a single target detail endpoint.
 type TargetDetail struct {
 	Name           string                `json:"name"`
@@ -60,6 +69,7 @@ type TargetDetail struct {
 	Conditions     []ConditionSummary    `json:"conditions"`
 	ImageSets      []ImageSetSummaryJSON `json:"imageSets"`
 	Resources      []ResourceLink        `json:"resources"`
+	Catalogs       []CatalogSummary      `json:"catalogs"`
 }
 
 // ImageSetSummaryJSON is the per-ImageSet status info returned in JSON.
@@ -98,12 +108,16 @@ func (s *Server) RegisterRoutes(r *mux.Router) {
 	api.HandleFunc("/targets", s.handleTargetsList).Methods("GET")
 	api.HandleFunc("/targets/{mt}", s.handleTargetDetail).Methods("GET")
 
-	// API endpoints – raw resources from ConfigMaps
+	// Catalog browsing endpoints
+	api.HandleFunc("/targets/{mt}/catalogs/{slug}/packages.json", s.handleFilteredCatalogPackages).Methods("GET")
+	api.HandleFunc("/targets/{mt}/catalogs/{slug}/upstream-packages.json", s.handleUpstreamCatalogPackages).Methods("GET")
+
+	// Raw resource endpoints – YAML/JSON from ConfigMaps (legacy {is} segment kept for compat)
 	api.HandleFunc("/targets/{mt}/imagesets/{is}/idms.yaml", s.handleIDMS).Methods("GET")
 	api.HandleFunc("/targets/{mt}/imagesets/{is}/itms.yaml", s.handleITMS).Methods("GET")
 	api.HandleFunc("/targets/{mt}/imagesets/{is}/catalogs/{slug}/catalogsource.yaml", s.handleCatalogSource).Methods("GET")
-	api.HandleFunc("/targets/{mt}/imagesets/{is}/catalogs/{slug}/upstream-packages.json", s.handleCatalogPackages).Methods("GET")
-	api.HandleFunc("/targets/{mt}/imagesets/{is}/catalogs/{slug}/packages.json", s.handleCatalogPackages).Methods("GET")
+	api.HandleFunc("/targets/{mt}/imagesets/{is}/catalogs/{slug}/upstream-packages.json", s.handleUpstreamCatalogPackages).Methods("GET")
+	api.HandleFunc("/targets/{mt}/imagesets/{is}/catalogs/{slug}/packages.json", s.handleFilteredCatalogPackages).Methods("GET")
 }
 
 func (s *Server) Run(ctx context.Context) {
@@ -174,22 +188,34 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
 		resources = buildResourceLinks(mtName, cm)
 	}
 
-	// Append packages links from per-catalog ConfigMaps (labelled by mirrortarget + catalog-packages).
-	packageCMs := &corev1.ConfigMapList{}
-	if err := s.client.List(r.Context(), packageCMs,
+	// Discover per-catalog ConfigMaps to build catalog summaries.
+	catalogCMs := &corev1.ConfigMapList{}
+	var catalogs []CatalogSummary
+	if err := s.client.List(r.Context(), catalogCMs,
 		client.InNamespace(s.namespace),
 		client.MatchingLabels{"oc-mirror.openshift.io/mirrortarget": mtName},
 	); err == nil {
-		base := fmt.Sprintf("/api/v1/targets/%s/imagesets/latest", mtName)
-		for _, pcm := range packageCMs.Items {
+		seen := make(map[string]bool)
+		for _, pcm := range catalogCMs.Items {
 			slug, ok := pcm.Labels["oc-mirror.openshift.io/catalog-packages"]
-			if ok && slug != "" {
-				resources = append(resources, ResourceLink{
-					Name: fmt.Sprintf("Packages (%s)", slug),
-					URL:  fmt.Sprintf("%s/catalogs/%s/packages.json", base, slug),
-					Type: "json",
-				})
+			if !ok || slug == "" {
+				continue
 			}
+			if seen[slug] {
+				continue
+			}
+			seen[slug] = true
+			base := fmt.Sprintf("/api/v1/targets/%s/catalogs/%s", mtName, slug)
+			catalogs = append(catalogs, CatalogSummary{
+				Slug:                slug,
+				FilteredPackagesURL: base + "/packages.json",
+				UpstreamPackagesURL: base + "/upstream-packages.json",
+			})
+			resources = append(resources, ResourceLink{
+				Name: fmt.Sprintf("Packages (%s)", slug),
+				URL:  base + "/packages.json",
+				Type: "json",
+			})
 		}
 	}
 
@@ -227,6 +253,7 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
 		Conditions:     conditions,
 		ImageSets:      imageSets,
 		Resources:      resources,
+		Catalogs:       catalogs,
 	}
 
 	writeJSON(w, detail)
@@ -258,11 +285,18 @@ func (s *Server) handleCatalogSource(w http.ResponseWriter, r *http.Request) {
 	s.serveConfigMapResource(w, r, fmt.Sprintf("oc-mirror-%s-resources", mtName), fmt.Sprintf("catalogsource-%s.yaml", slug))
 }
 
-func (s *Server) handleCatalogPackages(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleFilteredCatalogPackages(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	mtName := vars["mt"]
 	slug := vars["slug"]
 	s.serveConfigMapResource(w, r, fmt.Sprintf("oc-mirror-%s-%s-packages", mtName, slug), "packages.json")
+}
+
+func (s *Server) handleUpstreamCatalogPackages(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	mtName := vars["mt"]
+	slug := vars["slug"]
+	s.serveConfigMapResource(w, r, fmt.Sprintf("oc-mirror-%s-%s-upstream-packages", mtName, slug), "packages.json")
 }
 
 func (s *Server) serveConfigMapResource(w http.ResponseWriter, r *http.Request, cmName, key string) {

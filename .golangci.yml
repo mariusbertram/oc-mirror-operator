@@ -24,7 +24,7 @@ linters:
   settings:
     lll:
       # Increased to accommodate long Go function signatures with multiple parameters.
-      line-length: 220
+      line-length: 250
     revive:
       rules:
         - name: comment-spacings

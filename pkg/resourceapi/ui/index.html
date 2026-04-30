@@ -190,6 +190,96 @@
             white-space: pre;
         }
 
+        /* Catalog browser */
+        .catalog-card {
+            margin-bottom: var(--pf-v5-global--spacer--lg);
+        }
+        .catalog-card__header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+        .catalog-view-toggle {
+            display: flex;
+            gap: 4px;
+        }
+        .catalog-view-toggle button {
+            padding: 4px 12px;
+            font-size: 0.8rem;
+            border: 1px solid var(--pf-v5-global--BorderColor--100);
+            background: transparent;
+            cursor: pointer;
+            border-radius: 3px;
+        }
+        .catalog-view-toggle button.active {
+            background: var(--oc-brand-color);
+            color: #fff;
+            border-color: var(--oc-brand-color);
+        }
+        .pkg-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.85rem;
+        }
+        .pkg-table th {
+            text-align: left;
+            padding: 6px 10px;
+            background: var(--pf-v5-global--BackgroundColor--200);
+            border-bottom: 2px solid var(--pf-v5-global--BorderColor--100);
+            font-weight: 600;
+            font-size: 0.78rem;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            color: var(--pf-v5-global--Color--200);
+        }
+        .pkg-table td {
+            padding: 6px 10px;
+            border-bottom: 1px solid var(--pf-v5-global--BorderColor--100);
+            vertical-align: top;
+        }
+        .pkg-table tr:last-child td { border-bottom: none; }
+        .pkg-table tr:hover td { background: var(--pf-v5-global--BackgroundColor--200); }
+        .pkg-name { font-weight: 600; }
+        .pkg-default-channel {
+            display: inline-block;
+            padding: 1px 6px;
+            background: var(--pf-v5-global--primary-color--100);
+            color: #fff;
+            border-radius: 10px;
+            font-size: 0.72rem;
+        }
+        .channel-list { display: flex; flex-direction: column; gap: 4px; }
+        .channel-item {}
+        .channel-name {
+            font-size: 0.8rem;
+            font-weight: 600;
+            color: var(--pf-v5-global--Color--100);
+        }
+        .bundle-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+            margin-top: 3px;
+        }
+        .bundle-tag {
+            display: inline-block;
+            padding: 1px 7px;
+            border: 1px solid var(--pf-v5-global--BorderColor--100);
+            border-radius: 10px;
+            font-size: 0.73rem;
+            background: var(--pf-v5-global--BackgroundColor--100);
+            font-family: monospace;
+        }
+        .catalog-search {
+            padding: 4px 10px;
+            border: 1px solid var(--pf-v5-global--BorderColor--100);
+            border-radius: 4px;
+            font-size: 0.85rem;
+            width: 220px;
+        }
+
         /* Condition rows */
         .condition-row {
             display: flex;
@@ -271,6 +361,9 @@
                         <li class="pf-v5-c-tabs__item pf-m-current" id="tab-item-overview">
                             <button class="pf-v5-c-tabs__link" id="tab-overview">Overview</button>
                         </li>
+                        <li class="pf-v5-c-tabs__item" id="tab-item-catalogs">
+                            <button class="pf-v5-c-tabs__link" id="tab-catalogs">Catalogs</button>
+                        </li>
                         <li class="pf-v5-c-tabs__item" id="tab-item-yaml">
                             <button class="pf-v5-c-tabs__link" id="tab-yaml">YAML</button>
                         </li>
@@ -299,14 +392,15 @@
         const pageTitle = document.getElementById("page-title");
         const tabs = document.getElementById("tabs");
         const tabItemOverview = document.getElementById("tab-item-overview");
+        const tabItemCatalogs = document.getElementById("tab-item-catalogs");
         const tabItemYaml = document.getElementById("tab-item-yaml");
         const tabOverview = document.getElementById("tab-overview");
+        const tabCatalogs = document.getElementById("tab-catalogs");
         const tabYaml = document.getElementById("tab-yaml");
         let refreshTimer = null;
         let currentView = { name: "dashboard" };
 
         function navigate(view) {
-            // Preserve the active tab when refreshing the same target; reset when navigating away.
             if (view.name !== currentView.name || view.target !== currentView.target) {
                 view.tab = "overview";
             } else {
@@ -329,21 +423,24 @@
         tabOverview.addEventListener("click", () => {
             currentView.tab = "overview";
             setActiveTab("overview");
-            if (currentView.cachedDetail) {
-                renderTabOverview(currentView.cachedDetail);
-            }
+            if (currentView.cachedDetail) renderTabOverview(currentView.cachedDetail);
+        });
+
+        tabCatalogs.addEventListener("click", () => {
+            currentView.tab = "catalogs";
+            setActiveTab("catalogs");
+            if (currentView.cachedDetail) renderTabCatalogs(currentView.cachedDetail);
         });
 
         tabYaml.addEventListener("click", () => {
             currentView.tab = "yaml";
             setActiveTab("yaml");
-            if (currentView.target) {
-                renderTabYaml(currentView.target, currentView.cachedDetail);
-            }
+            if (currentView.target) renderTabYaml(currentView.target, currentView.cachedDetail);
         });
 
         function setActiveTab(tab) {
             tabItemOverview.classList.toggle("pf-m-current", tab === "overview");
+            tabItemCatalogs.classList.toggle("pf-m-current", tab === "catalogs");
             tabItemYaml.classList.toggle("pf-m-current", tab === "yaml");
         }
 
@@ -465,8 +562,11 @@
             const detail = await fetchJSON(`/api/v1/targets/${encodeURIComponent(targetName)}`);
             currentView.cachedDetail = detail;
 
-            if ((currentView.tab || "overview") === "yaml") {
+            const tab = currentView.tab || "overview";
+            if (tab === "yaml") {
                 renderTabYaml(targetName, detail);
+            } else if (tab === "catalogs") {
+                renderTabCatalogs(detail);
             } else {
                 renderTabOverview(detail);
             }
@@ -615,6 +715,153 @@
                 </div>
             </div>`;
         }
+
+        async function renderTabCatalogs(detail) {
+            const catalogs = detail.catalogs || [];
+            if (catalogs.length === 0) {
+                app.innerHTML = `
+                <div class="pf-v5-c-empty-state pf-m-lg">
+                    <div class="pf-v5-c-empty-state__content">
+                        <div class="pf-v5-c-empty-state__header">
+                            <div class="pf-v5-c-empty-state__icon pf-v5-u-color-200">
+                                <i class="fas fa-boxes" aria-hidden="true"></i>
+                            </div>
+                            <h1 class="pf-v5-c-title pf-m-lg">No catalogs discovered yet</h1>
+                        </div>
+                        <div class="pf-v5-c-empty-state__body">
+                            Catalog package data will appear here after the first mirroring run completes.
+                        </div>
+                    </div>
+                </div>`;
+                return;
+            }
+
+            // Store catalog URLs indexed by position so onclick handlers only pass the index.
+            window.__catalogUrls = catalogs.map(cat => ({
+                filtered: cat.filteredPackagesUrl,
+                upstream: cat.upstreamPackagesUrl,
+            }));
+
+            // Render skeleton cards first, then load package data per catalog.
+            app.innerHTML = catalogs.map((cat, i) => `
+            <div class="pf-v5-c-card catalog-card" id="catalog-card-${i}">
+                <div class="pf-v5-c-card__header">
+                    <div class="catalog-card__header">
+                        <div>
+                            <div class="pf-v5-c-card__title">${escapeHtml(cat.slug)}</div>
+                            ${cat.source ? `<div class="pf-v5-u-font-size-xs pf-v5-u-color-200">${escapeHtml(cat.source)}</div>` : ''}
+                        </div>
+                        <div class="pf-v5-l-flex pf-m-align-items-center" style="gap:8px">
+                            <input class="catalog-search" type="search" placeholder="Filter packages…"
+                                id="search-${i}" oninput="filterPkgTable(${i})" />
+                            <div class="catalog-view-toggle" id="toggle-${i}">
+                                <button class="active" onclick="switchCatalogView(${i}, 'filtered')">Filtered</button>
+                                <button onclick="switchCatalogView(${i}, 'upstream')">Upstream</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="pf-v5-c-card__body" id="catalog-body-${i}">
+                    <div class="pf-v5-l-bullseye" style="min-height:80px">
+                        <div class="pf-v5-c-spinner pf-m-sm" role="progressbar"></div>
+                    </div>
+                </div>
+            </div>`).join('');
+
+            // Load filtered packages for all catalogs in parallel.
+            await Promise.all(catalogs.map(async (cat, i) => {
+                try {
+                    const data = await fetchJSON(cat.filteredPackagesUrl);
+                    renderPackageTable(i, data, 'filtered');
+                } catch (e) {
+                    document.getElementById(`catalog-body-${i}`).innerHTML =
+                        `<div class="pf-v5-u-font-size-sm pf-v5-u-color-200">No filtered package data available yet.</div>`;
+                }
+            }));
+        }
+
+        // Switches a catalog card between filtered and upstream view.
+        // URLs are read from window.__catalogUrls to avoid embedding them in HTML attributes.
+        window.switchCatalogView = async function(idx, view) {
+            const urls = (window.__catalogUrls || [])[idx] || {};
+            const toggle = document.getElementById(`toggle-${idx}`);
+            if (toggle) {
+                toggle.querySelectorAll('button').forEach((b, bi) => {
+                    b.classList.toggle('active', (bi === 0 && view === 'filtered') || (bi === 1 && view === 'upstream'));
+                });
+            }
+            const body = document.getElementById(`catalog-body-${idx}`);
+            body.innerHTML = `<div class="pf-v5-l-bullseye" style="min-height:80px"><div class="pf-v5-c-spinner pf-m-sm" role="progressbar"></div></div>`;
+
+            const url = view === 'upstream' ? urls.upstream : urls.filtered;
+            if (!url) {
+                body.innerHTML = `<div class="pf-v5-u-font-size-sm pf-v5-u-color-200">No URL configured for this view.</div>`;
+                return;
+            }
+            try {
+                const data = await fetchJSON(url);
+                renderPackageTable(idx, data, view);
+            } catch(e) {
+                body.innerHTML = `<div class="pf-v5-u-font-size-sm pf-v5-u-color-200">
+                    ${view === 'upstream' ? 'Upstream package data not yet available.' : 'No filtered package data available.'}</div>`;
+            }
+        };
+
+        function renderPackageTable(idx, data, view) {
+            const body = document.getElementById(`catalog-body-${idx}`);
+            const packages = (data && data.packages) || [];
+            const isUpstream = view === 'upstream';
+
+            if (packages.length === 0) {
+                body.innerHTML = `<div class="pf-v5-u-font-size-sm pf-v5-u-color-200">No packages found.</div>`;
+                return;
+            }
+
+            const rows = packages.map(pkg => {
+                const channels = (pkg.channels || []).map(ch => {
+                    const isDefault = ch.name === pkg.defaultChannel;
+                    const bundles = (ch.entries || []).map(e => {
+                        const label = e.version ? escapeHtml(e.version) : escapeHtml(e.name);
+                        return `<span class="bundle-tag" title="${escapeHtml(e.name)}">${label}</span>`;
+                    }).join('');
+                    return `<div class="channel-item">
+                        <span class="channel-name">${escapeHtml(ch.name)}</span>${isDefault ? ' <span class="pkg-default-channel">default</span>' : ''}
+                        ${bundles ? `<div class="bundle-list">${bundles}</div>` : ''}
+                    </div>`;
+                }).join('');
+
+                return `<tr data-pkg="${escapeAttr(pkg.name.toLowerCase())}">
+                    <td><span class="pkg-name">${escapeHtml(pkg.name)}</span></td>
+                    <td><div class="channel-list">${channels}</div></td>
+                </tr>`;
+            }).join('');
+
+            const headLabel = isUpstream ? 'Latest version per channel' : 'Selected versions';
+            body.innerHTML = `
+            <p class="pf-v5-u-font-size-xs pf-v5-u-color-200 pf-v5-u-mb-sm">
+                ${packages.length} package${packages.length !== 1 ? 's' : ''} &mdash;
+                ${isUpstream ? 'showing channel heads from the upstream catalog' : 'showing bundles selected for mirroring'}
+            </p>
+            <table class="pkg-table" id="pkg-table-${idx}">
+                <thead><tr>
+                    <th style="width:220px">Package</th>
+                    <th>Channels &amp; ${headLabel}</th>
+                </tr></thead>
+                <tbody>${rows}</tbody>
+            </table>`;
+        }
+
+        // Client-side package filter — hides rows whose package name doesn't match.
+        window.filterPkgTable = function(idx) {
+            const input = document.getElementById(`search-${idx}`);
+            const query = (input ? input.value : '').toLowerCase().trim();
+            const table = document.getElementById(`pkg-table-${idx}`);
+            if (!table) return;
+            table.querySelectorAll('tbody tr').forEach(row => {
+                const name = row.dataset.pkg || '';
+                row.style.display = (!query || name.includes(query)) ? '' : 'none';
+            });
+        };
 
         async function renderTabYaml(targetName, detail) {
             app.innerHTML = `<div class="pf-v5-l-bullseye" style="min-height:200px">

@@ -692,5 +692,133 @@ var _ = Describe("bundleVersion", func() {
 	})
 })
 
+var _ = Describe("channelHeadNames", func() {
+	DescribeTable("correctly identifies channel heads",
+		func(entries []declcfg.ChannelEntry, expectedHeads []string) {
+			ch := declcfg.Channel{Entries: entries}
+			heads := channelHeadNames(ch)
+			Expect(heads).To(ConsistOf(expectedHeads))
+		},
+		Entry("single entry with no replaces is the head",
+			[]declcfg.ChannelEntry{
+				{Name: "op.v1.0.0"},
+			},
+			[]string{"op.v1.0.0"},
+		),
+		Entry("linear chain: only latest is head",
+			[]declcfg.ChannelEntry{
+				{Name: "op.v1.1.0", Replaces: "op.v1.0.0"},
+				{Name: "op.v1.0.0"},
+			},
+			[]string{"op.v1.1.0"},
+		),
+		Entry("skips are treated as replaced",
+			[]declcfg.ChannelEntry{
+				{Name: "op.v2.0.0", Skips: []string{"op.v1.0.0", "op.v1.1.0"}},
+				{Name: "op.v1.0.0"},
+				{Name: "op.v1.1.0"},
+			},
+			[]string{"op.v2.0.0"},
+		),
+		Entry("multiple independent heads (branched channel)",
+			[]declcfg.ChannelEntry{
+				{Name: "op.v1.1.0", Replaces: "op.v1.0.0"},
+				{Name: "op.v2.0.0"},
+				{Name: "op.v1.0.0"},
+			},
+			[]string{"op.v1.1.0", "op.v2.0.0"},
+		),
+		Entry("empty channel returns empty",
+			[]declcfg.ChannelEntry{},
+			[]string{},
+		),
+		Entry("all entries replace each other (cycle) falls back to last entry",
+			[]declcfg.ChannelEntry{
+				{Name: "op.v1.0.0", Replaces: "op.v1.1.0"},
+				{Name: "op.v1.1.0", Replaces: "op.v1.0.0"},
+			},
+			[]string{"op.v1.1.0"},
+		),
+	)
+})
+
+var _ = Describe("BuildUpstreamCatalogPackagesResponse", func() {
+	It("includes only head bundles per channel", func() {
+		cfg := &declcfg.DeclarativeConfig{
+			Packages: []declcfg.Package{
+				{Schema: "olm.package", Name: "operator-a", DefaultChannel: "stable"},
+			},
+			Channels: []declcfg.Channel{
+				{
+					Schema:  "olm.channel",
+					Name:    "stable",
+					Package: "operator-a",
+					Entries: []declcfg.ChannelEntry{
+						{Name: "operator-a.v1.2.0", Replaces: "operator-a.v1.1.0"},
+						{Name: "operator-a.v1.1.0", Replaces: "operator-a.v1.0.0"},
+						{Name: "operator-a.v1.0.0"},
+					},
+				},
+			},
+			Bundles: []declcfg.Bundle{
+				{
+					Schema: "olm.bundle",
+					Name:   "operator-a.v1.2.0",
+					Properties: []property.Property{
+						{Type: "olm.package", Value: json.RawMessage(`{"packageName":"operator-a","version":"1.2.0"}`)},
+					},
+				},
+			},
+		}
+
+		cat := CatalogInfo{SourceCatalog: "registry.redhat.io/redhat/redhat-operator-index:v4.21", TargetImage: "mirror/index"}
+		resp := BuildUpstreamCatalogPackagesResponse(cat, cfg)
+
+		Expect(resp.Catalog).To(Equal("registry.redhat.io/redhat/redhat-operator-index:v4.21"))
+		Expect(resp.Packages).To(HaveLen(1))
+		Expect(resp.Packages[0].Name).To(Equal("operator-a"))
+		Expect(resp.Packages[0].DefaultChannel).To(Equal("stable"))
+		Expect(resp.Packages[0].Channels).To(HaveLen(1))
+		// Only the head (v1.2.0) should be included, not all 3 entries
+		Expect(resp.Packages[0].Channels[0].Entries).To(HaveLen(1))
+		Expect(resp.Packages[0].Channels[0].Entries[0].Name).To(Equal("operator-a.v1.2.0"))
+		Expect(resp.Packages[0].Channels[0].Entries[0].Version).To(Equal("1.2.0"))
+	})
+
+	It("handles multiple packages and channels, sorts alphabetically", func() {
+		cfg := &declcfg.DeclarativeConfig{
+			Packages: []declcfg.Package{
+				{Schema: "olm.package", Name: "z-operator", DefaultChannel: "alpha"},
+				{Schema: "olm.package", Name: "a-operator", DefaultChannel: "stable"},
+			},
+			Channels: []declcfg.Channel{
+				{
+					Schema:  "olm.channel",
+					Name:    "stable",
+					Package: "a-operator",
+					Entries: []declcfg.ChannelEntry{{Name: "a-operator.v1.0.0"}},
+				},
+				{
+					Schema:  "olm.channel",
+					Name:    "alpha",
+					Package: "z-operator",
+					Entries: []declcfg.ChannelEntry{{Name: "z-operator.v2.0.0"}},
+				},
+			},
+		}
+
+		resp := BuildUpstreamCatalogPackagesResponse(CatalogInfo{}, cfg)
+
+		Expect(resp.Packages).To(HaveLen(2))
+		Expect(resp.Packages[0].Name).To(Equal("a-operator"))
+		Expect(resp.Packages[1].Name).To(Equal("z-operator"))
+	})
+
+	It("handles empty DeclarativeConfig", func() {
+		resp := BuildUpstreamCatalogPackagesResponse(CatalogInfo{}, &declcfg.DeclarativeConfig{})
+		Expect(resp.Packages).To(BeEmpty())
+	})
+})
+
 // Ensure json import is used.
 var _ = json.Unmarshal

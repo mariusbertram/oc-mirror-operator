@@ -387,6 +387,86 @@ type BundleEntry struct {
 	Version string `json:"version,omitempty"`
 }
 
+// BuildUpstreamCatalogPackagesResponse builds a compact packages response from
+// the full upstream FBC. To stay within the ConfigMap 1 MB limit, each channel
+// only includes the channel-head bundle (the bundle not replaced by any other).
+func BuildUpstreamCatalogPackagesResponse(cat CatalogInfo, cfg *declcfg.DeclarativeConfig) CatalogPackagesResponse {
+	channelsByPkg := make(map[string][]declcfg.Channel)
+	for _, ch := range cfg.Channels {
+		channelsByPkg[ch.Package] = append(channelsByPkg[ch.Package], ch)
+	}
+
+	bundleVersions := make(map[string]string, len(cfg.Bundles))
+	for _, b := range cfg.Bundles {
+		bundleVersions[b.Name] = bundleVersion(b)
+	}
+
+	defaultChannels := make(map[string]string, len(cfg.Packages))
+	for _, p := range cfg.Packages {
+		defaultChannels[p.Name] = p.DefaultChannel
+	}
+
+	pkgNames := make([]string, 0, len(cfg.Packages))
+	for _, p := range cfg.Packages {
+		pkgNames = append(pkgNames, p.Name)
+	}
+	sort.Strings(pkgNames)
+
+	packages := make([]PackageSummary, 0, len(pkgNames))
+	for _, pkgName := range pkgNames {
+		channels := channelsByPkg[pkgName]
+		sort.Slice(channels, func(i, j int) bool { return channels[i].Name < channels[j].Name })
+
+		chSummaries := make([]ChannelSummary, 0, len(channels))
+		for _, ch := range channels {
+			heads := channelHeadNames(ch)
+			entries := make([]BundleEntry, 0, len(heads))
+			for _, h := range heads {
+				entries = append(entries, BundleEntry{Name: h, Version: bundleVersions[h]})
+			}
+			sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
+			chSummaries = append(chSummaries, ChannelSummary{Name: ch.Name, Entries: entries})
+		}
+
+		packages = append(packages, PackageSummary{
+			Name:           pkgName,
+			DefaultChannel: defaultChannels[pkgName],
+			Channels:       chSummaries,
+		})
+	}
+
+	return CatalogPackagesResponse{
+		Catalog:     cat.SourceCatalog,
+		TargetImage: cat.TargetImage,
+		Packages:    packages,
+	}
+}
+
+// channelHeadNames returns the names of head bundles in a channel — bundles
+// whose name does not appear in any other entry's Replaces or Skips list.
+func channelHeadNames(ch declcfg.Channel) []string {
+	replaced := make(map[string]bool, len(ch.Entries))
+	for _, e := range ch.Entries {
+		if e.Replaces != "" {
+			replaced[e.Replaces] = true
+		}
+		for _, s := range e.Skips {
+			replaced[s] = true
+		}
+	}
+	var heads []string
+	for _, e := range ch.Entries {
+		if !replaced[e.Name] {
+			heads = append(heads, e.Name)
+		}
+	}
+	if len(heads) == 0 && len(ch.Entries) > 0 {
+		// Fallback: channel has no clear head (cycle or missing data) — return last entry.
+		heads = []string{ch.Entries[len(ch.Entries)-1].Name}
+	}
+	return heads
+}
+
 // BuildCatalogPackagesResponse builds a structured packages response from catalog info and FBC config.
 func BuildCatalogPackagesResponse(cat CatalogInfo, cfg *declcfg.DeclarativeConfig) CatalogPackagesResponse {
 	channelsByPkg := make(map[string][]declcfg.Channel)

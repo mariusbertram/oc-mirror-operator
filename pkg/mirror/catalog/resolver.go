@@ -1095,32 +1095,32 @@ func renderBundleRefs(names []string) string {
 	return fmt.Sprintf("%s (+%d more)", visible, len(names)-maxVisible)
 }
 
-// ResolveCatalogFull loads the FBC, filters it, and returns both the resulting
-// images and the filtered FBC config itself. Used by the manager to persist
-// package information in ConfigMaps (Phase 7a).
+// ResolveCatalogFull loads the FBC, filters it, and returns the selected images,
+// the filtered FBC, and the full upstream FBC. Used by the manager to persist
+// package information in ConfigMaps.
 // The map returned contains destination image reference → bundle-name label.
-func (r *CatalogResolver) ResolveCatalogFull(ctx context.Context, catalogImage string, includes []mirrorv1alpha1.IncludePackage) (map[string]string, *declcfg.DeclarativeConfig, error) {
+func (r *CatalogResolver) ResolveCatalogFull(ctx context.Context, catalogImage string, includes []mirrorv1alpha1.IncludePackage) (images map[string]string, filtered *declcfg.DeclarativeConfig, upstream *declcfg.DeclarativeConfig, err error) {
 	if _, err := ref.New(catalogImage); err != nil {
-		return nil, nil, fmt.Errorf("failed to parse catalog image reference: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to parse catalog image reference: %w", err)
 	}
 	if r.client == nil {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
-	cfg, err := r.loadFBCFromImage(ctx, catalogImage)
+	upstream, err = r.loadFBCFromImage(ctx, catalogImage)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to load FBC from %s: %w", catalogImage, err)
+		return nil, nil, nil, fmt.Errorf("failed to load FBC from %s: %w", catalogImage, err)
 	}
-	filtered, err := r.FilterFBC(ctx, cfg, includes)
+	filtered, err = r.FilterFBC(ctx, upstream, includes)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to filter FBC: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to filter FBC: %w", err)
 	}
-	return r.ExtractImagesWithBundles(filtered), filtered, nil
+	return r.ExtractImagesWithBundles(filtered), filtered, upstream, nil
 }
 
 // ResolveCatalogWithBundles is like ResolveCatalog but returns a map of image
 // reference → bundle-name string for use as per-image origin labels.
 func (r *CatalogResolver) ResolveCatalogWithBundles(ctx context.Context, catalogImage string, includes []mirrorv1alpha1.IncludePackage) (map[string]string, error) {
-	images, _, err := r.ResolveCatalogFull(ctx, catalogImage, includes)
+	images, _, _, err := r.ResolveCatalogFull(ctx, catalogImage, includes)
 	return images, err
 }
 

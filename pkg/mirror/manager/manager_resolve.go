@@ -47,29 +47,76 @@ func operatorCacheValue(digest string) string {
 	return operatorCacheVersion + ":" + digest
 }
 
-func (m *MirrorManager) saveCatalogPackages(ctx context.Context, slug string, info resources.CatalogInfo, cfg *declcfg.DeclarativeConfig) error {
-	resp := resources.BuildCatalogPackagesResponse(info, cfg)
-	data, err := json.Marshal(resp)
+// saveCatalogPackages persists catalog package information in two ConfigMaps:
+//   - oc-mirror-<target>-<slug>-packages: filtered packages (all selected bundles)
+//   - oc-mirror-<target>-<slug>-upstream-packages: upstream packages (channel heads only)
+func (m *MirrorManager) saveCatalogPackages(ctx context.Context, slug string, info resources.CatalogInfo, filtered *declcfg.DeclarativeConfig, upstream *declcfg.DeclarativeConfig) error {
+	if err := m.writeCatalogPackagesCM(ctx, slug, info, filtered, false); err != nil {
+		return fmt.Errorf("filtered packages: %w", err)
+	}
+	if err := m.writeCatalogPackagesCM(ctx, slug, info, upstream, true); err != nil {
+		return fmt.Errorf("upstream packages: %w", err)
+	}
+	return nil
+}
+
+// ensureUpstreamCatalogPackages loads and saves the upstream catalog package CM
+// when a cache hit skips ResolveCatalogFull. Only pulls the catalog image if
+// the upstream CM does not yet exist.
+func (m *MirrorManager) ensureUpstreamCatalogPackages(ctx context.Context, resolver *catalog.CatalogResolver, slug string, info resources.CatalogInfo) error {
+	cmName := fmt.Sprintf("oc-mirror-%s-%s-upstream-packages", m.TargetName, slug)
+	existing := &corev1.ConfigMap{}
+	err := m.Client.Get(ctx, client.ObjectKey{Name: cmName, Namespace: m.Namespace}, existing)
+	if err == nil {
+		return nil // already populated
+	}
+	if client.IgnoreNotFound(err) != nil {
+		return err
+	}
+	upstream, err := resolver.LoadFBC(ctx, info.SourceCatalog)
 	if err != nil {
-		return fmt.Errorf("marshal catalog packages: %w", err)
+		return fmt.Errorf("load upstream FBC: %w", err)
+	}
+	return m.writeCatalogPackagesCM(ctx, slug, info, upstream, true)
+}
+
+func (m *MirrorManager) writeCatalogPackagesCM(ctx context.Context, slug string, info resources.CatalogInfo, cfg *declcfg.DeclarativeConfig, isUpstream bool) error {
+	var resp resources.CatalogPackagesResponse
+	if isUpstream {
+		resp = resources.BuildUpstreamCatalogPackagesResponse(info, cfg)
+	} else {
+		resp = resources.BuildCatalogPackagesResponse(info, cfg)
 	}
 
-	cmName := fmt.Sprintf("oc-mirror-%s-%s-packages", m.TargetName, slug)
+	data, err := json.Marshal(resp)
+	if err != nil {
+		return fmt.Errorf("marshal: %w", err)
+	}
+
+	var cmName string
+	if isUpstream {
+		cmName = fmt.Sprintf("oc-mirror-%s-%s-upstream-packages", m.TargetName, slug)
+	} else {
+		cmName = fmt.Sprintf("oc-mirror-%s-%s-packages", m.TargetName, slug)
+	}
+
+	labelKey := "oc-mirror.openshift.io/catalog-packages"
+	if isUpstream {
+		labelKey = "oc-mirror.openshift.io/catalog-upstream-packages"
+	}
+
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      cmName,
 			Namespace: m.Namespace,
 			Labels: map[string]string{
-				"oc-mirror.openshift.io/catalog-packages": slug,
-				"oc-mirror.openshift.io/mirrortarget":     m.TargetName,
+				labelKey:                              slug,
+				"oc-mirror.openshift.io/mirrortarget": m.TargetName,
 			},
 		},
-		Data: map[string]string{
-			"packages.json": string(data),
-		},
+		Data: map[string]string{"packages.json": string(data)},
 	}
 
-	// Use CreateOrUpdate for idempotency
 	existing := &corev1.ConfigMap{}
 	err = m.Client.Get(ctx, client.ObjectKey{Name: cmName, Namespace: m.Namespace}, existing)
 	if err != nil {
@@ -78,7 +125,6 @@ func (m *MirrorManager) saveCatalogPackages(ctx context.Context, slug string, in
 		}
 		return m.Client.Create(ctx, cm)
 	}
-
 	existing.Data = cm.Data
 	existing.Labels = cm.Labels
 	return m.Client.Update(ctx, existing)
@@ -370,13 +416,25 @@ func (m *MirrorManager) resolveOperatorSection( //nolint:unparam
 			continue
 		}
 
+		catSlug := resources.CatalogSlug(op.Catalog)
+		targetImage := resources.CatalogTargetImage(mt.Spec.Registry, op.Catalog)
+		catInfo := resources.CatalogInfo{
+			SourceCatalog: op.Catalog,
+			TargetImage:   targetImage,
+		}
+
 		cacheToken := operatorCacheValue(freshDigest)
 		if !recollect && operatorCacheHit(cached, freshDigest) {
 			carryOverByOriginAndSig(currentState, newState, imagestate.OriginOperator, sig, originRef)
+			// Ensure upstream packages CM exists even on a cache hit. This handles
+			// the first run after the feature was added (existing clusters).
+			if err := m.ensureUpstreamCatalogPackages(ctx, resolver, catSlug, catInfo); err != nil {
+				fmt.Printf("Warning: failed to ensure upstream catalog packages for %s: %v\n", catSlug, err)
+			}
 			continue
 		}
 
-		images, cfg, err := resolver.ResolveCatalogFull(ctx, op.Catalog, op.Packages)
+		images, filtered, upstream, err := resolver.ResolveCatalogFull(ctx, op.Catalog, op.Packages)
 		if err != nil {
 			fmt.Printf("Warning: collect catalog %s: %v\n", op.Catalog, err)
 			carryOverByOriginAndSig(currentState, newState, imagestate.OriginOperator, sig, originRef)
@@ -393,14 +451,7 @@ func (m *MirrorManager) resolveOperatorSection( //nolint:unparam
 		}
 		mergeIntoStateWithSig(newState, targetImages, imagestate.OriginOperator, sig, originRef, currentState)
 
-		// Phase 7a: Persist catalog package information in a ConfigMap for the Resource API.
-		catSlug := resources.CatalogSlug(op.Catalog)
-		targetImage := resources.CatalogTargetImage(mt.Spec.Registry, op.Catalog)
-		catInfo := resources.CatalogInfo{
-			SourceCatalog: op.Catalog,
-			TargetImage:   targetImage,
-		}
-		if err := m.saveCatalogPackages(ctx, catSlug, catInfo, cfg); err != nil {
+		if err := m.saveCatalogPackages(ctx, catSlug, catInfo, filtered, upstream); err != nil {
 			fmt.Printf("Warning: failed to save catalog packages for %s: %v\n", catSlug, err)
 		}
 
