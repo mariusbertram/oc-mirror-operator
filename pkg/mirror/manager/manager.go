@@ -751,22 +751,34 @@ func (m *MirrorManager) saveGlobalResources(ctx context.Context, mt *mirrorv1alp
 	// Generate CatalogSources for all unique catalogs in the state.
 	catalogs := make(map[string]resources.CatalogInfo)
 	for _, entry := range m.imageState {
-		if entry.Origin == imagestate.OriginOperator {
-			// Extract catalog from OriginRef (hacky, but we don't store it explicitly in entry)
-			// OriginRef format: "catalog [pkg1, pkg2]" or "catalog — bundle"
-			if entry.OriginRef == "" {
-				continue
-			}
-			parts := strings.Split(entry.OriginRef, " ")
-			catSource := parts[0]
-			if catSource == "" {
-				continue
-			}
-			slug := resources.CatalogSlug(catSource)
-			if _, ok := catalogs[slug]; !ok {
-				catalogs[slug] = resources.CatalogInfo{
-					SourceCatalog: catSource,
-					TargetImage:   resources.CatalogTargetImage(mt.Spec.Registry, catSource),
+		// Check both legacy flat fields and consolidated refs.
+		refs := entry.Refs
+		if len(refs) == 0 {
+			// Backward compat: use flat fields as a single virtual ref.
+			refs = []imagestate.ImageRef{{
+				Origin:    entry.Origin,
+				OriginRef: entry.OriginRef,
+			}}
+		}
+
+		for _, ref := range refs {
+			if ref.Origin == imagestate.OriginOperator {
+				// Extract catalog from OriginRef (hacky, but we don't store it explicitly in entry)
+				// OriginRef format: "catalog [pkg1, pkg2]" or "catalog — bundle"
+				if ref.OriginRef == "" {
+					continue
+				}
+				parts := strings.Split(ref.OriginRef, " ")
+				catSource := parts[0]
+				if catSource == "" {
+					continue
+				}
+				slug := resources.CatalogSlug(catSource)
+				if _, ok := catalogs[slug]; !ok {
+					catalogs[slug] = resources.CatalogInfo{
+						SourceCatalog: catSource,
+						TargetImage:   resources.CatalogTargetImage(mt.Spec.Registry, catSource),
+					}
 				}
 			}
 		}
