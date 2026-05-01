@@ -98,21 +98,73 @@ make hooks
 
 ## Building
 
+The oc-mirror operator uses a modular architecture with three separate container images. All binaries can be built together:
+
 ```bash
-# Build the operator binary
+# Build all three binaries (controller, manager, worker)
 make build
 
-# Build the operator container image
-make docker-build IMG=<your-registry>/oc-mirror:dev
+# Build individual binaries
+make build/controller    # Build controller only
+make build/manager       # Build manager only
+make build/worker        # Build worker only
+```
 
-# Push the image
-make docker-push IMG=<your-registry>/oc-mirror:dev
+### Container Images
 
-# Build multi-arch image (linux/amd64 + linux/arm64)
-make docker-buildx IMG=<your-registry>/oc-mirror:dev
+**Build all three images:**
+
+```bash
+# Using podman (default)
+make docker-build-all IMG_BASE=<your-registry>/oc-mirror
+
+# Using docker
+make docker-build-all IMG_BASE=<your-registry>/oc-mirror CONTAINER_TOOL=docker
+```
+
+This creates three images with `IMG_BASE` as prefix:
+- `<your-registry>/oc-mirror-controller:dev`
+- `<your-registry>/oc-mirror-manager:dev`
+- `<your-registry>/oc-mirror-worker:dev`
+
+**Or build individual images:**
+
+```bash
+make docker-build-controller IMG_BASE=<your-registry>/oc-mirror
+make docker-build-manager    IMG_BASE=<your-registry>/oc-mirror
+make docker-build-worker     IMG_BASE=<your-registry>/oc-mirror
+```
+
+**Push images:**
+
+```bash
+make docker-push-all IMG_BASE=<your-registry>/oc-mirror
+
+# Or push individually
+make docker-push-controller IMG_BASE=<your-registry>/oc-mirror
+make docker-push-manager    IMG_BASE=<your-registry>/oc-mirror
+make docker-push-worker     IMG_BASE=<your-registry>/oc-mirror
+```
+
+**Multi-arch images (linux/amd64 + linux/arm64):**
+
+```bash
+make docker-buildx-all IMG_BASE=<your-registry>/oc-mirror
 ```
 
 ---
+
+## Modular Architecture
+
+Each component is a separate binary with distinct responsibilities:
+
+| Component | Binary Location | Dockerfile | Environment |
+|-----------|-----------------|-----------|-------------|
+| **Controller** | `cmd/controller/main.go` | `Dockerfile.controller` | Kubernetes operator (watches CRs) |
+| **Manager** | `cmd/manager/main.go` | `Dockerfile.manager` | Per-MirrorTarget Pod (orchestrates workers) |
+| **Worker** | `cmd/worker/main.go` | `Dockerfile.worker` | Ephemeral Pods + cleanup Job (mirrors images) |
+
+All three share common libraries in `pkg/mirror/` to avoid code duplication and maintain consistency across components.
 
 ## Unit Tests
 

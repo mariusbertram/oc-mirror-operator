@@ -48,6 +48,8 @@ var _ = Describe("MirrorTarget Controller", func() {
 
 		BeforeEach(func() {
 			Expect(os.Setenv("OPERATOR_IMAGE", "test-controller:latest")).To(Succeed())
+			Expect(os.Setenv("MANAGER_IMAGE", "test-manager:latest")).To(Succeed())
+			Expect(os.Setenv("WORKER_IMAGE", "test-worker:latest")).To(Succeed())
 			By("creating the MirrorTarget resource")
 			mt := &mirrorv1alpha1.MirrorTarget{
 				ObjectMeta: metav1.ObjectMeta{
@@ -138,6 +140,8 @@ var _ = Describe("MirrorTarget Controller", func() {
 
 		BeforeEach(func() {
 			Expect(os.Setenv("OPERATOR_IMAGE", "test-controller:latest")).To(Succeed())
+			Expect(os.Setenv("MANAGER_IMAGE", "test-manager:latest")).To(Succeed())
+			Expect(os.Setenv("WORKER_IMAGE", "test-worker:latest")).To(Succeed())
 			By("creating the MirrorTarget resource")
 			mt := &mirrorv1alpha1.MirrorTarget{
 				ObjectMeta: metav1.ObjectMeta{

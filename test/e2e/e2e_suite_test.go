@@ -52,10 +52,6 @@ var (
 	// Set this when running only non-cluster tests (catalog FBC, Cincinnati API)
 	// on a machine without a Kubernetes cluster: SKIP_OPERATOR_DEPLOY=true.
 	skipOperatorDeploy = os.Getenv("SKIP_OPERATOR_DEPLOY") == envTrue
-
-	// projectImage is the name of the image which will be build and loaded
-	// with the code source changes to be tested.
-	projectImage = "example.com/oc-mirror:v0.0.1"
 )
 
 // TestE2E runs the end-to-end (e2e) test suite for the project. These tests execute in an isolated,
@@ -70,18 +66,29 @@ func TestE2E(t *testing.T) {
 
 var _ = BeforeSuite(func() {
 	if !skipClusterSetup {
-		By("building the manager(Operator) image")
-		cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", projectImage))
-		_, err := utils.Run(cmd)
-		ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the manager(Operator) image")
+		By("building the component images (controller, manager, worker)")
+		// Build all 3 component images for the modular architecture
+		controllerImage := "example.com/oc-mirror-controller:v0.0.1"
+		managerImage := "example.com/oc-mirror-manager:v0.0.1"
+		workerImage := "example.com/oc-mirror-worker:v0.0.1"
 
-		By("loading the manager(Operator) image on Kind")
+		cmd := exec.Command("make", "docker-build-all",
+			fmt.Sprintf("IMG_CONTROLLER=%s", controllerImage),
+			fmt.Sprintf("IMG_MANAGER=%s", managerImage),
+			fmt.Sprintf("IMG_WORKER=%s", workerImage))
+		_, err := utils.Run(cmd)
+		ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the component images")
+
+		By("loading component images into Kind")
 		// Pass the podman provider env var through if the Makefile set it.
 		if p := os.Getenv("KIND_EXPERIMENTAL_PROVIDER"); p != "" {
 			Expect(os.Setenv("KIND_EXPERIMENTAL_PROVIDER", p)).To(Succeed())
 		}
-		err = utils.LoadImageToKindClusterWithName(projectImage)
-		ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the manager(Operator) image into Kind")
+		// Load all 3 component images into Kind cluster
+		for _, img := range []string{controllerImage, managerImage, workerImage} {
+			err = utils.LoadImageToKindClusterWithName(img)
+			ExpectWithOffset(1, err).NotTo(HaveOccurred(), fmt.Sprintf("Failed to load image %s into Kind", img))
+		}
 	}
 
 	// Setup CertManager before the suite if not skipped and if not already installed.
@@ -106,20 +113,24 @@ var _ = BeforeSuite(func() {
 		_, err := utils.Run(cmd)
 		ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to install CRDs")
 
-		By("deploying the operator")
-		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectImage))
+		By("deploying the operator (controller, manager, worker components)")
+		// Deploy all 3 component images via environment variables
+		cmd = exec.Command("sh", "-c",
+			"IMG_CONTROLLER=example.com/oc-mirror-controller:v0.0.1 "+
+				"IMG_MANAGER=example.com/oc-mirror-manager:v0.0.1 "+
+				"IMG_WORKER=example.com/oc-mirror-worker:v0.0.1 "+
+				"make deploy")
 		_, err = utils.Run(cmd)
 		ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to deploy the operator")
 
 		By("waiting for controller-manager to be ready")
 		Eventually(func(g Gomega) {
-			cmd := exec.Command("kubectl", "get", "pods",
-				"-l", "control-plane=controller-manager",
+			cmd := exec.Command("kubectl", "rollout", "status",
+				"deployment/oc-mirror-controller-manager",
 				"-n", operatorNamespace,
-				"-o", "jsonpath={.items[0].status.phase}")
-			output, err := utils.Run(cmd)
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(output).To(Equal("Running"), "controller-manager pod not running")
+				"--timeout=10s")
+			_, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred(), "controller-manager deployment not ready")
 		}, 5*time.Minute, 5*time.Second).Should(Succeed())
 	}
 })

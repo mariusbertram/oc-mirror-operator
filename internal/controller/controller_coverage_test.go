@@ -377,6 +377,8 @@ var _ = Describe("Coverage tests", func() {
 			mtName := "mt-catgate-recollect"
 
 			Expect(os.Setenv("OPERATOR_IMAGE", "test-operator:latest")).To(Succeed())
+			Expect(os.Setenv("MANAGER_IMAGE", "test-manager:latest")).To(Succeed())
+			Expect(os.Setenv("WORKER_IMAGE", "test-worker:latest")).To(Succeed())
 			bm, bmErr := builder.New()
 			Expect(bmErr).NotTo(HaveOccurred())
 
@@ -440,6 +442,8 @@ var _ = Describe("Coverage tests", func() {
 			mtName := "mt-catbuild-succeed"
 
 			Expect(os.Setenv("OPERATOR_IMAGE", "test-operator:latest")).To(Succeed())
+			Expect(os.Setenv("MANAGER_IMAGE", "test-manager:latest")).To(Succeed())
+			Expect(os.Setenv("WORKER_IMAGE", "test-worker:latest")).To(Succeed())
 			bm, bmErr := builder.New()
 			Expect(bmErr).NotTo(HaveOccurred())
 
@@ -516,6 +520,8 @@ var _ = Describe("Coverage tests", func() {
 			mtName := "mt-catbuild-fail"
 
 			Expect(os.Setenv("OPERATOR_IMAGE", "test-operator:latest")).To(Succeed())
+			Expect(os.Setenv("MANAGER_IMAGE", "test-manager:latest")).To(Succeed())
+			Expect(os.Setenv("WORKER_IMAGE", "test-worker:latest")).To(Succeed())
 			bm, bmErr := builder.New()
 			Expect(bmErr).NotTo(HaveOccurred())
 
@@ -587,6 +593,8 @@ var _ = Describe("Coverage tests", func() {
 			mtName := "mt-catbuild-rebuild"
 
 			Expect(os.Setenv("OPERATOR_IMAGE", "test-operator:latest")).To(Succeed())
+			Expect(os.Setenv("MANAGER_IMAGE", "test-manager:latest")).To(Succeed())
+			Expect(os.Setenv("WORKER_IMAGE", "test-worker:latest")).To(Succeed())
 			bm, bmErr := builder.New()
 			Expect(bmErr).NotTo(HaveOccurred())
 
@@ -663,6 +671,8 @@ var _ = Describe("Coverage tests", func() {
 			mtName := "mt-catbuild-poll"
 
 			Expect(os.Setenv("OPERATOR_IMAGE", "test-operator:latest")).To(Succeed())
+			Expect(os.Setenv("MANAGER_IMAGE", "test-manager:latest")).To(Succeed())
+			Expect(os.Setenv("WORKER_IMAGE", "test-worker:latest")).To(Succeed())
 			bm, bmErr := builder.New()
 			Expect(bmErr).NotTo(HaveOccurred())
 
@@ -716,6 +726,8 @@ var _ = Describe("Coverage tests", func() {
 			mtName := "mt-catbuild-skip"
 
 			Expect(os.Setenv("OPERATOR_IMAGE", "test-operator:latest")).To(Succeed())
+			Expect(os.Setenv("MANAGER_IMAGE", "test-manager:latest")).To(Succeed())
+			Expect(os.Setenv("WORKER_IMAGE", "test-worker:latest")).To(Succeed())
 			bm, bmErr := builder.New()
 			Expect(bmErr).NotTo(HaveOccurred())
 
@@ -774,6 +786,8 @@ var _ = Describe("Coverage tests", func() {
 			removedIS := "is-cleanup-removed"
 
 			Expect(os.Setenv("OPERATOR_IMAGE", "test-operator:latest")).To(Succeed())
+			Expect(os.Setenv("MANAGER_IMAGE", "test-manager:latest")).To(Succeed())
+			Expect(os.Setenv("WORKER_IMAGE", "test-worker:latest")).To(Succeed())
 
 			mt := &mirrorv1alpha1.MirrorTarget{
 				ObjectMeta: metav1.ObjectMeta{
@@ -859,6 +873,8 @@ var _ = Describe("Coverage tests", func() {
 			cleanedIS := "is-cleanup-done"
 
 			Expect(os.Setenv("OPERATOR_IMAGE", "test-operator:latest")).To(Succeed())
+			Expect(os.Setenv("MANAGER_IMAGE", "test-manager:latest")).To(Succeed())
+			Expect(os.Setenv("WORKER_IMAGE", "test-worker:latest")).To(Succeed())
 
 			mt := &mirrorv1alpha1.MirrorTarget{
 				ObjectMeta: metav1.ObjectMeta{
@@ -912,6 +928,8 @@ var _ = Describe("Coverage tests", func() {
 			failedIS := "is-cleanup-retry"
 
 			Expect(os.Setenv("OPERATOR_IMAGE", "test-operator:latest")).To(Succeed())
+			Expect(os.Setenv("MANAGER_IMAGE", "test-manager:latest")).To(Succeed())
+			Expect(os.Setenv("WORKER_IMAGE", "test-worker:latest")).To(Succeed())
 
 			mt := &mirrorv1alpha1.MirrorTarget{
 				ObjectMeta: metav1.ObjectMeta{
@@ -966,6 +984,8 @@ var _ = Describe("Coverage tests", func() {
 			isName := "is-create-cleanup"
 
 			Expect(os.Setenv("OPERATOR_IMAGE", "test-operator:latest")).To(Succeed())
+			Expect(os.Setenv("MANAGER_IMAGE", "test-manager:latest")).To(Succeed())
+			Expect(os.Setenv("WORKER_IMAGE", "test-worker:latest")).To(Succeed())
 
 			mt := &mirrorv1alpha1.MirrorTarget{
 				ObjectMeta: metav1.ObjectMeta{Name: mtName, Namespace: ns},
@@ -997,6 +1017,8 @@ var _ = Describe("Coverage tests", func() {
 			isName := "is-create-cleanup-noop"
 
 			Expect(os.Setenv("OPERATOR_IMAGE", "test-operator:latest")).To(Succeed())
+			Expect(os.Setenv("MANAGER_IMAGE", "test-manager:latest")).To(Succeed())
+			Expect(os.Setenv("WORKER_IMAGE", "test-worker:latest")).To(Succeed())
 
 			mt := &mirrorv1alpha1.MirrorTarget{
 				ObjectMeta: metav1.ObjectMeta{Name: mtName, Namespace: ns},
@@ -1027,6 +1049,8 @@ var _ = Describe("Coverage tests", func() {
 			isName := "is-cleanup-auth"
 
 			Expect(os.Setenv("OPERATOR_IMAGE", "test-operator:latest")).To(Succeed())
+			Expect(os.Setenv("MANAGER_IMAGE", "test-manager:latest")).To(Succeed())
+			Expect(os.Setenv("WORKER_IMAGE", "test-worker:latest")).To(Succeed())
 
 			mt := &mirrorv1alpha1.MirrorTarget{
 				ObjectMeta: metav1.ObjectMeta{Name: mtName, Namespace: ns},
@@ -1254,6 +1278,8 @@ var _ = Describe("Coverage tests", func() {
 			isName := "is-for-aggregate-cov"
 
 			Expect(os.Setenv("OPERATOR_IMAGE", "test-operator:latest")).To(Succeed())
+			Expect(os.Setenv("MANAGER_IMAGE", "test-manager:latest")).To(Succeed())
+			Expect(os.Setenv("WORKER_IMAGE", "test-worker:latest")).To(Succeed())
 
 			is := &mirrorv1alpha1.ImageSet{
 				ObjectMeta: metav1.ObjectMeta{Name: isName, Namespace: ns},

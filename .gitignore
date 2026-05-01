@@ -37,3 +37,4 @@ gha-creds-*.json
 
 .claude
 .claude-flow
+/manager

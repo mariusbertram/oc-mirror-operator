@@ -34,27 +34,47 @@ jobs:
           go mod tidy
           make test
 
-  # ── 2. Build operator image and export as artifact ─────────────────────────
+  # ── 2. Build component images and export as artifacts ────────────────────────
   build:
-    name: Build operator image
+    name: Build component images
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@v6
 
-      # Build a single-arch (amd64) image tagged with the name the e2e
-      # test suite expects and save it as a tar archive for downstream jobs.
-      - name: Build image
-        run: CONTAINER_TOOL=docker make docker-build IMG=example.com/oc-mirror:v0.0.1
+      # Build three separate single-arch (amd64) images tagged with the names the e2e
+      # test suite expects and save them as tar archives for downstream jobs.
+      - name: Build images (controller, manager, worker)
+        run: |
+          set -x
+          CONTAINER_TOOL=docker make docker-build-all \
+            IMG_CONTROLLER=example.com/oc-mirror-controller:v0.0.1 \
+            IMG_MANAGER=example.com/oc-mirror-manager:v0.0.1 \
+            IMG_WORKER=example.com/oc-mirror-worker:v0.0.1
+          
+          # Verify built images exist
+          echo "Built images:"
+          docker images | grep "oc-mirror"
 
-      - name: Export image to tar
-        run: docker save example.com/oc-mirror:v0.0.1 -o /tmp/operator-image.tar
-
+      - name: Export images to tar
+        run: |
+          set -x
+          echo "Exporting controller image..."
+          docker save example.com/oc-mirror-controller:v0.0.1 -o operator-controller-image.tar
+          echo "Exporting manager image..."
+          docker save example.com/oc-mirror-manager:v0.0.1 -o operator-manager-image.tar
+          echo "Exporting worker image..."
+          docker save example.com/oc-mirror-worker:v0.0.1 -o operator-worker-image.tar
+          
+          # Verify exported files exist and have content
+          echo "Exported tar files:"
+          ls -lh operator-*-image.tar || (echo "ERROR: Failed to export images"; exit 1)
+          du -sh operator-*-image.tar
       - uses: actions/upload-artifact@v7
         with:
-          name: operator-image
-          path: /tmp/operator-image.tar
+          name: operator-images
+          path: operator-*-image.tar
           retention-days: 1
 
   # ── 3. Bundle image build check ────────────────────────────────────────────
@@ -76,7 +96,7 @@ jobs:
           platforms: linux/amd64
           push: false
 
-  # ── 4. Multi-arch operator build check ────────────────────────────────────
+  # ── 4. Multi-arch component build check ────────────────────────────────────
   build-multiarch-check:
     name: Multi-arch build check
     runs-on: ubuntu-latest
@@ -89,10 +109,27 @@ jobs:
 
       - uses: docker/setup-buildx-action@v4
 
-      - name: Build operator image (linux/amd64 + linux/arm64, no push)
+      - name: Build controller image (linux/amd64 + linux/arm64, no push)
         uses: docker/build-push-action@v7
         with:
           context: .
+          file: Dockerfile.controller
+          platforms: linux/amd64,linux/arm64
+          push: false
+
+      - name: Build manager image (linux/amd64 + linux/arm64, no push)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.manager
+          platforms: linux/amd64,linux/arm64
+          push: false
+
+      - name: Build worker image (linux/amd64 + linux/arm64, no push)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.worker
           platforms: linux/amd64,linux/arm64
           push: false
 
@@ -116,11 +153,11 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Download operator image artifact
+      - name: Download component images artifacts
         uses: actions/download-artifact@v8
         with:
-          name: operator-image
-          path: /tmp
+          name: operator-images
+          path: .
 
       - name: Install Kind v0.29.0
         run: |
@@ -186,11 +223,27 @@ jobs:
           kubectl get nodes -o wide
           kubectl wait --for=condition=Ready node --all --timeout=120s
 
-      - name: Load operator image into Kind
+      - name: Load component images into Kind
         run: |
-          docker load -i /tmp/operator-image.tar
-          kind load docker-image example.com/oc-mirror:v0.0.1 --name oc-mirror-e2e
-
+          set -x
+          # Verify tar files exist
+          ls -lh operator-*-image.tar || (echo "ERROR: Image tar files not found"; exit 1)
+          
+          # Load images from tar
+          echo "Loading Docker images..."
+          docker load -i operator-controller-image.tar
+          docker load -i operator-manager-image.tar
+          docker load -i operator-worker-image.tar
+          
+          # Verify images exist in Docker
+          echo "Verifying loaded images..."
+          docker images | grep "oc-mirror"
+          
+          # Load images into Kind cluster
+          echo "Loading images into Kind cluster..."
+          kind load docker-image example.com/oc-mirror-controller:v0.0.1 --name oc-mirror-e2e
+          kind load docker-image example.com/oc-mirror-manager:v0.0.1 --name oc-mirror-e2e
+          kind load docker-image example.com/oc-mirror-worker:v0.0.1 --name oc-mirror-e2e
       - name: Install cert-manager v1.16.3
         run: |
           kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.16.3/cert-manager.yaml
@@ -220,42 +273,49 @@ jobs:
       - name: Download and install operator-sdk
         run: make operator-sdk
 
-      - name: Determine latest release tag
-        id: latest-tag
+      - name: Determine bundle versions for OLM upgrade test
+        id: bundle-ver
         run: |
-          LATEST_TAG=$(git tag --sort=-version:refname | head -1)
-          LATEST_VER=${LATEST_TAG#v}
-          # Bump patch for the new bundle version
-          IFS='.' read -r major minor patch <<< "$LATEST_VER"
-          NEW_VER="${major}.${minor}.$((patch + 1))"
-          echo "old_tag=$LATEST_TAG" >> "$GITHUB_OUTPUT"
-          echo "old_ver=$LATEST_VER" >> "$GITHUB_OUTPUT"
-          echo "new_ver=$NEW_VER" >> "$GITHUB_OUTPUT"
-          echo "Old bundle: $LATEST_TAG ($LATEST_VER) → New bundle: $NEW_VER"
+          # Old bundle: from the latest release tag (the "before" state for the upgrade)
+          OLD_TAG=$(git tag --sort=-version:refname | head -1)
+          OLD_VER="${OLD_TAG#v}"
+          # New bundle: fixed CI dev version — always higher than any release tag.
+          # Real version management happens in release.yml when a v* tag is pushed.
+          NEW_VER="0.0.99"
+          echo "old_tag=$OLD_TAG" >> "$GITHUB_OUTPUT"
+          echo "old_ver=$OLD_VER"  >> "$GITHUB_OUTPUT"
+          echo "new_ver=$NEW_VER"  >> "$GITHUB_OUTPUT"
+          echo "Old bundle: $OLD_TAG ($OLD_VER) → New bundle: $NEW_VER"
 
       - name: Build old bundle from latest tag and push to local registry
         run: |
           mkdir -p /tmp/fake-bundle-ctx
-          git archive ${{ steps.latest-tag.outputs.old_tag }} bundle/ | tar -x -C /tmp/fake-bundle-ctx
-          sed -i 's|image: ghcr.io/mariusbertram/oc-mirror-operator.*|image: example.com/oc-mirror:v0.0.1|g' \
-            /tmp/fake-bundle-ctx/bundle/manifests/oc-mirror.clusterserviceversion.yaml
-          docker build -f bundle.Dockerfile -t localhost:5001/oc-mirror-bundle:${{ steps.latest-tag.outputs.old_ver }} /tmp/fake-bundle-ctx
-          docker push localhost:5001/oc-mirror-bundle:${{ steps.latest-tag.outputs.old_ver }}
+          git archive ${{ steps.bundle-ver.outputs.old_tag }} bundle/ | tar -x -C /tmp/fake-bundle-ctx
+          # Keep the original upstream ghcr.io image references intact so that the
+          # old release binary runs as-is. Kind pulls from ghcr.io at runtime.
+          # Do NOT replace the image or patch the command — the old monolithic binary
+          # does not require MANAGER_IMAGE/WORKER_IMAGE and must run with its own entrypoint.
+          docker build -f bundle.Dockerfile -t localhost:5001/oc-mirror-bundle:${{ steps.bundle-ver.outputs.old_ver }} /tmp/fake-bundle-ctx
+          docker push localhost:5001/oc-mirror-bundle:${{ steps.bundle-ver.outputs.old_ver }}
 
       - name: Build new bundle image and push to local registry
         run: |
-          IMG=example.com/oc-mirror:v0.0.1 VERSION=${{ steps.latest-tag.outputs.new_ver }} USE_IMAGE_DIGESTS=false \
+          IMG_CONTROLLER=example.com/oc-mirror-controller:v0.0.1 \
+          IMG_MANAGER=example.com/oc-mirror-manager:v0.0.1 \
+          IMG_WORKER=example.com/oc-mirror-worker:v0.0.1 \
+          VERSION=${{ steps.bundle-ver.outputs.new_ver }} \
+          USE_IMAGE_DIGESTS=false \
             PATH=$PATH:$(go env GOPATH)/bin make bundle
-          docker build -f bundle.Dockerfile -t localhost:5001/oc-mirror-bundle:${{ steps.latest-tag.outputs.new_ver }} .
-          docker push localhost:5001/oc-mirror-bundle:${{ steps.latest-tag.outputs.new_ver }}
+          docker build -f bundle.Dockerfile -t localhost:5001/oc-mirror-bundle:${{ steps.bundle-ver.outputs.new_ver }} .
+          docker push localhost:5001/oc-mirror-bundle:${{ steps.bundle-ver.outputs.new_ver }}
 
       - name: Install OLM
         run: bin/operator-sdk olm install --timeout 5m
 
       - name: "Phase 2: Run OLM upgrade E2E tests"
         run: |
-          OLD_BUNDLE_IMG=localhost:5001/oc-mirror-bundle:${{ steps.latest-tag.outputs.old_ver }} \
-          NEW_BUNDLE_IMG=localhost:5001/oc-mirror-bundle:${{ steps.latest-tag.outputs.new_ver }} \
+          OLD_BUNDLE_IMG=localhost:5001/oc-mirror-bundle:${{ steps.bundle-ver.outputs.old_ver }} \
+          NEW_BUNDLE_IMG=localhost:5001/oc-mirror-bundle:${{ steps.bundle-ver.outputs.new_ver }} \
           OPERATOR_SDK_BIN=bin/operator-sdk \
           BUNDLE_SDK_FLAGS="--use-http" \
           SKIP_CLUSTER_SETUP=true \
@@ -273,10 +333,23 @@ jobs:
           kubectl get nodes -o wide || true
           echo "=== All Pods ==="
           kubectl get pods -A -o wide || true
-          echo "=== Pod Events ==="
+          echo "=== Deployments (all namespaces) ==="
+          kubectl get deployments -A -o wide || true
+          echo "=== Describe Deployments in oc-mirror-system ==="
+          kubectl describe deployments -n oc-mirror-system || true
+          echo "=== Describe Pods in oc-mirror-system ==="
+          kubectl describe pods -n oc-mirror-system || true
+          echo "=== Failed/Pending Pod Events ==="
+          kubectl get events -A --sort-by=.lastTimestamp | grep -E "Failed|ErrImagePull|ImagePullBackOff|Pending|Warning" | tail -50 || true
+          echo "=== All Events (last 80) ==="
           kubectl get events -A --sort-by=.lastTimestamp | tail -80 || true
           echo "=== Controller-Manager Logs (oc-mirror-system) ==="
           kubectl logs -l control-plane=controller-manager -n oc-mirror-system --tail=100 --all-containers 2>/dev/null || true
+          echo "=== Images loaded in Kind nodes ==="
+          for node in $(kind get nodes --name oc-mirror-e2e 2>/dev/null); do
+            echo "--- Node: $node ---"
+            docker exec "$node" crictl images 2>/dev/null | grep -E "oc-mirror|example.com" || true
+          done
           echo "=== Controller-Manager Logs (oc-mirror-operator / OLM) ==="
           kubectl logs -l control-plane=controller-manager -n oc-mirror-operator --tail=100 --all-containers 2>/dev/null || true
           echo "=== OLM Pods ==="

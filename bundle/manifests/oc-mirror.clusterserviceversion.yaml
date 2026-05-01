@@ -32,13 +32,13 @@ metadata:
     capabilities: Basic Install
     categories: OpenShift Optional, Integration & Delivery
     containerImage: quay.lab.brtrm.dev/marius/oc-mirror-operator:latest
-    createdAt: "2026-04-23T20:27:53Z"
+    createdAt: "2026-05-01T16:46:47Z"
     operatorframework.io/suggested-namespace: oc-mirror-operator
-    operators.operatorframework.io/builder: operator-sdk-v1.42.0
+    operators.operatorframework.io/builder: operator-sdk-v1.42.2
     operators.operatorframework.io/project_layout: go.kubebuilder.io/v4
     repository: https://github.com/mariusbertram/oc-mirror-operator
     support: Marius Bertram
-  name: oc-mirror.v0.0.3
+  name: oc-mirror.v0.0.13
   namespace: placeholder
 spec:
   apiservicedefinitions: {}
@@ -205,8 +205,10 @@ spec:
           - roles
           verbs:
           - create
+          - delete
           - get
           - list
+          - patch
           - update
           - watch
         - apiGroups:
@@ -269,11 +271,15 @@ spec:
                 - --leader-elect
                 - --health-probe-bind-address=:8081
                 command:
-                - /manager
+                - /controller
                 env:
                 - name: OPERATOR_IMAGE
-                  value: ghcr.io/mariusbertram/oc-mirror-operator:v0.0.3
-                image: ghcr.io/mariusbertram/oc-mirror-operator:v0.0.3
+                  value: example.com/oc-mirror-controller:v0.0.1
+                - name: MANAGER_IMAGE
+                  value: example.com/oc-mirror-manager:v0.0.1
+                - name: WORKER_IMAGE
+                  value: example.com/oc-mirror-worker:v0.0.1
+                image: example.com/oc-mirror-controller:v0.0.1
                 livenessProbe:
                   httpGet:
                     path: /healthz
@@ -369,4 +375,4 @@ spec:
   provider:
     name: Marius Bertram
     url: github.com/mariusbertram/oc-mirror-operator
-  version: 0.0.3
+  version: 0.0.13

@@ -72,6 +72,13 @@ The operator does **not** require persistent storage (no PVC). The image state i
 
 ## 2. Installation
 
+> **Note (v0.1.0+):** The operator now uses a modular 3-component architecture with separate container images:
+> - `oc-mirror-controller` – Kubernetes operator controller
+> - `oc-mirror-manager` – Per-MirrorTarget manager pod
+> - `oc-mirror-worker` – Worker pods for image mirroring + cleanup
+>
+> The OLM bundle and Helm chart automatically pull the correct image versions. For manual deployments, ensure all 3 images are deployed to your cluster.
+
 ### 2.1 Via OLM (recommended)
 
 #### Step 1: Create the CatalogSource
@@ -158,7 +165,59 @@ kubectl apply -f config/manager/manager.yaml
 
 ## 3. Concepts
 
-### 3.1 MirrorTarget
+The oc-mirror operator comprises three modular components working together:
+
+### 3.1 Controller
+
+The **Controller** (operator process) watches `MirrorTarget` and `ImageSet` custom resources:
+
+- Creates a Manager Pod Deployment for each `MirrorTarget`
+- Resolves upstream image sources (Cincinnati API for releases, catalog indices for operators)
+- Creates Catalog-Builder Jobs to filter and build OCI catalog images
+- Handles cleanup operations when resources are deleted
+- Sets status conditions on CRs
+
+Deployed as a single Deployment (one controller per operator namespace).
+
+### 3.2 Manager Pod
+
+The **Manager** pod runs once per `MirrorTarget` as a Deployment:
+
+- Loads and manages the ImageState ConfigMap (tracks mirroring progress)
+- Orchestrates Worker Pod creation and lifecycle
+- Serves Status API on port 8080 (workers report progress)
+- Verifies images in the target registry
+- Generates IDMS/ITMS/CatalogSource ConfigMaps for the Resource API
+- Handles cleanup of completed worker pods
+
+### 3.3 Worker Pods
+
+**Worker** pods are ephemeral and created by the Manager:
+
+- Receive a batch of images to mirror (via environment variable `MIRROR_BATCH`)
+- Mirror images using `regclient` with blob buffering
+- Report progress to the Manager via HTTP
+- Check with the Manager before each image whether it's still needed
+- Automatically deleted on completion
+
+### 3.4 ImageState (ConfigMap)
+
+The complete mirroring progress is stored in a Kubernetes ConfigMap (`<imageset-name>-images` in the same namespace). The data is gzip-compressed (JSON), resulting in approximately 30 bytes per image — scales easily to 50,000+ images.
+
+Each entry contains:
+- `source`: Source image reference
+- `state`: `Pending` | `Mirrored` | `Failed`
+- `retryCount`: Number of previous failed attempts
+- `permanentlyFailed`: true after 10 failed attempts
+- `lastError`: last error message
+
+### 3.5 Cleanup Policy
+
+When an `ImageSet` is removed or its spec is narrowed (e.g., an operator is no longer needed), the operator can trigger cleanup Jobs that delete now-obsolete images from the target registry. This is controlled by the `mirror.openshift.io/cleanup-policy: Delete` annotation on the `ImageSet`.
+
+---
+
+## 4. MirrorTarget CRD
 
 A `MirrorTarget` defines **where** to mirror to:
 
@@ -179,7 +238,7 @@ Use cases:
 - Separate ImageSets with different concurrency/performance settings
 - Isolate different teams' mirror configurations
 
-### 3.2 ImageSet
+## 5. ImageSet CRD
 
 An `ImageSet` defines **what** to mirror:
 
@@ -189,35 +248,9 @@ An `ImageSet` defines **what** to mirror:
 
 An `ImageSet` is independent of a specific target — it is referenced via `MirrorTarget.spec.imageSets`. The same `ImageSet` can be used in a `MirrorTarget`. However, an `ImageSet` should only be referenced by **one** `MirrorTarget`.
 
-### 3.3 Manager Pod
+---
 
-The manager pod is automatically started by the operator controller as a `Deployment` when a `MirrorTarget` is created. It:
-
-- Resolves the upstream image list (Cincinnati API, catalog index)
-- Manages the image state (which images are still pending, which have been mirrored)
-- Starts worker pods for the actual mirroring
-- Periodically checks whether mirrored images are still present in the target registry
-- Writes generated resources (IDMS/ITMS/CatalogSource) to ConfigMaps for the Resource API
-
-### 3.4 Worker Pods
-
-Worker pods are ephemeral — they are started for a batch of images and automatically cleaned up after completion. They:
-
-- Receive their work (batch of source→dest pairs) as a JSON annotation
-- Authenticate with the manager via bearer token
-- Report each success/failure individually back to the manager
-- Check before mirroring whether the image is still needed (the spec may have changed in the meantime)
-
-### 3.5 Image State (ConfigMap)
-
-The complete mirroring progress is stored in a Kubernetes ConfigMap (`<imageset-name>-images` in the same namespace). The data is gzip-compressed (JSON), resulting in approximately 30 bytes per image — scales easily to 50,000+ images.
-
-Each entry contains:
-- `source`: Source image reference
-- `state`: `Pending` | `Mirrored` | `Failed`
-- `retryCount`: Number of previous failed attempts
-- `permanentlyFailed`: true after 10 failed attempts
-- `lastError`: last error message
+## 6. MirrorTarget
 - `origin`: Source (release/operator/additional)
 - `originRef`: Human-readable description of the spec entry that produced this image
 

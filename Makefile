@@ -49,8 +49,11 @@ endif
 # Set the Operator SDK version to use. By default, what is installed on the system is used.
 # This is useful for CI or a project to utilize a specific version of the operator-sdk toolkit.
 OPERATOR_SDK_VERSION ?= v1.42.2
-# Image URL to use all building/pushing image targets
+# Image URLs to use for building/pushing image targets
 IMG ?= controller:latest
+IMG_CONTROLLER ?= ghcr.io/mariusbertram/oc-mirror-operator-controller:v$(VERSION)
+IMG_MANAGER ?= ghcr.io/mariusbertram/oc-mirror-operator-manager:v$(VERSION)
+IMG_WORKER ?= ghcr.io/mariusbertram/oc-mirror-operator-worker:v$(VERSION)
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -206,6 +209,37 @@ docker-build: ## Build docker image with the manager.
 docker-push: ## Push docker image with the manager.
 	$(CONTAINER_TOOL) push ${IMG}
 
+# Individual image builds for modular architecture
+.PHONY: docker-build-controller
+docker-build-controller: ## Build docker image with the controller.
+	$(CONTAINER_TOOL) build -t ${IMG_CONTROLLER} -f Dockerfile.controller .
+
+.PHONY: docker-build-manager
+docker-build-manager: ## Build docker image with the manager.
+	$(CONTAINER_TOOL) build -t ${IMG_MANAGER} -f Dockerfile.manager .
+
+.PHONY: docker-build-worker
+docker-build-worker: ## Build docker image with the worker (cleanup runs as a subcommand).
+	$(CONTAINER_TOOL) build -t ${IMG_WORKER} -f Dockerfile.worker .
+
+.PHONY: docker-build-all
+docker-build-all: docker-build-controller docker-build-manager docker-build-worker ## Build all three modular images (controller, manager, worker).
+
+.PHONY: docker-push-controller
+docker-push-controller: ## Push controller image.
+	$(CONTAINER_TOOL) push ${IMG_CONTROLLER}
+
+.PHONY: docker-push-manager
+docker-push-manager: ## Push manager image.
+	$(CONTAINER_TOOL) push ${IMG_MANAGER}
+
+.PHONY: docker-push-worker
+docker-push-worker: ## Push worker image.
+	$(CONTAINER_TOOL) push ${IMG_WORKER}
+
+.PHONY: docker-push-all
+docker-push-all: docker-push-controller docker-push-manager docker-push-worker ## Push all three modular images.
+
 # PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
 # architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:
 # - be able to use docker buildx. More info: https://docs.docker.com/build/buildx/
@@ -269,7 +303,10 @@ uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified 
 
 .PHONY: deploy
 deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
-	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
+	cd config/manager && $(KUSTOMIZE) edit set image \
+		ghcr.io/mariusbertram/oc-mirror-operator-controller=${IMG_CONTROLLER} \
+		ghcr.io/mariusbertram/oc-mirror-operator-manager=${IMG_MANAGER} \
+		ghcr.io/mariusbertram/oc-mirror-operator-worker=${IMG_WORKER}
 	$(KUSTOMIZE) build config/default | $(KUBECTL) apply -f -
 
 .PHONY: undeploy
@@ -364,7 +401,7 @@ endif
 .PHONY: bundle
 bundle: manifests kustomize operator-sdk ## Generate bundle manifests and metadata, then validate generated files.
 	$(OPERATOR_SDK) generate kustomize manifests -q
-	cd config/manager && $(KUSTOMIZE) edit set image controller=$(IMG)
+	cd config/manager && $(KUSTOMIZE) edit set image controller=$(IMG) ghcr.io/mariusbertram/oc-mirror-operator-controller=$(IMG_CONTROLLER) ghcr.io/mariusbertram/oc-mirror-operator-manager=$(IMG_MANAGER) ghcr.io/mariusbertram/oc-mirror-operator-worker=$(IMG_WORKER)
 	$(KUSTOMIZE) build config/manifests | $(OPERATOR_SDK) generate bundle $(BUNDLE_GEN_FLAGS)
 	$(OPERATOR_SDK) bundle validate ./bundle
 

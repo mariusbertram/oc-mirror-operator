@@ -1,0 +1,132 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: oc-mirror-controller
+  namespace: system
+  labels:
+    app.kubernetes.io/name: oc-mirror
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/managed-by: kustomize
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: oc-mirror-controller-role
+  labels:
+    app.kubernetes.io/name: oc-mirror
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/managed-by: kustomize
+rules:
+# MirrorTarget and ImageSet resources
+- apiGroups:
+  - mirror.openshift.io
+  resources:
+  - mirrortargets
+  - imagesets
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+- apiGroups:
+  - mirror.openshift.io
+  resources:
+  - mirrortargets/finalizers
+  - imagesets/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - mirror.openshift.io
+  resources:
+  - mirrortargets/status
+  - imagesets/status
+  verbs:
+  - get
+  - patch
+  - update
+# Pod management (create/delete manager and worker pods)
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - watch
+  - patch
+# Job management (cleanup jobs)
+- apiGroups:
+  - batch
+  resources:
+  - jobs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - watch
+  - patch
+# ConfigMap management (imagestate)
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+# Secret access (registry credentials)
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+  - list
+  - watch
+# Deployment management (manager deployments)
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - watch
+  - patch
+# Event creation for status updates
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: oc-mirror-controller-rolebinding
+  labels:
+    app.kubernetes.io/name: oc-mirror
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/managed-by: kustomize
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: oc-mirror-controller-role
+subjects:
+- kind: ServiceAccount
+  name: oc-mirror-controller
+  namespace: system

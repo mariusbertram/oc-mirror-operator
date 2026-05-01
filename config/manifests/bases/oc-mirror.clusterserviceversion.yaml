@@ -82,8 +82,101 @@ spec:
     mediatype: image/svg+xml
   install:
     spec:
-      deployments: null
-    strategy: ""
+      deployments:
+      - name: controller-manager
+        spec:
+          replicas: 1
+          selector:
+            matchLabels:
+              app.kubernetes.io/name: oc-mirror
+              control-plane: controller-manager
+          strategy: {}
+          template:
+            metadata:
+              annotations:
+                kubectl.kubernetes.io/default-container: manager
+              labels:
+                app.kubernetes.io/name: oc-mirror
+                control-plane: controller-manager
+            spec:
+              containers:
+              - args:
+                - --leader-elect
+                - --health-probe-bind-address=:8081
+                command:
+                - /controller
+                env:
+                - name: OPERATOR_IMAGE
+                  value: controller:latest
+                - name: MANAGER_IMAGE
+                  value: manager:latest
+                - name: WORKER_IMAGE
+                  value: worker:latest
+                image: controller:latest
+                livenessProbe:
+                  httpGet:
+                    path: /healthz
+                    port: 8081
+                  initialDelaySeconds: 15
+                  periodSeconds: 20
+                name: manager
+                readinessProbe:
+                  httpGet:
+                    path: /readyz
+                    port: 8081
+                  initialDelaySeconds: 5
+                  periodSeconds: 10
+                resources:
+                  limits:
+                    cpu: 500m
+                    memory: 128Mi
+                  requests:
+                    cpu: 10m
+                    memory: 64Mi
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  capabilities:
+                    drop:
+                    - ALL
+                  readOnlyRootFilesystem: true
+              securityContext:
+                runAsNonRoot: true
+                seccompProfile:
+                  type: RuntimeDefault
+              serviceAccountName: controller-manager
+              terminationGracePeriodSeconds: 10
+      permissions:
+      - rules:
+        - apiGroups:
+          - ""
+          resources:
+          - pods
+          verbs:
+          - create
+          - delete
+          - get
+          - list
+          - watch
+        - apiGroups:
+          - ""
+          resources:
+          - configmaps
+          verbs:
+          - get
+          - list
+          - watch
+          - create
+          - update
+          - patch
+        - apiGroups:
+          - ""
+          resources:
+          - secrets
+          verbs:
+          - get
+          - list
+        serviceAccountName: oc-mirror-manager
+    strategy: deployment
   installModes:
   - supported: false
     type: OwnNamespace

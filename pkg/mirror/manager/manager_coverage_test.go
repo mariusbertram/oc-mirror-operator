@@ -1394,7 +1394,7 @@ var _ = Describe("Manager Coverage", func() {
 			pod := pods.Items[0]
 			Expect(pod.Labels["app"]).To(Equal("oc-mirror-worker"))
 			Expect(pod.Labels["mirrortarget"]).To(Equal("test"))
-			Expect(pod.Spec.Containers[0].Args).To(Equal([]string{"worker"}))
+			Expect(pod.Spec.Containers[0].Args).To(BeEmpty())
 		})
 
 		It("adds --insecure flag when Insecure is true", func() {
