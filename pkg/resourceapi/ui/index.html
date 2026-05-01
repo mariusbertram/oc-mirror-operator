@@ -361,6 +361,9 @@
                         <li class="pf-v5-c-tabs__item pf-m-current" id="tab-item-overview">
                             <button class="pf-v5-c-tabs__link" id="tab-overview">Overview</button>
                         </li>
+                        <li class="pf-v5-c-tabs__item" id="tab-item-failures">
+                            <button class="pf-v5-c-tabs__link" id="tab-failures">Image Failures</button>
+                        </li>
                         <li class="pf-v5-c-tabs__item" id="tab-item-catalogs">
                             <button class="pf-v5-c-tabs__link" id="tab-catalogs">Catalogs</button>
                         </li>
@@ -392,9 +395,11 @@
         const pageTitle = document.getElementById("page-title");
         const tabs = document.getElementById("tabs");
         const tabItemOverview = document.getElementById("tab-item-overview");
+        const tabItemFailures = document.getElementById("tab-item-failures");
         const tabItemCatalogs = document.getElementById("tab-item-catalogs");
         const tabItemYaml = document.getElementById("tab-item-yaml");
         const tabOverview = document.getElementById("tab-overview");
+        const tabFailures = document.getElementById("tab-failures");
         const tabCatalogs = document.getElementById("tab-catalogs");
         const tabYaml = document.getElementById("tab-yaml");
         let refreshTimer = null;
@@ -427,6 +432,12 @@
             if (currentView.cachedDetail) renderTabOverview(currentView.cachedDetail);
         });
 
+        tabFailures.addEventListener("click", () => {
+            currentView.tab = "failures";
+            setActiveTab("failures");
+            if (currentView.target) renderTabFailures(currentView.target);
+        });
+
         tabCatalogs.addEventListener("click", () => {
             currentView.tab = "catalogs";
             setActiveTab("catalogs");
@@ -441,6 +452,7 @@
 
         function setActiveTab(tab) {
             tabItemOverview.classList.toggle("pf-m-current", tab === "overview");
+            tabItemFailures.classList.toggle("pf-m-current", tab === "failures");
             tabItemCatalogs.classList.toggle("pf-m-current", tab === "catalogs");
             tabItemYaml.classList.toggle("pf-m-current", tab === "yaml");
         }
@@ -566,6 +578,8 @@
             const tab = currentView.tab || "overview";
             if (tab === "yaml") {
                 renderTabYaml(targetName, detail);
+            } else if (tab === "failures") {
+                renderTabFailures(targetName);
             } else if (tab === "catalogs") {
                 renderTabCatalogs(detail);
             } else {
@@ -715,6 +729,125 @@
                     ${conditionsHtml}
                 </div>
             </div>`;
+        }
+
+        async function renderTabFailures(targetName) {
+            try {
+                const response = await fetchJSON(`/api/v1/targets/${encodeURIComponent(targetName)}/image-failures`);
+                const failed = response.failed || [];
+                const pending = response.pending || [];
+
+                let html = '';
+
+                // Failed Images Section
+                if (failed.length === 0 && pending.length === 0) {
+                    html = `
+                    <div class="pf-v5-c-empty-state">
+                        <div class="pf-v5-c-empty-state__content">
+                            <div class="pf-v5-c-empty-state__header">
+                                <div class="pf-v5-c-empty-state__icon status-complete">
+                                    <i class="fas fa-check-circle" aria-hidden="true"></i>
+                                </div>
+                                <h1 class="pf-v5-c-title pf-m-lg">No Issues</h1>
+                            </div>
+                            <div class="pf-v5-c-empty-state__body">
+                                All images are mirrored successfully.
+                            </div>
+                        </div>
+                    </div>`;
+                } else {
+                    // Failed Images Table
+                    if (failed.length > 0) {
+                        const failedRows = failed.map(img => `
+                            <tr role="row">
+                                <td role="cell" data-label="ImageSet"><strong>${escapeHtml(img.imageSet)}</strong></td>
+                                <td role="cell" data-label="Destination" style="word-break: break-all; font-family: monospace; font-size: 0.85rem;">${escapeHtml(img.destination)}</td>
+                                <td role="cell" data-label="Source" style="word-break: break-all; font-family: monospace; font-size: 0.85rem;">${escapeHtml(img.source)}</td>
+                                <td role="cell" data-label="State"><span class="pf-v5-u-font-size-sm status-failed"><i class="fas fa-exclamation-circle"></i> ${escapeHtml(img.state)}</span></td>
+                                <td role="cell" data-label="Retries">${img.retryCount || 0}/10</td>
+                                <td role="cell" data-label="Error">${img.lastError ? `<span title="${escapeAttr(img.lastError)}">${escapeHtml(img.lastError.substring(0, 50))}${img.lastError.length > 50 ? '...' : ''}</span>` : 'N/A'}</td>
+                            </tr>
+                        `).join('');
+
+                        html += `
+                        <section class="pf-v5-c-card pf-v5-u-mb-lg">
+                            <div class="pf-v5-c-card__title" style="color: var(--pf-v5-global--danger-color--100)">
+                                <i class="fas fa-exclamation-circle"></i> Failed Images (${failed.length})
+                            </div>
+                            <div class="pf-v5-c-card__body pf-m-no-fill">
+                                <table class="pf-v5-c-table pf-m-grid-md pf-m-compact" role="grid">
+                                    <thead>
+                                        <tr role="row">
+                                            <th role="columnheader" scope="col">ImageSet</th>
+                                            <th role="columnheader" scope="col">Destination</th>
+                                            <th role="columnheader" scope="col">Source</th>
+                                            <th role="columnheader" scope="col">State</th>
+                                            <th role="columnheader" scope="col">Retries</th>
+                                            <th role="columnheader" scope="col">Error</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        ${failedRows}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </section>`;
+                    }
+
+                    // Pending Images Table
+                    if (pending.length > 0) {
+                        const pendingRows = pending.map(img => `
+                            <tr role="row">
+                                <td role="cell" data-label="ImageSet"><strong>${escapeHtml(img.imageSet)}</strong></td>
+                                <td role="cell" data-label="Destination" style="word-break: break-all; font-family: monospace; font-size: 0.85rem;">${escapeHtml(img.destination)}</td>
+                                <td role="cell" data-label="Source" style="word-break: break-all; font-family: monospace; font-size: 0.85rem;">${escapeHtml(img.source)}</td>
+                                <td role="cell" data-label="State"><span class="pf-v5-u-font-size-sm status-mirroring"><i class="fas fa-sync fa-spin"></i> ${escapeHtml(img.state)}</span></td>
+                                <td role="cell" data-label="Retries">${img.retryCount || 0}/10</td>
+                            </tr>
+                        `).join('');
+
+                        html += `
+                        <section class="pf-v5-c-card">
+                            <div class="pf-v5-c-card__title" style="color: var(--pf-v5-global--warning-color--100)">
+                                <i class="fas fa-hourglass-half"></i> Pending Images (${pending.length})
+                            </div>
+                            <div class="pf-v5-c-card__body pf-m-no-fill">
+                                <table class="pf-v5-c-table pf-m-grid-md pf-m-compact" role="grid">
+                                    <thead>
+                                        <tr role="row">
+                                            <th role="columnheader" scope="col">ImageSet</th>
+                                            <th role="columnheader" scope="col">Destination</th>
+                                            <th role="columnheader" scope="col">Source</th>
+                                            <th role="columnheader" scope="col">State</th>
+                                            <th role="columnheader" scope="col">Retries</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        ${pendingRows}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </section>`;
+                    }
+                }
+
+                app.innerHTML = html;
+            } catch (err) {
+                app.innerHTML = `
+                <div class="pf-v5-c-empty-state pf-m-lg">
+                    <div class="pf-v5-c-empty-state__content">
+                        <div class="pf-v5-c-empty-state__header">
+                            <div class="pf-v5-c-empty-state__icon status-failed">
+                                <i class="fas fa-exclamation-triangle" aria-hidden="true"></i>
+                            </div>
+                            <h1 class="pf-v5-c-title pf-m-lg">Error loading image failures</h1>
+                        </div>
+                        <div class="pf-v5-c-empty-state__body">
+                            ${escapeHtml(err.message)}
+                        </div>
+                    </div>
+                </div>`;
+            }
         }
 
         async function renderTabCatalogs(detail) {

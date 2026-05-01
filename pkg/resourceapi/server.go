@@ -13,6 +13,7 @@ import (
 
 	"github.com/gorilla/mux"
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
+	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/imagestate"
 	mirrorresources "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/resources"
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -92,6 +93,23 @@ type ResourceLink struct {
 	Type string `json:"type"`
 }
 
+// FailedImageDetail describes a single failed or pending image with full details.
+type FailedImageDetail struct {
+	Destination       string `json:"destination"`
+	Source            string `json:"source"`
+	State             string `json:"state"`
+	LastError         string `json:"lastError,omitempty"`
+	RetryCount        int    `json:"retryCount,omitempty"`
+	PermanentlyFailed bool   `json:"permanentlyFailed,omitempty"`
+	ImageSet          string `json:"imageSet"`
+}
+
+// ImageFailuresResponse is the JSON response for the image failures endpoint.
+type ImageFailuresResponse struct {
+	Failed  []FailedImageDetail `json:"failed"`
+	Pending []FailedImageDetail `json:"pending"`
+}
+
 func (s *Server) RegisterRoutes(r *mux.Router) {
 	// Serve embedded Web UI at root
 	uiSub, err := fs.Sub(uiFS, "ui")
@@ -109,6 +127,7 @@ func (s *Server) RegisterRoutes(r *mux.Router) {
 	api := r.PathPrefix("/api/v1").Subrouter()
 	api.HandleFunc("/targets", s.handleTargetsList).Methods("GET")
 	api.HandleFunc("/targets/{mt}", s.handleTargetDetail).Methods("GET")
+	api.HandleFunc("/targets/{mt}/image-failures", s.handleImageFailures).Methods("GET")
 
 	// Catalog browsing endpoints
 	api.HandleFunc("/targets/{mt}/catalogs/{slug}/packages.json", s.handleFilteredCatalogPackages).Methods("GET")
@@ -273,6 +292,78 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, detail)
+}
+
+func (s *Server) handleImageFailures(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	mtName := vars["mt"]
+
+	mt := &mirrorv1alpha1.MirrorTarget{}
+	if err := s.client.Get(r.Context(), client.ObjectKey{Name: mtName, Namespace: s.namespace}, mt); err != nil {
+		http.Error(w, "MirrorTarget not found", http.StatusNotFound)
+		return
+	}
+
+	// Load the consolidated ImageState for the MirrorTarget.
+	state, err := imagestate.LoadForTarget(r.Context(), s.client, s.namespace, mtName)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to load image state: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	var failed, pending []FailedImageDetail
+
+	// Iterate through all images and collect failed/pending ones.
+	for destination, entry := range state {
+		if entry == nil {
+			continue
+		}
+
+		// Skip mirrored images.
+		if entry.State == "Mirrored" {
+			continue
+		}
+
+		// Determine which ImageSet(s) this entry belongs to.
+		// If Refs is populated (new format), use it; otherwise fall back to legacy fields.
+		imageSetNames := entry.ImageSetNames()
+		if len(imageSetNames) == 0 && entry.Origin != "" {
+			// Backward compatibility: legacy entry without Refs.
+			imageSetNames = []string{"unknown"}
+		}
+
+		// Create a detail entry for each ImageSet that references this image.
+		// If there are no ImageSet names, skip it.
+		if len(imageSetNames) == 0 {
+			continue
+		}
+
+		for _, isName := range imageSetNames {
+			detail := FailedImageDetail{
+				Destination:       destination,
+				Source:            entry.Source,
+				State:             entry.State,
+				LastError:         entry.LastError,
+				RetryCount:        entry.RetryCount,
+				PermanentlyFailed: entry.PermanentlyFailed,
+				ImageSet:          isName,
+			}
+
+			// Categorize as failed or pending.
+			if entry.PermanentlyFailed {
+				failed = append(failed, detail)
+			} else {
+				pending = append(pending, detail)
+			}
+		}
+	}
+
+	response := ImageFailuresResponse{
+		Failed:  failed,
+		Pending: pending,
+	}
+
+	writeJSON(w, response)
 }
 
 // --- Raw resource handlers ---

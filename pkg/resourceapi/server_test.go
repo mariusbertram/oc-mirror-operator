@@ -1,6 +1,8 @@
 package resourceapi_test
 
 import (
+	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -12,6 +14,7 @@ import (
 
 	"github.com/gorilla/mux"
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
+	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/imagestate"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/resourceapi"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -253,6 +256,134 @@ var _ = Describe("ResourceAPI Server", func() {
 			// Based on the old test, we expect some content.
 			if rr.Body.Len() > 0 {
 				Expect(strings.Contains(rr.Body.String(), "oc-mirror")).To(BeTrue())
+			}
+		})
+	})
+
+	Describe("Image Failures API", func() {
+		It("returns empty failed and pending images when ImageState ConfigMap does not exist", func() {
+			req := httptest.NewRequest("GET", fmt.Sprintf("/api/v1/targets/%s/image-failures", mtName), nil)
+			rr := httptest.NewRecorder()
+			router.ServeHTTP(rr, req)
+
+			Expect(rr.Code).To(Equal(http.StatusOK))
+
+			var response resourceapi.ImageFailuresResponse
+			Expect(json.Unmarshal(rr.Body.Bytes(), &response)).To(Succeed())
+			Expect(response.Failed).To(BeEmpty())
+			Expect(response.Pending).To(BeEmpty())
+		})
+
+		It("returns 404 for nonexistent target", func() {
+			req := httptest.NewRequest("GET", "/api/v1/targets/nonexistent/image-failures", nil)
+			rr := httptest.NewRecorder()
+			router.ServeHTTP(rr, req)
+
+			Expect(rr.Code).To(Equal(http.StatusNotFound))
+		})
+
+		It("returns failed and pending images with full details", func() {
+			// Create ImageState with mixed states
+			scheme := runtime.NewScheme()
+			_ = corev1.AddToScheme(scheme)
+			_ = mirrorv1alpha1.AddToScheme(scheme)
+
+			state := imagestate.ImageState{
+				"registry.example.com/img1": {
+					Source:            "quay.io/source1",
+					State:             "Pending",
+					LastError:         "",
+					RetryCount:        2,
+					PermanentlyFailed: false,
+					Refs: []imagestate.ImageRef{
+						{ImageSet: "is-one", Origin: imagestate.OriginRelease},
+					},
+				},
+				"registry.example.com/img2": {
+					Source:            "quay.io/source2",
+					State:             "Failed",
+					LastError:         "connection timeout",
+					RetryCount:        10,
+					PermanentlyFailed: true,
+					Refs: []imagestate.ImageRef{
+						{ImageSet: "is-one", Origin: imagestate.OriginOperator},
+						{ImageSet: "is-two", Origin: imagestate.OriginOperator},
+					},
+				},
+				"registry.example.com/img3": {
+					Source:            "quay.io/source3",
+					State:             "Mirrored",
+					RetryCount:        0,
+					PermanentlyFailed: false,
+					Refs: []imagestate.ImageRef{
+						{ImageSet: "is-two"},
+					},
+				},
+			}
+
+			// Encode as gzip and create ConfigMap
+			var buf bytes.Buffer
+			gz := gzip.NewWriter(&buf)
+			_ = json.NewEncoder(gz).Encode(state)
+			_ = gz.Close()
+
+			cm := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      mtName + "-images",
+					Namespace: ns,
+				},
+				BinaryData: map[string][]byte{
+					"images.json.gz": buf.Bytes(),
+				},
+			}
+
+			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+				&mirrorv1alpha1.MirrorTarget{
+					ObjectMeta: metav1.ObjectMeta{Name: mtName, Namespace: ns},
+					Spec: mirrorv1alpha1.MirrorTargetSpec{
+						Registry:  "registry.example.com",
+						ImageSets: []string{"is-one", "is-two"},
+					},
+				},
+				cm,
+			).Build()
+
+			s := resourceapi.NewServer(c, ns)
+			router := mux.NewRouter()
+			s.RegisterRoutes(router)
+
+			req := httptest.NewRequest("GET", fmt.Sprintf("/api/v1/targets/%s/image-failures", mtName), nil)
+			rr := httptest.NewRecorder()
+			router.ServeHTTP(rr, req)
+
+			Expect(rr.Code).To(Equal(http.StatusOK))
+
+			var response resourceapi.ImageFailuresResponse
+			Expect(json.Unmarshal(rr.Body.Bytes(), &response)).To(Succeed())
+
+			// Should have 1 pending image (img1)
+			Expect(response.Pending).To(HaveLen(1))
+			Expect(response.Pending[0].Destination).To(Equal("registry.example.com/img1"))
+			Expect(response.Pending[0].Source).To(Equal("quay.io/source1"))
+			Expect(response.Pending[0].State).To(Equal("Pending"))
+			Expect(response.Pending[0].RetryCount).To(Equal(2))
+			Expect(response.Pending[0].ImageSet).To(Equal("is-one"))
+			Expect(response.Pending[0].PermanentlyFailed).To(BeFalse())
+
+			// Should have 2 failed images (img2 in is-one and is-two)
+			Expect(response.Failed).To(HaveLen(2))
+			Expect(response.Failed[0].Destination).To(Equal("registry.example.com/img2"))
+			Expect(response.Failed[0].Source).To(Equal("quay.io/source2"))
+			Expect(response.Failed[0].LastError).To(Equal("connection timeout"))
+			Expect(response.Failed[0].RetryCount).To(Equal(10))
+			Expect(response.Failed[0].PermanentlyFailed).To(BeTrue())
+
+			// img3 (Mirrored) should not appear
+			for _, f := range response.Failed {
+				Expect(f.Destination).NotTo(Equal("registry.example.com/img3"))
+			}
+			for _, p := range response.Pending {
+				Expect(p.Destination).NotTo(Equal("registry.example.com/img3"))
 			}
 		})
 	})
