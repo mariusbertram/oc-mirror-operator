@@ -43,7 +43,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      # Build three separate single-arch (amd64) images tagged with the names the e2e
+      # Build four separate single-arch (amd64) images tagged with the names the e2e
       # test suite expects and save them as tar archives for downstream jobs.
       - name: Build images (controller, manager, worker)
         run: |
@@ -57,6 +57,17 @@ jobs:
           echo "Built images:"
           docker images | grep "oc-mirror"
 
+      - name: Build dashboard image
+        run: |
+          set -x
+          echo "Building dashboard image..."
+          CONTAINER_TOOL=docker make docker-build-dashboard \
+            IMG_DASHBOARD=example.com/oc-mirror-dashboard:v0.0.1
+          
+          # Verify built image exists
+          echo "Dashboard image:"
+          docker images | grep "oc-mirror-dashboard"
+
       - name: Export images to tar
         run: |
           set -x
@@ -66,6 +77,8 @@ jobs:
           docker save example.com/oc-mirror-manager:v0.0.1 -o operator-manager-image.tar
           echo "Exporting worker image..."
           docker save example.com/oc-mirror-worker:v0.0.1 -o operator-worker-image.tar
+          echo "Exporting dashboard image..."
+          docker save example.com/oc-mirror-dashboard:v0.0.1 -o operator-dashboard-image.tar
           
           # Verify exported files exist and have content
           echo "Exported tar files:"
@@ -130,6 +143,14 @@ jobs:
         with:
           context: .
           file: Dockerfile.worker
+          platforms: linux/amd64,linux/arm64
+          push: false
+
+      - name: Build dashboard image (linux/amd64 + linux/arm64, no push)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.dashboard
           platforms: linux/amd64,linux/arm64
           push: false
 
@@ -234,6 +255,7 @@ jobs:
           docker load -i operator-controller-image.tar
           docker load -i operator-manager-image.tar
           docker load -i operator-worker-image.tar
+          docker load -i operator-dashboard-image.tar
           
           # Verify images exist in Docker
           echo "Verifying loaded images..."
@@ -244,6 +266,7 @@ jobs:
           kind load docker-image example.com/oc-mirror-controller:v0.0.1 --name oc-mirror-e2e
           kind load docker-image example.com/oc-mirror-manager:v0.0.1 --name oc-mirror-e2e
           kind load docker-image example.com/oc-mirror-worker:v0.0.1 --name oc-mirror-e2e
+          kind load docker-image example.com/oc-mirror-dashboard:v0.0.1 --name oc-mirror-e2e
       - name: Install cert-manager v1.16.3
         run: |
           kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.16.3/cert-manager.yaml
