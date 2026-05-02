@@ -1,0 +1,23 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Local registry overlay for Kind cluster development
+# Replaces image registries to use local Kind registry (192.168.1.14:5001)
+# This overlay should NOT be used for OLM bundles
+
+bases:
+  - ../../manager
+
+images:
+  - name: controller
+    newName: 192.168.1.14:5001/oc-mirror-operator-controller
+    newTag: latest
+  - name: ghcr.io/mariusbertram/oc-mirror-operator-controller
+    newName: 192.168.1.14:5001/oc-mirror-operator-controller
+    newTag: latest
+  - name: ghcr.io/mariusbertram/oc-mirror-operator-manager
+    newName: 192.168.1.14:5001/oc-mirror-operator-manager
+    newTag: latest
+  - name: ghcr.io/mariusbertram/oc-mirror-operator-worker
+    newName: 192.168.1.14:5001/oc-mirror-operator-worker
+    newTag: latest

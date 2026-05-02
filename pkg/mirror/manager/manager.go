@@ -30,6 +30,7 @@ import (
 	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/imagestate"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/resources"
+	"github.com/mariusbertram/oc-mirror-operator/pkg/resourceapi"
 )
 
 // Image entry state constants used throughout the manager.
@@ -69,6 +70,7 @@ type MirrorManager struct {
 	Image          string
 	mirrorClient   *mirrorclient.MirrorClient
 	authConfigPath string // path to Docker config for creating fresh clients
+	clientCache    *mirrorclient.ClientCache
 
 	workerToken string
 
@@ -97,9 +99,13 @@ func New(targetName, namespace string, scheme *runtime.Scheme) (*MirrorManager, 
 		return nil, err
 	}
 
-	image := os.Getenv("OPERATOR_IMAGE")
+	image := os.Getenv("WORKER_IMAGE")
 	if image == "" {
-		return nil, fmt.Errorf("OPERATOR_IMAGE environment variable is required but not set")
+		// fallback for backward compatibility
+		image = os.Getenv("OPERATOR_IMAGE")
+	}
+	if image == "" {
+		return nil, fmt.Errorf("WORKER_IMAGE environment variable is required but not set")
 	}
 
 	authConfigPath := os.Getenv("DOCKER_CONFIG")
@@ -118,6 +124,7 @@ func NewWithClients(c client.Client, cs kubernetes.Interface, targetName, namesp
 		Image:          image,
 		mirrorClient:   mc,
 		authConfigPath: authConfigPath,
+		clientCache:    mirrorclient.NewClientCache(),
 		// workerToken is populated lazily by ensureWorkerTokenSecret() in Run().
 		inProgress: make(map[string]string),
 		mirrored:   make(map[string]bool),
@@ -202,7 +209,16 @@ func (m *MirrorManager) Run(ctx context.Context) error {
 	}
 
 	// Start Status API Server (internal, port 8080)
+	// Workers POST status updates here and query should-mirror decisions
 	go m.runStatusAPI(ctx)
+
+	// Start Resource API Server (external, port 8000)
+	// UI/CLI queries target status, catalogs, resources (IDMS/ITMS)
+	go func() {
+		srv := resourceapi.NewServer(m.Client, m.Namespace)
+		fmt.Println("Starting Resource API Server on :8000")
+		srv.Run(ctx)
+	}()
 
 	// Run reconcile once immediately on startup, then every 30s.
 	if err := m.reconcile(ctx); err != nil {
@@ -547,16 +563,14 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 	if driftCheckActive {
 		m.mirrored = make(map[string]bool)
 		m.lastDriftCheck = time.Now()
-		// Create a fresh regclient to avoid auth token scope accumulation.
+		// Refresh the cached client to avoid auth token scope accumulation.
 		// Quay's nginx proxy returns 400 when the Bearer token exceeds ~8 KB.
-		m.mirrorClient = mirrorclient.NewMirrorClient(nil, m.authConfigPath)
+		_, _ = m.clientCache.RefreshClient(nil, m.authConfigPath)
 		fmt.Println("CheckExist: verifying images in target registry")
 	}
 
 	// Phase D: Process all consolidated entries — drift check + collect pending.
 	pendingImages := make([]BatchItem, 0, len(m.imageState))
-	checkClient := mirrorclient.NewMirrorClient(nil, m.authConfigPath)
-	checkCount := 0
 
 	for dest, entry := range m.imageState {
 		// For images marked Mirrored in the ConfigMap but not yet verified
@@ -568,12 +582,9 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 				m.mirrored[dest] = true
 				continue
 			}
-			// Refresh the client every 20 checks to prevent auth token
-			// scope accumulation (Quay's nginx rejects tokens > ~8 KB).
-			checkCount++
-			if checkCount%20 == 0 {
-				checkClient = mirrorclient.NewMirrorClient(nil, m.authConfigPath)
-			}
+			// Use cached client; ClientCache automatically refreshes every 5 minutes
+			// to prevent auth token scope accumulation (Quay's nginx rejects tokens > ~8 KB).
+			checkClient, _ := m.clientCache.GetOrCreate(nil, m.authConfigPath)
 			// Release the manager lock while making the HTTP call so
 			// status callbacks from worker pods are not blocked on
 			// remote registry latency.
@@ -623,10 +634,7 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 					// If not found, reset for a fresh retry cycle (handles
 					// transient upstream unavailability). PermanentlyFailed
 					// stays true so the catalog-build gate remains open.
-					checkCount++
-					if checkCount%20 == 0 {
-						checkClient = mirrorclient.NewMirrorClient(nil, m.authConfigPath)
-					}
+					checkClient, _ := m.clientCache.GetOrCreate(nil, m.authConfigPath)
 					m.mu.Unlock()
 					exists, checkErr := checkClient.CheckExist(ctx, dest)
 					m.mu.Lock()
@@ -984,7 +992,7 @@ func (m *MirrorManager) startWorkerBatch(ctx context.Context, mt *mirrorv1alpha1
 		},
 	}
 
-	containerArgs := []string{"worker"}
+	var containerArgs []string
 	if mt.Spec.Insecure {
 		containerArgs = append(containerArgs, "--insecure")
 	}
@@ -993,18 +1001,20 @@ func (m *MirrorManager) startWorkerBatch(ctx context.Context, mt *mirrorv1alpha1
 	var volumes []corev1.Volume
 
 	// Blob buffer volume for large image layers.  By default an emptyDir is
-	// used.  When WorkerStorage is configured, a generic ephemeral PVC is
-	// used instead — Kubernetes binds the PVC to the pod lifecycle so no
-	// explicit cleanup is needed.
+	// used.  When WorkerStorage is configured with a StorageClassName, a
+	// generic ephemeral PVC is used instead.  Otherwise, emptyDir with the
+	// configured size is used.
 	volumeMounts = append(volumeMounts, corev1.VolumeMount{
 		Name:      "blob-buffer",
 		MountPath: "/tmp/blob-buffer",
 	})
-	if ws := mt.Spec.WorkerStorage; ws != nil {
-		size := ws.Size
-		if size.IsZero() {
-			size = resource.MustParse("10Gi")
-		}
+
+	blobBufferSize := resource.MustParse("10Gi")
+	if ws := mt.Spec.WorkerStorage; ws != nil && !ws.Size.IsZero() {
+		blobBufferSize = ws.Size
+	}
+
+	if ws := mt.Spec.WorkerStorage; ws != nil && ws.StorageClassName != nil {
 		volumes = append(volumes, corev1.Volume{
 			Name: "blob-buffer",
 			VolumeSource: corev1.VolumeSource{
@@ -1015,7 +1025,7 @@ func (m *MirrorManager) startWorkerBatch(ctx context.Context, mt *mirrorv1alpha1
 							StorageClassName: ws.StorageClassName,
 							Resources: corev1.VolumeResourceRequirements{
 								Requests: corev1.ResourceList{
-									corev1.ResourceStorage: size,
+									corev1.ResourceStorage: blobBufferSize,
 								},
 							},
 						},
@@ -1028,7 +1038,7 @@ func (m *MirrorManager) startWorkerBatch(ctx context.Context, mt *mirrorv1alpha1
 			Name: "blob-buffer",
 			VolumeSource: corev1.VolumeSource{
 				EmptyDir: &corev1.EmptyDirVolumeSource{
-					SizeLimit: resourcePtr("10Gi"),
+					SizeLimit: &blobBufferSize,
 				},
 			},
 		})

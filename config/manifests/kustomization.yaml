@@ -6,6 +6,43 @@ resources:
 - ../samples
 - ../scorecard
 
+configurations:
+- kustomizeconfig.yaml
+
+replacements:
+- source:
+    kind: Deployment
+    name: controller-manager
+    fieldPath: spec.template.metadata.annotations.oc-mirror-manager-image
+  targets:
+  - select:
+      kind: ClusterServiceVersion
+    fieldPaths:
+    - spec.relatedImages.[name=manager].image
+    - metadata.annotations.oc-mirror-manager-image
+    - spec.install.spec.deployments.[name=controller-manager].spec.template.spec.containers.[name=manager].env.[name=MANAGER_IMAGE].value
+- source:
+    kind: Deployment
+    name: controller-manager
+    fieldPath: spec.template.metadata.annotations.oc-mirror-worker-image
+  targets:
+  - select:
+      kind: ClusterServiceVersion
+    fieldPaths:
+    - spec.relatedImages.[name=worker].image
+    - metadata.annotations.oc-mirror-worker-image
+    - spec.install.spec.deployments.[name=controller-manager].spec.template.spec.containers.[name=manager].env.[name=WORKER_IMAGE].value
+- source:
+    kind: Deployment
+    name: controller-manager
+    fieldPath: spec.template.spec.containers.[name=manager].image
+  targets:
+  - select:
+      kind: ClusterServiceVersion
+    fieldPaths:
+    - spec.install.spec.deployments.[name=controller-manager].spec.template.spec.containers.[name=manager].image
+    - metadata.annotations.containerImage
+
 # [WEBHOOK] To enable webhooks, uncomment all the sections with [WEBHOOK] prefix.
 # Do NOT uncomment sections with prefix [CERTMANAGER], as OLM does not support cert-manager.
 # These patches remove the unnecessary "cert" volume and its manager container volumeMount.

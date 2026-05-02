@@ -9,6 +9,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.0] - 2026-05-01
+
+### BREAKING CHANGES
+- **Container image split**: Operator now requires 3 separate container images instead of a single monolithic image:
+  - `oc-mirror-controller` – Kubernetes operator controller
+  - `oc-mirror-manager` – Per-MirrorTarget manager pod
+  - `oc-mirror-worker` – Worker pods for image mirroring + cleanup subcommand
+  - Old `oc-mirror-operator:v0.0.x` image is **deprecated**
+- **Installation changes**: Helm charts, OLM bundles, and manual deployments must now reference 3 images instead of 1
+- **Deployment procedure**: See [migration guide](docs/migration-v0.0-to-v0.1.md) for upgrade instructions
+
+### Added
+- **Modular component architecture**: Separated operator controller, manager orchestration, and worker execution into distinct binaries and container images for improved maintainability and independent scaling
+- **Controller-only deployment**: `oc-mirror-controller` can now be deployed independently without embedding manager/worker code
+- **Dedicated manager image**: `oc-mirror-manager` focuses solely on worker orchestration and ImageState management
+- **Standalone worker pods**: `oc-mirror-worker` binary handles both ephemeral worker pods and cleanup job subcommand
+- **Reduced image sizes**: Each modular image is smaller than the monolithic predecessor, enabling faster deployments
+- **Separate RBAC roles**: Each component gets its own ServiceAccount and Role for least-privilege access
+- **Improved testability**: Modular architecture makes unit testing and local development simpler
+- **Helm chart enhancements**: Per-component image configuration and resource limits
+
+### Changed
+- **Documentation**: Updated README, user guide, and contributing guide for new 3-component architecture
+- **Code organization**: Extracted manager and worker responsibilities into separate main.go entry points while preserving shared libraries in `pkg/mirror/`
+- **CI/CD**: Build pipeline now produces 3 optimized images per release
+- **Maintainability**: ~30 lines of duplicate code between manager/worker subcommands removed
+
+### Fixed
+- Registry connection pooling now isolated per component
+- Token scope errors in Quay compatibility fixed (per-component credential isolation)
+
+### Deprecated
+- Single-binary deployment (`v0.0.x` and earlier) – **migrate to v0.1.0+** for modular deployment
+- Old `oc-mirror-operator` Helm chart tag – use per-component tags in v0.1.0+
+- Legacy deployment procedures using single `oc-mirror:vX` image
+
+### Security
+- Separated RBAC permissions reduce blast radius if one component is compromised
+- Each pod type (controller, manager, worker) has minimal required permissions
+
+### Documentation
+- New: [Migration Guide](docs/migration-v0.0-to-v0.1.md) — upgrade from v0.0.x to v0.1.0
+- Updated: README Architecture section with component overview
+- Updated: User Guide installation and concepts sections
+- Updated: Contributing guide build instructions for 3 images
+
+---
+
 ## [v0.0.11] - 2026-04-26
 
 ### Added

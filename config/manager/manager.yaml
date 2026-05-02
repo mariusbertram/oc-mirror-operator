@@ -26,6 +26,8 @@ spec:
     metadata:
       annotations:
         kubectl.kubernetes.io/default-container: manager
+        oc-mirror-manager-image: ghcr.io/mariusbertram/oc-mirror-operator-manager:latest
+        oc-mirror-worker-image: ghcr.io/mariusbertram/oc-mirror-operator-worker:latest
       labels:
         control-plane: controller-manager
         app.kubernetes.io/name: oc-mirror
@@ -59,15 +61,19 @@ spec:
           type: RuntimeDefault
       containers:
       - command:
-        - /manager
+        - /controller
         args:
           - --leader-elect
           - --health-probe-bind-address=:8081
-        image: controller:latest
+        image: ghcr.io/mariusbertram/oc-mirror-operator-controller:latest
         name: manager
         env:
         - name: OPERATOR_IMAGE
-          value: controller:latest
+          value: ghcr.io/mariusbertram/oc-mirror-operator-controller:latest
+        - name: MANAGER_IMAGE
+          value: ghcr.io/mariusbertram/oc-mirror-operator-manager:latest
+        - name: WORKER_IMAGE
+          value: ghcr.io/mariusbertram/oc-mirror-operator-worker:latest
         ports: []
         securityContext:
           allowPrivilegeEscalation: false

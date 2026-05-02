@@ -12,6 +12,19 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
+
+DEPRECATION NOTICE:
+This file provides backward-compatibility for v0.0.x single-binary deployments.
+As of v0.1.0+, the oc-mirror-operator uses a modular 3-component architecture:
+
+  - cmd/controller/main.go   → oc-mirror-controller image
+  - cmd/manager/main.go      → oc-mirror-manager image
+  - cmd/worker/main.go       → oc-mirror-worker image
+
+This file (cmd/main.go) with subcommands is NO LONGER USED in v0.1.0+ deployments.
+It will be removed in a future major release.
+
+Migration: See docs/migration-v0.0-to-v0.1.md for upgrade instructions.
 */
 
 package main

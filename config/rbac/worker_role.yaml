@@ -1,6 +1,55 @@
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
+---
+apiVersion: v1
+kind: ServiceAccount
 metadata:
   name: oc-mirror-worker
   namespace: system
-rules: [] # No K8s API permissions needed anymore due to direct manager communication
+  labels:
+    app.kubernetes.io/name: oc-mirror
+    app.kubernetes.io/component: worker
+    app.kubernetes.io/managed-by: kustomize
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: oc-mirror-worker-role
+  namespace: system
+  labels:
+    app.kubernetes.io/name: oc-mirror
+    app.kubernetes.io/component: worker
+    app.kubernetes.io/managed-by: kustomize
+rules:
+# ConfigMap access (imagestate, batch coordination)
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - get
+  - list
+# Secret access (registry credentials)
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+  - list
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: oc-mirror-worker-rolebinding
+  namespace: system
+  labels:
+    app.kubernetes.io/name: oc-mirror
+    app.kubernetes.io/component: worker
+    app.kubernetes.io/managed-by: kustomize
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: oc-mirror-worker-role
+subjects:
+- kind: ServiceAccount
+  name: oc-mirror-worker
+  namespace: system

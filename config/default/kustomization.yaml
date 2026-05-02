@@ -54,6 +54,26 @@ replacements:
       name: controller-manager
     fieldPaths:
     - spec.template.spec.containers.[name=manager].env.[name=OPERATOR_IMAGE].value
+- source:
+    kind: Deployment
+    name: controller-manager
+    fieldPath: spec.template.metadata.annotations.oc-mirror-manager-image
+  targets:
+  - select:
+      kind: Deployment
+      name: controller-manager
+    fieldPaths:
+    - spec.template.spec.containers.[name=manager].env.[name=MANAGER_IMAGE].value
+- source:
+    kind: Deployment
+    name: controller-manager
+    fieldPath: spec.template.metadata.annotations.oc-mirror-worker-image
+  targets:
+  - select:
+      kind: Deployment
+      name: controller-manager
+    fieldPaths:
+    - spec.template.spec.containers.[name=manager].env.[name=WORKER_IMAGE].value
 
 # Uncomment the patches line if you enable Metrics and CertManager
 # [METRICS-WITH-CERTS] To enable metrics protected with certManager, uncomment the following line.

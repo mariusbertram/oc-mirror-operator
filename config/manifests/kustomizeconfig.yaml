@@ -1,0 +1,9 @@
+images:
+- kind: ClusterServiceVersion
+  group: operators.coreos.com
+  path: spec/relatedImages/image
+- kind: ClusterServiceVersion
+  group: operators.coreos.com
+  path: metadata/annotations
+- kind: Deployment
+  path: spec/template/spec/containers/env/value

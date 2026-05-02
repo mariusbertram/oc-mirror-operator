@@ -171,7 +171,7 @@ spec:
 				{"Pods", []string{"get", "pods", "-l", "mirror.openshift.io/imageset=" + imageSetName, "-n", ns, "-o", "wide"}},
 				{"Pod logs (last 100 lines)", []string{"logs", "-l", "mirror.openshift.io/imageset=" + imageSetName, "-n", ns, "--tail=100", "--all-containers"}},
 				{"Events", []string{"get", "events", "-n", ns, "--sort-by=.lastTimestamp", "--field-selector", "reason!=Pulling"}},
-				{"Operator controller-manager logs", []string{"logs", "-l", "control-plane=controller-manager", "-n", "oc-mirror-operator-system", "--tail=100", "--all-containers"}},
+				{"Operator controller-manager logs", []string{"logs", "-l", "control-plane=controller-manager", "-n", operatorNamespace, "--tail=100", "--all-containers"}},
 			}
 			for _, dc := range diagCmds {
 				out, err := exec.Command("kubectl", dc.args...).CombinedOutput()

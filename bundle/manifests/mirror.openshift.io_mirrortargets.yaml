@@ -283,9 +283,10 @@ spec:
               proxy:
                 description: |-
                   Proxy configures HTTP/HTTPS proxy settings for worker, manager, and
-                  catalog-builder pods.  Set NoProxy to include cluster-internal addresses
-                  (e.g. ".svc,.cluster.local") to prevent internal pod traffic from being
-                  routed through the proxy.
+                  catalog-builder pods.  Cluster-internal FQDN suffixes
+                  (localhost, 127.0.0.1, .svc, .svc.cluster.local) are automatically
+                  added to NO_PROXY when a proxy is configured; add further exclusions
+                  via ProxyConfig.NoProxy if needed (e.g. the pod CIDR).
                 properties:
                   httpProxy:
                     description: HTTPProxy sets the HTTP_PROXY and http_proxy environment
@@ -297,9 +298,13 @@ spec:
                     type: string
                   noProxy:
                     description: |-
-                      NoProxy sets the NO_PROXY and no_proxy environment variables.
-                      Should include cluster-internal addresses (e.g. ".svc,.cluster.local")
-                      to prevent pod-to-pod traffic from being sent through the proxy.
+                      NoProxy sets additional NO_PROXY and no_proxy entries appended to the
+                      automatically-injected cluster-internal defaults.
+                      When HTTPProxy or HTTPSProxy is set, the operator always prepends
+                      "localhost,127.0.0.1,.svc,.svc.cluster.local" so that pod-to-service
+                      traffic (e.g. to the manager service) bypasses the proxy without
+                      additional user configuration.  Use this field to add further
+                      exclusions such as the pod/service CIDR or custom domains.
                     type: string
                 type: object
               registry:
@@ -420,16 +425,14 @@ spec:
               workerStorage:
                 description: |-
                   WorkerStorage replaces the default 10 GiB emptyDir blob buffer with a
-                  dynamically-provisioned ephemeral PVC for worker pods.  Use this when
-                  mirroring very large images (e.g. LLMs) that exceed the emptyDir limit.
-                  The PVC is bound to the worker pod lifecycle and deleted automatically
-                  when the pod is removed.
+                  larger node-local emptyDir or a dynamically-provisioned ephemeral PVC.
+                  Use this when mirroring very large images (e.g. LLMs) that exceed the
+                  default emptyDir limit.
                 properties:
                   size:
                     anyOf:
                     - type: integer
                     - type: string
-                    default: 10Gi
                     description: |-
                       Size is the requested storage capacity (e.g. "100Gi").
                       Defaults to "10Gi" when not set.
@@ -437,8 +440,9 @@ spec:
                     x-kubernetes-int-or-string: true
                   storageClassName:
                     description: |-
-                      StorageClassName selects the StorageClass for the ephemeral PVC.
-                      If omitted the cluster's default StorageClass is used.
+                      StorageClassName selects the StorageClass for a generic ephemeral PVC.
+                      If set, a PVC is used. If omitted, a node-local emptyDir is used with
+                      the given Size.
                     type: string
                 type: object
             required:

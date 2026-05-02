@@ -44,19 +44,19 @@ type CABundleRef struct {
 	Key string `json:"key,omitempty"`
 }
 
-// WorkerStorageConfig replaces the default emptyDir blob buffer with a
-// dynamically-provisioned PVC (generic ephemeral volume) for worker pods.
+// WorkerStorageConfig replaces the default 10 GiB emptyDir blob buffer with a
+// larger emptyDir or a dynamically-provisioned PVC.
 // Use this when mirroring very large images (e.g. LLMs) that need more
 // scratch space than the default 10 GiB emptyDir can provide.
 type WorkerStorageConfig struct {
-	// StorageClassName selects the StorageClass for the ephemeral PVC.
-	// If omitted the cluster's default StorageClass is used.
+	// StorageClassName selects the StorageClass for a generic ephemeral PVC.
+	// If set, a PVC is used. If omitted, a node-local emptyDir is used with
+	// the given Size.
 	// +optional
 	StorageClassName *string `json:"storageClassName,omitempty"`
 
 	// Size is the requested storage capacity (e.g. "100Gi").
 	// Defaults to "10Gi" when not set.
-	// +kubebuilder:default="10Gi"
 	// +optional
 	Size resource.Quantity `json:"size,omitempty"`
 }
@@ -201,10 +201,9 @@ type MirrorTargetSpec struct {
 	CABundle *CABundleRef `json:"caBundle,omitempty"`
 
 	// WorkerStorage replaces the default 10 GiB emptyDir blob buffer with a
-	// dynamically-provisioned ephemeral PVC for worker pods.  Use this when
-	// mirroring very large images (e.g. LLMs) that exceed the emptyDir limit.
-	// The PVC is bound to the worker pod lifecycle and deleted automatically
-	// when the pod is removed.
+	// larger node-local emptyDir or a dynamically-provisioned ephemeral PVC.
+	// Use this when mirroring very large images (e.g. LLMs) that exceed the
+	// default emptyDir limit.
 	// +optional
 	WorkerStorage *WorkerStorageConfig `json:"workerStorage,omitempty"`
 }

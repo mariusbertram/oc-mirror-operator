@@ -90,7 +90,18 @@ Unlike the static `oc-mirror` CLI tool, this operator works cloud-natively and d
 
 ## Architecture
 
-The architecture follows a scalable **four-layer model** with a **Catalog Build System** and **Resource API**:
+The oc-mirror operator now uses a **modular 3-component architecture** for improved scalability, maintainability, and independent deployment:
+
+### Component Overview
+
+| Component | Binary | Container Image | Purpose |
+|-----------|--------|------------------|---------|
+| **Controller** | `oc-mirror-controller` | `oc-mirror-controller:v0.1.0+` | Kubernetes operator managing MirrorTarget/ImageSet CRs, deploying Manager Pods, creating Cleanup Jobs |
+| **Manager** | `oc-mirror-manager` | `oc-mirror-manager:v0.1.0+` | Per-MirrorTarget orchestrator: manages Worker Pod batches, owns ImageState ConfigMap, serves Status API |
+| **Worker** | `oc-mirror-worker` | `oc-mirror-worker:v0.1.0+` | Ephemeral Pods for image mirroring; mirrors batches, buffers large blobs, reports progress to Manager |
+| **Cleanup** | `oc-mirror-worker cleanup` | `oc-mirror-worker:v0.1.0+` | Job subcommand for deleting orphaned images from target registry |
+
+### Architecture Diagram
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -98,34 +109,36 @@ The architecture follows a scalable **four-layer model** with a **Catalog Build 
 │                                                                     │
 │  ┌──────────────────┐   watch   ┌──────────────────────────────┐    │
 │  │  ImageSet CR     │◄──────────│                              │    │
-│  │  MirrorTarget CR │           │   Operator (Control Plane)   │    │
-│  └──────────────────┘  reconcile│   internal/controller/       │    │
-│                         ───────►│                              │    │
+│  │  MirrorTarget CR │           │   Controller (1 Deployment)  │    │
+│  └──────────────────┘  reconcile│   cmd/controller/main.go     │    │
+│                         ───────►│   internal/controller/        │    │
 │                                 └──┬──────────────┬────────┬───┘    │
 │                                    │ creates      │ creates│creates │
-│                                    │ Deployment   │ Job    │Deploy  │
+│                                    │ Manager Pod  │ Job    │Deploy  │
 │                                    │ Service      │(Cat/   │+Svc    │
 │                                    │ Route/Ingress│Cleanup)│(1/ns)  │
 │                                    ▼              ▼        ▼        │
 │          ┌────────────────────────┐ ┌──────────┐ ┌───────────────┐  │
-│          │ Manager Pod            │ │ Catalog- │ │ Resource API  │  │
-│          │ pkg/mirror/manager/    │ │ Builder /│ │ pkg/resource- │  │
+│          │ Manager Pod (1/Target) │ │ Catalog- │ │ Resource API  │  │
+│          │ cmd/manager/main.go    │ │ Builder/ │ │ pkg/resource- │  │
 │          │                        │ │ Cleanup  │ │ api/          │  │
-│          │ • Loads image state    │ │ Job      │ │               │  │
-│          │ • Manages worker queue │ │          │ │ • REST API    │  │
-│          │ • HTTP Status-API :8080│ │ • FBC    │ │ • Web UI /ui/ │  │
+│          │ • Loads ImageState CM  │ │ Job      │ │               │  │
+│          │ • Manages Worker Queue │ │          │ │ • REST API    │  │
+│          │ • Status API :8080     │ │ • FBC    │ │ • Web UI /ui/ │  │
 │          │ • Writes Resource CMs  │ │ • OCI    │ │ • Reads CMs   │  │
 │          │ • Registry verification│ │ • Push   │ │ • Port :8081  │  │
-│          │ • Worker pod cleanup   │ │ • Delete │ │               │  │
+│          │ • Worker Cleanup       │ │ • Delete │ │               │  │
 │          └──────┬─────────────────┘ └──────────┘ └───────┬───────┘  │
-│                 │creates Pods                            │          │
-│                 │ receives POST /status    ┌─────────────┴───────┐  │
-│          ┌──────▼───────┐                  │ Route / Ingress /   │  │
-│          │ Worker Pod 1 │                  │ Svc → :8081         │  │
-│          │ Worker Pod 2 │                  │ /api/v1/targets/... │  │
-│          │ Worker Pod N │                  │ /ui/ (Dashboard)    │  │
-│          └──────┬───────┘                  └─────────────────────┘  │
-│                 │ regclient + emptyDir                              │
+│                 │creates Pods (ephemeral)                │          │
+│                 │ POST /status           ┌─────────────┴───────┐   │
+│          ┌──────▼───────┐                │ Route/Ingress/Svc   │   │
+│          │ Worker Pod 1 │                │ → Manager :8080     │   │
+│          │ Worker Pod 2 │                │ → Resource API      │   │
+│          │ Worker Pod N │                │    :8081            │   │
+│          │cmd/worker/   │                │ /api/v1/targets/... │   │
+│          │main.go       │                │ /ui/ (Dashboard)    │   │
+│          └──────┬───────┘                └─────────────────────┘   │
+│                 │ regclient + buffer                               │
 │                 ▼                                                   │
 │          ┌──────────────────────────────┐                           │
 │          │   Target Registry            │                           │
@@ -133,16 +146,14 @@ The architecture follows a scalable **four-layer model** with a **Catalog Build 
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-### Components
+### Component Responsibilities
 
-| Layer | Component | Description |
-|---------|------------|-------------|
-| **Control Plane** | `Operator` (`internal/controller/`) | Monitors CRs, computes target image lists via Cincinnati API and FBC parsing, creates catalog build jobs and cleanup jobs, deploys Resource API, periodic upstream polling, sets status conditions |
-| **Orchestration** | `Manager` (`pkg/mirror/manager/`) | One Deployment per `MirrorTarget`. Loads image state, plans mirror order (blob planner), starts worker pods, receives results via authenticated HTTP API (:8080), verifies registry state, writes generated resources (IDMS/ITMS/CatalogSource) to ConfigMaps, cleans up completed pods |
-| **Resource API** | `Resource API` (`pkg/resourceapi/`) | Standalone Deployment (one per namespace). Reads resource ConfigMaps and serves IDMS, ITMS, CatalogSource, ClusterCatalog, packages and signature ConfigMaps via REST API. Includes an embedded Web UI Dashboard (`/ui/`). Exposed via Route (OpenShift), Ingress or Service |
-| **Execution** | `Worker` (short-lived pods) | Copies image batches with `regclient`, buffers large blobs on emptyDir, copies signatures, asks the manager via `GET /should-mirror` before each image whether the target is still needed, reports status via `POST /status` |
-| **Catalog Build** | `Catalog-Builder` (K8s Job) | One job per source catalog: filters FBC, resolves dependencies, builds OCI image with source layers + FBC overlay, pushes to target registry |
-| **State** | ConfigMap (gzip-JSON) | Per-image mirroring status in Kubernetes ConfigMaps — no PV/PVC needed, ~30 bytes per image |
+| Component | Responsibilities | Launch | Lifetime |
+|-----------|-----------------|--------|----------|
+| **Controller** | Reconciles MirrorTarget/ImageSet CRs; creates Manager Deployments; schedules catalog build Jobs; triggers cleanup on deletion; owns RBAC roles | `1×` per operator deployment | Long-lived |
+| **Manager** | Orchestrates Workers; loads/updates ImageState ConfigMap; serves Status API; coordinates cleanup; verifies target registry state | `1×` per MirrorTarget | Long-lived (pod restart on error) |
+| **Worker** | Mirrors image batches; buffers large layers; reports progress; skips obsolete images; cleans up on exit | `N×` batches (configurable) | Ephemeral (auto-deleted on completion) |
+| **Cleanup Job** | Deletes images from target registry when ImageSet is removed or spec is narrowed | `1×` per cleanup operation | Runs to completion, auto-cleaned |
 
 ### Data Flow
 
@@ -901,6 +912,8 @@ oc-mirror-operator/
 |---|---|
 | [User Guide](docs/user-guide.md) | Installation, configuration, and operational walkthrough |
 | [API Reference](docs/api-reference.md) | Complete CRD field reference for MirrorTarget and ImageSet |
+| [Developer Guide](docs/developer-guide.md) | How to build, deploy, and test in various environments |
 | [OLM Upgrade Guide](docs/olm-upgrade.md) | How to upgrade between operator versions via OLM |
 | [Contributing Guide](docs/contributing.md) | Development setup, build, test, CI, and release process |
 | [Changelog](CHANGELOG.md) | Release history and migration notes |
+# Workflow trigger: Fix local registry issue

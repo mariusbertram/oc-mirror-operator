@@ -174,7 +174,7 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 					Containers: []corev1.Container{
 						{
 							Name:  "manager",
-							Image: os.Getenv("OPERATOR_IMAGE"), // Ensure this is set or use a default
+							Image: os.Getenv("MANAGER_IMAGE"),
 							SecurityContext: &corev1.SecurityContext{
 								AllowPrivilegeEscalation: pointerTo(false),
 								Capabilities: &corev1.Capabilities{
@@ -182,7 +182,6 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 								},
 							},
 							Args: []string{
-								"manager",
 								"--mirrortarget", mt.Name,
 								"--namespace", mt.Namespace,
 							},
@@ -961,7 +960,7 @@ func (r *MirrorTargetReconciler) createCleanupJob(ctx context.Context, mt *mirro
 					Containers: []corev1.Container{
 						{
 							Name:  "cleanup",
-							Image: os.Getenv("OPERATOR_IMAGE"),
+							Image: os.Getenv("WORKER_IMAGE"),
 							Args:  args,
 							Env:   env,
 							SecurityContext: &corev1.SecurityContext{
@@ -1079,7 +1078,7 @@ func (r *MirrorTargetReconciler) ensureResourceAPI(ctx context.Context, mt *mirr
 					Containers: []corev1.Container{
 						{
 							Name:  "api",
-							Image: os.Getenv("OPERATOR_IMAGE"),
+							Image: os.Getenv("MANAGER_IMAGE"),
 							SecurityContext: &corev1.SecurityContext{
 								AllowPrivilegeEscalation: pointerTo(false),
 								Capabilities: &corev1.Capabilities{
@@ -1491,6 +1490,10 @@ func managerContainerEnv(mt *mirrorv1alpha1.MirrorTarget) []corev1.EnvVar {
 		{
 			Name:  "OPERATOR_IMAGE",
 			Value: os.Getenv("OPERATOR_IMAGE"),
+		},
+		{
+			Name:  "WORKER_IMAGE",
+			Value: os.Getenv("WORKER_IMAGE"),
 		},
 	}
 	if mt.Spec.AuthSecret != "" {

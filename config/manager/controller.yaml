@@ -1,0 +1,82 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oc-mirror-controller
+  namespace: system
+  labels:
+    control-plane: controller
+    app.kubernetes.io/name: oc-mirror
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  selector:
+    matchLabels:
+      control-plane: controller
+      app.kubernetes.io/name: oc-mirror
+      app.kubernetes.io/component: controller
+  replicas: 1
+  template:
+    metadata:
+      annotations:
+        kubectl.kubernetes.io/default-container: controller
+      labels:
+        control-plane: controller
+        app.kubernetes.io/name: oc-mirror
+        app.kubernetes.io/component: controller
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - command:
+        - /manager
+        args:
+          - --leader-elect
+          - --health-probe-bind-address=:8081
+        image: ghcr.io/mariusbertram/oc-mirror-operator-controller:latest
+        imagePullPolicy: IfNotPresent
+        name: controller
+        env:
+        - name: OPERATOR_IMAGE
+          value: example.com/oc-mirror-controller:v0.0.1
+        - name: MANAGER_IMAGE
+          value: example.com/oc-mirror-manager:v0.0.1
+        - name: WORKER_IMAGE
+          value: example.com/oc-mirror-worker:v0.0.1
+        ports:
+        - containerPort: 8080
+          name: metrics
+          protocol: TCP
+        - containerPort: 8081
+          name: health
+          protocol: TCP
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - "ALL"
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8081
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 8081
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          limits:
+            cpu: 500m
+            memory: 128Mi
+          requests:
+            cpu: 10m
+            memory: 64Mi
+        volumeMounts: []
+      volumes: []
+      serviceAccountName: oc-mirror-controller
+      terminationGracePeriodSeconds: 10
