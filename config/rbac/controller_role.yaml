@@ -113,6 +113,32 @@ rules:
   verbs:
   - create
   - patch
+# DashboardReconciler: manage cluster-wide RBAC for the dashboard ServiceAccount
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - clusterroles
+  - clusterrolebindings
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+# DashboardReconciler: manage OpenShift ConsolePlugin CR
+- apiGroups:
+  - console.openshift.io
+  resources:
+  - consoleplugins
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

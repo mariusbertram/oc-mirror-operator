@@ -1,0 +1,10 @@
+# Kustomization for OpenShift Console Plugin
+namespace: oc-mirror
+
+namePrefix: oc-mirror-
+
+commonLabels:
+  app.kubernetes.io/name: oc-mirror
+  app.kubernetes.io/version: v0.4.0
+
+resources: []
