@@ -29,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
+	ocmetrics "github.com/mariusbertram/oc-mirror-operator/pkg/metrics"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/imagestate"
 )
 
@@ -70,8 +71,14 @@ type MirrorTargetReconciler struct {
 // of the pod creator (the coordinator/manager).
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;delete
 
-func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ctrl.Result, rerr error) {
 	l := log.FromContext(ctx)
+
+	defer func() {
+		if rerr != nil {
+			ocmetrics.ReconcileErrorsTotal.WithLabelValues(req.Namespace, req.Name, "mirrortarget").Inc()
+		}
+	}()
 
 	mt := &mirrorv1alpha1.MirrorTarget{}
 	if err := r.Get(ctx, req.NamespacedName, mt); err != nil {
@@ -148,8 +155,12 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		}
 
 		labels := map[string]string{
-			"app":          "oc-mirror-manager",
-			"mirrortarget": mt.Name,
+			"app":                                 "oc-mirror-manager",
+			"mirrortarget":                        mt.Name,
+			"app.kubernetes.io/component":         "manager",
+			"app.kubernetes.io/name":              "oc-mirror",
+			"app.kubernetes.io/instance":          mt.Name,
+			"oc-mirror.openshift.io/mirrortarget": mt.Name,
 		}
 		deployment.Labels = labels
 
@@ -190,6 +201,7 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 							Resources:    mt.Spec.Manager.Resources,
 							Ports: []corev1.ContainerPort{
 								{Name: "status", ContainerPort: 8080, Protocol: corev1.ProtocolTCP},
+								{Name: "metrics", ContainerPort: 9090, Protocol: corev1.ProtocolTCP},
 							},
 						},
 					},
@@ -221,15 +233,26 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			return err
 		}
 		service.Labels = map[string]string{
-			"app":          "oc-mirror-manager",
-			"mirrortarget": mt.Name,
+			"app":                                 "oc-mirror-manager",
+			"mirrortarget":                        mt.Name,
+			"app.kubernetes.io/component":         "manager",
+			"app.kubernetes.io/name":              "oc-mirror",
+			"app.kubernetes.io/instance":          mt.Name,
+			"oc-mirror.openshift.io/mirrortarget": mt.Name,
 		}
 		service.Spec = corev1.ServiceSpec{
-			Selector: service.Labels,
+			Selector: map[string]string{
+				"app":          "oc-mirror-manager",
+				"mirrortarget": mt.Name,
+			},
 			Ports: []corev1.ServicePort{
 				{
 					Name: "http",
 					Port: 8080,
+				},
+				{
+					Name: "metrics",
+					Port: 9090,
 				},
 			},
 		}
@@ -301,6 +324,10 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if err := r.aggregateImageSetStatus(ctx, mt); err != nil {
 		l.Error(err, "Failed to aggregate ImageSet status; continuing with stale counters")
 	}
+	ocmetrics.MirrorTargetImagesTotal.WithLabelValues(mt.Namespace, mt.Name).Set(float64(mt.Status.TotalImages))
+	ocmetrics.MirrorTargetImagesMirrored.WithLabelValues(mt.Namespace, mt.Name).Set(float64(mt.Status.MirroredImages))
+	ocmetrics.MirrorTargetImagesFailed.WithLabelValues(mt.Namespace, mt.Name).Set(float64(mt.Status.FailedImages))
+	ocmetrics.MirrorTargetImagesPending.WithLabelValues(mt.Namespace, mt.Name).Set(float64(mt.Status.PendingImages))
 	if err := r.Status().Update(ctx, mt); err != nil {
 		return ctrl.Result{}, err
 	}

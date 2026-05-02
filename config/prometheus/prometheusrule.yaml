@@ -1,0 +1,61 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: oc-mirror-alerts
+  namespace: system
+  labels:
+    app.kubernetes.io/name: oc-mirror
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  groups:
+    - name: oc-mirror.rules
+      interval: 30s
+      rules:
+        - alert: OCMirrorHighFailedImages
+          expr: oc_mirror_mirrortarget_images_failed > 10
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High number of failed images for {{ $labels.target }}"
+            description: "MirrorTarget {{ $labels.namespace }}/{{ $labels.target }} has {{ $value }} permanently failed images for more than 5 minutes."
+
+        - alert: OCMirrorAllImagesFailed
+          expr: |
+            oc_mirror_mirrortarget_images_failed
+              / on(namespace, target) oc_mirror_mirrortarget_images_total > 0.5
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: "More than 50% of images failed for {{ $labels.target }}"
+            description: "MirrorTarget {{ $labels.namespace }}/{{ $labels.target }} has more than 50% permanently failed images for more than 10 minutes."
+
+        - alert: OCMirrorReconcileErrors
+          expr: rate(oc_mirror_reconcile_errors_total[5m]) > 0
+          for: 0m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Reconcile errors in controller for {{ $labels.name }}"
+            description: "The oc-mirror {{ $labels.controller }} controller is encountering reconcile errors for {{ $labels.namespace }}/{{ $labels.name }}."
+
+        - alert: OCMirrorNoProgress
+          expr: |
+            oc_mirror_mirrortarget_images_pending > 0
+              and rate(oc_mirror_manager_images_mirrored_total[30m]) == 0
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "No mirroring progress for {{ $labels.target }}"
+            description: "MirrorTarget {{ $labels.target }} has pending images but no images have been mirrored in the last 30 minutes."
+
+        - alert: OCMirrorManagerDown
+          expr: absent(oc_mirror_manager_active_workers)
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "OC Mirror manager metrics absent"
+            description: "No manager metrics are being reported. The manager pod may be down."

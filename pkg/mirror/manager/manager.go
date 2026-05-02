@@ -28,6 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
+	ocmetrics "github.com/mariusbertram/oc-mirror-operator/pkg/metrics"
 	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/imagestate"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/resources"
@@ -213,6 +214,9 @@ func (m *MirrorManager) Run(ctx context.Context) error {
 	// Workers POST status updates here and query should-mirror decisions
 	go m.runStatusAPI(ctx)
 
+	// Start Prometheus metrics endpoint (port 9090)
+	go m.runMetricsServer(ctx)
+
 	// Start Resource API Server (external, port 8000)
 	// UI/CLI queries target status, catalogs, resources (IDMS/ITMS)
 	go func() {
@@ -279,6 +283,29 @@ func (m *MirrorManager) syncInProgressFromPods(ctx context.Context) error {
 	return nil
 }
 
+func (m *MirrorManager) runMetricsServer(ctx context.Context) {
+	server := &http.Server{
+		Addr:              ":9090",
+		Handler:           ocmetrics.NewManagerMetricsHandler(),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+
+	go func() {
+		fmt.Println("Manager metrics server started on :9090")
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			fmt.Printf("Metrics server failed: %v\n", err)
+		}
+	}()
+
+	<-ctx.Done()
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = server.Shutdown(shutdownCtx)
+}
+
 func (m *MirrorManager) runStatusAPI(ctx context.Context) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/status", m.handleStatusUpdate)
@@ -335,9 +362,11 @@ func (m *MirrorManager) handleStatusUpdate(w http.ResponseWriter, r *http.Reques
 
 	if req.Error != "" {
 		m.setImageStateLocked(req.Destination, stateFailed, req.Error)
+		ocmetrics.ManagerImagesFailedTotal.WithLabelValues(m.TargetName, "").Inc()
 	} else {
 		m.mirrored[req.Destination] = true
 		m.setImageStateLocked(req.Destination, stateMirrored, "")
+		ocmetrics.ManagerImagesMirroredTotal.WithLabelValues(m.TargetName, "").Inc()
 	}
 
 	// Remove from in-progress tracking. The pod itself is cleaned up by
@@ -450,6 +479,7 @@ func (m *MirrorManager) cleanupFinishedWorkers(ctx context.Context) {
 				}
 			}
 		}
+		ocmetrics.ManagerActiveWorkers.WithLabelValues(m.TargetName).Set(float64(len(m.inProgress)))
 		m.mu.Unlock()
 	}
 
@@ -681,12 +711,15 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 		podName, startErr := m.startWorkerBatch(ctx, mt, batch)
 		if startErr != nil {
 			fmt.Printf("Failed to start worker batch: %v\n", startErr)
+			ocmetrics.ManagerBatchesTotal.WithLabelValues(m.TargetName, "failed").Inc()
 			continue
 		}
+		ocmetrics.ManagerBatchesTotal.WithLabelValues(m.TargetName, "success").Inc()
 		for _, item := range batch {
 			m.inProgress[item.Dest] = podName
 		}
 		activePods[podName] = struct{}{}
+		ocmetrics.ManagerActiveWorkers.WithLabelValues(m.TargetName).Set(float64(len(activePods)))
 		fmt.Printf("Started worker pod %s for batch of %d images\n", podName, len(batch))
 	}
 
