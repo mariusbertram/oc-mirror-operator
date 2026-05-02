@@ -50,11 +50,11 @@ endif
 # This is useful for CI or a project to utilize a specific version of the operator-sdk toolkit.
 OPERATOR_SDK_VERSION ?= v1.42.2
 # Image URLs to use for building/pushing image targets
-IMG ?= controller:latest
-IMG_CONTROLLER ?= ghcr.io/mariusbertram/oc-mirror-operator-controller:v$(VERSION)
-IMG_MANAGER ?= ghcr.io/mariusbertram/oc-mirror-operator-manager:v$(VERSION)
-IMG_WORKER ?= ghcr.io/mariusbertram/oc-mirror-operator-worker:v$(VERSION)
-IMG_DASHBOARD ?= ghcr.io/mariusbertram/oc-mirror-operator-dashboard:v$(VERSION)
+IMG ?= quay.lab.brtrm.dev/marius/oc-mirror-operator:latest
+IMG_CONTROLLER ?= quay.lab.brtrm.dev/marius/oc-mirror-operator-controller:latest
+IMG_MANAGER ?= quay.lab.brtrm.dev/marius/oc-mirror-operator-manager:latest
+IMG_WORKER ?= quay.lab.brtrm.dev/marius/oc-mirror-operator-worker:latest
+IMG_DASHBOARD ?= quay.lab.brtrm.dev/marius/oc-mirror-operator-dashboard:latest
 
 # External images used by the operator
 IMG_OAUTH_PROXY ?= quay.io/openshift/origin-oauth-proxy:latest
