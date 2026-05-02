@@ -154,59 +154,25 @@ jobs:
 
       - name: Build release bundle
         env:
-          VERSION:        ${{ needs.build-operator.outputs.version }}
-          CONTROLLER_REF: ${{ env.CONTROLLER_IMAGE }}@${{ needs.build-operator.outputs.controller_digest }}
-          MANAGER_REF:    ${{ env.MANAGER_IMAGE }}@${{ needs.build-operator.outputs.manager_digest }}
-          WORKER_REF:     ${{ env.WORKER_IMAGE }}@${{ needs.build-operator.outputs.worker_digest }}
+          VERSION: ${{ needs.build-operator.outputs.version }}
         run: |
           set -euo pipefail
           CSV="bundle/manifests/oc-mirror.clusterserviceversion.yaml"
 
-          # Regenerate CRDs, RBAC and bundle structure from kubebuilder annotations.
-          # A placeholder controller image is used so make bundle can run without
-          # pulling images; all refs are overwritten explicitly below.
-          IMG_CONTROLLER="placeholder/oc-mirror-operator-controller:v${VERSION}" \
-          VERSION="${VERSION}" \
-          USE_IMAGE_DIGESTS=false \
-          make manifests bundle
+          # USE_IMAGE_DIGESTS=true is the Makefile default: operator-sdk pulls
+          # controller, manager and worker by their :v<VERSION> tags, resolves
+          # them to digest refs, and writes all three into spec.relatedImages.
+          # IMG_CONTROLLER/MANAGER/WORKER are derived from VERSION automatically.
+          VERSION="${VERSION}" make manifests bundle
 
-          # ── Update version and name ──────────────────────────────────────
-          sed -i "s|name: oc-mirror\.v[0-9.]*|name: oc-mirror.v${VERSION}|g" "$CSV"
-          sed -i "s|^\(  version: \)[0-9.]*|\1${VERSION}|"                    "$CSV"
-          sed -i "s|containerImage: .*|containerImage: ${CONTROLLER_REF}|g"   "$CSV"
-
-          # ── Replace all image refs throughout the CSV ────────────────────
-          sed -i "s|[^ '\"]*oc-mirror-operator-controller@sha256:[a-f0-9]*|${CONTROLLER_REF}|g" "$CSV"
-          sed -i "s|[^ '\"]*oc-mirror-operator-controller:[^ '\"]*|${CONTROLLER_REF}|g"         "$CSV"
-          sed -i "s|[^ '\"]*oc-mirror-operator-manager@sha256:[a-f0-9]*|${MANAGER_REF}|g"       "$CSV"
-          sed -i "s|[^ '\"]*oc-mirror-operator-manager:[^ '\"]*|${MANAGER_REF}|g"               "$CSV"
-          sed -i "s|[^ '\"]*oc-mirror-operator-worker@sha256:[a-f0-9]*|${WORKER_REF}|g"         "$CSV"
-          sed -i "s|[^ '\"]*oc-mirror-operator-worker:[^ '\"]*|${WORKER_REF}|g"                 "$CSV"
-
-          # ── Explicitly set spec.relatedImages ───────────────────────────
-          # operator-sdk omits manager and worker from spec.relatedImages when
-          # USE_IMAGE_DIGESTS=false (it only picks up the main container image).
-          # Set all three unconditionally so opm render and oc-mirror always find them.
-          yq -i '.spec.relatedImages = [
-            {"image": strenv(CONTROLLER_REF), "name": "controller"},
-            {"image": strenv(MANAGER_REF),    "name": "manager"},
-            {"image": strenv(WORKER_REF),     "name": "worker"}
-          ]' "$CSV"
-
-          # ── Verify ───────────────────────────────────────────────────────
-          echo "CSV updated to version ${VERSION}"
-          echo "  controller: ${CONTROLLER_REF}"
-          echo "  manager:    ${MANAGER_REF}"
-          echo "  worker:     ${WORKER_REF}"
           echo "spec.relatedImages:"
           yq '.spec.relatedImages' "$CSV"
 
-          grep -q 'placeholder/' "$CSV" && { echo "ERROR: placeholder image still present"; exit 1; }
-          yq '.spec.relatedImages[].image' "$CSV" | grep -Fq "${CONTROLLER_REF}" \
+          yq '.spec.relatedImages[].image' "$CSV" | grep -q "oc-mirror-operator-controller@sha256:" \
             || { echo "ERROR: controller not in spec.relatedImages"; exit 1; }
-          yq '.spec.relatedImages[].image' "$CSV" | grep -Fq "${MANAGER_REF}" \
+          yq '.spec.relatedImages[].image' "$CSV" | grep -q "oc-mirror-operator-manager@sha256:" \
             || { echo "ERROR: manager not in spec.relatedImages"; exit 1; }
-          yq '.spec.relatedImages[].image' "$CSV" | grep -Fq "${WORKER_REF}" \
+          yq '.spec.relatedImages[].image' "$CSV" | grep -q "oc-mirror-operator-worker@sha256:" \
             || { echo "ERROR: worker not in spec.relatedImages"; exit 1; }
           echo "OK: all 3 images verified in spec.relatedImages"
 
