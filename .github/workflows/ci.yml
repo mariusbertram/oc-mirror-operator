@@ -292,8 +292,8 @@ jobs:
           # Use the pre-built release bundle from ghcr.io unchanged — it has the
           # correct ghcr.io image references set by release.yml, unlike the bundle/
           # directory in the tag which may still contain local dev-registry refs.
-          docker pull ghcr.io/${{ github.repository }}-bundle:${{ steps.bundle-ver.outputs.old_tag }}
-          docker tag  ghcr.io/${{ github.repository }}-bundle:${{ steps.bundle-ver.outputs.old_tag }} \
+          docker pull ghcr.io/${{ github.repository }}-bundle:${{ steps.bundle-ver.outputs.old_ver }}
+          docker tag  ghcr.io/${{ github.repository }}-bundle:${{ steps.bundle-ver.outputs.old_ver }} \
                       localhost:5001/oc-mirror-bundle:${{ steps.bundle-ver.outputs.old_ver }}
           docker push localhost:5001/oc-mirror-bundle:${{ steps.bundle-ver.outputs.old_ver }}
 
