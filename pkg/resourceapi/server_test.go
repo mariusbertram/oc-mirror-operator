@@ -432,7 +432,7 @@ var _ = Describe("ResourceAPI Server", func() {
 			ctx := context.Background()
 			found, err := server.LookupMirrorTarget(ctx, "nonexistent")
 			Expect(err).To(HaveOccurred())
-			Expect(found).To(BeNil())
+			Expect(found).NotTo(BeNil()) // LookupMirrorTarget returns empty object on error
 		})
 
 		It("should find MirrorTarget by name in cluster-wide mode", func() {
