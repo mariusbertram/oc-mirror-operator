@@ -92,7 +92,7 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		if err := r.Update(ctx, mt); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{}, nil // update event will re-trigger reconcile
 	}
 
 	// Detect removed ImageSets and create cleanup Jobs if cleanup policy is set.
@@ -467,8 +467,8 @@ func (r *MirrorTargetReconciler) ensureNetworkPolicies(ctx context.Context, mt *
 	}
 
 	tcp := corev1.ProtocolTCP
-	statusPort := intstr.FromInt(8080)
-	resourcesPort := intstr.FromInt(8081)
+	statusPort := intstr.FromInt32(8080)
+	resourcesPort := intstr.FromInt32(8081)
 
 	policies := []*networkingv1.NetworkPolicy{
 		// 1. Manager ingress policy. Two rules:
@@ -907,7 +907,7 @@ func (r *MirrorTargetReconciler) createCleanupJob(ctx context.Context, mt *mirro
 		args = append(args, "--insecure")
 	}
 
-	env := []corev1.EnvVar{}
+	var env []corev1.EnvVar
 	var volumes []corev1.Volume
 	var volumeMounts []corev1.VolumeMount
 
@@ -1120,7 +1120,7 @@ func (r *MirrorTargetReconciler) ensureResourceAPI(ctx context.Context, mt *mirr
 		svc.Labels = labels
 		svc.Spec = corev1.ServiceSpec{
 			Selector: labels,
-			Ports:    []corev1.ServicePort{{Port: 8081, TargetPort: intstr.FromInt(8081)}},
+			Ports:    []corev1.ServicePort{{Port: 8081, TargetPort: intstr.FromInt32(8081)}},
 		}
 		return nil
 	})

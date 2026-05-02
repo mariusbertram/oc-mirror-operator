@@ -161,7 +161,7 @@ func runWorkerBatch(insecure bool, batchJSON string) {
 }
 
 func buildMirrorClient(insecure bool, firstDest string) *mirrorclient.MirrorClient {
-	insecureHosts := []string{}
+	var insecureHosts []string
 	destHost := ""
 	if parts := strings.Split(firstDest, "/"); len(parts) > 0 {
 		destHost = parts[0]
