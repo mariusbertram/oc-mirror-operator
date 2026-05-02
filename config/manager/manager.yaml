@@ -74,6 +74,10 @@ spec:
           value: ghcr.io/mariusbertram/oc-mirror-operator-manager:latest
         - name: WORKER_IMAGE
           value: ghcr.io/mariusbertram/oc-mirror-operator-worker:latest
+        - name: DASHBOARD_IMAGE
+          value: ghcr.io/mariusbertram/oc-mirror-operator-dashboard:latest
+        - name: OAUTH_PROXY_IMAGE
+          value: quay.io/openshift/origin-oauth-proxy:latest
         ports: []
         securityContext:
           allowPrivilegeEscalation: false

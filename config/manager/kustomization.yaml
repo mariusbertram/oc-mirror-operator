@@ -20,3 +20,6 @@ images:
 - name: ghcr.io/mariusbertram/oc-mirror-operator-worker
   newName: ghcr.io/mariusbertram/oc-mirror-operator-worker
   newTag: v0.0.2
+- name: ghcr.io/mariusbertram/oc-mirror-operator-dashboard
+  newName: ghcr.io/mariusbertram/oc-mirror-operator-dashboard
+  newTag: v0.0.2

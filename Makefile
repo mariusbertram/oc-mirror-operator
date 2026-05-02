@@ -56,6 +56,12 @@ IMG_MANAGER ?= ghcr.io/mariusbertram/oc-mirror-operator-manager:v$(VERSION)
 IMG_WORKER ?= ghcr.io/mariusbertram/oc-mirror-operator-worker:v$(VERSION)
 IMG_DASHBOARD ?= ghcr.io/mariusbertram/oc-mirror-operator-dashboard:v$(VERSION)
 
+# External images used by the operator
+IMG_OAUTH_PROXY ?= quay.io/openshift/origin-oauth-proxy:latest
+IMG_PROMETHEUS_OPERATOR ?= quay.io/prometheus-operator/prometheus-operator:latest
+IMG_PROMETHEUS ?= quay.io/prometheus/prometheus:latest
+IMG_GRAFANA ?= docker.io/grafana/grafana:latest
+
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
 GOBIN=$(shell go env GOPATH)/bin
@@ -299,7 +305,11 @@ podman-build-single: ## Build single-arch image using podman (default: native ar
 .PHONY: build-installer
 build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.
 	mkdir -p dist
-	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
+	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG} \
+		ghcr.io/mariusbertram/oc-mirror-operator-controller=${IMG_CONTROLLER} \
+		ghcr.io/mariusbertram/oc-mirror-operator-manager=${IMG_MANAGER} \
+		ghcr.io/mariusbertram/oc-mirror-operator-worker=${IMG_WORKER} \
+		ghcr.io/mariusbertram/oc-mirror-operator-dashboard=${IMG_DASHBOARD}
 	$(KUSTOMIZE) build config/default > dist/install.yaml
 
 ##@ Deployment
@@ -321,7 +331,8 @@ deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in
 	cd config/manager && $(KUSTOMIZE) edit set image \
 		ghcr.io/mariusbertram/oc-mirror-operator-controller=${IMG_CONTROLLER} \
 		ghcr.io/mariusbertram/oc-mirror-operator-manager=${IMG_MANAGER} \
-		ghcr.io/mariusbertram/oc-mirror-operator-worker=${IMG_WORKER}
+		ghcr.io/mariusbertram/oc-mirror-operator-worker=${IMG_WORKER} \
+		ghcr.io/mariusbertram/oc-mirror-operator-dashboard=${IMG_DASHBOARD}
 	$(KUSTOMIZE) build config/default | $(KUBECTL) apply -f -
 
 .PHONY: undeploy
@@ -416,7 +427,7 @@ endif
 .PHONY: bundle
 bundle: manifests kustomize operator-sdk ## Generate bundle manifests and metadata, then validate generated files.
 	$(OPERATOR_SDK) generate kustomize manifests -q
-	cd config/manager && $(KUSTOMIZE) edit set image controller=$(IMG) ghcr.io/mariusbertram/oc-mirror-operator-controller=$(IMG_CONTROLLER) ghcr.io/mariusbertram/oc-mirror-operator-manager=$(IMG_MANAGER) ghcr.io/mariusbertram/oc-mirror-operator-worker=$(IMG_WORKER)
+	cd config/manager && $(KUSTOMIZE) edit set image controller=$(IMG) ghcr.io/mariusbertram/oc-mirror-operator-controller=$(IMG_CONTROLLER) ghcr.io/mariusbertram/oc-mirror-operator-manager=$(IMG_MANAGER) ghcr.io/mariusbertram/oc-mirror-operator-worker=$(IMG_WORKER) ghcr.io/mariusbertram/oc-mirror-operator-dashboard=$(IMG_DASHBOARD)
 	$(KUSTOMIZE) build config/manifests | $(OPERATOR_SDK) generate bundle $(BUNDLE_GEN_FLAGS)
 	$(OPERATOR_SDK) bundle validate ./bundle
 
