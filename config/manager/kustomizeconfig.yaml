@@ -1,0 +1,5 @@
+images:
+- kind: Deployment
+  path: spec/template/metadata/annotations/oc-mirror-manager-image
+- kind: Deployment
+  path: spec/template/metadata/annotations/oc-mirror-worker-image

@@ -1001,18 +1001,20 @@ func (m *MirrorManager) startWorkerBatch(ctx context.Context, mt *mirrorv1alpha1
 	var volumes []corev1.Volume
 
 	// Blob buffer volume for large image layers.  By default an emptyDir is
-	// used.  When WorkerStorage is configured, a generic ephemeral PVC is
-	// used instead — Kubernetes binds the PVC to the pod lifecycle so no
-	// explicit cleanup is needed.
+	// used.  When WorkerStorage is configured with a StorageClassName, a
+	// generic ephemeral PVC is used instead.  Otherwise, emptyDir with the
+	// configured size is used.
 	volumeMounts = append(volumeMounts, corev1.VolumeMount{
 		Name:      "blob-buffer",
 		MountPath: "/tmp/blob-buffer",
 	})
-	if ws := mt.Spec.WorkerStorage; ws != nil {
-		size := ws.Size
-		if size.IsZero() {
-			size = resource.MustParse("10Gi")
-		}
+
+	blobBufferSize := resource.MustParse("10Gi")
+	if ws := mt.Spec.WorkerStorage; ws != nil && !ws.Size.IsZero() {
+		blobBufferSize = ws.Size
+	}
+
+	if ws := mt.Spec.WorkerStorage; ws != nil && ws.StorageClassName != nil {
 		volumes = append(volumes, corev1.Volume{
 			Name: "blob-buffer",
 			VolumeSource: corev1.VolumeSource{
@@ -1023,7 +1025,7 @@ func (m *MirrorManager) startWorkerBatch(ctx context.Context, mt *mirrorv1alpha1
 							StorageClassName: ws.StorageClassName,
 							Resources: corev1.VolumeResourceRequirements{
 								Requests: corev1.ResourceList{
-									corev1.ResourceStorage: size,
+									corev1.ResourceStorage: blobBufferSize,
 								},
 							},
 						},
@@ -1036,7 +1038,7 @@ func (m *MirrorManager) startWorkerBatch(ctx context.Context, mt *mirrorv1alpha1
 			Name: "blob-buffer",
 			VolumeSource: corev1.VolumeSource{
 				EmptyDir: &corev1.EmptyDirVolumeSource{
-					SizeLimit: resourcePtr("10Gi"),
+					SizeLimit: &blobBufferSize,
 				},
 			},
 		})

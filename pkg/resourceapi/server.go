@@ -115,6 +115,9 @@ func (s *Server) RegisterRoutes(r *mux.Router) {
 	uiSub, err := fs.Sub(uiFS, "ui")
 	if err == nil {
 		r.PathPrefix("/ui/").Handler(http.StripPrefix("/ui/", http.FileServer(http.FS(uiSub))))
+		r.HandleFunc("/ui", func(w http.ResponseWriter, req *http.Request) {
+			http.Redirect(w, req, "/ui/", http.StatusMovedPermanently)
+		})
 		r.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
 			http.Redirect(w, req, "/ui/", http.StatusMovedPermanently)
 		})

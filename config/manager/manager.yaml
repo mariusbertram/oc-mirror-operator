@@ -26,6 +26,8 @@ spec:
     metadata:
       annotations:
         kubectl.kubernetes.io/default-container: manager
+        oc-mirror-manager-image: ghcr.io/mariusbertram/oc-mirror-operator-manager:latest
+        oc-mirror-worker-image: ghcr.io/mariusbertram/oc-mirror-operator-worker:latest
       labels:
         control-plane: controller-manager
         app.kubernetes.io/name: oc-mirror

@@ -31,6 +31,8 @@ metadata:
     capabilities: Basic Install
     categories: OpenShift Optional, Integration & Delivery
     containerImage: quay.lab.brtrm.dev/marius/oc-mirror-operator:latest
+    oc-mirror-manager-image: ghcr.io/mariusbertram/oc-mirror-operator-manager:latest
+    oc-mirror-worker-image: ghcr.io/mariusbertram/oc-mirror-operator-worker:latest
     operatorframework.io/suggested-namespace: oc-mirror-operator
     repository: https://github.com/mariusbertram/oc-mirror-operator
     support: Marius Bertram
@@ -205,4 +207,9 @@ spec:
   provider:
     name: Marius Bertram
     url: github.com/mariusbertram/oc-mirror-operator
+  relatedImages:
+  - image: ghcr.io/mariusbertram/oc-mirror-operator-manager:latest
+    name: manager
+  - image: ghcr.io/mariusbertram/oc-mirror-operator-worker:latest
+    name: worker
   version: 0.0.0

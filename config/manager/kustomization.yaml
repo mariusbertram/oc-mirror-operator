@@ -4,30 +4,19 @@ kind: Kustomization
 resources:
 - manager.yaml
 
+configurations:
+- kustomizeconfig.yaml
+
 images:
 - name: controller
   newName: controller
   newTag: latest
 - name: ghcr.io/mariusbertram/oc-mirror-operator-controller
-  newName: example.com/oc-mirror-controller
-  newTag: v0.0.1
+  newName: quay.lab.brtrm.dev/marius/oc-mirror-operator-controller
+  newTag: v0.0.2-test
 - name: ghcr.io/mariusbertram/oc-mirror-operator-manager
-  newName: example.com/oc-mirror-manager
-  newTag: v0.0.1
+  newName: quay.lab.brtrm.dev/marius/oc-mirror-operator-manager
+  newTag: v0.0.2-test
 - name: ghcr.io/mariusbertram/oc-mirror-operator-worker
-  newName: example.com/oc-mirror-worker
-  newTag: v0.0.1
-
-# Patch MANAGER_IMAGE and WORKER_IMAGE env vars since kustomize `images:`
-# only replaces container image fields, not env var values.
-patches:
-- patch: |-
-    - op: replace
-      path: /spec/template/spec/containers/0/env/1/value
-      value: example.com/oc-mirror-manager:v0.0.1
-    - op: replace
-      path: /spec/template/spec/containers/0/env/2/value
-      value: example.com/oc-mirror-worker:v0.0.1
-  target:
-    kind: Deployment
-    name: controller-manager
+  newName: quay.lab.brtrm.dev/marius/oc-mirror-operator-worker
+  newTag: v0.0.2-test

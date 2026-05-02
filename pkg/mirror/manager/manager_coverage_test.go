@@ -1498,12 +1498,15 @@ var _ = Describe("Manager Coverage", func() {
 			Expect(foundSSLCert).To(BeTrue())
 		})
 
-		It("uses ephemeral PVC when WorkerStorage is set", func() {
+		It("uses ephemeral PVC when WorkerStorage is set with StorageClassName", func() {
+			sc := "standard"
 			mt := &mirrorv1alpha1.MirrorTarget{
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default", UID: "uid-1"},
 				Spec: mirrorv1alpha1.MirrorTargetSpec{
-					Registry:      "reg.io",
-					WorkerStorage: &mirrorv1alpha1.WorkerStorageConfig{},
+					Registry: "reg.io",
+					WorkerStorage: &mirrorv1alpha1.WorkerStorageConfig{
+						StorageClassName: &sc,
+					},
 				},
 			}
 			items := []BatchItem{{Source: "quay.io/img:v1", Dest: "reg.io/mirror/img:v1"}}
@@ -1516,6 +1519,7 @@ var _ = Describe("Manager Coverage", func() {
 			for _, v := range pod.Spec.Volumes {
 				if v.Name == "blob-buffer" && v.Ephemeral != nil {
 					foundEphemeral = true
+					Expect(*v.Ephemeral.VolumeClaimTemplate.Spec.StorageClassName).To(Equal("standard"))
 				}
 			}
 			Expect(foundEphemeral).To(BeTrue())
@@ -2202,7 +2206,7 @@ var _ = Describe("Manager Coverage", func() {
 	// ─── Additional startWorkerBatch coverage ────────────────────────
 
 	Context("startWorkerBatch with WorkerStorage size", func() {
-		It("uses custom size from WorkerStorage", func() {
+		It("uses custom size from WorkerStorage in EmptyDir", func() {
 			size := resource.MustParse("50Gi")
 			mt := &mirrorv1alpha1.MirrorTarget{
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default", UID: "uid-1"},
@@ -2219,15 +2223,14 @@ var _ = Describe("Manager Coverage", func() {
 
 			pods, _ := m.Clientset.CoreV1().Pods("default").List(context.TODO(), metav1.ListOptions{})
 			pod := pods.Items[0]
-			foundEphemeral := false
+			foundEmptyDir := false
 			for _, v := range pod.Spec.Volumes {
-				if v.Name == "blob-buffer" && v.Ephemeral != nil {
-					foundEphemeral = true
-					req := v.Ephemeral.VolumeClaimTemplate.Spec.Resources.Requests[corev1.ResourceStorage]
-					Expect(req.String()).To(Equal("50Gi"))
+				if v.Name == "blob-buffer" && v.EmptyDir != nil {
+					foundEmptyDir = true
+					Expect(v.EmptyDir.SizeLimit.String()).To(Equal("50Gi"))
 				}
 			}
-			Expect(foundEphemeral).To(BeTrue())
+			Expect(foundEmptyDir).To(BeTrue())
 		})
 	})
 

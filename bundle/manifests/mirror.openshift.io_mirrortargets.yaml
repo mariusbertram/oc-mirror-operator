@@ -425,16 +425,14 @@ spec:
               workerStorage:
                 description: |-
                   WorkerStorage replaces the default 10 GiB emptyDir blob buffer with a
-                  dynamically-provisioned ephemeral PVC for worker pods.  Use this when
-                  mirroring very large images (e.g. LLMs) that exceed the emptyDir limit.
-                  The PVC is bound to the worker pod lifecycle and deleted automatically
-                  when the pod is removed.
+                  larger node-local emptyDir or a dynamically-provisioned ephemeral PVC.
+                  Use this when mirroring very large images (e.g. LLMs) that exceed the
+                  default emptyDir limit.
                 properties:
                   size:
                     anyOf:
                     - type: integer
                     - type: string
-                    default: 10Gi
                     description: |-
                       Size is the requested storage capacity (e.g. "100Gi").
                       Defaults to "10Gi" when not set.
@@ -442,8 +440,9 @@ spec:
                     x-kubernetes-int-or-string: true
                   storageClassName:
                     description: |-
-                      StorageClassName selects the StorageClass for the ephemeral PVC.
-                      If omitted the cluster's default StorageClass is used.
+                      StorageClassName selects the StorageClass for a generic ephemeral PVC.
+                      If set, a PVC is used. If omitted, a node-local emptyDir is used with
+                      the given Size.
                     type: string
                 type: object
             required:
