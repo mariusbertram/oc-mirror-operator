@@ -152,58 +152,63 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Regenerate bundle from source
+      - name: Build release bundle
+        env:
+          VERSION:        ${{ needs.build-operator.outputs.version }}
+          CONTROLLER_REF: ${{ env.CONTROLLER_IMAGE }}@${{ needs.build-operator.outputs.controller_digest }}
+          MANAGER_REF:    ${{ env.MANAGER_IMAGE }}@${{ needs.build-operator.outputs.manager_digest }}
+          WORKER_REF:     ${{ env.WORKER_IMAGE }}@${{ needs.build-operator.outputs.worker_digest }}
         run: |
-          VERSION="${{ needs.build-operator.outputs.version }}"
-          # Regenerate CRDs, RBAC and bundle manifests from kubebuilder annotations.
-          # A placeholder image is used here; the real digest is injected by the next step.
-          IMG_CONTROLLER=placeholder/oc-mirror-operator-controller:v${VERSION} \
-          VERSION=${VERSION} \
+          set -euo pipefail
+          CSV="bundle/manifests/oc-mirror.clusterserviceversion.yaml"
+
+          # Regenerate CRDs, RBAC and bundle structure from kubebuilder annotations.
+          # A placeholder controller image is used so make bundle can run without
+          # pulling images; all refs are overwritten explicitly below.
+          IMG_CONTROLLER="placeholder/oc-mirror-operator-controller:v${VERSION}" \
+          VERSION="${VERSION}" \
           USE_IMAGE_DIGESTS=false \
           make manifests bundle
 
-      - name: Inject version and operator image digest into CSV
-        run: |
-          VERSION="${{ needs.build-operator.outputs.version }}"
-          CONTROLLER_REF="${{ env.CONTROLLER_IMAGE }}@${{ needs.build-operator.outputs.controller_digest }}"
-          MANAGER_REF="${{ env.MANAGER_IMAGE }}@${{ needs.build-operator.outputs.manager_digest }}"
-          WORKER_REF="${{ env.WORKER_IMAGE }}@${{ needs.build-operator.outputs.worker_digest }}"
-          CSV="bundle/manifests/oc-mirror.clusterserviceversion.yaml"
-
-          # Update CSV name: oc-mirror.v<old> → oc-mirror.v<VERSION>
+          # ── Update version and name ──────────────────────────────────────
           sed -i "s|name: oc-mirror\.v[0-9.]*|name: oc-mirror.v${VERSION}|g" "$CSV"
+          sed -i "s|^\(  version: \)[0-9.]*|\1${VERSION}|"                    "$CSV"
+          sed -i "s|containerImage: .*|containerImage: ${CONTROLLER_REF}|g"   "$CSV"
 
-          # Update spec.version field
-          sed -i "s|^\(  version: \)[0-9.]*|\1${VERSION}|" "$CSV"
-
-          # Update containerImage annotation
-          sed -i "s|containerImage: .*|containerImage: ${CONTROLLER_REF}|g" "$CSV"
-
-          # Replace controller image references (placeholder tag or any tag/digest ref).
-          # Patterns cover: <any-registry>/oc-mirror-operator-controller@sha256:<hex>
-          #              or <any-registry>/oc-mirror-operator-controller:<tag>
+          # ── Replace all image refs throughout the CSV ────────────────────
           sed -i "s|[^ '\"]*oc-mirror-operator-controller@sha256:[a-f0-9]*|${CONTROLLER_REF}|g" "$CSV"
           sed -i "s|[^ '\"]*oc-mirror-operator-controller:[^ '\"]*|${CONTROLLER_REF}|g"         "$CSV"
+          sed -i "s|[^ '\"]*oc-mirror-operator-manager@sha256:[a-f0-9]*|${MANAGER_REF}|g"       "$CSV"
+          sed -i "s|[^ '\"]*oc-mirror-operator-manager:[^ '\"]*|${MANAGER_REF}|g"               "$CSV"
+          sed -i "s|[^ '\"]*oc-mirror-operator-worker@sha256:[a-f0-9]*|${WORKER_REF}|g"         "$CSV"
+          sed -i "s|[^ '\"]*oc-mirror-operator-worker:[^ '\"]*|${WORKER_REF}|g"                 "$CSV"
 
-          # Replace manager image references
-          sed -i "s|[^ '\"]*oc-mirror-operator-manager@sha256:[a-f0-9]*|${MANAGER_REF}|g" "$CSV"
-          sed -i "s|[^ '\"]*oc-mirror-operator-manager:[^ '\"]*|${MANAGER_REF}|g"         "$CSV"
+          # ── Explicitly set spec.relatedImages ───────────────────────────
+          # operator-sdk omits manager and worker from spec.relatedImages when
+          # USE_IMAGE_DIGESTS=false (it only picks up the main container image).
+          # Set all three unconditionally so opm render and oc-mirror always find them.
+          yq -i '.spec.relatedImages = [
+            {"image": strenv(CONTROLLER_REF), "name": "controller"},
+            {"image": strenv(MANAGER_REF),    "name": "manager"},
+            {"image": strenv(WORKER_REF),     "name": "worker"}
+          ]' "$CSV"
 
-          # Replace worker image references
-          sed -i "s|[^ '\"]*oc-mirror-operator-worker@sha256:[a-f0-9]*|${WORKER_REF}|g" "$CSV"
-          sed -i "s|[^ '\"]*oc-mirror-operator-worker:[^ '\"]*|${WORKER_REF}|g"         "$CSV"
-
+          # ── Verify ───────────────────────────────────────────────────────
           echo "CSV updated to version ${VERSION}"
           echo "  controller: ${CONTROLLER_REF}"
           echo "  manager:    ${MANAGER_REF}"
           echo "  worker:     ${WORKER_REF}"
-          grep -E "name: oc-mirror|version:|containerImage:|image:" "$CSV" | head -15
+          echo "spec.relatedImages:"
+          yq '.spec.relatedImages' "$CSV"
 
-          # Verify no placeholder references remain and all three images are present.
-          grep -q 'placeholder/' "$CSV" && { echo "ERROR: placeholder image still present in CSV"; exit 1; }
-          grep -Fq "$CONTROLLER_REF" "$CSV" || { echo "ERROR: controller ref missing from CSV"; exit 1; }
-          grep -Fq "$MANAGER_REF"    "$CSV" || { echo "ERROR: manager ref missing from CSV"; exit 1; }
-          grep -Fq "$WORKER_REF"     "$CSV" || { echo "ERROR: worker ref missing from CSV"; exit 1; }
+          grep -q 'placeholder/' "$CSV" && { echo "ERROR: placeholder image still present"; exit 1; }
+          yq '.spec.relatedImages[].image' "$CSV" | grep -Fq "${CONTROLLER_REF}" \
+            || { echo "ERROR: controller not in spec.relatedImages"; exit 1; }
+          yq '.spec.relatedImages[].image' "$CSV" | grep -Fq "${MANAGER_REF}" \
+            || { echo "ERROR: manager not in spec.relatedImages"; exit 1; }
+          yq '.spec.relatedImages[].image' "$CSV" | grep -Fq "${WORKER_REF}" \
+            || { echo "ERROR: worker not in spec.relatedImages"; exit 1; }
+          echo "OK: all 3 images verified in spec.relatedImages"
 
       # QEMU is required for cross-compilation of the arm64 layer during
       # multi-arch bundle builds. The bundle contains only YAML (no binaries),
