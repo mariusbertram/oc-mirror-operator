@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v0.0.13] - 2026-05-02
+
+### Added
+- **Developer Guide**: New comprehensive documentation for building and deploying the operator in various environments (OpenShift, MicroShift, KinD, standard Kubernetes).
+- **Image Status Redesign**: Completely redesigned the image mirroring status tab in the Web UI, providing a more condensed and intuitive view with status badges and registry tooltips.
+
+### Fixed
+- **CSV RelatedImages**: Implemented dynamic detection and replacement logic in Kustomize to ensure modular images (manager, worker) are correctly included in the `relatedImages` section of the ClusterServiceVersion with their respective SHA digests.
+- **Worker Storage Default**: Refactored worker storage to use node-local `emptyDir` by default for blob buffering. PVC-backed generic ephemeral volumes are now only provisioned if a `storageClassName` is explicitly specified.
+- **UI Scroll Restoration**: Fixed a bug where the UI would jump to the top during the 30-second auto-refresh cycle. Scroll position is now preserved across refreshes.
+- **UI Font Assets (404s)**: Fixed Red Hat font loading by correcting relative paths and adding a server-side redirect from `/ui` to `/ui/` for consistent path resolution.
+- **CRD Spec Clean-up**: Removed `+kubebuilder:default` tag for storage size in the CRD to prevent the Kubernetes API from automatically injecting default values into the spec, while maintaining the 10 GiB fallback in the operator logic.
+
+---
+
 ## [0.1.0] - 2026-05-01
 
 ### BREAKING CHANGES
@@ -266,7 +281,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **E2E test suite**: Ginkgo/Gomega end-to-end tests for a KinD cluster
   covering the full mirroring lifecycle.
 
-[Unreleased]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.0.11...HEAD
+[Unreleased]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.0.13...HEAD
+[v0.0.13]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.1.0...v0.0.13
 [v0.0.11]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.0.10...v0.0.11
 [v0.0.6]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.0.5...v0.0.6
 [v0.0.5]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.0.4...v0.0.5
