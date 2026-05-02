@@ -912,6 +912,7 @@ oc-mirror-operator/
 |---|---|
 | [User Guide](docs/user-guide.md) | Installation, configuration, and operational walkthrough |
 | [API Reference](docs/api-reference.md) | Complete CRD field reference for MirrorTarget and ImageSet |
+| [Developer Guide](docs/developer-guide.md) | How to build, deploy, and test in various environments |
 | [OLM Upgrade Guide](docs/olm-upgrade.md) | How to upgrade between operator versions via OLM |
 | [Contributing Guide](docs/contributing.md) | Development setup, build, test, CI, and release process |
 | [Changelog](CHANGELOG.md) | Release history and migration notes |
