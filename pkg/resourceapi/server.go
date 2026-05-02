@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"strings"
@@ -16,7 +17,11 @@ import (
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/imagestate"
 	mirrorresources "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/resources"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime"
+	clientgorest "k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/config"
 )
 
 //go:embed ui
@@ -25,13 +30,41 @@ var uiFS embed.FS
 type Server struct {
 	client    client.Client
 	namespace string
+	scheme    *runtime.Scheme
+	baseCfg   *clientgorest.Config
 }
 
 func NewServer(c client.Client, namespace string) *Server {
+	cfg, _ := config.GetConfig()
 	return &Server{
 		client:    c,
 		namespace: namespace,
+		scheme:    c.Scheme(),
+		baseCfg:   cfg,
 	}
+}
+
+// clientForRequest builds a K8s client scoped to the caller's Bearer token.
+// The token is read from X-Forwarded-Access-Token (set by oauth-proxy) or from
+// the Authorization header (used by the Console Plugin SDK via consoleFetch).
+// If neither is present, the server's own service-account client is returned.
+func (s *Server) clientForRequest(r *http.Request) client.Client {
+	token := r.Header.Get("X-Forwarded-Access-Token")
+	if token == "" {
+		auth := r.Header.Get("Authorization")
+		token = strings.TrimPrefix(auth, "Bearer ")
+	}
+	if token == "" || s.baseCfg == nil {
+		return s.client
+	}
+	cfg := clientgorest.CopyConfig(s.baseCfg)
+	cfg.BearerToken = token
+	cfg.BearerTokenFile = ""
+	c, err := client.New(cfg, client.Options{Scheme: s.scheme})
+	if err != nil {
+		return s.client
+	}
+	return c
 }
 
 // TargetSummary is the JSON response for the targets list endpoint.
@@ -131,6 +164,11 @@ func (s *Server) RegisterRoutes(r *mux.Router) {
 	api.HandleFunc("/targets", s.handleTargetsList).Methods("GET")
 	api.HandleFunc("/targets/{mt}", s.handleTargetDetail).Methods("GET")
 	api.HandleFunc("/targets/{mt}/image-failures", s.handleImageFailures).Methods("GET")
+
+	// Edit endpoints (token-scoped writes — RBAC of the requesting user applies)
+	api.HandleFunc("/imagesets/{namespace}/{name}/catalogs/{slug}/packages", s.handlePatchCatalogPackages).Methods("PATCH")
+	api.HandleFunc("/imagesets/{namespace}/{name}/recollect", s.handleTriggerRecollect).Methods("PATCH")
+	api.HandleFunc("/imagesets/{namespace}/{name}", s.handleDeleteImageSet).Methods("DELETE")
 
 	// Catalog browsing endpoints
 	api.HandleFunc("/targets/{mt}/catalogs/{slug}/packages.json", s.handleFilteredCatalogPackages).Methods("GET")
@@ -508,4 +546,141 @@ func writeJSON(w http.ResponseWriter, v any) {
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
 	}
+}
+
+// --- Edit handlers ---
+
+type packagePatchBody struct {
+	Include []string `json:"include"`
+	Exclude []string `json:"exclude"`
+}
+
+// handlePatchCatalogPackages updates the package filter for an operator catalog
+// in the named ImageSet. The calling user's RBAC rights are enforced via the
+// token-scoped client (see clientForRequest).
+func (s *Server) handlePatchCatalogPackages(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	namespace, name, slug := vars["namespace"], vars["name"], vars["slug"]
+
+	defer func() { _ = r.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		http.Error(w, "failed to read body", http.StatusBadRequest)
+		return
+	}
+	var patch packagePatchBody
+	if err := json.Unmarshal(body, &patch); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+
+	c := s.clientForRequest(r)
+	is := &mirrorv1alpha1.ImageSet{}
+	if err := c.Get(r.Context(), client.ObjectKey{Namespace: namespace, Name: name}, is); err != nil {
+		if apierrors.IsNotFound(err) {
+			http.Error(w, "ImageSet not found", http.StatusNotFound)
+		} else {
+			http.Error(w, fmt.Sprintf("get ImageSet: %v", err), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	includeSet := make(map[string]bool, len(patch.Include))
+	for _, p := range patch.Include {
+		includeSet[p] = true
+	}
+
+	for i, op := range is.Spec.Mirror.Operators {
+		catalogSlug := catalogSlugFromSource(op.Catalog)
+		if catalogSlug != slug {
+			continue
+		}
+		// Rebuild the package list from the include set.
+		var packages []mirrorv1alpha1.IncludePackage
+		for _, pkg := range patch.Include {
+			packages = append(packages, mirrorv1alpha1.IncludePackage{Name: pkg})
+		}
+		is.Spec.Mirror.Operators[i].Packages = packages
+	}
+
+	if err := c.Update(r.Context(), is); err != nil {
+		if apierrors.IsForbidden(err) {
+			http.Error(w, "forbidden: insufficient permissions", http.StatusForbidden)
+		} else {
+			http.Error(w, fmt.Sprintf("update ImageSet: %v", err), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleTriggerRecollect sets the recollect annotation on an ImageSet to force
+// an upstream re-resolution on the next Manager reconcile cycle.
+func (s *Server) handleTriggerRecollect(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	namespace, name := vars["namespace"], vars["name"]
+
+	c := s.clientForRequest(r)
+	is := &mirrorv1alpha1.ImageSet{}
+	if err := c.Get(r.Context(), client.ObjectKey{Namespace: namespace, Name: name}, is); err != nil {
+		if apierrors.IsNotFound(err) {
+			http.Error(w, "ImageSet not found", http.StatusNotFound)
+		} else {
+			http.Error(w, fmt.Sprintf("get ImageSet: %v", err), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	if is.Annotations == nil {
+		is.Annotations = make(map[string]string)
+	}
+	is.Annotations["mirror.openshift.io/recollect"] = "true"
+
+	if err := c.Update(r.Context(), is); err != nil {
+		if apierrors.IsForbidden(err) {
+			http.Error(w, "forbidden: insufficient permissions", http.StatusForbidden)
+		} else {
+			http.Error(w, fmt.Sprintf("update ImageSet: %v", err), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleDeleteImageSet deletes an ImageSet using the caller's token.
+func (s *Server) handleDeleteImageSet(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	namespace, name := vars["namespace"], vars["name"]
+
+	c := s.clientForRequest(r)
+	is := &mirrorv1alpha1.ImageSet{}
+	if err := c.Get(r.Context(), client.ObjectKey{Namespace: namespace, Name: name}, is); err != nil {
+		if apierrors.IsNotFound(err) {
+			http.Error(w, "ImageSet not found", http.StatusNotFound)
+		} else {
+			http.Error(w, fmt.Sprintf("get ImageSet: %v", err), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	if err := c.Delete(r.Context(), is); err != nil {
+		if apierrors.IsForbidden(err) {
+			http.Error(w, "forbidden: insufficient permissions", http.StatusForbidden)
+		} else {
+			http.Error(w, fmt.Sprintf("delete ImageSet: %v", err), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// catalogSlugFromSource derives the catalog slug from the catalog source image
+// in the same way the manager does — last path segment, colon replaced by dash.
+func catalogSlugFromSource(source string) string {
+	parts := strings.Split(source, "/")
+	last := parts[len(parts)-1]
+	return strings.ReplaceAll(last, ":", "-")
 }

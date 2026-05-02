@@ -38,3 +38,9 @@ gha-creds-*.json
 .claude
 .claude-flow
 /manager
+
+# Node / npm (ui/)
+ui/node_modules/
+ui/dist/
+ui/.eslintcache
+ui/*.tsbuildinfo
