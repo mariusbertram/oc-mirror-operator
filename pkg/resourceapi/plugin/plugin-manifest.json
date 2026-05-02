@@ -1,0 +1,1 @@
+{"name":"oc-mirror-operator","version":"0.0.1","displayName":"oc-mirror-operator","description":"OpenShift image mirroring management","exposedModules":{"MirrorTargetListPage":"./pages/MirrorTargetListPage","MirrorTargetDetailPage":"./pages/MirrorTargetDetailPage","CatalogBrowserPage":"./pages/CatalogBrowserPage"},"dependencies":{"@console/pluginAPI":">=4.14"}}

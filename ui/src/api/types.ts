@@ -1,4 +1,5 @@
 export interface TargetSummary {
+  namespace: string;
   name: string;
   registry: string;
   totalImages: number;

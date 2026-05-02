@@ -245,6 +245,31 @@ spec:
                 - subjectaccessreviews
               verbs:
                 - create
+            - apiGroups:
+                - rbac.authorization.k8s.io
+              resources:
+                - clusterroles
+                - clusterrolebindings
+              verbs:
+                - create
+                - delete
+                - get
+                - list
+                - patch
+                - update
+                - watch
+            - apiGroups:
+                - console.openshift.io
+              resources:
+                - consoleplugins
+              verbs:
+                - create
+                - delete
+                - get
+                - list
+                - patch
+                - update
+                - watch
           serviceAccountName: oc-mirror-controller-manager
       deployments:
         - label:
@@ -283,6 +308,12 @@ spec:
                         value: quay.lab.brtrm.dev/marius/oc-mirror-operator-manager@sha256:22533dabb26bf1e8d640164e5e4f780263fd5d28937e7f9a5f00ba9269e55063
                       - name: WORKER_IMAGE
                         value: quay.lab.brtrm.dev/marius/oc-mirror-operator-worker@sha256:205b9a48150986034a7a68a3a0d3d424b7cae6523319a8f3122b0f024f08fac0
+                      - name: DASHBOARD_IMAGE
+                        value: ghcr.io/mariusbertram/oc-mirror-operator-dashboard:latest
+                      - name: OPERATOR_NAMESPACE
+                        valueFrom:
+                          fieldRef:
+                            fieldPath: metadata.namespace
                     image: quay.lab.brtrm.dev/marius/oc-mirror-operator-controller@sha256:d5286d34ef3f700adddad17ece98ab90a3905fc9f73bab9d214c2621c73390f0
                     livenessProbe:
                       httpGet:

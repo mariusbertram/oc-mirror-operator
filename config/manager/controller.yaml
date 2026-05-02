@@ -44,6 +44,12 @@ spec:
           value: example.com/oc-mirror-manager:v0.0.1
         - name: WORKER_IMAGE
           value: example.com/oc-mirror-worker:v0.0.1
+        - name: DASHBOARD_IMAGE
+          value: example.com/oc-mirror-dashboard:v0.0.1
+        - name: OPERATOR_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
         ports:
         - containerPort: 8080
           name: metrics

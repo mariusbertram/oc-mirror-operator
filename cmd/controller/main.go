@@ -217,6 +217,23 @@ func main() {
 		os.Exit(1)
 	}
 
+	operatorNamespace := os.Getenv("OPERATOR_NAMESPACE")
+	if operatorNamespace == "" {
+		operatorNamespace = os.Getenv("POD_NAMESPACE")
+	}
+	if operatorNamespace == "" {
+		setupLog.Info("OPERATOR_NAMESPACE / POD_NAMESPACE not set, dashboard reconciler disabled")
+	} else {
+		if err := (&controller.DashboardReconciler{
+			Client:    mgr.GetClient(),
+			Scheme:    mgr.GetScheme(),
+			Namespace: operatorNamespace,
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "Dashboard")
+			os.Exit(1)
+		}
+	}
+
 	if metricsCertWatcher != nil {
 		setupLog.Info("Adding metrics certificate watcher to manager")
 		if err := mgr.Add(metricsCertWatcher); err != nil {

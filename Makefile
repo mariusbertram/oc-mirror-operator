@@ -54,6 +54,7 @@ IMG ?= controller:latest
 IMG_CONTROLLER ?= ghcr.io/mariusbertram/oc-mirror-operator-controller:v$(VERSION)
 IMG_MANAGER ?= ghcr.io/mariusbertram/oc-mirror-operator-manager:v$(VERSION)
 IMG_WORKER ?= ghcr.io/mariusbertram/oc-mirror-operator-worker:v$(VERSION)
+IMG_DASHBOARD ?= ghcr.io/mariusbertram/oc-mirror-operator-dashboard:v$(VERSION)
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -194,6 +195,12 @@ lint-config: golangci-lint ## Verify golangci-lint linter configuration
 build: manifests generate fmt vet ## Build manager binary.
 	go build -o bin/manager cmd/main.go
 
+.PHONY: build-ui
+build-ui: ## Build the React dashboard UI and Console Plugin assets.
+	npm --prefix ui ci --ignore-scripts
+	npm --prefix ui run build:dashboard
+	npm --prefix ui run build:plugin
+
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
 	go run ./cmd/main.go
@@ -222,8 +229,12 @@ docker-build-manager: ## Build docker image with the manager.
 docker-build-worker: ## Build docker image with the worker (cleanup runs as a subcommand).
 	$(CONTAINER_TOOL) build -t ${IMG_WORKER} -f Dockerfile.worker .
 
+.PHONY: docker-build-dashboard
+docker-build-dashboard: ## Build docker image for the cluster-wide dashboard (includes React UI build).
+	$(CONTAINER_TOOL) build -t ${IMG_DASHBOARD} -f Dockerfile.dashboard .
+
 .PHONY: docker-build-all
-docker-build-all: docker-build-controller docker-build-manager docker-build-worker ## Build all three modular images (controller, manager, worker).
+docker-build-all: docker-build-controller docker-build-manager docker-build-worker docker-build-dashboard ## Build all modular images (controller, manager, worker, dashboard).
 
 .PHONY: docker-push-controller
 docker-push-controller: ## Push controller image.
@@ -237,8 +248,12 @@ docker-push-manager: ## Push manager image.
 docker-push-worker: ## Push worker image.
 	$(CONTAINER_TOOL) push ${IMG_WORKER}
 
+.PHONY: docker-push-dashboard
+docker-push-dashboard: ## Push dashboard image.
+	$(CONTAINER_TOOL) push ${IMG_DASHBOARD}
+
 .PHONY: docker-push-all
-docker-push-all: docker-push-controller docker-push-manager docker-push-worker ## Push all three modular images.
+docker-push-all: docker-push-controller docker-push-manager docker-push-worker docker-push-dashboard ## Push all modular images.
 
 # PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
 # architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:

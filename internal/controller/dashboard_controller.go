@@ -381,7 +381,7 @@ func (r *DashboardReconciler) ensureConsolePlugin(ctx context.Context) error {
 				},
 			},
 		}
-		return r.Client.Create(ctx, plugin)
+		return r.Create(ctx, plugin)
 	}
 	return err
 }

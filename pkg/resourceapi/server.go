@@ -58,9 +58,9 @@ func NewServerClusterWide(c client.Client) *Server {
 	}
 }
 
-// lookupMirrorTarget fetches a MirrorTarget by name. In namespace-bound mode the
+// LookupMirrorTarget fetches a MirrorTarget by name. In namespace-bound mode the
 // stored namespace is used; in cluster-wide mode all namespaces are searched.
-func (s *Server) lookupMirrorTarget(ctx context.Context, name string) (*mirrorv1alpha1.MirrorTarget, error) {
+func (s *Server) LookupMirrorTarget(ctx context.Context, name string) (*mirrorv1alpha1.MirrorTarget, error) {
 	if s.namespace != "" {
 		mt := &mirrorv1alpha1.MirrorTarget{}
 		return mt, s.client.Get(ctx, client.ObjectKey{Name: name, Namespace: s.namespace}, mt)
@@ -295,7 +295,7 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	mtName := vars["mt"]
 
-	mt, err := s.lookupMirrorTarget(r.Context(), mtName)
+	mt, err := s.LookupMirrorTarget(r.Context(), mtName)
 	if err != nil {
 		http.Error(w, "MirrorTarget not found", http.StatusNotFound)
 		return
@@ -396,7 +396,7 @@ func (s *Server) handleImageFailures(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	mtName := vars["mt"]
 
-	mt, err := s.lookupMirrorTarget(r.Context(), mtName)
+	mt, err := s.LookupMirrorTarget(r.Context(), mtName)
 	if err != nil {
 		http.Error(w, "MirrorTarget not found", http.StatusNotFound)
 		return
@@ -521,7 +521,7 @@ func (s *Server) handleSignatures(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	mtName := vars["mt"]
 
-	mt, err := s.lookupMirrorTarget(r.Context(), mtName)
+	mt, err := s.LookupMirrorTarget(r.Context(), mtName)
 	if err != nil {
 		http.Error(w, "MirrorTarget not found", http.StatusNotFound)
 		return
@@ -558,7 +558,7 @@ func (s *Server) resolveNamespace(r *http.Request, mtName string) string {
 	if s.namespace != "" {
 		return s.namespace
 	}
-	mt, err := s.lookupMirrorTarget(r.Context(), mtName)
+	mt, err := s.LookupMirrorTarget(r.Context(), mtName)
 	if err != nil {
 		return ""
 	}
