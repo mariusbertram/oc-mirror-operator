@@ -916,4 +916,3 @@ oc-mirror-operator/
 | [OLM Upgrade Guide](docs/olm-upgrade.md) | How to upgrade between operator versions via OLM |
 | [Contributing Guide](docs/contributing.md) | Development setup, build, test, CI, and release process |
 | [Changelog](CHANGELOG.md) | Release history and migration notes |
-# Workflow trigger: Fix local registry issue
