@@ -57,7 +57,7 @@ func (r *DashboardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 	oauthImage := os.Getenv(oauthProxyImageEnv)
 	if oauthImage == "" {
-		oauthImage = "quay.io/openshift/origin-oauth-proxy:4.15"
+		oauthImage = "quay.io/openshift/origin-oauth-proxy:latest"
 	}
 
 	if err := r.ensureServiceAccount(ctx); err != nil {
