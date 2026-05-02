@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v0.0.15] - 2026-05-02
+
+### Fixed
+- **OLM upgrade e2e test**: The "build old bundle" step was reconstructing the bundle from the git tag using `git archive` + `docker build`. Because `config/manager/kustomization.yaml` is committed with dev-registry overrides (`quay.lab.brtrm.dev`), the rebuilt bundle referenced inaccessible images and caused `ImagePullBackOff`. The step now pulls the released bundle image directly from `ghcr.io` instead.
+- **Bundle image tag format**: The old bundle pull used the `v`-prefixed git tag (e.g. `v0.0.14`) but ghcr.io bundle images are tagged without the `v` prefix (e.g. `0.0.14`), causing a 404. Fixed to use the version without prefix.
+- **Incomplete `spec.relatedImages` in released bundle**: `operator-sdk generate bundle` with `USE_IMAGE_DIGESTS=false` only added the controller container to `spec.relatedImages`, silently dropping manager and worker. This caused `oc-mirror` to mirror only 2 images (bundle + controller) instead of all 3. The release workflow now uses `USE_IMAGE_DIGESTS=true` with real versioned image refs so operator-sdk pulls all three images, resolves them to digest refs, and writes all three into `spec.relatedImages` — matching local `make bundle` behaviour exactly.
+- **IDE warnings**: Addressed deprecated API usages, resource leaks, and missing error handling surfaced by static analysis.
+
+### Changed
+- **Release workflow streamlined**: Merged the two-step "Regenerate bundle" + "Inject image digest" approach into a single `VERSION="${VERSION}" make manifests bundle` invocation. No placeholder images, no sed substitutions, no manual yq overrides needed.
+
+---
+
 ## [v0.0.13] - 2026-05-02
 
 ### Added
@@ -281,7 +294,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **E2E test suite**: Ginkgo/Gomega end-to-end tests for a KinD cluster
   covering the full mirroring lifecycle.
 
-[Unreleased]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.0.13...HEAD
+[Unreleased]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.0.15...HEAD
+[v0.0.15]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.0.13...v0.0.15
 [v0.0.13]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.1.0...v0.0.13
 [v0.0.11]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.0.10...v0.0.11
 [v0.0.6]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.0.5...v0.0.6

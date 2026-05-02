@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -15,7 +16,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -157,7 +158,7 @@ func (m *MirrorManager) ensureWorkerTokenSecret(ctx context.Context, mt *mirrorv
 		m.workerToken = string(tok)
 		return nil
 	}
-	if !errors.IsNotFound(getErr) {
+	if !apierrors.IsNotFound(getErr) {
 		return fmt.Errorf("get worker token secret: %w", getErr)
 	}
 
@@ -293,7 +294,7 @@ func (m *MirrorManager) runStatusAPI(ctx context.Context) {
 	}
 
 	go func() {
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			fmt.Printf("Status API server failed: %v\n", err)
 		}
 	}()

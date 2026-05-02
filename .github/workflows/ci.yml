@@ -287,15 +287,14 @@ jobs:
           echo "new_ver=$NEW_VER"  >> "$GITHUB_OUTPUT"
           echo "Old bundle: $OLD_TAG ($OLD_VER) → New bundle: $NEW_VER"
 
-      - name: Build old bundle from latest tag and push to local registry
+      - name: Pull old bundle from latest release and push to local registry
         run: |
-          mkdir -p /tmp/fake-bundle-ctx
-          git archive ${{ steps.bundle-ver.outputs.old_tag }} bundle/ | tar -x -C /tmp/fake-bundle-ctx
-          # Keep the original upstream ghcr.io image references intact so that the
-          # old release binary runs as-is. Kind pulls from ghcr.io at runtime.
-          # Do NOT replace the image or patch the command — the old monolithic binary
-          # does not require MANAGER_IMAGE/WORKER_IMAGE and must run with its own entrypoint.
-          docker build -f bundle.Dockerfile -t localhost:5001/oc-mirror-bundle:${{ steps.bundle-ver.outputs.old_ver }} /tmp/fake-bundle-ctx
+          # Use the pre-built release bundle from ghcr.io unchanged — it has the
+          # correct ghcr.io image references set by release.yml, unlike the bundle/
+          # directory in the tag which may still contain local dev-registry refs.
+          docker pull ghcr.io/${{ github.repository }}-bundle:${{ steps.bundle-ver.outputs.old_ver }}
+          docker tag  ghcr.io/${{ github.repository }}-bundle:${{ steps.bundle-ver.outputs.old_ver }} \
+                      localhost:5001/oc-mirror-bundle:${{ steps.bundle-ver.outputs.old_ver }}
           docker push localhost:5001/oc-mirror-bundle:${{ steps.bundle-ver.outputs.old_ver }}
 
       - name: Build new bundle image and push to local registry

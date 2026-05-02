@@ -726,7 +726,7 @@ func channelHeadPlusN(ch declcfg.Channel, previous int) []string {
 // oc-mirror v2 compatible behaviour: when no channels or version filters are
 // specified for a package, only the channel head (latest version) of every
 // channel is included ("heads-only" mode).
-func (r *CatalogResolver) FilterFBC(ctx context.Context, cfg *declcfg.DeclarativeConfig, includes []mirrorv1alpha1.IncludePackage) (*declcfg.DeclarativeConfig, error) { //nolint:gocyclo
+func (r *CatalogResolver) FilterFBC(_ context.Context, cfg *declcfg.DeclarativeConfig, includes []mirrorv1alpha1.IncludePackage) (*declcfg.DeclarativeConfig, error) { //nolint:gocyclo
 	if len(includes) == 0 {
 		return cfg, nil
 	}
@@ -1385,6 +1385,7 @@ func buildFBCLayer(cfg *declcfg.DeclarativeConfig) ([]byte, godigest.Digest, err
 	diffIDHash := sha256.New()
 	uncompressedWriter := io.MultiWriter(&uncompressedBuf, diffIDHash)
 	tw := tar.NewWriter(uncompressedWriter)
+	defer func() { _ = tw.Close() }()
 
 	// Write the configs/ directory entry.
 	if err := tw.WriteHeader(&tar.Header{
@@ -1477,6 +1478,7 @@ func buildFBCLayer(cfg *declcfg.DeclarativeConfig) ([]byte, godigest.Digest, err
 	// Gzip the tar.
 	var gzBuf bytes.Buffer
 	gzw := gzip.NewWriter(&gzBuf)
+	defer func() { _ = gzw.Close() }()
 	if _, err := io.Copy(gzw, &uncompressedBuf); err != nil {
 		return nil, "", fmt.Errorf("failed to gzip tar: %w", err)
 	}
