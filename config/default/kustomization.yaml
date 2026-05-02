@@ -19,13 +19,13 @@ resources:
 - ../rbac
 - ../manager
 - ../consoleplugin
+- ../prometheus
+- ../grafana
 # [WEBHOOK] To enable webhook, uncomment all the sections with [WEBHOOK] prefix including the one in
 # crd/kustomization.yaml
 #- ../webhook
 # [CERTMANAGER] To enable cert-manager, uncomment all sections with 'CERTMANAGER'. 'WEBHOOK' components are required.
 #- ../certmanager
-# [PROMETHEUS] To enable prometheus monitor, uncomment all sections with 'PROMETHEUS'.
-#- ../prometheus
 # [METRICS] Expose the controller manager metrics service.
 - metrics_service.yaml
 # [NETWORK POLICY] Protect the /metrics endpoint and Webhook Server with NetworkPolicy.
@@ -75,6 +75,44 @@ replacements:
       name: controller-manager
     fieldPaths:
     - spec.template.spec.containers.[name=manager].env.[name=WORKER_IMAGE].value
+- source:
+    kind: Deployment
+    name: controller-manager
+    fieldPath: spec.template.metadata.annotations.oc-mirror-dashboard-image
+  targets:
+  - select:
+      kind: Deployment
+      name: controller-manager
+    fieldPaths:
+    - spec.template.spec.containers.[name=manager].env.[name=DASHBOARD_IMAGE].value
+- source:
+    kind: Deployment
+    name: controller-manager
+    fieldPath: spec.template.metadata.annotations.oc-mirror-oauth-proxy-image
+  targets:
+  - select:
+      kind: Deployment
+      name: controller-manager
+    fieldPaths:
+    - spec.template.spec.containers.[name=manager].env.[name=OAUTH_PROXY_IMAGE].value
+
+# Image overrides for container references
+images:
+- name: ghcr.io/mariusbertram/oc-mirror-operator-controller
+  newName: ghcr.io/mariusbertram/oc-mirror-operator-controller
+  newTag: v0.0.2
+- name: ghcr.io/mariusbertram/oc-mirror-operator-manager
+  newName: ghcr.io/mariusbertram/oc-mirror-operator-manager
+  newTag: v0.0.2
+- name: ghcr.io/mariusbertram/oc-mirror-operator-worker
+  newName: ghcr.io/mariusbertram/oc-mirror-operator-worker
+  newTag: v0.0.2
+- name: ghcr.io/mariusbertram/oc-mirror-operator-dashboard
+  newName: ghcr.io/mariusbertram/oc-mirror-operator-dashboard
+  newTag: v0.0.2
+- name: quay.io/openshift/origin-oauth-proxy
+  newName: quay.io/openshift/origin-oauth-proxy
+  newTag: latest
 
 # Uncomment the patches line if you enable Metrics and CertManager
 # [METRICS-WITH-CERTS] To enable metrics protected with certManager, uncomment the following line.

@@ -28,6 +28,8 @@ spec:
         kubectl.kubernetes.io/default-container: manager
         oc-mirror-manager-image: ghcr.io/mariusbertram/oc-mirror-operator-manager:latest
         oc-mirror-worker-image: ghcr.io/mariusbertram/oc-mirror-operator-worker:latest
+        oc-mirror-dashboard-image: ghcr.io/mariusbertram/oc-mirror-operator-dashboard:latest
+        oc-mirror-oauth-proxy-image: quay.io/openshift/origin-oauth-proxy:latest
       labels:
         control-plane: controller-manager
         app.kubernetes.io/name: oc-mirror
