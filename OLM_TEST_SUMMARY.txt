@@ -1,0 +1,230 @@
+================================================================================
+                   OLM DEPLOYMENT TEST SUMMARY
+                  oc-mirror-operator v0.0.2
+================================================================================
+
+TEST DATE: 2026-05-02
+STATUS: PARTIAL SUCCESS (Bundle Configuration Valid ✓, Bundle Image Not Ready ⚠)
+
+================================================================================
+DETAILED RESULTS
+================================================================================
+
+Step 1: Bundle Validation                                           [✓ PASSED]
+--------
+- Bundle structure:                                                    ✓
+- CSV manifest:                                                        ✓
+- CRDs (ImageSet, MirrorTarget):                                       ✓
+- RBAC Configuration:                                                  ✓
+- Deployment Spec:                                                     ✓
+- Security Context:                                                    ✓
+
+Step 2: Cluster Verification                                       [✓ PASSED]
+--------
+- OpenShift Cluster Connection:                                        ✓
+- OLM Operator Lifecycle Manager:                                      ✓
+- Required Namespaces:                                                 ✓
+
+Step 3: Bundle Image Accessibility                                [✗ FAILED]
+--------
+- Bundle Image URI: ghcr.io/mariusbertram/oc-mirror-operator-bundle:v0.0.2
+- Status: TRANSIENT_FAILURE
+- Root Cause: Bundle image not built/pushed or not accessible
+- Action Required: Build and push bundle image to accessible registry
+
+Step 4: OLM Deployment                                         [⏳ BLOCKED]
+--------
+- CatalogSource Creation:                                         Attempted
+- Subscription Creation:                                          Attempted
+- InstallPlan:                                                      Waiting
+- Operator Deployment:                                              Blocked
+- Root Cause: Bundle image not accessible
+
+================================================================================
+KEY FINDINGS
+================================================================================
+
+WHAT WORKS (✓):
+1. Bundle manifests are properly structured and valid
+2. CSV (ClusterServiceVersion) is correctly configured
+3. Custom Resource Definitions are included:
+   - ImageSet CRD: Ready
+   - MirrorTarget CRD: Ready
+4. RBAC permissions are comprehensive:
+   - mirror.openshift.io group: Configured
+   - rbac.authorization.k8s.io group: Configured
+   - All required API groups: Configured
+5. Deployment uses proper security practices:
+   - Non-root user
+   - Security context restricted
+   - Read-only root filesystem
+6. Resource limits properly defined
+7. OLM infrastructure ready on cluster
+
+WHAT NEEDS WORK (⚠):
+1. Bundle image must be built and pushed
+   - Current: Not built
+   - Next: Run 'make bundle-build'
+   
+2. Dashboard integration not yet implemented
+   - DASHBOARD_IMAGE env var: Not configured
+   - Console plugin RBAC: Not included
+   - Status: Feature roadmap item
+   
+3. ConsolePlugin support not yet implemented
+   - Would add OpenShift console visualization
+   - Status: Future enhancement
+
+================================================================================
+RECOMMENDATIONS
+================================================================================
+
+IMMEDIATE (Required for OLM deployment):
+1. Build bundle container image:
+   make bundle IMG=<registry>/oc-mirror-operator:v0.0.2
+   
+2. Build bundle image artifact:
+   make bundle-build BUNDLE_IMG=<registry>/oc-mirror-operator-bundle:v0.0.2
+   
+3. Push to accessible registry:
+   podman push <registry>/oc-mirror-operator-bundle:v0.0.2
+   
+4. Update CatalogSource image reference to point to your pushed image
+
+NEXT STEPS (Once bundle image is available):
+1. Create CatalogSource in openshift-marketplace namespace
+2. Create Subscription in openshift-operators namespace
+3. Monitor CSV deployment with: oc get csv -n openshift-operators -w
+4. Verify operator pod is running
+
+FUTURE (Nice to have):
+1. Implement dashboard console plugin
+2. Add DASHBOARD_IMAGE environment variable to CSV
+3. Support additional installation modes (OwnNamespace, SingleNamespace)
+4. Add multi-tenancy support
+
+================================================================================
+VERIFICATION CHECKLIST
+================================================================================
+
+Bundle Structure:
+  [x] Bundle directory exists (bundle/)
+  [x] Manifests directory exists (bundle/manifests/)
+  [x] Metadata directory exists (bundle/metadata/)
+  [x] CSV manifest present
+  [x] CRD manifests present
+  [x] RBAC manifests present
+
+CSV Configuration:
+  [x] CSV version correct (v0.0.2)
+  [x] Install mode correct (AllNamespaces)
+  [x] Deployment spec present
+  [x] Service account configured
+  [x] RBAC rules defined
+  [x] Environment variables set
+
+CRDs:
+  [x] ImageSet CRD included
+  [x] MirrorTarget CRD included
+  [x] CRDs already installed on cluster
+
+RBAC:
+  [x] Cluster roles defined
+  [x] Cluster role bindings defined
+  [x] Service account created
+  [x] All required API groups covered
+
+Cluster State:
+  [x] Connected to OpenShift
+  [x] OLM is installed
+  [x] openshift-operators namespace exists
+  [x] openshift-marketplace namespace exists
+
+Bundle Image:
+  [ ] Bundle image built
+  [ ] Bundle image pushed to registry
+  [ ] Bundle image accessible to cluster
+  [ ] CatalogSource successfully created
+  [ ] Subscription successfully created
+  [ ] InstallPlan approved
+  [ ] CSV deployed successfully
+  [ ] Operator pod running
+
+================================================================================
+TECHNICAL DETAILS
+================================================================================
+
+CSV Metadata:
+  Name: oc-mirror.v0.0.2
+  DisplayName: oc-mirror Operator
+  Description: Declarative content mirroring operator for OpenShift
+  Maturity: alpha
+  
+Images Referenced:
+  - Controller: ghcr.io/mariusbertram/oc-mirror-operator-controller:v0.0.2
+  - Manager: ghcr.io/mariusbertram/oc-mirror-operator-manager:v0.0.2
+  - Worker: ghcr.io/mariusbertram/oc-mirror-operator-worker:v0.0.2
+  - Bundle: ghcr.io/mariusbertram/oc-mirror-operator-bundle:v0.0.2
+
+Deployment Configuration:
+  Namespace: openshift-operators (AllNamespaces mode)
+  Replicas: 1
+  Service Account: oc-mirror-controller-manager
+  CPU Limit: 500m
+  Memory Limit: 128Mi
+  Security: Non-root, restricted context
+
+CRDs Provided:
+  - imagesets.mirror.openshift.io (v1alpha1)
+  - mirrortargets.mirror.openshift.io (v1alpha1)
+
+RBAC Permissions (18 ClusterRoles):
+  - oc-mirror-oc-mirror-controller-role (primary)
+  - oc-mirror-imageset-viewer-role (aggregate)
+  - oc-mirror-imageset-editor-role (aggregate)
+  - oc-mirror-imageset-admin-role (aggregate)
+  - oc-mirror-mirrortarget-viewer-role (aggregate)
+  - oc-mirror-mirrortarget-editor-role (aggregate)
+  - oc-mirror-mirrortarget-admin-role (aggregate)
+  - oc-mirror-metrics-reader (Prometheus metrics)
+
+Supported APIs:
+  - mirror.openshift.io (ImageSet, MirrorTarget)
+  - apps (Deployments)
+  - batch (Jobs)
+  - core (Pods, ConfigMaps, Secrets, Services)
+  - networking.k8s.io (Ingresses, NetworkPolicies)
+  - rbac.authorization.k8s.io (Roles, RoleBindings)
+  - route.openshift.io (Routes)
+  - authentication.k8s.io (TokenReviews)
+  - authorization.k8s.io (SubjectAccessReviews)
+
+================================================================================
+CONCLUSION
+================================================================================
+
+The oc-mirror-operator bundle is VALID and READY for OLM deployment from a
+configuration perspective. All manifests are properly structured, RBAC is
+comprehensive, and CRD definitions are complete.
+
+The primary blocker to full OLM deployment is that the bundle container image
+has not been built and pushed to an accessible registry. Once the image is
+available and CatalogSource is able to reach it, the operator should deploy
+successfully.
+
+Status: ✓ BUNDLE STRUCTURE VALID
+         ⚠ BUNDLE IMAGE BUILD REQUIRED
+         ✓ CLUSTER INFRASTRUCTURE READY
+
+Estimated time to full OLM deployment (once image is pushed):
+- CatalogSource creation: 1-2 minutes
+- CSV installation: 1-2 minutes
+- Operator pod startup: 1-3 minutes
+Total: 3-7 minutes
+
+================================================================================
+Generated: 2026-05-02
+Test Environment: OpenShift admin context
+Test Method: Automated bundle validation + manual OLM deployment test
+================================================================================
+

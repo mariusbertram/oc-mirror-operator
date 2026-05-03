@@ -21,6 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
+	ocmetrics "github.com/mariusbertram/oc-mirror-operator/pkg/metrics"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/catalog/builder"
 	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
@@ -45,8 +46,14 @@ const conditionCatalogReady = "CatalogReady"
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 
-func (r *ImageSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *ImageSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ctrl.Result, rerr error) {
 	l := log.FromContext(ctx)
+
+	defer func() {
+		if rerr != nil {
+			ocmetrics.ReconcileErrorsTotal.WithLabelValues(req.Namespace, req.Name, "imageset").Inc()
+		}
+	}()
 
 	is := &mirrorv1alpha1.ImageSet{}
 	if err := r.Get(ctx, req.NamespacedName, is); err != nil {

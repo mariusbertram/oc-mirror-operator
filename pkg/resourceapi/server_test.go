@@ -3,6 +3,7 @@ package resourceapi_test
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -385,6 +386,171 @@ var _ = Describe("ResourceAPI Server", func() {
 			for _, p := range response.Pending {
 				Expect(p.Destination).NotTo(Equal("registry.example.com/img3"))
 			}
+		})
+	})
+
+	Describe("lookupMirrorTarget", func() {
+		var (
+			ns     = "lookup-test-ns"
+			mtName = "lookup-test-mt"
+		)
+
+		It("should find MirrorTarget by name in namespace-bound mode", func() {
+			scheme := runtime.NewScheme()
+			_ = corev1.AddToScheme(scheme)
+			_ = mirrorv1alpha1.AddToScheme(scheme)
+
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      mtName,
+					Namespace: ns,
+				},
+				Spec: mirrorv1alpha1.MirrorTargetSpec{
+					Registry: "registry.example.com/mirror",
+				},
+			}
+
+			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(mt).Build()
+			server := resourceapi.NewServer(c, ns)
+
+			ctx := context.Background()
+			found, err := server.LookupMirrorTarget(ctx, mtName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).NotTo(BeNil())
+			Expect(found.Name).To(Equal(mtName))
+			Expect(found.Namespace).To(Equal(ns))
+		})
+
+		It("should return error for non-existent MirrorTarget in namespace-bound mode", func() {
+			scheme := runtime.NewScheme()
+			_ = corev1.AddToScheme(scheme)
+			_ = mirrorv1alpha1.AddToScheme(scheme)
+
+			c := fake.NewClientBuilder().WithScheme(scheme).Build()
+			server := resourceapi.NewServer(c, ns)
+
+			ctx := context.Background()
+			found, err := server.LookupMirrorTarget(ctx, "nonexistent")
+			Expect(err).To(HaveOccurred())
+			Expect(found).NotTo(BeNil()) // LookupMirrorTarget returns empty object on error
+		})
+
+		It("should find MirrorTarget by name in cluster-wide mode", func() {
+			scheme := runtime.NewScheme()
+			_ = corev1.AddToScheme(scheme)
+			_ = mirrorv1alpha1.AddToScheme(scheme)
+
+			mt1 := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      mtName,
+					Namespace: "ns1",
+				},
+				Spec: mirrorv1alpha1.MirrorTargetSpec{
+					Registry: "registry.example.com/mirror",
+				},
+			}
+
+			mt2 := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "other-target",
+					Namespace: "ns2",
+				},
+				Spec: mirrorv1alpha1.MirrorTargetSpec{
+					Registry: "registry.example.com/other",
+				},
+			}
+
+			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(mt1, mt2).Build()
+			server := resourceapi.NewServerClusterWide(c)
+
+			ctx := context.Background()
+			found, err := server.LookupMirrorTarget(ctx, mtName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).NotTo(BeNil())
+			Expect(found.Name).To(Equal(mtName))
+			Expect(found.Namespace).To(Equal("ns1"))
+		})
+
+		It("should return error for non-existent MirrorTarget in cluster-wide mode", func() {
+			scheme := runtime.NewScheme()
+			_ = corev1.AddToScheme(scheme)
+			_ = mirrorv1alpha1.AddToScheme(scheme)
+
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      mtName,
+					Namespace: "ns1",
+				},
+				Spec: mirrorv1alpha1.MirrorTargetSpec{
+					Registry: "registry.example.com/mirror",
+				},
+			}
+
+			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(mt).Build()
+			server := resourceapi.NewServerClusterWide(c)
+
+			ctx := context.Background()
+			found, err := server.LookupMirrorTarget(ctx, "nonexistent")
+			Expect(err).To(HaveOccurred())
+			Expect(found).To(BeNil())
+		})
+	})
+
+	Describe("NewServerClusterWide", func() {
+		It("should initialize server with cluster-wide namespace", func() {
+			scheme := runtime.NewScheme()
+			_ = corev1.AddToScheme(scheme)
+			_ = mirrorv1alpha1.AddToScheme(scheme)
+
+			c := fake.NewClientBuilder().WithScheme(scheme).Build()
+			server := resourceapi.NewServerClusterWide(c)
+
+			Expect(server).NotTo(BeNil())
+			// Verify that the server is cluster-wide by checking that it can search across namespaces
+			// (We verify this indirectly by testing lookupMirrorTarget with multiple namespaces in next test)
+		})
+
+		It("should search across multiple namespaces", func() {
+			scheme := runtime.NewScheme()
+			_ = corev1.AddToScheme(scheme)
+			_ = mirrorv1alpha1.AddToScheme(scheme)
+
+			mt1 := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "target-a",
+					Namespace: "namespace-a",
+				},
+				Spec: mirrorv1alpha1.MirrorTargetSpec{
+					Registry: "registry.example.com/a",
+				},
+			}
+
+			mt2 := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "target-b",
+					Namespace: "namespace-b",
+				},
+				Spec: mirrorv1alpha1.MirrorTargetSpec{
+					Registry: "registry.example.com/b",
+				},
+			}
+
+			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(mt1, mt2).Build()
+			server := resourceapi.NewServerClusterWide(c)
+
+			ctx := context.Background()
+
+			By("finding target-a in namespace-a")
+			found1, err := server.LookupMirrorTarget(ctx, "target-a")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found1.Name).To(Equal("target-a"))
+			Expect(found1.Namespace).To(Equal("namespace-a"))
+
+			By("finding target-b in namespace-b")
+			found2, err := server.LookupMirrorTarget(ctx, "target-b")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found2.Name).To(Equal("target-b"))
+			Expect(found2.Namespace).To(Equal("namespace-b"))
 		})
 	})
 })

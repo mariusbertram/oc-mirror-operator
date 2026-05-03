@@ -18,13 +18,16 @@ resources:
 - ../crd
 - ../rbac
 - ../manager
+- ../consoleplugin
+# [PROMETHEUS] Requires prometheus-operator CRDs (ServiceMonitor, PrometheusRule).
+# Uncomment when deploying to a cluster with prometheus-operator installed.
+#- ../prometheus
+- ../grafana
 # [WEBHOOK] To enable webhook, uncomment all the sections with [WEBHOOK] prefix including the one in
 # crd/kustomization.yaml
 #- ../webhook
 # [CERTMANAGER] To enable cert-manager, uncomment all sections with 'CERTMANAGER'. 'WEBHOOK' components are required.
 #- ../certmanager
-# [PROMETHEUS] To enable prometheus monitor, uncomment all sections with 'PROMETHEUS'.
-#- ../prometheus
 # [METRICS] Expose the controller manager metrics service.
 - metrics_service.yaml
 # [NETWORK POLICY] Protect the /metrics endpoint and Webhook Server with NetworkPolicy.
@@ -74,6 +77,44 @@ replacements:
       name: controller-manager
     fieldPaths:
     - spec.template.spec.containers.[name=manager].env.[name=WORKER_IMAGE].value
+- source:
+    kind: Deployment
+    name: controller-manager
+    fieldPath: spec.template.metadata.annotations.oc-mirror-dashboard-image
+  targets:
+  - select:
+      kind: Deployment
+      name: controller-manager
+    fieldPaths:
+    - spec.template.spec.containers.[name=manager].env.[name=DASHBOARD_IMAGE].value
+- source:
+    kind: Deployment
+    name: controller-manager
+    fieldPath: spec.template.metadata.annotations.oc-mirror-oauth-proxy-image
+  targets:
+  - select:
+      kind: Deployment
+      name: controller-manager
+    fieldPaths:
+    - spec.template.spec.containers.[name=manager].env.[name=OAUTH_PROXY_IMAGE].value
+
+# Image overrides for container references
+images:
+- name: ghcr.io/mariusbertram/oc-mirror-operator-controller
+  newName: quay.lab.brtrm.dev/marius/oc-mirror-operator-controller
+  newTag: latest
+- name: ghcr.io/mariusbertram/oc-mirror-operator-manager
+  newName: quay.lab.brtrm.dev/marius/oc-mirror-operator-manager
+  newTag: latest
+- name: ghcr.io/mariusbertram/oc-mirror-operator-worker
+  newName: quay.lab.brtrm.dev/marius/oc-mirror-operator-worker
+  newTag: latest
+- name: ghcr.io/mariusbertram/oc-mirror-operator-dashboard
+  newName: quay.lab.brtrm.dev/marius/oc-mirror-operator-dashboard
+  newTag: latest
+- name: quay.io/openshift/origin-oauth-proxy
+  newName: quay.io/openshift/origin-oauth-proxy
+  newTag: latest
 
 # Uncomment the patches line if you enable Metrics and CertManager
 # [METRICS-WITH-CERTS] To enable metrics protected with certManager, uncomment the following line.

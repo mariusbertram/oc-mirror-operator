@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"strings"
@@ -16,26 +17,92 @@ import (
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/imagestate"
 	mirrorresources "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/resources"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime"
+	clientgorest "k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/config"
 )
 
 //go:embed ui
 var uiFS embed.FS
 
+//go:embed plugin
+var pluginFS embed.FS
+
 type Server struct {
 	client    client.Client
-	namespace string
+	namespace string // empty = cluster-wide mode
+	scheme    *runtime.Scheme
+	baseCfg   *clientgorest.Config
 }
 
 func NewServer(c client.Client, namespace string) *Server {
+	cfg, _ := config.GetConfig()
 	return &Server{
 		client:    c,
 		namespace: namespace,
+		scheme:    c.Scheme(),
+		baseCfg:   cfg,
 	}
+}
+
+// NewServerClusterWide creates a Server that lists MirrorTargets across all namespaces.
+// Used by the standalone dashboard binary.
+func NewServerClusterWide(c client.Client) *Server {
+	cfg, _ := config.GetConfig()
+	return &Server{
+		client:  c,
+		scheme:  c.Scheme(),
+		baseCfg: cfg,
+	}
+}
+
+// LookupMirrorTarget fetches a MirrorTarget by name. In namespace-bound mode the
+// stored namespace is used; in cluster-wide mode all namespaces are searched.
+func (s *Server) LookupMirrorTarget(ctx context.Context, name string) (*mirrorv1alpha1.MirrorTarget, error) {
+	if s.namespace != "" {
+		mt := &mirrorv1alpha1.MirrorTarget{}
+		return mt, s.client.Get(ctx, client.ObjectKey{Name: name, Namespace: s.namespace}, mt)
+	}
+	list := &mirrorv1alpha1.MirrorTargetList{}
+	if err := s.client.List(ctx, list); err != nil {
+		return nil, err
+	}
+	for i := range list.Items {
+		if list.Items[i].Name == name {
+			return &list.Items[i], nil
+		}
+	}
+	return nil, apierrors.NewNotFound(mirrorv1alpha1.GroupVersion.WithResource("mirrortargets").GroupResource(), name)
+}
+
+// clientForRequest builds a K8s client scoped to the caller's Bearer token.
+// The token is read from X-Forwarded-Access-Token (set by oauth-proxy) or from
+// the Authorization header (used by the Console Plugin SDK via consoleFetch).
+// If neither is present, the server's own service-account client is returned.
+func (s *Server) clientForRequest(r *http.Request) client.Client {
+	token := r.Header.Get("X-Forwarded-Access-Token")
+	if token == "" {
+		auth := r.Header.Get("Authorization")
+		token = strings.TrimPrefix(auth, "Bearer ")
+	}
+	if token == "" || s.baseCfg == nil {
+		return s.client
+	}
+	cfg := clientgorest.CopyConfig(s.baseCfg)
+	cfg.BearerToken = token
+	cfg.BearerTokenFile = ""
+	c, err := client.New(cfg, client.Options{Scheme: s.scheme})
+	if err != nil {
+		return s.client
+	}
+	return c
 }
 
 // TargetSummary is the JSON response for the targets list endpoint.
 type TargetSummary struct {
+	Namespace      string `json:"namespace"`
 	Name           string `json:"name"`
 	Registry       string `json:"registry"`
 	TotalImages    int    `json:"totalImages"`
@@ -63,6 +130,7 @@ type CatalogSummary struct {
 
 // TargetDetail is the JSON response for a single target detail endpoint.
 type TargetDetail struct {
+	Namespace      string                `json:"namespace"`
 	Name           string                `json:"name"`
 	Registry       string                `json:"registry"`
 	TotalImages    int                   `json:"totalImages"`
@@ -132,6 +200,11 @@ func (s *Server) RegisterRoutes(r *mux.Router) {
 	api.HandleFunc("/targets/{mt}", s.handleTargetDetail).Methods("GET")
 	api.HandleFunc("/targets/{mt}/image-failures", s.handleImageFailures).Methods("GET")
 
+	// Edit endpoints (token-scoped writes — RBAC of the requesting user applies)
+	api.HandleFunc("/imagesets/{namespace}/{name}/catalogs/{slug}/packages", s.handlePatchCatalogPackages).Methods("PATCH")
+	api.HandleFunc("/imagesets/{namespace}/{name}/recollect", s.handleTriggerRecollect).Methods("PATCH")
+	api.HandleFunc("/imagesets/{namespace}/{name}", s.handleDeleteImageSet).Methods("DELETE")
+
 	// Catalog browsing endpoints
 	api.HandleFunc("/targets/{mt}/catalogs/{slug}/packages.json", s.handleFilteredCatalogPackages).Methods("GET")
 	api.HandleFunc("/targets/{mt}/catalogs/{slug}/upstream-packages.json", s.handleUpstreamCatalogPackages).Methods("GET")
@@ -149,11 +222,16 @@ func (s *Server) RegisterRoutes(r *mux.Router) {
 }
 
 func (s *Server) Run(ctx context.Context) {
+	s.RunOn(ctx, ":8081")
+}
+
+// RunOn starts the HTTP server on the given address and blocks until ctx is done.
+func (s *Server) RunOn(ctx context.Context, addr string) {
 	r := mux.NewRouter()
 	s.RegisterRoutes(r)
 
 	srv := &http.Server{
-		Addr:              ":8081",
+		Addr:              addr,
 		Handler:           r,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
@@ -167,18 +245,32 @@ func (s *Server) Run(ctx context.Context) {
 		}
 	}()
 
-	fmt.Println("Resource API started on :8081")
+	fmt.Printf("Resource API started on %s\n", addr)
 	<-ctx.Done()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(shutdownCtx)
 }
 
+// RegisterPluginRoutes registers the Console Plugin static asset routes onto
+// the given ServeMux. Assets are served from the embedded plugin/ directory.
+func RegisterPluginRoutes(serveMux *http.ServeMux) {
+	pluginSub, err := fs.Sub(pluginFS, "plugin")
+	if err != nil {
+		return
+	}
+	serveMux.Handle("/", http.FileServer(http.FS(pluginSub)))
+}
+
 // --- JSON API handlers ---
 
 func (s *Server) handleTargetsList(w http.ResponseWriter, r *http.Request) {
 	list := &mirrorv1alpha1.MirrorTargetList{}
-	if err := s.client.List(r.Context(), list, client.InNamespace(s.namespace)); err != nil {
+	listOpts := []client.ListOption{}
+	if s.namespace != "" {
+		listOpts = append(listOpts, client.InNamespace(s.namespace))
+	}
+	if err := s.client.List(r.Context(), list, listOpts...); err != nil {
 		http.Error(w, fmt.Sprintf("failed to list MirrorTargets: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -186,6 +278,7 @@ func (s *Server) handleTargetsList(w http.ResponseWriter, r *http.Request) {
 	targets := make([]TargetSummary, 0, len(list.Items))
 	for _, mt := range list.Items {
 		targets = append(targets, TargetSummary{
+			Namespace:      mt.Namespace,
 			Name:           mt.Name,
 			Registry:       mt.Spec.Registry,
 			TotalImages:    mt.Status.TotalImages,
@@ -202,23 +295,24 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	mtName := vars["mt"]
 
-	mt := &mirrorv1alpha1.MirrorTarget{}
-	if err := s.client.Get(r.Context(), client.ObjectKey{Name: mtName, Namespace: s.namespace}, mt); err != nil {
+	mt, err := s.LookupMirrorTarget(r.Context(), mtName)
+	if err != nil {
 		http.Error(w, "MirrorTarget not found", http.StatusNotFound)
 		return
 	}
+	ns := mt.Namespace
 
 	// Build resource links from the resources ConfigMap
 	cmName := fmt.Sprintf("oc-mirror-%s-resources", mtName)
 	cm := &corev1.ConfigMap{}
 	var resources []ResourceLink
-	if err := s.client.Get(r.Context(), client.ObjectKey{Name: cmName, Namespace: s.namespace}, cm); err == nil {
+	if err := s.client.Get(r.Context(), client.ObjectKey{Name: cmName, Namespace: ns}, cm); err == nil {
 		resources = buildResourceLinks(mtName, cm)
 	}
 
 	// Add signature resource link if the signatures ConfigMap exists and has data.
 	sigCM := &corev1.ConfigMap{}
-	if err := s.client.Get(r.Context(), client.ObjectKey{Name: mtName + "-signatures", Namespace: s.namespace}, sigCM); err == nil && len(sigCM.BinaryData) > 0 {
+	if err := s.client.Get(r.Context(), client.ObjectKey{Name: mtName + "-signatures", Namespace: ns}, sigCM); err == nil && len(sigCM.BinaryData) > 0 {
 		resources = append(resources, ResourceLink{
 			Name: fmt.Sprintf("Signatures (%d releases)", len(sigCM.BinaryData)),
 			URL:  fmt.Sprintf("/api/v1/targets/%s/signatures.yaml", mtName),
@@ -230,7 +324,7 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
 	catalogCMs := &corev1.ConfigMapList{}
 	var catalogs []CatalogSummary
 	if err := s.client.List(r.Context(), catalogCMs,
-		client.InNamespace(s.namespace),
+		client.InNamespace(ns),
 		client.MatchingLabels{"oc-mirror.openshift.io/mirrortarget": mtName},
 	); err == nil {
 		seen := make(map[string]bool)
@@ -282,6 +376,7 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	detail := TargetDetail{
+		Namespace:      ns,
 		Name:           mt.Name,
 		Registry:       mt.Spec.Registry,
 		TotalImages:    mt.Status.TotalImages,
@@ -301,14 +396,14 @@ func (s *Server) handleImageFailures(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	mtName := vars["mt"]
 
-	mt := &mirrorv1alpha1.MirrorTarget{}
-	if err := s.client.Get(r.Context(), client.ObjectKey{Name: mtName, Namespace: s.namespace}, mt); err != nil {
+	mt, err := s.LookupMirrorTarget(r.Context(), mtName)
+	if err != nil {
 		http.Error(w, "MirrorTarget not found", http.StatusNotFound)
 		return
 	}
 
 	// Load the consolidated ImageState for the MirrorTarget.
-	state, err := imagestate.LoadForTarget(r.Context(), s.client, s.namespace, mtName)
+	state, err := imagestate.LoadForTarget(r.Context(), s.client, mt.Namespace, mtName)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to load image state: %v", err), http.StatusInternalServerError)
 		return
@@ -379,49 +474,61 @@ func (s *Server) handleLegacyRedirect(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleIDMS(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	mtName := vars["mt"]
-	s.serveConfigMapResource(w, r, fmt.Sprintf("oc-mirror-%s-resources", mtName), "idms.yaml")
+	ns := s.resolveNamespace(r, mtName)
+	s.serveConfigMapResource(w, r, ns, fmt.Sprintf("oc-mirror-%s-resources", mtName), "idms.yaml")
 }
 
 func (s *Server) handleITMS(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	mtName := vars["mt"]
-	s.serveConfigMapResource(w, r, fmt.Sprintf("oc-mirror-%s-resources", mtName), "itms.yaml")
+	ns := s.resolveNamespace(r, mtName)
+	s.serveConfigMapResource(w, r, ns, fmt.Sprintf("oc-mirror-%s-resources", mtName), "itms.yaml")
 }
 
 func (s *Server) handleCatalogSource(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	mtName := vars["mt"]
 	slug := vars["slug"]
-	s.serveConfigMapResource(w, r, fmt.Sprintf("oc-mirror-%s-resources", mtName), fmt.Sprintf("catalogsource-%s.yaml", slug))
+	ns := s.resolveNamespace(r, mtName)
+	s.serveConfigMapResource(w, r, ns, fmt.Sprintf("oc-mirror-%s-resources", mtName), fmt.Sprintf("catalogsource-%s.yaml", slug))
 }
 
 func (s *Server) handleClusterCatalog(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	mtName := vars["mt"]
 	slug := vars["slug"]
-	s.serveConfigMapResource(w, r, fmt.Sprintf("oc-mirror-%s-resources", mtName), fmt.Sprintf("clustercatalog-%s.yaml", slug))
+	ns := s.resolveNamespace(r, mtName)
+	s.serveConfigMapResource(w, r, ns, fmt.Sprintf("oc-mirror-%s-resources", mtName), fmt.Sprintf("clustercatalog-%s.yaml", slug))
 }
 
 func (s *Server) handleFilteredCatalogPackages(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	mtName := vars["mt"]
 	slug := vars["slug"]
-	s.serveConfigMapResource(w, r, fmt.Sprintf("oc-mirror-%s-%s-packages", mtName, slug), "packages.json")
+	ns := s.resolveNamespace(r, mtName)
+	s.serveConfigMapResource(w, r, ns, fmt.Sprintf("oc-mirror-%s-%s-packages", mtName, slug), "packages.json")
 }
 
 func (s *Server) handleUpstreamCatalogPackages(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	mtName := vars["mt"]
 	slug := vars["slug"]
-	s.serveConfigMapResource(w, r, fmt.Sprintf("oc-mirror-%s-%s-upstream-packages", mtName, slug), "packages.json")
+	ns := s.resolveNamespace(r, mtName)
+	s.serveConfigMapResource(w, r, ns, fmt.Sprintf("oc-mirror-%s-%s-upstream-packages", mtName, slug), "packages.json")
 }
 
 func (s *Server) handleSignatures(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	mtName := vars["mt"]
 
+	mt, err := s.LookupMirrorTarget(r.Context(), mtName)
+	if err != nil {
+		http.Error(w, "MirrorTarget not found", http.StatusNotFound)
+		return
+	}
+
 	cm := &corev1.ConfigMap{}
-	if err := s.client.Get(r.Context(), client.ObjectKey{Name: mtName + "-signatures", Namespace: s.namespace}, cm); err != nil {
+	if err := s.client.Get(r.Context(), client.ObjectKey{Name: mtName + "-signatures", Namespace: mt.Namespace}, cm); err != nil {
 		http.Error(w, "Signatures not found", http.StatusNotFound)
 		return
 	}
@@ -444,9 +551,23 @@ func (s *Server) handleSignatures(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(out)
 }
 
-func (s *Server) serveConfigMapResource(w http.ResponseWriter, r *http.Request, cmName, key string) {
+// resolveNamespace returns the server's fixed namespace, or looks up the
+// MirrorTarget's namespace in cluster-wide mode. Falls back to "" on error so
+// the downstream ConfigMap Get will fail naturally with a not-found response.
+func (s *Server) resolveNamespace(r *http.Request, mtName string) string {
+	if s.namespace != "" {
+		return s.namespace
+	}
+	mt, err := s.LookupMirrorTarget(r.Context(), mtName)
+	if err != nil {
+		return ""
+	}
+	return mt.Namespace
+}
+
+func (s *Server) serveConfigMapResource(w http.ResponseWriter, r *http.Request, namespace, cmName, key string) {
 	cm := &corev1.ConfigMap{}
-	err := s.client.Get(r.Context(), client.ObjectKey{Name: cmName, Namespace: s.namespace}, cm)
+	err := s.client.Get(r.Context(), client.ObjectKey{Name: cmName, Namespace: namespace}, cm)
 	if err != nil {
 		http.Error(w, "Resource not found", http.StatusNotFound)
 		return
@@ -508,4 +629,141 @@ func writeJSON(w http.ResponseWriter, v any) {
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
 	}
+}
+
+// --- Edit handlers ---
+
+type packagePatchBody struct {
+	Include []string `json:"include"`
+	Exclude []string `json:"exclude"`
+}
+
+// handlePatchCatalogPackages updates the package filter for an operator catalog
+// in the named ImageSet. The calling user's RBAC rights are enforced via the
+// token-scoped client (see clientForRequest).
+func (s *Server) handlePatchCatalogPackages(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	namespace, name, slug := vars["namespace"], vars["name"], vars["slug"]
+
+	defer func() { _ = r.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		http.Error(w, "failed to read body", http.StatusBadRequest)
+		return
+	}
+	var patch packagePatchBody
+	if err := json.Unmarshal(body, &patch); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+
+	c := s.clientForRequest(r)
+	is := &mirrorv1alpha1.ImageSet{}
+	if err := c.Get(r.Context(), client.ObjectKey{Namespace: namespace, Name: name}, is); err != nil {
+		if apierrors.IsNotFound(err) {
+			http.Error(w, "ImageSet not found", http.StatusNotFound)
+		} else {
+			http.Error(w, fmt.Sprintf("get ImageSet: %v", err), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	includeSet := make(map[string]bool, len(patch.Include))
+	for _, p := range patch.Include {
+		includeSet[p] = true
+	}
+
+	for i, op := range is.Spec.Mirror.Operators {
+		catalogSlug := catalogSlugFromSource(op.Catalog)
+		if catalogSlug != slug {
+			continue
+		}
+		// Rebuild the package list from the include set.
+		var packages []mirrorv1alpha1.IncludePackage
+		for _, pkg := range patch.Include {
+			packages = append(packages, mirrorv1alpha1.IncludePackage{Name: pkg})
+		}
+		is.Spec.Mirror.Operators[i].Packages = packages
+	}
+
+	if err := c.Update(r.Context(), is); err != nil {
+		if apierrors.IsForbidden(err) {
+			http.Error(w, "forbidden: insufficient permissions", http.StatusForbidden)
+		} else {
+			http.Error(w, fmt.Sprintf("update ImageSet: %v", err), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleTriggerRecollect sets the recollect annotation on an ImageSet to force
+// an upstream re-resolution on the next Manager reconcile cycle.
+func (s *Server) handleTriggerRecollect(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	namespace, name := vars["namespace"], vars["name"]
+
+	c := s.clientForRequest(r)
+	is := &mirrorv1alpha1.ImageSet{}
+	if err := c.Get(r.Context(), client.ObjectKey{Namespace: namespace, Name: name}, is); err != nil {
+		if apierrors.IsNotFound(err) {
+			http.Error(w, "ImageSet not found", http.StatusNotFound)
+		} else {
+			http.Error(w, fmt.Sprintf("get ImageSet: %v", err), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	if is.Annotations == nil {
+		is.Annotations = make(map[string]string)
+	}
+	is.Annotations["mirror.openshift.io/recollect"] = "true"
+
+	if err := c.Update(r.Context(), is); err != nil {
+		if apierrors.IsForbidden(err) {
+			http.Error(w, "forbidden: insufficient permissions", http.StatusForbidden)
+		} else {
+			http.Error(w, fmt.Sprintf("update ImageSet: %v", err), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleDeleteImageSet deletes an ImageSet using the caller's token.
+func (s *Server) handleDeleteImageSet(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	namespace, name := vars["namespace"], vars["name"]
+
+	c := s.clientForRequest(r)
+	is := &mirrorv1alpha1.ImageSet{}
+	if err := c.Get(r.Context(), client.ObjectKey{Namespace: namespace, Name: name}, is); err != nil {
+		if apierrors.IsNotFound(err) {
+			http.Error(w, "ImageSet not found", http.StatusNotFound)
+		} else {
+			http.Error(w, fmt.Sprintf("get ImageSet: %v", err), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	if err := c.Delete(r.Context(), is); err != nil {
+		if apierrors.IsForbidden(err) {
+			http.Error(w, "forbidden: insufficient permissions", http.StatusForbidden)
+		} else {
+			http.Error(w, fmt.Sprintf("delete ImageSet: %v", err), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// catalogSlugFromSource derives the catalog slug from the catalog source image
+// in the same way the manager does — last path segment, colon replaced by dash.
+func catalogSlugFromSource(source string) string {
+	parts := strings.Split(source, "/")
+	last := parts[len(parts)-1]
+	return strings.ReplaceAll(last, ":", "-")
 }

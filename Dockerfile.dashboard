@@ -1,0 +1,50 @@
+# Dockerfile.dashboard — multi-stage build for the cluster-wide dashboard binary.
+#
+# Stage 1: Build the React SPA and Console Plugin assets.
+# Stage 2: Build the Go dashboard binary with embedded UI.
+# Stage 3: Minimal distroless runtime image.
+#
+# To rebuild after UI changes:
+#   make docker-build-dashboard IMG_DASHBOARD=<registry>/<image>:<tag>
+
+FROM docker.io/library/node:20-alpine AS ui-build
+WORKDIR /build
+COPY ui/package.json ui/package-lock.json* ./ui/
+RUN npm --prefix ui ci --ignore-scripts
+
+COPY ui/ ./ui/
+# Build the standalone SPA (dashboard).
+RUN npm --prefix ui run build:dashboard
+# Create empty plugin directory to satisfy the Go build (plugin currently unused)
+RUN mkdir -p ./ui/dist/plugin
+
+# -----------------------------------------------------------------------
+FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.25@sha256:4c22673170524e09a47a6e1a5f1ca99692f4796c9b4f2de25ec7137bcd897edd AS go-build
+ARG TARGETOS
+ARG TARGETARCH
+
+WORKDIR /workspace
+
+COPY go.mod go.mod
+COPY go.sum go.sum
+RUN go mod download
+
+COPY cmd/ cmd/
+COPY api/ api/
+COPY pkg/ pkg/
+COPY internal/ internal/
+
+# Replace the placeholder embedded UI with the React build output.
+COPY --from=ui-build /build/ui/dist/dashboard/ pkg/resourceapi/ui/
+COPY --from=ui-build /build/ui/dist/plugin/ pkg/resourceapi/plugin/
+
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
+    go build -a -o dashboard ./cmd/dashboard/
+
+# -----------------------------------------------------------------------
+FROM gcr.io/distroless/static:nonroot@sha256:64c43684e6d2b581d1eb362ea47b6a4defee6a9cac5f7ebbda3daa67e8c9b8e6
+WORKDIR /
+COPY --from=go-build /workspace/dashboard .
+USER 65532:65532
+
+ENTRYPOINT ["/dashboard"]

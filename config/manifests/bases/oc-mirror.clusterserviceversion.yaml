@@ -114,6 +114,12 @@ spec:
                   value: manager:latest
                 - name: WORKER_IMAGE
                   value: worker:latest
+                - name: DASHBOARD_IMAGE
+                  value: dashboard:latest
+                - name: OPERATOR_NAMESPACE
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.namespace
                 image: controller:latest
                 livenessProbe:
                   httpGet:
@@ -208,8 +214,14 @@ spec:
     name: Marius Bertram
     url: github.com/mariusbertram/oc-mirror-operator
   relatedImages:
+  - image: ghcr.io/mariusbertram/oc-mirror-operator-controller:latest
+    name: controller
   - image: ghcr.io/mariusbertram/oc-mirror-operator-manager:latest
     name: manager
   - image: ghcr.io/mariusbertram/oc-mirror-operator-worker:latest
     name: worker
+  - image: ghcr.io/mariusbertram/oc-mirror-operator-dashboard:latest
+    name: dashboard
+  - image: quay.io/openshift/origin-oauth-proxy:latest
+    name: oauth-proxy
   version: 0.0.0
