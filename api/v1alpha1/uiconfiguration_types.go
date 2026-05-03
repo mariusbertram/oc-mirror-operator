@@ -132,7 +132,7 @@ type UIConfigurationStatus struct {
 }
 
 // +kubebuilder:object:root=true
-// +kubebuilder:resource:scope=Cluster,shortName=uic
+// +kubebuilder:resource:scope=Namespaced,shortName=uic
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Exposure Type",type=string,JSONPath=`.spec.exposureType`
 // +kubebuilder:printcolumn:name="Exposed URL",type=string,JSONPath=`.status.exposedURL`
@@ -140,7 +140,7 @@ type UIConfigurationStatus struct {
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // UIConfiguration is the Schema for the uiconfigurations API.
-// UIConfiguration is cluster-scoped and controls how the oc-mirror UI dashboard is exposed
+// UIConfiguration is namespace-scoped and controls how the oc-mirror UI dashboard is exposed
 // and configured (via Service, Ingress, Route, or OpenShift Console Plugin).
 type UIConfiguration struct {
 	metav1.TypeMeta   `json:",inline"`

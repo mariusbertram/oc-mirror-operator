@@ -62,17 +62,17 @@ var _ = Describe("Dashboard Controller", func() {
 			}
 
 			uicName := "dashboard-basic-flow-uic"
-			namespacedName := types.NamespacedName{Name: uicName}
+			namespacedName := types.NamespacedName{Name: uicName, Namespace: dashboardNamespace}
 
 			By("creating a UIConfiguration")
 			uic := &mirrorv1alpha1.UIConfiguration{
-				ObjectMeta: metav1.ObjectMeta{Name: uicName},
+				ObjectMeta: metav1.ObjectMeta{Name: uicName, Namespace: dashboardNamespace},
 				Spec: mirrorv1alpha1.UIConfigurationSpec{
 					ExposureType: mirrorv1alpha1.UIExposureTypeService,
 				},
 			}
 			Expect(k8sClient.Create(ctx, uic)).To(Succeed())
-			defer cleanupUIConfig(ctx, uicName)
+			defer cleanupUIConfig(ctx, dashboardNamespace, uicName)
 
 			By("first reconcile: adds finalizer")
 			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
@@ -268,17 +268,17 @@ var _ = Describe("Dashboard Controller", func() {
 			}
 
 			uicName := "dashboard-skip-uic"
-			namespacedName := types.NamespacedName{Name: uicName}
+			namespacedName := types.NamespacedName{Name: uicName, Namespace: dashboardNamespace}
 
 			By("creating a UIConfiguration")
 			uic := &mirrorv1alpha1.UIConfiguration{
-				ObjectMeta: metav1.ObjectMeta{Name: uicName},
+				ObjectMeta: metav1.ObjectMeta{Name: uicName, Namespace: dashboardNamespace},
 				Spec: mirrorv1alpha1.UIConfigurationSpec{
 					ExposureType: mirrorv1alpha1.UIExposureTypeService,
 				},
 			}
 			Expect(k8sClient.Create(ctx, uic)).To(Succeed())
-			defer cleanupUIConfig(ctx, uicName)
+			defer cleanupUIConfig(ctx, dashboardNamespace, uicName)
 
 			By("first reconcile: adds finalizer")
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})

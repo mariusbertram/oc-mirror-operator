@@ -33,7 +33,7 @@ BUNDLE_METADATA_OPTS ?= $(BUNDLE_CHANNELS) $(BUNDLE_DEFAULT_CHANNEL)
 IMAGE_TAG_BASE ?= quay.lab.brtrm.dev/marius
 # BUNDLE_IMG defines the image:tag used for the bundle.
 # You can use it as an arg. (E.g make bundle-build BUNDLE_IMG=<some-registry>/<project-name-bundle>:<tag>)
-BUNDLE_IMG ?= $(IMAGE_TAG_BASE)-bundle:v$(VERSION)
+BUNDLE_IMG ?= $(IMAGE_TAG_BASE)/oc-mirror-operator-bundle:v$(VERSION)
 
 # BUNDLE_GEN_FLAGS are the flags passed to the operator-sdk generate bundle command
 BUNDLE_GEN_FLAGS ?= -q --overwrite --version $(VERSION) $(BUNDLE_METADATA_OPTS)
@@ -84,9 +84,7 @@ kind: OperatorGroup
 metadata:
   name: oc-mirror-operator-group
   namespace: $(OPERATOR_NAMESPACE)
-spec:
-  targetNamespaces:
-  - $(OPERATOR_NAMESPACE)
+spec: {}
 endef
 export OPERATOR_GROUP_YAML
 
@@ -99,7 +97,7 @@ metadata:
 spec:
   channel: $(DEFAULT_CHANNEL)
   installPlanApproval: Automatic
-  name: oc-mirror-operator
+  name: oc-mirror
   source: oc-mirror-test-catalog
   sourceNamespace: $(OPERATOR_NAMESPACE)
 endef
@@ -431,10 +429,10 @@ deploy-test-catalog: ## Apply CatalogSource, OperatorGroup, and Subscription for
 
 .PHONY: undeploy-test
 undeploy-test: ## Remove test catalog deployment from cluster.
-	-$(KUBECTL) delete subscription oc-mirror-operator -n $(OPERATOR_NAMESPACE) 2>/dev/null
-	-$(KUBECTL) delete operatorgroup oc-mirror-operator-group -n $(OPERATOR_NAMESPACE) 2>/dev/null
+	-$(KUBECTL) delete subscription oc-mirror-operator oc-mirror -n $(OPERATOR_NAMESPACE) 2>/dev/null
+	-$(KUBECTL) delete operatorgroup --all -n $(OPERATOR_NAMESPACE) 2>/dev/null
 	-$(KUBECTL) delete catalogsource oc-mirror-test-catalog -n $(OPERATOR_NAMESPACE) 2>/dev/null
-	-$(KUBECTL) delete csv -l operators.coreos.com/oc-mirror-operator.$(OPERATOR_NAMESPACE) -n $(OPERATOR_NAMESPACE) 2>/dev/null
+	-$(KUBECTL) delete csv -l operators.coreos.com/oc-mirror.$(OPERATOR_NAMESPACE) -n $(OPERATOR_NAMESPACE) 2>/dev/null
 	@echo "✅ Test deployment removed"
 
 ##@ Dependencies
@@ -537,9 +535,9 @@ bundle: manifests kustomize operator-sdk ## Generate bundle manifests and metada
 	$(OPERATOR_SDK) bundle validate ./bundle
 
 .PHONY: bundle-build
-bundle-build: ## Build the bundle image (multi-arch manifest list via buildx).
-	$(CONTAINER_TOOL) buildx build --platform linux/amd64,linux/arm64 \
-		-f bundle.Dockerfile -t $(BUNDLE_IMG) --push .
+bundle-build: ## Build and push the bundle image.
+	$(CONTAINER_TOOL) build -f bundle.Dockerfile -t $(BUNDLE_IMG) .
+	$(CONTAINER_TOOL) push $(BUNDLE_IMG)
 
 .PHONY: bundle-push
 bundle-push: ## Push the bundle image.
@@ -567,7 +565,7 @@ endif
 BUNDLE_IMGS ?= $(BUNDLE_IMG)
 
 # The image tag given to the resulting catalog image (e.g. make catalog-build CATALOG_IMG=example.com/operator-catalog:v0.2.0).
-CATALOG_IMG ?= $(IMAGE_TAG_BASE)-catalog:v$(VERSION)
+CATALOG_IMG ?= $(IMAGE_TAG_BASE)/oc-mirror-operator-catalog:v$(VERSION)
 
 # Set CATALOG_BASE_IMG to an existing catalog image tag to add $BUNDLE_IMGS to that image.
 ifneq ($(origin CATALOG_BASE_IMG), undefined)
@@ -579,9 +577,17 @@ endif
 .PHONY: catalog-build
 catalog-build: opm ## Build a file-based catalog image from the bundle.
 	mkdir -p catalog
-	$(OPM) init oc-mirror-operator --default-channel=$(DEFAULT_CHANNEL) --output yaml > catalog/operator.yaml
-	$(OPM) render $(BUNDLE_IMG) --output yaml >> catalog/operator.yaml
-	$(OPM) generate dockerfile catalog
+	# 1. Render bundle objects (CSV, CRDs) from the bundle image
+	$(OPM) render $(BUNDLE_IMG) --output yaml > catalog/operator.yaml
+	# 2. Append package declaration
+	echo '---' >> catalog/operator.yaml
+	printf 'schema: olm.package\nname: oc-mirror\ndefaultChannel: %s\n' $(DEFAULT_CHANNEL) >> catalog/operator.yaml
+	# 3. Append channel entry linking the bundle into the channel
+	echo '---' >> catalog/operator.yaml
+	printf 'schema: olm.channel\nname: %s\npackage: oc-mirror\nentries:\n- name: oc-mirror.v%s\n' $(DEFAULT_CHANNEL) $(VERSION) >> catalog/operator.yaml
+	# 4. Validate before building
+	$(OPM) validate catalog
+	# 5. Build catalog image (catalog.Dockerfile already exists in repo)
 	$(CONTAINER_TOOL) build -t $(CATALOG_IMG) -f catalog.Dockerfile .
 
 .PHONY: catalog-validate

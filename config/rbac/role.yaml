@@ -71,6 +71,7 @@ rules:
   resources:
   - imagesets
   - mirrortargets
+  - uiconfigurations
   verbs:
   - create
   - delete
@@ -106,14 +107,6 @@ rules:
   - get
   - patch
   - update
-- apiGroups:
-  - mirror.openshift.io
-  resources:
-  - uiconfigurations
-  verbs:
-  - get
-  - list
-  - watch
 - apiGroups:
   - monitoring.coreos.com
   resources:

@@ -52,7 +52,7 @@ type UIConfigurationReconciler struct {
 	Namespace string // operator namespace where dashboard resources are created
 }
 
-// +kubebuilder:rbac:groups=mirror.openshift.io,resources=uiconfigurations,verbs=get;list;watch
+// +kubebuilder:rbac:groups=mirror.openshift.io,resources=uiconfigurations,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=mirror.openshift.io,resources=uiconfigurations/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=mirror.openshift.io,resources=uiconfigurations/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
@@ -796,12 +796,12 @@ func (r *UIConfigurationReconciler) setUIConfigCondition(ctx context.Context, ui
 	}
 }
 
-// validateSingleInstance ensures only one UIConfiguration exists cluster-wide.
+// validateSingleInstance ensures only one UIConfiguration exists per namespace.
 func (r *UIConfigurationReconciler) validateSingleInstance(ctx context.Context, current *mirrorv1alpha1.UIConfiguration) error {
 	l := log.FromContext(ctx)
 
 	uicList := &mirrorv1alpha1.UIConfigurationList{}
-	if err := r.List(ctx, uicList); err != nil {
+	if err := r.List(ctx, uicList, client.InNamespace(current.Namespace)); err != nil {
 		return fmt.Errorf("failed to list UIConfigurations: %w", err)
 	}
 
@@ -821,8 +821,8 @@ func (r *UIConfigurationReconciler) validateSingleInstance(ctx context.Context, 
 			}
 			details += other.Name
 		}
-		l.Info("multiple UIConfigurations detected", "details", details)
-		return fmt.Errorf("multiple UIConfigurations found (cluster-scoped CRD allows only one): %s", details)
+		l.Info("multiple UIConfigurations detected in namespace", "namespace", current.Namespace, "details", details)
+		return fmt.Errorf("multiple UIConfigurations found in namespace %q (only one allowed per namespace): %s", current.Namespace, details)
 	}
 
 	return nil

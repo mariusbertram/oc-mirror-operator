@@ -113,7 +113,7 @@ spec:
                 - --leader-elect
                 - --health-probe-bind-address=:8081
                 command:
-                - /controller
+                - /manager
                 env:
                 - name: OPERATOR_IMAGE
                   value: controller:latest
@@ -195,9 +195,9 @@ spec:
         serviceAccountName: oc-mirror-manager
     strategy: deployment
   installModes:
-  - supported: false
+  - supported: true
     type: OwnNamespace
-  - supported: false
+  - supported: true
     type: SingleNamespace
   - supported: false
     type: MultiNamespace

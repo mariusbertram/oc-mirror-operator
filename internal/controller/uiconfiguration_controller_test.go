@@ -36,8 +36,9 @@ import (
 
 var _ = Describe("UIConfiguration Controller", func() {
 	const (
-		timeout  = 10 * time.Second
-		interval = 250 * time.Millisecond
+		timeout       = 10 * time.Second
+		interval      = 250 * time.Millisecond
+		testNamespace = "default"
 	)
 
 	Context("TestSingleInstanceValidation", func() {
@@ -52,65 +53,67 @@ var _ = Describe("UIConfiguration Controller", func() {
 			By("creating the first UIConfiguration")
 			uic1 := &mirrorv1alpha1.UIConfiguration{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: "uic-first",
+					Name:      "uic-first",
+					Namespace: testNamespace,
 				},
 				Spec: mirrorv1alpha1.UIConfigurationSpec{
 					ExposureType: mirrorv1alpha1.UIExposureTypeService,
 				},
 			}
 			Expect(k8sClient.Create(ctx, uic1)).To(Succeed())
-			defer cleanupUIConfig(ctx, "uic-first")
+			defer cleanupUIConfig(ctx, testNamespace, "uic-first")
 
 			By("first reconcile: adds finalizer")
-			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: "uic-first"}})
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: "uic-first", Namespace: testNamespace}})
 			Expect(err).NotTo(HaveOccurred())
 
 			By("second reconcile: sets status")
-			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: "uic-first"}})
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: "uic-first", Namespace: testNamespace}})
 			Expect(err).NotTo(HaveOccurred())
 
 			By("verifying first UIConfiguration is active")
 			Eventually(func() mirrorv1alpha1.UIConfigurationPhase {
 				uic := &mirrorv1alpha1.UIConfiguration{}
-				_ = k8sClient.Get(ctx, types.NamespacedName{Name: "uic-first"}, uic)
+				_ = k8sClient.Get(ctx, types.NamespacedName{Name: "uic-first", Namespace: testNamespace}, uic)
 				return uic.Status.Phase
 			}, timeout, interval).Should(Equal(mirrorv1alpha1.UIConfigurationPhaseActive))
 
 			By("creating a second UIConfiguration")
 			uic2 := &mirrorv1alpha1.UIConfiguration{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: "uic-second",
+					Name:      "uic-second",
+					Namespace: testNamespace,
 				},
 				Spec: mirrorv1alpha1.UIConfigurationSpec{
 					ExposureType: mirrorv1alpha1.UIExposureTypeService,
 				},
 			}
 			Expect(k8sClient.Create(ctx, uic2)).To(Succeed())
-			defer cleanupUIConfig(ctx, "uic-second")
+			defer cleanupUIConfig(ctx, testNamespace, "uic-second")
 
 			By("reconciling the second UIConfiguration: first pass adds finalizer")
-			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: "uic-second"}})
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: "uic-second", Namespace: testNamespace}})
 			Expect(err).NotTo(HaveOccurred())
 
 			By("reconciling the second UIConfiguration: second pass triggers single-instance check")
-			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: "uic-second"}})
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: "uic-second", Namespace: testNamespace}})
 			Expect(err).NotTo(HaveOccurred())
 
 			By("verifying second UIConfiguration is in failed phase")
 			Eventually(func() mirrorv1alpha1.UIConfigurationPhase {
 				uic := &mirrorv1alpha1.UIConfiguration{}
-				_ = k8sClient.Get(ctx, types.NamespacedName{Name: "uic-second"}, uic)
+				_ = k8sClient.Get(ctx, types.NamespacedName{Name: "uic-second", Namespace: testNamespace}, uic)
 				return uic.Status.Phase
 			}, timeout, interval).Should(Equal(mirrorv1alpha1.UIConfigurationPhaseFailed))
 
 			By("re-reconciling first UIConfiguration: now sees a second instance exists")
-			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: "uic-first"}})
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: "uic-first", Namespace: testNamespace}})
 			Expect(err).NotTo(HaveOccurred())
 
 			By("verifying first UIConfiguration has SingleInstanceViolation condition")
 			Eventually(func() bool {
 				uic := &mirrorv1alpha1.UIConfiguration{}
-				_ = k8sClient.Get(ctx, types.NamespacedName{Name: "uic-first"}, uic)
+				_ = k8sClient.Get(ctx, types.NamespacedName{Name: "uic-first", Namespace: testNamespace}, uic)
 				for _, cond := range uic.Status.Conditions {
 					if cond.Type == "SingleInstanceViolation" && cond.Status == metav1.ConditionTrue {
 						return true
@@ -118,6 +121,71 @@ var _ = Describe("UIConfiguration Controller", func() {
 				}
 				return false
 			}, timeout, interval).Should(BeTrue())
+		})
+
+		It("should allow UIConfigurations in different namespaces", func() {
+			reconciler := &UIConfigurationReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			By("creating a namespace for isolation test")
+			ns2 := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{Name: "uic-isolation-ns"},
+			}
+			_ = k8sClient.Create(ctx, ns2)
+			defer func() { _ = k8sClient.Delete(ctx, ns2) }()
+
+			By("creating UIConfiguration in default namespace")
+			uicA := &mirrorv1alpha1.UIConfiguration{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "uic-ns-a",
+					Namespace: testNamespace,
+				},
+				Spec: mirrorv1alpha1.UIConfigurationSpec{ExposureType: mirrorv1alpha1.UIExposureTypeService},
+			}
+			Expect(k8sClient.Create(ctx, uicA)).To(Succeed())
+			defer cleanupUIConfig(ctx, testNamespace, "uic-ns-a")
+
+			By("creating UIConfiguration in separate namespace")
+			uicB := &mirrorv1alpha1.UIConfiguration{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "uic-ns-b",
+					Namespace: "uic-isolation-ns",
+				},
+				Spec: mirrorv1alpha1.UIConfigurationSpec{ExposureType: mirrorv1alpha1.UIExposureTypeService},
+			}
+			Expect(k8sClient.Create(ctx, uicB)).To(Succeed())
+			defer cleanupUIConfig(ctx, "uic-isolation-ns", "uic-ns-b")
+
+			By("reconciling uicA: adds finalizer")
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: "uic-ns-a", Namespace: testNamespace}})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("reconciling uicA: sets status")
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: "uic-ns-a", Namespace: testNamespace}})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("reconciling uicB: adds finalizer")
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: "uic-ns-b", Namespace: "uic-isolation-ns"}})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("reconciling uicB: sets status")
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: "uic-ns-b", Namespace: "uic-isolation-ns"}})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying both UIConfigurations are active (no cross-namespace conflict)")
+			Eventually(func() mirrorv1alpha1.UIConfigurationPhase {
+				uic := &mirrorv1alpha1.UIConfiguration{}
+				_ = k8sClient.Get(ctx, types.NamespacedName{Name: "uic-ns-a", Namespace: testNamespace}, uic)
+				return uic.Status.Phase
+			}, timeout, interval).Should(Equal(mirrorv1alpha1.UIConfigurationPhaseActive))
+
+			Eventually(func() mirrorv1alpha1.UIConfigurationPhase {
+				uic := &mirrorv1alpha1.UIConfiguration{}
+				_ = k8sClient.Get(ctx, types.NamespacedName{Name: "uic-ns-b", Namespace: "uic-isolation-ns"}, uic)
+				return uic.Status.Phase
+			}, timeout, interval).Should(Equal(mirrorv1alpha1.UIConfigurationPhaseActive))
 		})
 	})
 
@@ -131,19 +199,20 @@ var _ = Describe("UIConfiguration Controller", func() {
 			}
 
 			uicName := "uic-finalizer-test"
-			namespacedName := types.NamespacedName{Name: uicName}
+			namespacedName := types.NamespacedName{Name: uicName, Namespace: testNamespace}
 
 			By("creating a UIConfiguration")
 			uic := &mirrorv1alpha1.UIConfiguration{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: uicName,
+					Name:      uicName,
+					Namespace: testNamespace,
 				},
 				Spec: mirrorv1alpha1.UIConfigurationSpec{
 					ExposureType: mirrorv1alpha1.UIExposureTypeService,
 				},
 			}
 			Expect(k8sClient.Create(ctx, uic)).To(Succeed())
-			defer cleanupUIConfig(ctx, uicName)
+			defer cleanupUIConfig(ctx, testNamespace, uicName)
 
 			By("reconciling the UIConfiguration")
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
@@ -179,12 +248,13 @@ var _ = Describe("UIConfiguration Controller", func() {
 			}
 
 			uicName := "uic-deletion-test"
-			namespacedName := types.NamespacedName{Name: uicName}
+			namespacedName := types.NamespacedName{Name: uicName, Namespace: testNamespace}
 
 			By("creating a UIConfiguration with finalizer")
 			uic := &mirrorv1alpha1.UIConfiguration{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:       uicName,
+					Namespace:  testNamespace,
 					Finalizers: []string{uiConfigurationFinalizer},
 				},
 				Spec: mirrorv1alpha1.UIConfigurationSpec{
@@ -223,12 +293,13 @@ var _ = Describe("UIConfiguration Controller", func() {
 			}
 
 			uicName := "uic-status-test"
-			namespacedName := types.NamespacedName{Name: uicName}
+			namespacedName := types.NamespacedName{Name: uicName, Namespace: testNamespace}
 
 			By("creating a UIConfiguration")
 			uic := &mirrorv1alpha1.UIConfiguration{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:       uicName,
+					Namespace:  testNamespace,
 					Generation: 1,
 				},
 				Spec: mirrorv1alpha1.UIConfigurationSpec{
@@ -236,7 +307,7 @@ var _ = Describe("UIConfiguration Controller", func() {
 				},
 			}
 			Expect(k8sClient.Create(ctx, uic)).To(Succeed())
-			defer cleanupUIConfig(ctx, uicName)
+			defer cleanupUIConfig(ctx, testNamespace, uicName)
 
 			By("first reconcile to add finalizer")
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
@@ -284,19 +355,20 @@ var _ = Describe("UIConfiguration Controller", func() {
 			}
 
 			uicName := "uic-phase-test"
-			namespacedName := types.NamespacedName{Name: uicName}
+			namespacedName := types.NamespacedName{Name: uicName, Namespace: testNamespace}
 
 			By("creating a UIConfiguration")
 			uic := &mirrorv1alpha1.UIConfiguration{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: uicName,
+					Name:      uicName,
+					Namespace: testNamespace,
 				},
 				Spec: mirrorv1alpha1.UIConfigurationSpec{
 					ExposureType: mirrorv1alpha1.UIExposureTypeService,
 				},
 			}
 			Expect(k8sClient.Create(ctx, uic)).To(Succeed())
-			defer cleanupUIConfig(ctx, uicName)
+			defer cleanupUIConfig(ctx, testNamespace, uicName)
 
 			By("initial phase should be empty (reconciler not yet run)")
 			initialUIC := &mirrorv1alpha1.UIConfiguration{}
@@ -330,12 +402,13 @@ var _ = Describe("UIConfiguration Controller", func() {
 			}
 
 			uicName := "uic-ingress-notls"
-			namespacedName := types.NamespacedName{Name: uicName}
+			namespacedName := types.NamespacedName{Name: uicName, Namespace: testNamespace}
 
 			By("creating UIConfiguration with Ingress but no TLS")
 			uic := &mirrorv1alpha1.UIConfiguration{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: uicName,
+					Name:      uicName,
+					Namespace: testNamespace,
 				},
 				Spec: mirrorv1alpha1.UIConfigurationSpec{
 					ExposureType: mirrorv1alpha1.UIExposureTypeIngress,
@@ -343,7 +416,7 @@ var _ = Describe("UIConfiguration Controller", func() {
 				},
 			}
 			Expect(k8sClient.Create(ctx, uic)).To(Succeed())
-			defer cleanupUIConfig(ctx, uicName)
+			defer cleanupUIConfig(ctx, testNamespace, uicName)
 
 			By("first reconcile to add finalizer")
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
@@ -380,12 +453,13 @@ var _ = Describe("UIConfiguration Controller", func() {
 			}
 
 			uicName := "uic-ingress-withtls"
-			namespacedName := types.NamespacedName{Name: uicName}
+			namespacedName := types.NamespacedName{Name: uicName, Namespace: testNamespace}
 
 			By("creating UIConfiguration with Ingress and TLS enabled")
 			uic := &mirrorv1alpha1.UIConfiguration{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: uicName,
+					Name:      uicName,
+					Namespace: testNamespace,
 				},
 				Spec: mirrorv1alpha1.UIConfigurationSpec{
 					ExposureType: mirrorv1alpha1.UIExposureTypeIngress,
@@ -395,7 +469,7 @@ var _ = Describe("UIConfiguration Controller", func() {
 				},
 			}
 			Expect(k8sClient.Create(ctx, uic)).To(Succeed())
-			defer cleanupUIConfig(ctx, uicName)
+			defer cleanupUIConfig(ctx, testNamespace, uicName)
 
 			By("first reconcile to add finalizer")
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
@@ -424,13 +498,14 @@ var _ = Describe("UIConfiguration Controller", func() {
 			}
 
 			uicName := "uic-resources"
-			namespacedName := types.NamespacedName{Name: uicName}
+			namespacedName := types.NamespacedName{Name: uicName, Namespace: testNamespace}
 
 			By("creating UIConfiguration with resource spec")
 			replicas := int32(2)
 			uic := &mirrorv1alpha1.UIConfiguration{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: uicName,
+					Name:      uicName,
+					Namespace: testNamespace,
 				},
 				Spec: mirrorv1alpha1.UIConfigurationSpec{
 					ExposureType: mirrorv1alpha1.UIExposureTypeService,
@@ -448,7 +523,7 @@ var _ = Describe("UIConfiguration Controller", func() {
 				},
 			}
 			Expect(k8sClient.Create(ctx, uic)).To(Succeed())
-			defer cleanupUIConfig(ctx, uicName)
+			defer cleanupUIConfig(ctx, testNamespace, uicName)
 
 			By("first reconcile to add finalizer")
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
@@ -488,7 +563,7 @@ var _ = Describe("UIConfiguration Controller", func() {
 			}
 
 			By("reconciling non-existent UIConfiguration")
-			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: "non-existent-uic"}})
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: "non-existent-uic", Namespace: testNamespace}})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(Equal(reconcile.Result{}))
 		})
@@ -504,19 +579,20 @@ var _ = Describe("UIConfiguration Controller", func() {
 			}
 
 			uicName := "uic-conditions"
-			namespacedName := types.NamespacedName{Name: uicName}
+			namespacedName := types.NamespacedName{Name: uicName, Namespace: testNamespace}
 
 			By("creating UIConfiguration")
 			uic := &mirrorv1alpha1.UIConfiguration{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: uicName,
+					Name:      uicName,
+					Namespace: testNamespace,
 				},
 				Spec: mirrorv1alpha1.UIConfigurationSpec{
 					ExposureType: mirrorv1alpha1.UIExposureTypeService,
 				},
 			}
 			Expect(k8sClient.Create(ctx, uic)).To(Succeed())
-			defer cleanupUIConfig(ctx, uicName)
+			defer cleanupUIConfig(ctx, testNamespace, uicName)
 
 			By("first reconcile to add finalizer")
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
@@ -569,19 +645,20 @@ var _ = Describe("UIConfiguration Controller", func() {
 			}
 
 			uicName := "uic-idempotent"
-			namespacedName := types.NamespacedName{Name: uicName}
+			namespacedName := types.NamespacedName{Name: uicName, Namespace: testNamespace}
 
 			By("creating UIConfiguration")
 			uic := &mirrorv1alpha1.UIConfiguration{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: uicName,
+					Name:      uicName,
+					Namespace: testNamespace,
 				},
 				Spec: mirrorv1alpha1.UIConfigurationSpec{
 					ExposureType: mirrorv1alpha1.UIExposureTypeService,
 				},
 			}
 			Expect(k8sClient.Create(ctx, uic)).To(Succeed())
-			defer cleanupUIConfig(ctx, uicName)
+			defer cleanupUIConfig(ctx, testNamespace, uicName)
 
 			By("reconcile 1: add finalizer")
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
@@ -637,12 +714,13 @@ var _ = Describe("UIConfiguration Controller", func() {
 
 			for _, expType := range exposureTypes {
 				uicName := "uic-exposure-" + strings.ToLower(string(expType))
-				namespacedName := types.NamespacedName{Name: uicName}
+				namespacedName := types.NamespacedName{Name: uicName, Namespace: testNamespace}
 
 				By("creating UIConfiguration with exposure type: " + string(expType))
 				uic := &mirrorv1alpha1.UIConfiguration{
 					ObjectMeta: metav1.ObjectMeta{
-						Name: uicName,
+						Name:      uicName,
+						Namespace: testNamespace,
 					},
 					Spec: mirrorv1alpha1.UIConfigurationSpec{
 						ExposureType: expType,
@@ -666,7 +744,7 @@ var _ = Describe("UIConfiguration Controller", func() {
 				}, timeout, interval).Should(Equal(mirrorv1alpha1.UIConfigurationPhaseActive))
 
 				// Clean up before next iteration so single-instance check doesn't fail
-				cleanupUIConfig(ctx, uicName)
+				cleanupUIConfig(ctx, testNamespace, uicName)
 			}
 		})
 	})
@@ -679,9 +757,9 @@ func parseQuantity(s string) *resource.Quantity {
 }
 
 // cleanupUIConfig removes the finalizer (if any) and deletes the UIConfiguration.
-func cleanupUIConfig(ctx context.Context, name string) {
+func cleanupUIConfig(ctx context.Context, namespace, name string) {
 	obj := &mirrorv1alpha1.UIConfiguration{}
-	if err := k8sClient.Get(ctx, types.NamespacedName{Name: name}, obj); err != nil {
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, obj); err != nil {
 		return
 	}
 	if controllerutil.ContainsFinalizer(obj, uiConfigurationFinalizer) {
