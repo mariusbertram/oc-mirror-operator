@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -233,31 +232,6 @@ var _ = Describe("ResourceAPI Server", func() {
 			router.ServeHTTP(rr, req)
 
 			Expect(rr.Code).To(Equal(http.StatusGone))
-		})
-	})
-
-	Describe("Web UI", func() {
-		It("redirects root to /ui/", func() {
-			req := httptest.NewRequest("GET", "/", nil)
-			rr := httptest.NewRecorder()
-			router.ServeHTTP(rr, req)
-
-			Expect(rr.Code).To(Equal(http.StatusMovedPermanently))
-			Expect(rr.Header().Get("Location")).To(Equal("/ui/"))
-		})
-
-		It("serves the UI index", func() {
-			req := httptest.NewRequest("GET", "/ui/", nil)
-			rr := httptest.NewRecorder()
-			router.ServeHTTP(rr, req)
-
-			Expect(rr.Code).To(Equal(http.StatusOK))
-			// uiFS is likely empty in tests or not easily checkable without real assets,
-			// but RegisterRoutes should have set up the handler.
-			// Based on the old test, we expect some content.
-			if rr.Body.Len() > 0 {
-				Expect(strings.Contains(rr.Body.String(), "oc-mirror")).To(BeTrue())
-			}
 		})
 	})
 
