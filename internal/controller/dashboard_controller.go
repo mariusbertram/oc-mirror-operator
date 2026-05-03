@@ -9,6 +9,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -85,6 +86,9 @@ func (r *DashboardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, err
 	}
 	if err := r.ensureConsolePlugin(ctx); err != nil {
+		return ctrl.Result{}, err
+	}
+	if err := r.ensureServiceMonitor(ctx); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -257,6 +261,7 @@ func (r *DashboardReconciler) ensureDashboardService(ctx context.Context) error 
 }
 
 func (r *DashboardReconciler) ensureRoute(ctx context.Context) error {
+	l := log.FromContext(ctx)
 	route := &unstructured.Unstructured{}
 	route.SetGroupVersionKind(schema.GroupVersionKind{
 		Group:   "route.openshift.io",
@@ -268,6 +273,10 @@ func (r *DashboardReconciler) ensureRoute(ctx context.Context) error {
 
 	existing := route.DeepCopy()
 	err := r.Get(ctx, client.ObjectKeyFromObject(existing), existing)
+	if apimeta.IsNoMatchError(err) {
+		l.Info("Route CRD unavailable, skipping (non-OpenShift cluster)")
+		return nil
+	}
 	if errors.IsNotFound(err) {
 		route.Object["spec"] = map[string]interface{}{
 			"to": map[string]interface{}{
@@ -358,6 +367,7 @@ func (r *DashboardReconciler) ensurePluginService(ctx context.Context) error {
 }
 
 func (r *DashboardReconciler) ensureConsolePlugin(ctx context.Context) error {
+	l := log.FromContext(ctx)
 	plugin := &unstructured.Unstructured{}
 	plugin.SetGroupVersionKind(schema.GroupVersionKind{
 		Group:   "console.openshift.io",
@@ -368,6 +378,10 @@ func (r *DashboardReconciler) ensureConsolePlugin(ctx context.Context) error {
 
 	existing := plugin.DeepCopy()
 	err := r.Get(ctx, client.ObjectKeyFromObject(existing), existing)
+	if apimeta.IsNoMatchError(err) {
+		l.Info("ConsolePlugin CRD unavailable, skipping (non-OpenShift cluster)")
+		return nil
+	}
 	if errors.IsNotFound(err) {
 		plugin.Object["spec"] = map[string]interface{}{
 			"displayName": "oc-mirror-operator",
@@ -382,6 +396,47 @@ func (r *DashboardReconciler) ensureConsolePlugin(ctx context.Context) error {
 			},
 		}
 		return r.Create(ctx, plugin)
+	}
+	return err
+}
+
+// +kubebuilder:rbac:groups=monitoring.coreos.com,resources=servicemonitors,verbs=get;list;watch;create;update;patch
+
+// ensureServiceMonitor creates a ServiceMonitor for controller-manager metrics if
+// prometheus-operator is installed. Silently skips when the CRD is unavailable.
+func (r *DashboardReconciler) ensureServiceMonitor(ctx context.Context) error {
+	l := log.FromContext(ctx)
+	sm := &unstructured.Unstructured{}
+	sm.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "monitoring.coreos.com",
+		Version: "v1",
+		Kind:    "ServiceMonitor",
+	})
+	sm.SetName("oc-mirror-manager-metrics")
+	sm.SetNamespace(r.Namespace)
+
+	err := r.Get(ctx, client.ObjectKeyFromObject(sm), sm)
+	if apimeta.IsNoMatchError(err) {
+		l.Info("ServiceMonitor CRD unavailable, skipping (prometheus-operator not installed)")
+		return nil
+	}
+	if errors.IsNotFound(err) {
+		sm.Object["spec"] = map[string]interface{}{
+			"endpoints": []interface{}{
+				map[string]interface{}{
+					"path":   "/metrics",
+					"port":   "metrics",
+					"scheme": "http",
+				},
+			},
+			"selector": map[string]interface{}{
+				"matchLabels": map[string]interface{}{
+					"app.kubernetes.io/component": "manager",
+					"app.kubernetes.io/name":      "oc-mirror",
+				},
+			},
+		}
+		return r.Create(ctx, sm)
 	}
 	return err
 }
