@@ -379,4 +379,15 @@ spec:
   provider:
     name: Marius Bertram
     url: github.com/mariusbertram/oc-mirror-operator
+  relatedImages:
+  - name: controller
+    image: ghcr.io/mariusbertram/oc-mirror-operator-controller:v0.0.2
+  - name: manager
+    image: ghcr.io/mariusbertram/oc-mirror-operator-manager:v0.0.2
+  - name: worker
+    image: ghcr.io/mariusbertram/oc-mirror-operator-worker:v0.0.2
+  - name: dashboard
+    image: ghcr.io/mariusbertram/oc-mirror-operator-dashboard:v0.0.2
+  - name: oauth-proxy
+    image: quay.io/openshift/origin-oauth-proxy:latest
   version: 0.0.2
