@@ -671,6 +671,18 @@ func runController() {
 		setupLog.Error(err, "unable to create controller", "controller", "ImageSet")
 		os.Exit(1)
 	}
+	uiNamespace := os.Getenv("OPERATOR_NAMESPACE")
+	if uiNamespace == "" {
+		uiNamespace = os.Getenv("POD_NAMESPACE")
+	}
+	if err := (&controller.UIConfigurationReconciler{
+		Client:    mgr.GetClient(),
+		Scheme:    mgr.GetScheme(),
+		Namespace: uiNamespace,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "UIConfiguration")
+		os.Exit(1)
+	}
 	// +kubebuilder:scaffold:builder
 
 	if metricsCertWatcher != nil {

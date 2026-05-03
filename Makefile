@@ -56,6 +56,55 @@ IMG_MANAGER ?= quay.lab.brtrm.dev/marius/oc-mirror-operator-manager:latest
 IMG_WORKER ?= quay.lab.brtrm.dev/marius/oc-mirror-operator-worker:latest
 IMG_DASHBOARD ?= quay.lab.brtrm.dev/marius/oc-mirror-operator-dashboard:latest
 
+# Test/OLM deployment variables
+OPERATOR_NAMESPACE ?= oc-mirror-operator
+DEFAULT_CHANNEL ?= alpha
+
+# YAML manifests for test deployment (used by deploy-test-catalog)
+define CATALOG_SOURCE_YAML
+apiVersion: operators.coreos.com/v1alpha1
+kind: CatalogSource
+metadata:
+  name: oc-mirror-test-catalog
+  namespace: $(OPERATOR_NAMESPACE)
+spec:
+  sourceType: grpc
+  image: $(CATALOG_IMG)
+  displayName: oc-mirror Test Catalog
+  publisher: Local Test
+  updateStrategy:
+    registryPoll:
+      interval: 1m
+endef
+export CATALOG_SOURCE_YAML
+
+define OPERATOR_GROUP_YAML
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: oc-mirror-operator-group
+  namespace: $(OPERATOR_NAMESPACE)
+spec:
+  targetNamespaces:
+  - $(OPERATOR_NAMESPACE)
+endef
+export OPERATOR_GROUP_YAML
+
+define SUBSCRIPTION_YAML
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: oc-mirror-operator
+  namespace: $(OPERATOR_NAMESPACE)
+spec:
+  channel: $(DEFAULT_CHANNEL)
+  installPlanApproval: Automatic
+  name: oc-mirror-operator
+  source: oc-mirror-test-catalog
+  sourceNamespace: $(OPERATOR_NAMESPACE)
+endef
+export SUBSCRIPTION_YAML
+
 # External images used by the operator
 IMG_OAUTH_PROXY ?= quay.io/openshift/origin-oauth-proxy:latest
 IMG_PROMETHEUS_OPERATOR ?= quay.io/prometheus-operator/prometheus-operator:latest
@@ -215,11 +264,11 @@ run: manifests generate fmt vet ## Run a controller from your host.
 # (i.e. docker build --platform linux/arm64). However, you must enable docker buildKit for it.
 # More info: https://docs.docker.com/develop/develop-images/build_enhancements/
 .PHONY: docker-build
-docker-build: ## Build docker image with the manager.
+docker-build: ## (deprecated) Build docker image with the manager. Use build-images instead.
 	$(CONTAINER_TOOL) build -t ${IMG} .
 
 .PHONY: docker-push
-docker-push: ## Push docker image with the manager.
+docker-push: ## (deprecated) Push docker image with the manager. Use push-images instead.
 	$(CONTAINER_TOOL) push ${IMG}
 
 # Individual image builds for modular architecture
@@ -240,7 +289,7 @@ docker-build-dashboard: ## Build docker image for the cluster-wide dashboard (in
 	$(CONTAINER_TOOL) build -t ${IMG_DASHBOARD} -f Dockerfile.dashboard .
 
 .PHONY: docker-build-all
-docker-build-all: docker-build-controller docker-build-manager docker-build-worker docker-build-dashboard ## Build all modular images (controller, manager, worker, dashboard).
+docker-build-all: docker-build-controller docker-build-manager docker-build-worker docker-build-dashboard ## (deprecated) Build all modular images. Use build-images instead.
 
 .PHONY: docker-push-controller
 docker-push-controller: ## Push controller image.
@@ -259,7 +308,7 @@ docker-push-dashboard: ## Push dashboard image.
 	$(CONTAINER_TOOL) push ${IMG_DASHBOARD}
 
 .PHONY: docker-push-all
-docker-push-all: docker-push-controller docker-push-manager docker-push-worker docker-push-dashboard ## Push all modular images.
+docker-push-all: docker-push-controller docker-push-manager docker-push-worker docker-push-dashboard ## (deprecated) Push all modular images. Use push-images instead.
 
 # PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
 # architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:
@@ -298,7 +347,7 @@ podman-buildx-inspect: ## Inspect the built multi-arch manifest.
 	podman manifest inspect ${IMG}
 
 .PHONY: podman-build-single
-podman-build-single: ## Build single-arch image using podman (default: native arch).
+podman-build-single: ## (deprecated) Build single-arch image using podman. Use build-images instead.
 	podman build -t ${IMG} .
 	@echo "✓ Single-arch image built: ${IMG}"
 
@@ -312,6 +361,25 @@ build-installer: manifests generate kustomize ## Generate a consolidated YAML wi
 		dashboard=${IMG_DASHBOARD} \
 		oauth-proxy=${IMG_OAUTH_PROXY}
 	$(KUSTOMIZE) build config/default > dist/install.yaml
+
+##@ Images
+
+.PHONY: build-images
+build-images: ## Build all operator images (controller, manager, worker, dashboard).
+	$(CONTAINER_TOOL) build -t $(IMG_CONTROLLER) -f Dockerfile.controller .
+	$(CONTAINER_TOOL) build -t $(IMG_MANAGER) -f Dockerfile.manager .
+	$(CONTAINER_TOOL) build -t $(IMG_WORKER) -f Dockerfile.worker .
+	$(CONTAINER_TOOL) build -t $(IMG_DASHBOARD) -f Dockerfile.dashboard .
+
+.PHONY: push-images
+push-images: ## Push all operator images to registry.
+	$(CONTAINER_TOOL) push $(IMG_CONTROLLER)
+	$(CONTAINER_TOOL) push $(IMG_MANAGER)
+	$(CONTAINER_TOOL) push $(IMG_WORKER)
+	$(CONTAINER_TOOL) push $(IMG_DASHBOARD)
+
+.PHONY: build-push-images
+build-push-images: build-images push-images ## Build and push all operator images.
 
 ##@ Deployment
 
@@ -340,6 +408,34 @@ deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in
 .PHONY: undeploy
 undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
 	$(KUSTOMIZE) build config/default | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
+
+.PHONY: deploy-test
+deploy-test: build-push-images bundle bundle-build catalog-build catalog-push deploy-test-catalog ## Full test deployment: build images, generate bundle, push catalog, deploy via OLM.
+	@echo "✅ Operator deployed to test cluster via OLM catalog"
+
+.PHONY: deploy-test-catalog
+deploy-test-catalog: ## Apply CatalogSource, OperatorGroup, and Subscription for OLM-based test deployment.
+	@echo "Creating namespace $(OPERATOR_NAMESPACE)..."
+	-$(KUBECTL) create namespace $(OPERATOR_NAMESPACE) 2>/dev/null || true
+	@echo "Applying CatalogSource..."
+	@echo "$$CATALOG_SOURCE_YAML" | $(KUBECTL) apply -f -
+	@echo "Applying OperatorGroup..."
+	@echo "$$OPERATOR_GROUP_YAML" | $(KUBECTL) apply -f -
+	@echo "Applying Subscription..."
+	@echo "$$SUBSCRIPTION_YAML" | $(KUBECTL) apply -f -
+	@echo "Waiting for CSV..."
+	-$(KUBECTL) wait --for=jsonpath='{.status.phase}'=Succeeded csv \
+		-l operators.coreos.com/oc-mirror-operator.$(OPERATOR_NAMESPACE) \
+		-n $(OPERATOR_NAMESPACE) --timeout=300s 2>/dev/null || true
+	$(KUBECTL) get csv -n $(OPERATOR_NAMESPACE)
+
+.PHONY: undeploy-test
+undeploy-test: ## Remove test catalog deployment from cluster.
+	-$(KUBECTL) delete subscription oc-mirror-operator -n $(OPERATOR_NAMESPACE) 2>/dev/null
+	-$(KUBECTL) delete operatorgroup oc-mirror-operator-group -n $(OPERATOR_NAMESPACE) 2>/dev/null
+	-$(KUBECTL) delete catalogsource oc-mirror-test-catalog -n $(OPERATOR_NAMESPACE) 2>/dev/null
+	-$(KUBECTL) delete csv -l operators.coreos.com/oc-mirror-operator.$(OPERATOR_NAMESPACE) -n $(OPERATOR_NAMESPACE) 2>/dev/null
+	@echo "✅ Test deployment removed"
 
 ##@ Dependencies
 
@@ -426,6 +522,8 @@ OPERATOR_SDK = $(shell which operator-sdk)
 endif
 endif
 
+##@ Bundle/Catalog
+
 .PHONY: bundle
 bundle: manifests kustomize operator-sdk ## Generate bundle manifests and metadata, then validate generated files.
 	$(OPERATOR_SDK) generate kustomize manifests -q
@@ -476,12 +574,19 @@ ifneq ($(origin CATALOG_BASE_IMG), undefined)
 FROM_INDEX_OPT := --from-index $(CATALOG_BASE_IMG)
 endif
 
-# Build a catalog image by adding bundle images to an empty catalog using the operator package manager tool, 'opm'.
-# This recipe invokes 'opm' in 'semver' bundle add mode. For more information on add modes, see:
-# https://github.com/operator-framework/community-operators/blob/7f1438c/docs/packaging-operator.md#updating-your-existing-operator
+# Build a file-based catalog image using opm FBC (File-Based Catalog).
+# See: https://olm.operatorframework.io/docs/reference/file-based-catalogs/
 .PHONY: catalog-build
-catalog-build: opm ## Build a catalog image.
-	$(OPM) index add --container-tool $(CONTAINER_TOOL) --mode semver --tag $(CATALOG_IMG) --bundles $(BUNDLE_IMGS) $(FROM_INDEX_OPT)
+catalog-build: opm ## Build a file-based catalog image from the bundle.
+	mkdir -p catalog
+	$(OPM) init oc-mirror-operator --default-channel=$(DEFAULT_CHANNEL) --output yaml > catalog/operator.yaml
+	$(OPM) render $(BUNDLE_IMG) --output yaml >> catalog/operator.yaml
+	$(OPM) generate dockerfile catalog
+	$(CONTAINER_TOOL) build -t $(CATALOG_IMG) -f catalog.Dockerfile .
+
+.PHONY: catalog-validate
+catalog-validate: opm ## Validate the file-based catalog.
+	$(OPM) validate catalog
 
 # Push the catalog image.
 .PHONY: catalog-push

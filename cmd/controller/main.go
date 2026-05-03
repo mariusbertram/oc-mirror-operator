@@ -222,16 +222,16 @@ func main() {
 		operatorNamespace = os.Getenv("POD_NAMESPACE")
 	}
 	if operatorNamespace == "" {
-		setupLog.Info("OPERATOR_NAMESPACE / POD_NAMESPACE not set, dashboard reconciler disabled")
-	} else {
-		if err := (&controller.DashboardReconciler{
-			Client:    mgr.GetClient(),
-			Scheme:    mgr.GetScheme(),
-			Namespace: operatorNamespace,
-		}).SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "Dashboard")
-			os.Exit(1)
-		}
+		setupLog.Info("OPERATOR_NAMESPACE / POD_NAMESPACE not set, registering UIConfiguration controller without dashboard namespace")
+	}
+
+	if err := (&controller.UIConfigurationReconciler{
+		Client:    mgr.GetClient(),
+		Scheme:    mgr.GetScheme(),
+		Namespace: operatorNamespace,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "UIConfiguration")
+		os.Exit(1)
 	}
 
 	if metricsCertWatcher != nil {

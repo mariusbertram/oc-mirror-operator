@@ -115,7 +115,7 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// The manager deployment runs as coordinator and needs permissions to manage ImageSet status and worker pods.
 	if err := r.ensureCoordinatorRBAC(ctx, mt); err != nil {
 		l.Error(err, "Failed to ensure coordinator RBAC")
-		setCondition(&mt.Status.Conditions, "Ready", metav1.ConditionFalse, "ReconcileError", err.Error(), mt.Generation)
+		setCondition(&mt.Status.Conditions, conditionTypeReady, metav1.ConditionFalse, "ReconcileError", err.Error(), mt.Generation)
 		_ = r.Status().Update(ctx, mt)
 		return ctrl.Result{}, err
 	}
@@ -126,7 +126,7 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// stricter policies if needed.
 	if err := r.ensureNetworkPolicies(ctx, mt); err != nil {
 		l.Error(err, "Failed to ensure network policies")
-		setCondition(&mt.Status.Conditions, "Ready", metav1.ConditionFalse, "ReconcileError", err.Error(), mt.Generation)
+		setCondition(&mt.Status.Conditions, conditionTypeReady, metav1.ConditionFalse, "ReconcileError", err.Error(), mt.Generation)
 		_ = r.Status().Update(ctx, mt)
 		return ctrl.Result{}, err
 	}
@@ -134,7 +134,7 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// Ensure global Resource API Deployment and Service (Phase 7d)
 	if err := r.ensureResourceAPI(ctx, mt); err != nil {
 		l.Error(err, "Failed to ensure Resource API")
-		setCondition(&mt.Status.Conditions, "Ready", metav1.ConditionFalse, "ReconcileError", err.Error(), mt.Generation)
+		setCondition(&mt.Status.Conditions, conditionTypeReady, metav1.ConditionFalse, "ReconcileError", err.Error(), mt.Generation)
 		_ = r.Status().Update(ctx, mt)
 		return ctrl.Result{}, err
 	}
@@ -215,7 +215,7 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	})
 	if err != nil {
 		l.Error(err, "Failed to create or update manager deployment")
-		setCondition(&mt.Status.Conditions, "Ready", metav1.ConditionFalse, "ReconcileError", err.Error(), mt.Generation)
+		setCondition(&mt.Status.Conditions, conditionTypeReady, metav1.ConditionFalse, "ReconcileError", err.Error(), mt.Generation)
 		_ = r.Status().Update(ctx, mt)
 		return ctrl.Result{}, err
 	}
@@ -260,7 +260,7 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	})
 	if err != nil {
 		l.Error(err, "Failed to create or update manager service")
-		setCondition(&mt.Status.Conditions, "Ready", metav1.ConditionFalse, "ReconcileError", err.Error(), mt.Generation)
+		setCondition(&mt.Status.Conditions, conditionTypeReady, metav1.ConditionFalse, "ReconcileError", err.Error(), mt.Generation)
 		_ = r.Status().Update(ctx, mt)
 		return ctrl.Result{}, err
 	}
@@ -296,7 +296,7 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	})
 	if err != nil {
 		l.Error(err, "Failed to create or update resources service")
-		setCondition(&mt.Status.Conditions, "Ready", metav1.ConditionFalse, "ReconcileError", err.Error(), mt.Generation)
+		setCondition(&mt.Status.Conditions, conditionTypeReady, metav1.ConditionFalse, "ReconcileError", err.Error(), mt.Generation)
 		_ = r.Status().Update(ctx, mt)
 		return ctrl.Result{}, err
 	}
@@ -304,10 +304,10 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// Create Route/Ingress for the resource server based on ExposeConfig.
 	if err := r.reconcileExposure(ctx, mt); err != nil {
 		l.Error(err, "Failed to reconcile resource server exposure; continuing with status aggregation")
-		setCondition(&mt.Status.Conditions, "Ready", metav1.ConditionFalse, "ExposureError", err.Error(), mt.Generation)
+		setCondition(&mt.Status.Conditions, conditionTypeReady, metav1.ConditionFalse, "ExposureError", err.Error(), mt.Generation)
 		// We don't return here so that image counts are still aggregated and surfaced to the UI.
 	} else {
-		setCondition(&mt.Status.Conditions, "Ready", metav1.ConditionTrue, "DeploymentReady", "Manager deployment is active", mt.Generation)
+		setCondition(&mt.Status.Conditions, conditionTypeReady, metav1.ConditionTrue, "DeploymentReady", "Manager deployment is active", mt.Generation)
 	}
 
 	// Only advance KnownImageSets when no pending cleanups remain.

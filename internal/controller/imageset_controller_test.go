@@ -87,7 +87,7 @@ var _ = Describe("ImageSet Controller", func() {
 					return false
 				}
 				for _, c := range is.Status.Conditions {
-					if c.Type == "Ready" && c.Status == metav1.ConditionFalse && c.Reason == "Unbound" {
+					if c.Type == conditionTypeReady && c.Status == metav1.ConditionFalse && c.Reason == "Unbound" {
 						return true
 					}
 				}

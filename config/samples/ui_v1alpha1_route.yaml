@@ -1,0 +1,60 @@
+# UIConfiguration - OpenShift Route with TLS
+# ==================================================
+# This example exposes the oc-mirror dashboard via an OpenShift Route with TLS/HTTPS support.
+# Routes are the OpenShift-native alternative to Kubernetes Ingress, providing superior
+# integration with OpenShift's routing layer and automatic certificate management.
+#
+# WHEN TO USE:
+# - OpenShift/OKD clusters (not standard Kubernetes)
+# - When you want to leverage OpenShift's native routing capabilities
+# - When you need automatic DNS resolution via OpenShift's router
+# - When you want improved performance and features over Ingress
+#
+# PREREQUISITES:
+# - Running on OpenShift 4.x or OKD
+# - OpenShift Router deployed (default in OpenShift)
+# - TLS certificate secret named 'dashboard-tls-cert' in 'oc-mirror-operator' namespace
+#   Create the secret with:
+#     kubectl create secret tls dashboard-tls-cert \
+#       --cert=path/to/cert.crt \
+#       --key=path/to/private.key \
+#       -n oc-mirror-operator
+#   Or let OpenShift create a self-signed cert automatically (if enabled)
+#
+# APPLY:
+#   kubectl apply -f config/samples/ui_v1alpha1_route.yaml
+#
+# VERIFY:
+#   kubectl get routes -n oc-mirror-operator
+#   kubectl get uiconfiguration -n oc-mirror-operator
+#   kubectl describe route oc-mirror-dashboard -n oc-mirror-operator
+#   # Get the route hostname:
+#   oc get route oc-mirror-dashboard -n oc-mirror-operator -o jsonpath='{.status.ingress[0].host}'
+#
+# ACCESS:
+#   # OpenShift automatically provisions a DNS name. Access it directly:
+#   https://<route-hostname>
+#   # Or from the OpenShift web console, navigate to Networking > Routes
+#
+# RESOURCES CREATED:
+#   - Service (ClusterIP) named oc-mirror-dashboard
+#   - OpenShift Route named oc-mirror-dashboard with edge TLS
+#   - Deployment with 1 replica
+#
+# NOTE: routeName should be unique within the namespace. OpenShift will create the
+# full hostname as: <routeName>-<namespace>.apps.<cluster-domain>
+#
+apiVersion: mirror.openshift.io/v1alpha1
+kind: UIConfiguration
+metadata:
+  name: dashboard-route
+  namespace: oc-mirror-operator
+spec:
+  exposureType: route
+  routeName: oc-mirror-dashboard
+  replicas: 1
+  tls:
+    enabled: true
+    certSecretRef:
+      name: dashboard-tls-cert
+      namespace: oc-mirror-operator

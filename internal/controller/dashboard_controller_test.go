@@ -30,6 +30,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
+	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
 )
 
 var _ = Describe("Dashboard Controller", func() {
@@ -47,17 +49,38 @@ var _ = Describe("Dashboard Controller", func() {
 			Expect(os.Setenv("OAUTH_PROXY_IMAGE", "test-oauth-proxy:latest")).To(Succeed())
 		})
 
+		AfterEach(func() {
+			Expect(os.Unsetenv("DASHBOARD_IMAGE")).To(Succeed())
+			Expect(os.Unsetenv("OAUTH_PROXY_IMAGE")).To(Succeed())
+		})
+
 		It("should create Dashboard Deployment, Service, and OAuth Proxy Secret", func() {
-			reconciler := &DashboardReconciler{
+			reconciler := &UIConfigurationReconciler{
 				Client:    k8sClient,
 				Scheme:    k8sClient.Scheme(),
 				Namespace: dashboardNamespace,
 			}
 
-			By("reconciling the dashboard")
-			_, _ = reconciler.Reconcile(ctx, reconcile.Request{})
-			// Error is expected because Route creation will fail (no OpenShift API)
-			// But the important resources should still be created
+			uicName := "dashboard-basic-flow-uic"
+			namespacedName := types.NamespacedName{Name: uicName}
+
+			By("creating a UIConfiguration")
+			uic := &mirrorv1alpha1.UIConfiguration{
+				ObjectMeta: metav1.ObjectMeta{Name: uicName},
+				Spec: mirrorv1alpha1.UIConfigurationSpec{
+					ExposureType: mirrorv1alpha1.UIExposureTypeService,
+				},
+			}
+			Expect(k8sClient.Create(ctx, uic)).To(Succeed())
+			defer cleanupUIConfig(ctx, uicName)
+
+			By("first reconcile: adds finalizer")
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+
+			By("second reconcile: creates dashboard resources")
+			// Error is expected because Route/OpenShift API may be unavailable,
+			// but the core resources (Deployment, Service, SA, Secret) should still be created.
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
 
 			By("verifying the Dashboard Deployment exists")
 			deployment := &appsv1.Deployment{}
@@ -105,7 +128,7 @@ var _ = Describe("Dashboard Controller", func() {
 		ctx := context.Background()
 
 		It("should create ClusterRole with correct rules", func() {
-			reconciler := &DashboardReconciler{
+			reconciler := &UIConfigurationReconciler{
 				Client:    k8sClient,
 				Scheme:    k8sClient.Scheme(),
 				Namespace: dashboardNamespace,
@@ -159,7 +182,7 @@ var _ = Describe("Dashboard Controller", func() {
 		ctx := context.Background()
 
 		It("should create the OAuth proxy secret with session_secret", func() {
-			reconciler := &DashboardReconciler{
+			reconciler := &UIConfigurationReconciler{
 				Client:    k8sClient,
 				Scheme:    k8sClient.Scheme(),
 				Namespace: dashboardNamespace,
@@ -209,7 +232,7 @@ var _ = Describe("Dashboard Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, secret)).To(Succeed())
 
-			reconciler := &DashboardReconciler{
+			reconciler := &UIConfigurationReconciler{
 				Client:    k8sClient,
 				Scheme:    k8sClient.Scheme(),
 				Namespace: dashboardNamespace,
@@ -237,15 +260,32 @@ var _ = Describe("Dashboard Controller", func() {
 			Expect(os.Unsetenv("DASHBOARD_IMAGE")).To(Succeed())
 		})
 
-		It("should skip reconciliation when DASHBOARD_IMAGE is not set", func() {
-			reconciler := &DashboardReconciler{
+		It("should skip dashboard resources when DASHBOARD_IMAGE is not set", func() {
+			reconciler := &UIConfigurationReconciler{
 				Client:    k8sClient,
 				Scheme:    k8sClient.Scheme(),
 				Namespace: dashboardNamespace,
 			}
 
-			By("reconciling the dashboard without DASHBOARD_IMAGE")
-			result, err := reconciler.Reconcile(ctx, reconcile.Request{})
+			uicName := "dashboard-skip-uic"
+			namespacedName := types.NamespacedName{Name: uicName}
+
+			By("creating a UIConfiguration")
+			uic := &mirrorv1alpha1.UIConfiguration{
+				ObjectMeta: metav1.ObjectMeta{Name: uicName},
+				Spec: mirrorv1alpha1.UIConfigurationSpec{
+					ExposureType: mirrorv1alpha1.UIExposureTypeService,
+				},
+			}
+			Expect(k8sClient.Create(ctx, uic)).To(Succeed())
+			defer cleanupUIConfig(ctx, uicName)
+
+			By("first reconcile: adds finalizer")
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("second reconcile: no dashboard resources created without DASHBOARD_IMAGE")
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.IsZero()).To(BeTrue())
 

@@ -67,7 +67,7 @@ func (r *ImageSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (r
 	mt, err := r.findOwningMirrorTarget(ctx, is)
 	if err != nil {
 		l.Info("No MirrorTarget references this ImageSet", "imageSet", is.Name, "reason", err.Error())
-		setCondition(&is.Status.Conditions, "Ready", metav1.ConditionFalse, "Unbound", err.Error(), is.Generation)
+		setCondition(&is.Status.Conditions, conditionTypeReady, metav1.ConditionFalse, "Unbound", err.Error(), is.Generation)
 		_ = r.Status().Update(ctx, is)
 		return ctrl.Result{RequeueAfter: 1 * time.Minute}, nil
 	}

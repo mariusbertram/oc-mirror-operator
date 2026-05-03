@@ -4,6 +4,7 @@
 resources:
 - bases/mirror.openshift.io_mirrortargets.yaml
 - bases/mirror.openshift.io_imagesets.yaml
+- bases/mirror.openshift.io_uiconfigurations.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

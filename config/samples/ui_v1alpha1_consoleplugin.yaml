@@ -1,0 +1,56 @@
+# UIConfiguration - OpenShift Console Plugin
+# ==================================================
+# This example embeds the oc-mirror dashboard directly into the OpenShift web console
+# as a plugin. The dashboard becomes a tab or section within the console UI.
+#
+# WHEN TO USE:
+# - OpenShift clusters (4.10 and later)
+# - When you want a unified console experience
+# - When the dashboard should be part of the OpenShift web console
+# - When you want to avoid managing external ingress/routes
+#
+# PREREQUISITES:
+# - Running on OpenShift 4.10 or later
+# - Console Operator running (default in OpenShift)
+# - No external TLS certificate needed (console handles TLS internally)
+# - No ingress/route controller required
+#
+# APPLY:
+#   kubectl apply -f config/samples/ui_v1alpha1_consoleplugin.yaml
+#
+# VERIFY:
+#   kubectl get uiconfiguration -n oc-mirror-operator
+#   kubectl get consolelugins (to verify the plugin is registered)
+#   # Monitor operator logs for plugin registration:
+#   oc logs -n oc-mirror-operator deployment/oc-mirror-operator-controller-manager -f
+#
+# ACCESS:
+#   # The dashboard will appear as a new tab/section in the OpenShift web console
+#   # Navigate to: https://<openshift-console-url>
+#   # Look for "oc-mirror Dashboard" or similar tab
+#
+# RESOURCES CREATED:
+#   - Service (ClusterIP) named oc-mirror-dashboard (internal-only)
+#   - Deployment with 1 replica
+#   - ConsolePlugin CR registered with OpenShift Console Operator
+#
+# ARCHITECTURE:
+# Console Plugin mode is the most integrated approach:
+# - No external networking required
+# - Dashboard runs in the same cluster
+# - Access controlled by OpenShift RBAC
+# - Console handles all TLS and authentication
+#
+# LIMITATIONS:
+# - Only available on OpenShift 4.10+
+# - Limited to cluster-local access (no external URLs)
+# - Requires OpenShift console running
+#
+apiVersion: mirror.openshift.io/v1alpha1
+kind: UIConfiguration
+metadata:
+  name: dashboard-console
+  namespace: oc-mirror-operator
+spec:
+  exposureType: consolePlugin
+  replicas: 1
