@@ -45,6 +45,13 @@ spec:
   customresourcedefinitions:
     owned:
     - description: |
+        An ImageSet describes the desired content (release channels, operator
+        catalogs, additional images) to mirror to one or more MirrorTargets.
+      displayName: Image Set
+      kind: ImageSet
+      name: imagesets.mirror.openshift.io
+      version: v1alpha1
+    - description: |
         A MirrorTarget defines a destination registry for one or more ImageSets.
         It owns the manager Deployment that orchestrates per-image worker pods
         and exposes aggregated mirroring progress (Total/Mirrored/Pending/Failed).
@@ -52,12 +59,10 @@ spec:
       kind: MirrorTarget
       name: mirrortargets.mirror.openshift.io
       version: v1alpha1
-    - description: |
-        An ImageSet describes the desired content (release channels, operator
-        catalogs, additional images) to mirror to one or more MirrorTargets.
-      displayName: Image Set
-      kind: ImageSet
-      name: imagesets.mirror.openshift.io
+    - description: "Configures how the oc-mirror UI dashboard is exposed and accessed"
+      displayName: UI Configuration
+      kind: UIConfiguration
+      name: uiconfigurations.mirror.openshift.io
       version: v1alpha1
   description: |
     The oc-mirror operator brings the functionality of the upstream `oc-mirror`
