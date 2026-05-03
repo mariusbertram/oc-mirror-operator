@@ -243,4 +243,4 @@ metadata:
     app.kubernetes.io/name: oc-mirror
     console.openshift.io/dashboard: "true"
     grafana_dashboard: "1"
-  name: oc-mirror-oc-mirror-grafana-dashboard
+  name: oc-mirror-grafana-dashboard

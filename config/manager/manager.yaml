@@ -80,6 +80,10 @@ spec:
           value: dashboard:latest
         - name: OAUTH_PROXY_IMAGE
           value: oauth-proxy:latest
+        - name: OPERATOR_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
         ports: []
         securityContext:
           allowPrivilegeEscalation: false

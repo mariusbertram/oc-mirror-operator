@@ -45,11 +45,6 @@ patches:
 - path: manager_metrics_patch.yaml
   target:
     kind: Deployment
-# [UICONFIGURATION] Apply namespace substitution to UIConfiguration instance
-- path: uiconfiguration_patch.yaml
-  target:
-    kind: UIConfiguration
-    name: oc-mirror-dashboard-config
 
 # Copies the manager container image value to the OPERATOR_IMAGE env var so that
 # CatalogBuildJobs use the same image without hard-coding it.

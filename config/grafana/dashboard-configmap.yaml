@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: oc-mirror-grafana-dashboard
+  name: grafana-dashboard
   namespace: system
   labels:
     app.kubernetes.io/name: oc-mirror
