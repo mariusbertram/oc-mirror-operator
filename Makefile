@@ -29,8 +29,8 @@ BUNDLE_METADATA_OPTS ?= $(BUNDLE_CHANNELS) $(BUNDLE_DEFAULT_CHANNEL)
 #
 # For example, running 'make bundle-build bundle-push catalog-build catalog-push' will build and push both
 # mirror.openshift.io/oc-mirror-bundle:$VERSION and mirror.openshift.io/oc-mirror-catalog:$VERSION.
-IMAGE_TAG_BASE ?= ghcr.io/mariusbertram/oc-mirror-operator
-
+#IMAGE_TAG_BASE ?= ghcr.io/mariusbertram/oc-mirror-operator
+IMAGE_TAG_BASE ?= quay.lab.brtrm.dev/marius
 # BUNDLE_IMG defines the image:tag used for the bundle.
 # You can use it as an arg. (E.g make bundle-build BUNDLE_IMG=<some-registry>/<project-name-bundle>:<tag>)
 BUNDLE_IMG ?= $(IMAGE_TAG_BASE)-bundle:v$(VERSION)
@@ -305,12 +305,12 @@ podman-build-single: ## Build single-arch image using podman (default: native ar
 .PHONY: build-installer
 build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.
 	mkdir -p dist
-	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG} \
-		ghcr.io/mariusbertram/oc-mirror-operator-controller=${IMG_CONTROLLER} \
-		ghcr.io/mariusbertram/oc-mirror-operator-manager=${IMG_MANAGER} \
-		ghcr.io/mariusbertram/oc-mirror-operator-worker=${IMG_WORKER} \
-		ghcr.io/mariusbertram/oc-mirror-operator-dashboard=${IMG_DASHBOARD} \
-		quay.io/openshift/origin-oauth-proxy=${IMG_OAUTH_PROXY}
+	cd config/manager && $(KUSTOMIZE) edit set image \
+		controller=${IMG_CONTROLLER} \
+		manager=${IMG_MANAGER} \
+		worker=${IMG_WORKER} \
+		dashboard=${IMG_DASHBOARD} \
+		oauth-proxy=${IMG_OAUTH_PROXY}
 	$(KUSTOMIZE) build config/default > dist/install.yaml
 
 ##@ Deployment
@@ -330,11 +330,11 @@ uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified 
 .PHONY: deploy
 deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
 	cd config/manager && $(KUSTOMIZE) edit set image \
-		ghcr.io/mariusbertram/oc-mirror-operator-controller=${IMG_CONTROLLER} \
-		ghcr.io/mariusbertram/oc-mirror-operator-manager=${IMG_MANAGER} \
-		ghcr.io/mariusbertram/oc-mirror-operator-worker=${IMG_WORKER} \
-		ghcr.io/mariusbertram/oc-mirror-operator-dashboard=${IMG_DASHBOARD} \
-		quay.io/openshift/origin-oauth-proxy=${IMG_OAUTH_PROXY}
+		controller=${IMG_CONTROLLER} \
+		manager=${IMG_MANAGER} \
+		worker=${IMG_WORKER} \
+		dashboard=${IMG_DASHBOARD} \
+		oauth-proxy=${IMG_OAUTH_PROXY}
 	$(KUSTOMIZE) build config/default | $(KUBECTL) apply -f -
 
 .PHONY: undeploy
@@ -429,12 +429,12 @@ endif
 .PHONY: bundle
 bundle: manifests kustomize operator-sdk ## Generate bundle manifests and metadata, then validate generated files.
 	$(OPERATOR_SDK) generate kustomize manifests -q
-	cd config/manager && $(KUSTOMIZE) edit set image controller=$(IMG) \
-		ghcr.io/mariusbertram/oc-mirror-operator-controller=$(IMG_CONTROLLER) \
-		ghcr.io/mariusbertram/oc-mirror-operator-manager=$(IMG_MANAGER) \
-		ghcr.io/mariusbertram/oc-mirror-operator-worker=$(IMG_WORKER) \
-		ghcr.io/mariusbertram/oc-mirror-operator-dashboard=$(IMG_DASHBOARD) \
-		quay.io/openshift/origin-oauth-proxy=$(IMG_OAUTH_PROXY)
+	cd config/manager && $(KUSTOMIZE) edit set image \
+		controller=$(IMG_CONTROLLER) \
+		manager=$(IMG_MANAGER) \
+		worker=$(IMG_WORKER) \
+		dashboard=$(IMG_DASHBOARD) \
+		oauth-proxy=$(IMG_OAUTH_PROXY)
 	$(KUSTOMIZE) build config/manifests | $(OPERATOR_SDK) generate bundle $(BUNDLE_GEN_FLAGS)
 	$(OPERATOR_SDK) bundle validate ./bundle
 

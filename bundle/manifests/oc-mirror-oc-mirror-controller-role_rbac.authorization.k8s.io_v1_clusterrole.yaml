@@ -120,3 +120,14 @@ rules:
   - update
   - patch
   - delete
+- apiGroups:
+  - monitoring.coreos.com
+  resources:
+  - servicemonitors
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch

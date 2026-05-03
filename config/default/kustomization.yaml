@@ -100,19 +100,19 @@ replacements:
 
 # Image overrides for container references
 images:
-- name: ghcr.io/mariusbertram/oc-mirror-operator-controller
+- name: controller
   newName: quay.lab.brtrm.dev/marius/oc-mirror-operator-controller
   newTag: latest
-- name: ghcr.io/mariusbertram/oc-mirror-operator-manager
+- name: manager
   newName: quay.lab.brtrm.dev/marius/oc-mirror-operator-manager
   newTag: latest
-- name: ghcr.io/mariusbertram/oc-mirror-operator-worker
+- name: worker
   newName: quay.lab.brtrm.dev/marius/oc-mirror-operator-worker
   newTag: latest
-- name: ghcr.io/mariusbertram/oc-mirror-operator-dashboard
+- name: dashboard
   newName: quay.lab.brtrm.dev/marius/oc-mirror-operator-dashboard
   newTag: latest
-- name: quay.io/openshift/origin-oauth-proxy
+- name: oauth-proxy
   newName: quay.io/openshift/origin-oauth-proxy
   newTag: latest
 

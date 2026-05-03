@@ -30,9 +30,11 @@ metadata:
       ]
     capabilities: Basic Install
     categories: OpenShift Optional, Integration & Delivery
-    containerImage: quay.lab.brtrm.dev/marius/oc-mirror-operator:latest
-    oc-mirror-manager-image: ghcr.io/mariusbertram/oc-mirror-operator-manager:latest
-    oc-mirror-worker-image: ghcr.io/mariusbertram/oc-mirror-operator-worker:latest
+    containerImage: controller:latest
+    oc-mirror-dashboard-image: dashboard:latest
+    oc-mirror-manager-image: manager:latest
+    oc-mirror-oauth-proxy-image: oauth-proxy:latest
+    oc-mirror-worker-image: worker:latest
     operatorframework.io/suggested-namespace: oc-mirror-operator
     repository: https://github.com/mariusbertram/oc-mirror-operator
     support: Marius Bertram
@@ -116,6 +118,8 @@ spec:
                   value: worker:latest
                 - name: DASHBOARD_IMAGE
                   value: dashboard:latest
+                - name: OAUTH_PROXY_IMAGE
+                  value: oauth-proxy:latest
                 - name: OPERATOR_NAMESPACE
                   valueFrom:
                     fieldRef:
@@ -210,18 +214,19 @@ spec:
   - email: marius@brtrm.de
     name: Marius Bertram
   maturity: alpha
+  minKubeVersion: 1.22.0
   provider:
     name: Marius Bertram
     url: github.com/mariusbertram/oc-mirror-operator
   relatedImages:
-  - image: ghcr.io/mariusbertram/oc-mirror-operator-controller:latest
+  - image: controller:latest
     name: controller
-  - image: ghcr.io/mariusbertram/oc-mirror-operator-manager:latest
+  - image: manager:latest
     name: manager
-  - image: ghcr.io/mariusbertram/oc-mirror-operator-worker:latest
+  - image: worker:latest
     name: worker
-  - image: ghcr.io/mariusbertram/oc-mirror-operator-dashboard:latest
+  - image: dashboard:latest
     name: dashboard
-  - image: quay.io/openshift/origin-oauth-proxy:latest
+  - image: oauth-proxy:latest
     name: oauth-proxy
   version: 0.0.0

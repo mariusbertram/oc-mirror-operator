@@ -3,3 +3,7 @@ images:
   path: spec/template/metadata/annotations/oc-mirror-manager-image
 - kind: Deployment
   path: spec/template/metadata/annotations/oc-mirror-worker-image
+- kind: Deployment
+  path: spec/template/metadata/annotations/oc-mirror-dashboard-image
+- kind: Deployment
+  path: spec/template/metadata/annotations/oc-mirror-oauth-proxy-image

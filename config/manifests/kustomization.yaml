@@ -35,11 +35,34 @@ replacements:
 - source:
     kind: Deployment
     name: controller-manager
+    fieldPath: spec.template.metadata.annotations.oc-mirror-dashboard-image
+  targets:
+  - select:
+      kind: ClusterServiceVersion
+    fieldPaths:
+    - spec.relatedImages.[name=dashboard].image
+    - metadata.annotations.oc-mirror-dashboard-image
+    - spec.install.spec.deployments.[name=controller-manager].spec.template.spec.containers.[name=manager].env.[name=DASHBOARD_IMAGE].value
+- source:
+    kind: Deployment
+    name: controller-manager
+    fieldPath: spec.template.metadata.annotations.oc-mirror-oauth-proxy-image
+  targets:
+  - select:
+      kind: ClusterServiceVersion
+    fieldPaths:
+    - spec.relatedImages.[name=oauth-proxy].image
+    - metadata.annotations.oc-mirror-oauth-proxy-image
+    - spec.install.spec.deployments.[name=controller-manager].spec.template.spec.containers.[name=manager].env.[name=OAUTH_PROXY_IMAGE].value
+- source:
+    kind: Deployment
+    name: controller-manager
     fieldPath: spec.template.spec.containers.[name=manager].image
   targets:
   - select:
       kind: ClusterServiceVersion
     fieldPaths:
+    - spec.relatedImages.[name=controller].image
     - spec.install.spec.deployments.[name=controller-manager].spec.template.spec.containers.[name=manager].image
     - metadata.annotations.containerImage
 
