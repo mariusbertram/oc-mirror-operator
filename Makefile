@@ -309,7 +309,8 @@ build-installer: manifests generate kustomize ## Generate a consolidated YAML wi
 		ghcr.io/mariusbertram/oc-mirror-operator-controller=${IMG_CONTROLLER} \
 		ghcr.io/mariusbertram/oc-mirror-operator-manager=${IMG_MANAGER} \
 		ghcr.io/mariusbertram/oc-mirror-operator-worker=${IMG_WORKER} \
-		ghcr.io/mariusbertram/oc-mirror-operator-dashboard=${IMG_DASHBOARD}
+		ghcr.io/mariusbertram/oc-mirror-operator-dashboard=${IMG_DASHBOARD} \
+		quay.io/openshift/origin-oauth-proxy=${IMG_OAUTH_PROXY}
 	$(KUSTOMIZE) build config/default > dist/install.yaml
 
 ##@ Deployment
@@ -332,7 +333,8 @@ deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in
 		ghcr.io/mariusbertram/oc-mirror-operator-controller=${IMG_CONTROLLER} \
 		ghcr.io/mariusbertram/oc-mirror-operator-manager=${IMG_MANAGER} \
 		ghcr.io/mariusbertram/oc-mirror-operator-worker=${IMG_WORKER} \
-		ghcr.io/mariusbertram/oc-mirror-operator-dashboard=${IMG_DASHBOARD}
+		ghcr.io/mariusbertram/oc-mirror-operator-dashboard=${IMG_DASHBOARD} \
+		quay.io/openshift/origin-oauth-proxy=${IMG_OAUTH_PROXY}
 	$(KUSTOMIZE) build config/default | $(KUBECTL) apply -f -
 
 .PHONY: undeploy
@@ -427,7 +429,12 @@ endif
 .PHONY: bundle
 bundle: manifests kustomize operator-sdk ## Generate bundle manifests and metadata, then validate generated files.
 	$(OPERATOR_SDK) generate kustomize manifests -q
-	cd config/manager && $(KUSTOMIZE) edit set image controller=$(IMG) ghcr.io/mariusbertram/oc-mirror-operator-controller=$(IMG_CONTROLLER) ghcr.io/mariusbertram/oc-mirror-operator-manager=$(IMG_MANAGER) ghcr.io/mariusbertram/oc-mirror-operator-worker=$(IMG_WORKER) ghcr.io/mariusbertram/oc-mirror-operator-dashboard=$(IMG_DASHBOARD)
+	cd config/manager && $(KUSTOMIZE) edit set image controller=$(IMG) \
+		ghcr.io/mariusbertram/oc-mirror-operator-controller=$(IMG_CONTROLLER) \
+		ghcr.io/mariusbertram/oc-mirror-operator-manager=$(IMG_MANAGER) \
+		ghcr.io/mariusbertram/oc-mirror-operator-worker=$(IMG_WORKER) \
+		ghcr.io/mariusbertram/oc-mirror-operator-dashboard=$(IMG_DASHBOARD) \
+		quay.io/openshift/origin-oauth-proxy=$(IMG_OAUTH_PROXY)
 	$(KUSTOMIZE) build config/manifests | $(OPERATOR_SDK) generate bundle $(BUNDLE_GEN_FLAGS)
 	$(OPERATOR_SDK) bundle validate ./bundle
 
