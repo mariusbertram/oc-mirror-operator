@@ -84,7 +84,9 @@ kind: OperatorGroup
 metadata:
   name: oc-mirror-operator-group
   namespace: $(OPERATOR_NAMESPACE)
-spec: {}
+spec:
+  targetNamespaces:
+  - $(OPERATOR_NAMESPACE)
 endef
 export OPERATOR_GROUP_YAML
 
