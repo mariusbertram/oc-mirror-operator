@@ -39,9 +39,11 @@ const (
 	dashboardClusterRole = "oc-mirror-dashboard"
 	oauthProxySecretName = "oc-mirror-dashboard-proxy"
 
-	dashboardPort  = 8080
-	oauthProxyPort = 8443
-	pluginPort     = 9443
+	dashboardPort   = 8080
+	oauthProxyPort  = 8443
+	pluginPort      = 9443
+	resourceAPIName = "oc-mirror-resource-api"
+	resourceAPIPort = 8081
 )
 
 // UIConfigurationReconciler reconciles a UIConfiguration object and owns all
@@ -601,8 +603,8 @@ func (r *UIConfigurationReconciler) generateConsolePlugin(ctx context.Context, u
 						"type": "Service",
 						"service": map[string]interface{}{
 							"namespace": r.Namespace,
-							"name":      dashboardName + "-plugin",
-							"port":      int64(pluginPort),
+							"name":      resourceAPIName,
+							"port":      int64(resourceAPIPort),
 						},
 					},
 				},
