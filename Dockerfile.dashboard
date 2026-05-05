@@ -15,8 +15,8 @@ RUN npm --prefix ui ci --ignore-scripts
 COPY ui/ ./ui/
 # Build the standalone SPA (dashboard).
 RUN npm --prefix ui run build:dashboard
-# Create empty plugin directory to satisfy the Go build (plugin currently unused)
-RUN mkdir -p ./ui/dist/plugin
+# Build the OpenShift Console Plugin assets.
+RUN npm --prefix ui run build:plugin
 
 # -----------------------------------------------------------------------
 FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.25@sha256:4c22673170524e09a47a6e1a5f1ca99692f4796c9b4f2de25ec7137bcd897edd AS go-build

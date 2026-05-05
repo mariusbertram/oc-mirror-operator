@@ -1,11 +1,12 @@
 {
-  "name": "oc-mirror-plugin",
+  "name": "oc-mirror-operator",
   "version": "0.1.0",
   "displayName": "OC Mirror",
   "description": "Manage OC Mirror Operator ImageSets and MirrorTargets from the OpenShift Console",
   "exposedModules": {
     "MirrorTargetListPage": "./src/plugin/pages/MirrorTargetListPage",
     "MirrorTargetDetailPage": "./src/plugin/pages/MirrorTargetDetailPage",
+    "FailedImagesPage": "./src/plugin/pages/FailedImagesPage",
     "CatalogBrowserPage": "./src/plugin/pages/CatalogBrowserPage"
   },
   "dependencies": {

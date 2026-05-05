@@ -1,6 +1,6 @@
 const path = require('path');
 const MiniCssExtractPlugin = require('mini-css-extract-plugin');
-const { DynamicRemotePlugin } = require('@openshift-console/dynamic-plugin-sdk/webpack');
+const { ConsoleRemotePlugin } = require('@openshift-console/dynamic-plugin-sdk-webpack');
 
 const pluginMetadata = require('./src/plugin/plugin-manifest.json');
 
@@ -34,9 +34,9 @@ module.exports = (env, argv) => ({
   },
   plugins: [
     new MiniCssExtractPlugin({ filename: 'plugin.css' }),
-    new DynamicRemotePlugin({
+    new ConsoleRemotePlugin({
       pluginMetadata,
-      extensions: require('./src/plugin/extensions').default,
+      extensions: require('./src/plugin/extensions'),
     }),
   ],
   devServer: {

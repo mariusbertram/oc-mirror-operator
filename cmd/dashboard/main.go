@@ -32,6 +32,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/gorilla/mux"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
 	"k8s.io/apimachinery/pkg/runtime"
@@ -103,12 +104,21 @@ func runPlugin() {
 	ctrl.SetLogger(zap.New())
 	ctx := ctrl.SetupSignalHandler()
 
-	mux := http.NewServeMux()
-	resourceapi.RegisterPluginRoutes(mux)
+	cfg := ctrl.GetConfigOrDie()
+	c, err := client.New(cfg, client.Options{Scheme: scheme})
+	if err != nil {
+		setupLog.Error(err, "unable to create k8s client for plugin resource API")
+		os.Exit(1)
+	}
+	apiSrv := resourceapi.NewServerClusterWide(c)
+
+	r := mux.NewRouter()
+	apiSrv.RegisterAPIRoutes(r)
+	resourceapi.RegisterPluginStaticRoutes(r)
 
 	httpSrv := &http.Server{
 		Addr:              addr,
-		Handler:           mux,
+		Handler:           r,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      60 * time.Second,

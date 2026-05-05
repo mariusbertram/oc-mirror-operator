@@ -96,7 +96,7 @@ export const MirrorTargetList: React.FC = () => {
             return (
               <Tr key={t.name}>
                 <Td>
-                  <Link to={`/targets/${t.name}`}>{t.name}</Link>
+                  <Link to={`/oc-mirror/targets/${t.name}`}>{t.name}</Link>
                 </Td>
                 <Td>{t.registry}</Td>
                 <Td style={{ minWidth: '160px' }}>

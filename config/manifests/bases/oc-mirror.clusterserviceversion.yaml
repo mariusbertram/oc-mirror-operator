@@ -113,7 +113,7 @@ spec:
                 - --leader-elect
                 - --health-probe-bind-address=:8081
                 command:
-                - /manager
+                - /controller
                 env:
                 - name: OPERATOR_IMAGE
                   value: controller:latest

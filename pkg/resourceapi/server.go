@@ -27,6 +27,9 @@ import (
 //go:embed plugin
 var pluginFS embed.FS
 
+//go:embed all:ui
+var uiFS embed.FS
+
 type Server struct {
 	client    client.Client
 	namespace string // empty = cluster-wide mode
@@ -175,7 +178,9 @@ type ImageFailuresResponse struct {
 	Pending []FailedImageDetail `json:"pending"`
 }
 
-func (s *Server) RegisterRoutes(r *mux.Router) {
+// RegisterAPIRoutes registers all JSON API and raw-resource routes onto r.
+// It does not add any static-asset handler, so callers can append their own.
+func (s *Server) RegisterAPIRoutes(r *mux.Router) {
 	// Legacy redirect
 	r.PathPrefix("/resources/{imageset}/").HandlerFunc(s.handleLegacyRedirect)
 
@@ -204,6 +209,26 @@ func (s *Server) RegisterRoutes(r *mux.Router) {
 	api.HandleFunc("/targets/{mt}/imagesets/{is}/catalogs/{slug}/clustercatalog.yaml", s.handleClusterCatalog).Methods("GET")
 	api.HandleFunc("/targets/{mt}/imagesets/{is}/catalogs/{slug}/upstream-packages.json", s.handleUpstreamCatalogPackages).Methods("GET")
 	api.HandleFunc("/targets/{mt}/imagesets/{is}/catalogs/{slug}/packages.json", s.handleFilteredCatalogPackages).Methods("GET")
+}
+
+func (s *Server) RegisterRoutes(r *mux.Router) {
+	s.RegisterAPIRoutes(r)
+
+	// Dashboard SPA static assets
+	uiSub, _ := fs.Sub(uiFS, "ui")
+	spa := &spaHandler{staticFS: http.FS(uiSub), indexFile: "index.html"}
+	r.PathPrefix("/").Handler(spa)
+}
+
+// RegisterPluginStaticRoutes appends a catch-all route that serves embedded
+// Console Plugin static assets. Must be called after RegisterAPIRoutes so that
+// the more-specific API routes take precedence.
+func RegisterPluginStaticRoutes(r *mux.Router) {
+	pluginSub, err := fs.Sub(pluginFS, "plugin")
+	if err != nil {
+		return
+	}
+	r.PathPrefix("/").Handler(http.FileServer(http.FS(pluginSub)))
 }
 
 func (s *Server) Run(ctx context.Context) {
@@ -751,4 +776,31 @@ func catalogSlugFromSource(source string) string {
 	parts := strings.Split(source, "/")
 	last := parts[len(parts)-1]
 	return strings.ReplaceAll(last, ":", "-")
+}
+
+// spaHandler implements http.Handler to serve an SPA.
+type spaHandler struct {
+	staticFS  http.FileSystem
+	indexFile string
+}
+
+func (h *spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// If the request path has a file extension, try to serve the file.
+	if strings.Contains(r.URL.Path, ".") {
+		f, err := h.staticFS.Open(r.URL.Path)
+		if err == nil {
+			_ = f.Close()
+			http.FileServer(h.staticFS).ServeHTTP(w, r)
+			return
+		}
+	}
+	// Otherwise, serve the index file (History API fallback).
+	index, err := h.staticFS.Open(h.indexFile)
+	if err != nil {
+		http.Error(w, "SPA index not found", http.StatusNotFound)
+		return
+	}
+	defer func() { _ = index.Close() }()
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = io.Copy(w, index)
 }

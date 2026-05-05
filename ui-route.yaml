@@ -1,0 +1,8 @@
+apiVersion: mirror.openshift.io/v1alpha1
+kind: UIConfiguration
+metadata:
+  name: oc-mirror-dashboard-route
+  namespace: oc-mirror-system
+spec:
+  exposureType: route
+  replicas: 1

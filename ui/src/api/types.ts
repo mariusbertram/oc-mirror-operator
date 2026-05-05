@@ -61,9 +61,23 @@ export interface ImageFailuresResponse {
   pending: FailedImageDetail[];
 }
 
+export interface CatalogChannel {
+  name: string;
+  entries: {
+    name: string;
+    version: string;
+  }[];
+}
+
 export interface CatalogPackage {
   name: string;
   defaultChannel: string;
-  channels: string[];
+  channels: CatalogChannel[];
   description?: string;
+}
+
+export interface CatalogPackagesResponse {
+  catalog: string;
+  targetImage: string;
+  packages: CatalogPackage[];
 }

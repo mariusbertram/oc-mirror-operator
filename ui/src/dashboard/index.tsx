@@ -1,10 +1,11 @@
 import React from 'react';
-import { createRoot } from 'react-dom/client';
-import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
+import ReactDOM from 'react-dom';
+import { BrowserRouter, Redirect, Route, Switch } from 'react-router-dom';
 import { Page, PageSidebar, PageSidebarBody, Nav, NavItem, NavList, Masthead, MastheadMain, MastheadContent, Title } from '@patternfly/react-core';
 import '@patternfly/react-core/dist/styles/base.css';
 import { MirrorTargetList } from '../pages/MirrorTargets/MirrorTargetList';
 import { MirrorTargetDetail } from '../pages/MirrorTargets/MirrorTargetDetail';
+import { FailedImages } from '../pages/MirrorTargets/FailedImages';
 import { CatalogBrowser } from '../pages/CatalogBrowser/CatalogBrowser';
 
 const App: React.FC = () => {
@@ -37,25 +38,31 @@ const App: React.FC = () => {
 
   return (
     <Page header={header} sidebar={sidebar}>
-      <Routes>
-        <Route path="/" element={<Navigate to="/targets" replace />} />
-        <Route path="/targets" element={<MirrorTargetList />} />
-        <Route path="/targets/:name" element={<MirrorTargetDetail />} />
+      <Switch>
+        <Route exact path="/">
+          <Redirect to="/oc-mirror/targets" />
+        </Route>
+        <Route exact path="/targets">
+          <Redirect to="/oc-mirror/targets" />
+        </Route>
+        <Route exact path="/oc-mirror/targets" component={MirrorTargetList} />
+        <Route exact path="/oc-mirror/targets/:name" component={MirrorTargetDetail} />
+        <Route path="/oc-mirror/targets/:name/failures" component={FailedImages} />
         <Route
-          path="/targets/:targetName/catalogs/:slug"
-          element={<CatalogBrowser />}
+          path="/oc-mirror/targets/:targetName/namespaces/:namespace/imagesets/:imageSetName/catalogs/:slug"
+          component={CatalogBrowser}
         />
-      </Routes>
+      </Switch>
     </Page>
   );
 };
 
 const container = document.getElementById('root')!;
-const root = createRoot(container);
-root.render(
+ReactDOM.render(
   <React.StrictMode>
     <BrowserRouter>
       <App />
     </BrowserRouter>
   </React.StrictMode>,
+  container
 );

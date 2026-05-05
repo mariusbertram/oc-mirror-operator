@@ -1,0 +1,10 @@
+apiVersion: mirror.openshift.io/v1alpha1
+kind: UIConfiguration
+metadata:
+  name: oc-mirror-dashboard-config
+  namespace: oc-mirror-operator
+spec:
+  exposureType: service
+  replicas: 1
+  tls:
+    enabled: false

@@ -11,7 +11,7 @@ import {
   ToolbarContent,
   ToolbarItem,
 } from '@patternfly/react-core';
-import { useParams } from 'react-router-dom';
+import { Link, useParams, RouteComponentProps } from 'react-router-dom';
 import {
   getFilteredPackages,
   getUpstreamPackages,
@@ -19,13 +19,16 @@ import {
 } from '../../api/client';
 import type { CatalogPackage } from '../../api/types';
 
-export const CatalogBrowser: React.FC = () => {
-  const { targetName, slug, namespace, imageSetName } = useParams<{
-    targetName: string;
-    slug: string;
-    namespace: string;
-    imageSetName: string;
-  }>();
+interface CatalogBrowserParams {
+  targetName: string;
+  slug: string;
+  namespace: string;
+  imageSetName: string;
+}
+
+export const CatalogBrowser: React.FC<Partial<RouteComponentProps<CatalogBrowserParams>>> = ({ match }) => {
+  const params = useParams<CatalogBrowserParams>();
+  const { targetName, slug, namespace, imageSetName } = match?.params || params;
 
   const [upstream, setUpstream] = useState<CatalogPackage[]>([]);
   const [filtered, setFiltered] = useState<Set<string>>(new Set());
@@ -43,7 +46,9 @@ export const CatalogBrowser: React.FC = () => {
       getUpstreamPackages(targetName, slug),
       getFilteredPackages(targetName, slug),
     ])
-      .then(([up, fp]) => {
+      .then(([upResp, fpResp]) => {
+        const up = upResp.packages;
+        const fp = fpResp.packages;
         setUpstream(up);
         const filteredNames = new Set(fp.map((p) => p.name));
         setFiltered(filteredNames);
@@ -98,7 +103,8 @@ export const CatalogBrowser: React.FC = () => {
 
   return (
     <PageSection>
-      <Title headingLevel="h1" style={{ marginBottom: '1rem' }}>
+      <Link to={`/oc-mirror/targets/${targetName}`}>← Back to {targetName}</Link>
+      <Title headingLevel="h1" style={{ margin: '1rem 0' }}>
         Catalog: {slug}
       </Title>
 

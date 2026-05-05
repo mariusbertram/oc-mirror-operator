@@ -1,14 +1,11 @@
-import React, { useEffect } from 'react';
+import React from 'react';
 import { consoleFetch } from '@openshift-console/dynamic-plugin-sdk';
-import { setFetchImpl } from '../../api/client';
+import { setFetchImpl, setApiBaseUrl } from '../../api/client';
 import { CatalogBrowser } from '../../pages/CatalogBrowser/CatalogBrowser';
 
-const CatalogBrowserPage: React.FC = () => {
-  useEffect(() => {
-    setFetchImpl((url, init) => consoleFetch(url, init));
-  }, []);
+setFetchImpl((url, init) => consoleFetch(url, init));
+setApiBaseUrl('/api/proxy/plugin/oc-mirror-operator/resourceapi');
 
-  return <CatalogBrowser />;
-};
+const CatalogBrowserPage: React.FC<any> = (props) => <CatalogBrowser {...props} />;
 
 export default CatalogBrowserPage;

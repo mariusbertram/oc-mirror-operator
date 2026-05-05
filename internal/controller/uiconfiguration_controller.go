@@ -40,7 +40,7 @@ const (
 	oauthProxySecretName = "oc-mirror-dashboard-proxy"
 
 	dashboardPort  = 8080
-	oauthProxyPort = 4180
+	oauthProxyPort = 8443
 	pluginPort     = 9443
 )
 
@@ -57,7 +57,7 @@ type UIConfigurationReconciler struct {
 // +kubebuilder:rbac:groups=mirror.openshift.io,resources=uiconfigurations/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=serviceaccounts;services;secrets,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles;clusterrolebindings,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles;clusterrolebindings,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=route.openshift.io,resources=routes,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=console.openshift.io,resources=consoleplugins,verbs=get;list;watch;create;update;patch;delete
@@ -213,7 +213,16 @@ func (r *UIConfigurationReconciler) ensureServiceAccount(ctx context.Context) er
 	sa := &corev1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{Name: dashboardName, Namespace: r.Namespace},
 	}
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, sa, func() error { return nil })
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, sa, func() error {
+		if sa.Annotations == nil {
+			sa.Annotations = map[string]string{}
+		}
+		sa.Annotations["serviceaccounts.openshift.io/oauth-redirectreference.primary"] = fmt.Sprintf(
+			`{"kind":"OAuthRedirectReference","apiVersion":"v1","reference":{"kind":"Route","name":"%s"}}`,
+			dashboardName,
+		)
+		return nil
+	})
 	return err
 }
 
@@ -250,6 +259,28 @@ func (r *UIConfigurationReconciler) ensureClusterRBAC(ctx context.Context) error
 			Name:     dashboardName,
 		}
 		crb.Subjects = []rbacv1.Subject{{
+			Kind:      "ServiceAccount",
+			Name:      dashboardName,
+			Namespace: r.Namespace,
+		}}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	// oauth-proxy with --provider=openshift requires the SA to be able to validate
+	// tokens via TokenReview and SubjectAccessReview — system:auth-delegator grants this.
+	authDelegatorCRB := &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: dashboardName + "-auth-delegator"},
+	}
+	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, authDelegatorCRB, func() error {
+		authDelegatorCRB.RoleRef = rbacv1.RoleRef{
+			APIGroup: "rbac.authorization.k8s.io",
+			Kind:     "ClusterRole",
+			Name:     "system:auth-delegator",
+		}
+		authDelegatorCRB.Subjects = []rbacv1.Subject{{
 			Kind:      "ServiceAccount",
 			Name:      dashboardName,
 			Namespace: r.Namespace,
@@ -360,9 +391,6 @@ func (r *UIConfigurationReconciler) ensureDashboardDeployment(ctx context.Contex
 		dep.Spec.Template = corev1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{
 				Labels: map[string]string{"app": dashboardName},
-				Annotations: map[string]string{
-					"serviceaccounts.openshift.io/oauth-redirectreference.primary": fmt.Sprintf(`{"kind":"OAuthRedirectReference","apiVersion":"v1","reference":{"kind":"Service","name":"%s"}}`, dashboardName),
-				},
 			},
 			Spec: podSpec,
 		}
@@ -474,7 +502,7 @@ func (r *UIConfigurationReconciler) ensurePluginDeployment(ctx context.Context, 
 			Image:   dashImage,
 			Command: []string{"/dashboard", "plugin"},
 			Args: []string{
-				"--bind-address=:9001",
+				fmt.Sprintf("--bind-address=:%d", pluginPort),
 				"--cert-file=/var/serving-cert/tls.crt",
 				"--key-file=/var/serving-cert/tls.key",
 			},
@@ -565,6 +593,20 @@ func (r *UIConfigurationReconciler) generateConsolePlugin(ctx context.Context, u
 					"basePath":  "/",
 				},
 			},
+			"proxy": []interface{}{
+				map[string]interface{}{
+					"alias":         "resourceapi",
+					"authorization": "UserToken",
+					"endpoint": map[string]interface{}{
+						"type": "Service",
+						"service": map[string]interface{}{
+							"namespace": r.Namespace,
+							"name":      dashboardName + "-plugin",
+							"port":      int64(pluginPort),
+						},
+					},
+				},
+			},
 		}
 		return nil
 	})
@@ -574,7 +616,22 @@ func (r *UIConfigurationReconciler) generateConsolePlugin(ctx context.Context, u
 		return err
 	}
 
-	uiConfig.Status.ExposedURL = "https://<console-host>/console/oc-mirror-operator"
+	// Try to find the console URL to provide a better ExposedURL status.
+	consoleRoute := &unstructured.Unstructured{}
+	consoleRoute.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "route.openshift.io",
+		Version: "v1",
+		Kind:    "Route",
+	})
+	if err := r.Get(ctx, types.NamespacedName{Name: "console", Namespace: "openshift-console"}, consoleRoute); err == nil {
+		if host, ok, _ := unstructured.NestedString(consoleRoute.Object, "spec", "host"); ok {
+			uiConfig.Status.ExposedURL = "https://" + host + "/oc-mirror/targets"
+		} else {
+			uiConfig.Status.ExposedURL = "https://<console-host>/oc-mirror/targets"
+		}
+	} else {
+		uiConfig.Status.ExposedURL = "https://<console-host>/oc-mirror/targets"
+	}
 
 	return nil
 }
@@ -867,6 +924,7 @@ func (r *UIConfigurationReconciler) handleDeletion(ctx context.Context, uic *mir
 
 			_ = r.Delete(ctx, &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: dashboardName}}, client.PropagationPolicy(metav1.DeletePropagationBackground))
 			_ = r.Delete(ctx, &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: dashboardName}}, client.PropagationPolicy(metav1.DeletePropagationBackground))
+			_ = r.Delete(ctx, &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: dashboardName + "-auth-delegator"}}, client.PropagationPolicy(metav1.DeletePropagationBackground))
 		}
 
 		controllerutil.RemoveFinalizer(uic, uiConfigurationFinalizer)

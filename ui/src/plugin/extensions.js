@@ -1,6 +1,5 @@
-import type { Extension } from '@openshift-console/dynamic-plugin-sdk/lib/types';
-
-const extensions: Extension[] = [
+/** @type {import('@openshift-console/dynamic-plugin-sdk/lib/types').Extension[]} */
+const extensions = [
   {
     type: 'console.navigation/section',
     properties: {
@@ -52,4 +51,4 @@ const extensions: Extension[] = [
   },
 ];
 
-export default extensions;
+module.exports = extensions;

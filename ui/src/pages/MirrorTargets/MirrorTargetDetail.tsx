@@ -15,12 +15,14 @@ import {
   Spinner,
   Title,
 } from '@patternfly/react-core';
-import { Link, useParams } from 'react-router-dom';
-import { getTarget, triggerRecollect } from '../../api/client';
+import { Link, useParams, RouteComponentProps } from 'react-router-dom';
+import { getTarget, triggerRecollect, deleteImageSet } from '../../api/client';
 import type { TargetDetail } from '../../api/types';
 
-export const MirrorTargetDetail: React.FC = () => {
-  const { name } = useParams<{ name: string }>();
+export const MirrorTargetDetail: React.FC<Partial<RouteComponentProps<{ name: string }>>> = ({ match }) => {
+  const params = useParams<{ name: string }>();
+  const name = match?.params?.name || params.name;
+  console.log('MirrorTargetDetail rendering, name:', name);
   const [target, setTarget] = useState<TargetDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -49,6 +51,17 @@ export const MirrorTargetDetail: React.FC = () => {
     }
   };
 
+  const handleDelete = async (namespace: string, isName: string) => {
+    if (!window.confirm(`Are you sure you want to delete ImageSet ${isName}?`)) return;
+    try {
+      await deleteImageSet(namespace, isName);
+      alert(`ImageSet ${isName} deleted`);
+      load();
+    } catch (e) {
+      alert(`Failed: ${(e as Error).message}`);
+    }
+  };
+
   if (loading && !target) {
     return <PageSection><Spinner /></PageSection>;
   }
@@ -65,13 +78,17 @@ export const MirrorTargetDetail: React.FC = () => {
 
   return (
     <PageSection>
-      <Link to="/targets">← Back to MirrorTargets</Link>
+      <Link to="/oc-mirror/targets">← Back to MirrorTargets</Link>
       <Title headingLevel="h1" style={{ margin: '1rem 0' }}>{target.name}</Title>
 
       <Card style={{ marginBottom: '1rem' }}>
         <CardTitle>Overview</CardTitle>
         <CardBody>
           <DescriptionList isHorizontal>
+            <DescriptionListGroup>
+              <DescriptionListTerm>Namespace</DescriptionListTerm>
+              <DescriptionListDescription>{target.namespace}</DescriptionListDescription>
+            </DescriptionListGroup>
             <DescriptionListGroup>
               <DescriptionListTerm>Registry</DescriptionListTerm>
               <DescriptionListDescription>{target.registry}</DescriptionListDescription>
@@ -83,6 +100,11 @@ export const MirrorTargetDetail: React.FC = () => {
                 <span style={{ color: target.failedImages > 0 ? 'var(--pf-v5-global--danger-color--100)' : undefined }}>
                   {target.failedImages}
                 </span>
+                {(target.failedImages > 0 || target.pendingImages > 0) && (
+                  <Link to={`/oc-mirror/targets/${target.name}/failures`} style={{ marginLeft: '1rem' }}>
+                    <Button variant="link" isInline size="sm">View Details</Button>
+                  </Link>
+                )}
               </DescriptionListDescription>
             </DescriptionListGroup>
           </DescriptionList>
@@ -130,13 +152,18 @@ export const MirrorTargetDetail: React.FC = () => {
                       variant="secondary"
                       size="sm"
                       style={{ marginLeft: '1rem' }}
-                      onClick={() => handleRecollect(/* namespace from URL */ 'default', is.name)}
+                      onClick={() => handleRecollect(target.namespace, is.name)}
                     >
                       Recollect
                     </Button>
-                    <Link to={`/imagesets/${is.name}`} style={{ marginLeft: '0.5rem' }}>
-                      <Button variant="link" size="sm">Edit</Button>
-                    </Link>
+                    <Button
+                      variant="danger"
+                      size="sm"
+                      style={{ marginLeft: '0.5rem' }}
+                      onClick={() => handleDelete(target.namespace, is.name)}
+                    >
+                      Delete
+                    </Button>
                   </div>
                 </div>
               </CardBody>
@@ -149,11 +176,24 @@ export const MirrorTargetDetail: React.FC = () => {
         <Card style={{ marginBottom: '1rem' }}>
           <CardTitle>Catalogs</CardTitle>
           <CardBody>
-            {target.catalogs.map((c) => (
-              <div key={c.slug} style={{ marginBottom: '0.5rem' }}>
-                <Link to={`/targets/${target.name}/catalogs/${c.slug}`}>
-                  {c.slug}
-                </Link>
+            <Alert variant="info" title="Catalog Browser" isInline style={{ marginBottom: '1rem' }}>
+              Select an ImageSet to edit catalog package filters.
+            </Alert>
+            {target.imageSets.map((is) => (
+              <div key={is.name} style={{ marginBottom: '1rem' }}>
+                <Title headingLevel="h4">{is.name}</Title>
+                <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', marginTop: '0.5rem' }}>
+                  {target.catalogs.map((c) => (
+                    <Link
+                      key={c.slug}
+                      to={`/oc-mirror/targets/${target.name}/namespaces/${target.namespace}/imagesets/${is.name}/catalogs/${c.slug}`}
+                    >
+                      <Button variant="link" size="sm" style={{ paddingLeft: 0 }}>
+                        Browse {c.slug}
+                      </Button>
+                    </Link>
+                  ))}
+                </div>
               </div>
             ))}
           </CardBody>
