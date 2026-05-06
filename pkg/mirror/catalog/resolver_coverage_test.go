@@ -29,6 +29,48 @@ import (
 	"github.com/regclient/regclient/types/ref"
 )
 
+// tarEntry describes a single entry in a test gzip-compressed tar archive.
+type tarEntry struct {
+	name     string
+	typeflag byte
+	size     int64
+	body     []byte
+}
+
+// makeGzipTar creates an in-memory gzip-compressed tar archive for use in tests.
+func makeGzipTar(t *testing.T, entries []tarEntry) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	for _, e := range entries {
+		hdr := &tar.Header{
+			Typeflag: e.typeflag,
+			Name:     e.name,
+			Size:     e.size,
+			Mode:     0o644,
+		}
+		if e.typeflag == tar.TypeDir {
+			hdr.Mode = 0o755
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatalf("write header: %v", err)
+		}
+		if e.typeflag == tar.TypeReg && e.size > 0 {
+			if _, err := tw.Write(e.body); err != nil {
+				t.Fatalf("write body: %v", err)
+			}
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("close tar: %v", err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatalf("close gz: %v", err)
+	}
+	return buf.Bytes()
+}
+
 // ---------------------------------------------------------------------------
 // New
 // ---------------------------------------------------------------------------
@@ -963,57 +1005,6 @@ func TestExtractImagesWithBundles_ManyBundlesForSameImage(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// classifyLayer — additional edge cases
-// ---------------------------------------------------------------------------
-
-func TestClassifyLayer_LeadingDotSlash(t *testing.T) {
-	body := []byte("data")
-	data := makeGzipTar(t, []tarEntry{
-		{name: "./configs/foo/catalog.yaml", typeflag: tar.TypeReg, size: int64(len(body)), body: body},
-	})
-	skip, _, _, err := classifyLayer(bytes.NewReader(data))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !skip {
-		t.Error("leading ./ should be stripped, layer should be skippable")
-	}
-}
-
-func TestClassifyLayer_CacheOnlyLayer(t *testing.T) {
-	body := []byte("cache-data")
-	data := makeGzipTar(t, []tarEntry{
-		{name: "tmp/cache/db.pogreb", typeflag: tar.TypeReg, size: int64(len(body)), body: body},
-	})
-	skip, sz, _, err := classifyLayer(bytes.NewReader(data))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !skip {
-		t.Error("cache-only layer should be skippable")
-	}
-	if sz != int64(len(body)) {
-		t.Errorf("expected size %d, got %d", len(body), sz)
-	}
-}
-
-func TestClassifyLayer_HardlinkInConfigs(t *testing.T) {
-	data := makeGzipTar(t, []tarEntry{
-		{name: "configs/foo/hardlink", typeflag: tar.TypeLink},
-	})
-	skip, _, reject, err := classifyLayer(bytes.NewReader(data))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if skip {
-		t.Error("hardlinks should not be skippable")
-	}
-	if !strings.Contains(reject, "non-regular file") {
-		t.Errorf("expected non-regular file in reject, got %q", reject)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // FilterFBC — additional edge cases for coverage
 // ---------------------------------------------------------------------------
 
@@ -1311,39 +1302,6 @@ func TestExtractFBCLayer_CorruptedTar(t *testing.T) {
 	count := extractFBCLayer(bytes.NewReader(buf.Bytes()), fsMap)
 	if count != 0 {
 		t.Errorf("expected 0 for corrupted tar, got %d", count)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// classifyLayer — corrupted tar
-// ---------------------------------------------------------------------------
-
-func TestClassifyLayer_CorruptedTar(t *testing.T) {
-	var buf bytes.Buffer
-	gz := gzip.NewWriter(&buf)
-	_, _ = gz.Write([]byte("not a tar"))
-	_ = gz.Close()
-
-	_, _, _, err := classifyLayer(bytes.NewReader(buf.Bytes()))
-	if err == nil {
-		t.Fatal("expected tar error for corrupted data")
-	}
-}
-
-func TestClassifyLayer_EmptyArchive(t *testing.T) {
-	// Valid gzip+tar with zero entries.
-	var buf bytes.Buffer
-	gz := gzip.NewWriter(&buf)
-	tw := tar.NewWriter(gz)
-	_ = tw.Close()
-	_ = gz.Close()
-
-	skip, _, _, err := classifyLayer(bytes.NewReader(buf.Bytes()))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if skip {
-		t.Error("empty archive (no files) should not be skippable")
 	}
 }
 

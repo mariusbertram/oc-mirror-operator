@@ -1193,13 +1193,6 @@ func pointerTo[T any](v T) *T {
 	return &v
 }
 
-// resourcePtr parses a resource quantity string and returns a pointer to it.
-// Used for EmptyDir size limits.
-func resourcePtr(q string) *resource.Quantity {
-	v := resource.MustParse(q)
-	return &v
-}
-
 // clusterNoProxy contains address patterns that always bypass the proxy so that
 // pod-to-service traffic via cluster-internal FQDNs is never routed through an
 // external proxy.  Kept in sync with the controller's clusterNoProxy.

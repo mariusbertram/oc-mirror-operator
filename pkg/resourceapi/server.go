@@ -265,16 +265,6 @@ func (s *Server) RunOn(ctx context.Context, addr string) {
 	_ = srv.Shutdown(shutdownCtx)
 }
 
-// RegisterPluginRoutes registers the Console Plugin static asset routes onto
-// the given ServeMux. Assets are served from the embedded plugin/ directory.
-func RegisterPluginRoutes(serveMux *http.ServeMux) {
-	pluginSub, err := fs.Sub(pluginFS, "plugin")
-	if err != nil {
-		return
-	}
-	serveMux.Handle("/", http.FileServer(http.FS(pluginSub)))
-}
-
 // --- JSON API handlers ---
 
 func (s *Server) handleTargetsList(w http.ResponseWriter, r *http.Request) {

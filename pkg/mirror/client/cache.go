@@ -47,22 +47,6 @@ func (cc *ClientCache) GetOrCreate(insecureHosts []string, authConfigPath string
 	return client, nil
 }
 
-// Close closes all cached clients.
-func (cc *ClientCache) Close() {
-	cc.mu.Lock()
-	defer cc.mu.Unlock()
-	cc.cache = make(map[string]*MirrorClient)
-	cc.lastRefresh = make(map[string]time.Time)
-}
-
-// Reset clears the cache and all refresh times.
-func (cc *ClientCache) Reset() {
-	cc.mu.Lock()
-	defer cc.mu.Unlock()
-	cc.cache = make(map[string]*MirrorClient)
-	cc.lastRefresh = make(map[string]time.Time)
-}
-
 // RefreshClient forces a refresh of the cached client for the given authConfigPath.
 // This is useful when auth config has changed.
 func (cc *ClientCache) RefreshClient(insecureHosts []string, authConfigPath string) (*MirrorClient, error) {

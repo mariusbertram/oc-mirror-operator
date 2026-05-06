@@ -57,19 +57,6 @@ var _ = Describe("Manager Coverage", func() {
 		})
 	})
 
-	Context("resourcePtr", func() {
-		It("parses a quantity string", func() {
-			q := resourcePtr("10Gi")
-			Expect(q).NotTo(BeNil())
-			Expect(q.String()).To(Equal("10Gi"))
-		})
-		It("parses a small quantity", func() {
-			q := resourcePtr("500Mi")
-			Expect(q).NotTo(BeNil())
-			Expect(q.String()).To(Equal("500Mi"))
-		})
-	})
-
 	Context("containsString", func() {
 		It("returns true when string is in slice", func() {
 			Expect(containsString([]string{"a", "b", "c"}, "b")).To(BeTrue())

@@ -721,22 +721,6 @@ var _ = Describe("DeleteBuildJob", func() {
 	})
 })
 
-// ---------- New / MustNew ----------
-
-var _ = Describe("MustNew", func() {
-	It("panics when OPERATOR_IMAGE is not set", func() {
-		GinkgoT().Setenv(OperatorImageEnvVar, "")
-		Expect(func() { MustNew() }).To(Panic())
-	})
-
-	It("returns a manager when OPERATOR_IMAGE is set", func() {
-		GinkgoT().Setenv(OperatorImageEnvVar, "registry.example.com/operator:v1")
-		var m *CatalogBuildManager
-		Expect(func() { m = MustNew() }).NotTo(Panic())
-		Expect(m).NotTo(BeNil())
-	})
-})
-
 // ---------- helpers ----------
 
 func envToMap(envs []corev1.EnvVar) map[string]string {

@@ -40,62 +40,6 @@ const configsPath = "configs/"
 // that contains it must be either skipped or whited out.
 const cachePath = "tmp/cache/"
 
-// classifyLayer streams a gzipped tar layer and returns true when *every*
-// regular-file entry in the layer lies under either configsPath or cachePath.
-// Such layers can be safely skipped when building a filtered catalog overlay,
-// because the new overlay layer fully replaces both directories. Directory
-// entries are ignored (a layer that only ships directories has no payload to
-// preserve). Hardlinks/symlinks targeting outside paths are treated as
-// non-skippable to stay on the safe side.
-//
-// totalSize is the sum of regular-file sizes inside configs/ + tmp/cache/
-// (used only for logging).
-//
-// firstReject (when non-empty) is the first tar entry name that disqualified
-// the layer from being skippable — useful for diagnostic logging.
-func classifyLayer(r io.Reader) (skippable bool, totalSize int64, firstReject string, err error) {
-	gz, err := gzip.NewReader(r)
-	if err != nil {
-		return false, 0, "", fmt.Errorf("gzip: %w", err)
-	}
-	defer func() { _ = gz.Close() }()
-
-	tr := tar.NewReader(gz)
-	sawAny := false
-	for {
-		hdr, nextErr := tr.Next()
-		if nextErr == io.EOF {
-			break
-		}
-		if nextErr != nil {
-			return false, 0, "", fmt.Errorf("tar: %w", nextErr)
-		}
-
-		name := strings.TrimPrefix(hdr.Name, "./")
-
-		// Pure directory entries carry no payload — ignore for classification.
-		if hdr.Typeflag == tar.TypeDir {
-			continue
-		}
-
-		// Anything outside the two known FBC paths disqualifies the layer.
-		if !strings.HasPrefix(name, configsPath) && !strings.HasPrefix(name, cachePath) {
-			return false, 0, name, nil
-		}
-
-		// Refuse to skip layers that contain hardlinks/symlinks (their targets
-		// could escape configs/) or other non-regular file types.
-		if hdr.Typeflag != tar.TypeReg {
-			return false, 0, name + " (non-regular file)", nil
-		}
-
-		sawAny = true
-		totalSize += hdr.Size
-	}
-
-	return sawAny, totalSize, "", nil
-}
-
 // classifyResult holds the output of classifying all layers in a catalog image.
 type classifyResult struct {
 	keptLayers  []descriptor.Descriptor

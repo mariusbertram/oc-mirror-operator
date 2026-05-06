@@ -349,16 +349,6 @@ func CatalogSlug(source string) string {
 	return "unknown"
 }
 
-// FindCatalog returns the CatalogInfo matching the given slug.
-func FindCatalog(catalogs []CatalogInfo, slug string) (CatalogInfo, bool) {
-	for _, c := range catalogs {
-		if CatalogSlug(c.SourceCatalog) == slug {
-			return c, true
-		}
-	}
-	return CatalogInfo{}, false
-}
-
 // --- Catalog packages response types ---
 
 // CatalogPackagesResponse is the JSON envelope for the packages endpoint.
