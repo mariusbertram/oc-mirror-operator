@@ -30,7 +30,9 @@ async function get<T>(path: string): Promise<T> {
     console.error('API GET failed:', _baseUrl + path, resp.status, resp.statusText);
     throw new Error(`${resp.status} ${resp.statusText}: ${path}`);
   }
-  return resp.json() as Promise<T>;
+  const text = await resp.text();
+  if (!text) return {} as T;
+  return JSON.parse(text) as T;
 }
 
 async function patch<T>(path: string, body: unknown): Promise<T> {
@@ -45,7 +47,9 @@ async function patch<T>(path: string, body: unknown): Promise<T> {
     console.error('API PATCH failed:', _baseUrl + path, resp.status, resp.statusText, text);
     throw new Error(`${resp.status} ${resp.statusText}: ${text}`);
   }
-  return resp.json() as Promise<T>;
+  const text = await resp.text();
+  if (!text) return {} as T;
+  return JSON.parse(text) as T;
 }
 
 async function post<T>(path: string, body: unknown): Promise<T> {
@@ -60,7 +64,9 @@ async function post<T>(path: string, body: unknown): Promise<T> {
     console.error('API POST failed:', _baseUrl + path, resp.status, resp.statusText, text);
     throw new Error(`${resp.status} ${resp.statusText}: ${text}`);
   }
-  return resp.json() as Promise<T>;
+  const text = await resp.text();
+  if (!text) return {} as T;
+  return JSON.parse(text) as T;
 }
 
 async function del(path: string): Promise<void> {
@@ -71,6 +77,8 @@ async function del(path: string): Promise<void> {
     console.error('API DELETE failed:', _baseUrl + path, resp.status, resp.statusText, text);
     throw new Error(`${resp.status} ${resp.statusText}: ${text}`);
   }
+  // Consume the body even for DELETE to avoid potential fetch issues
+  await resp.text();
 }
 
 // --- Read API ---

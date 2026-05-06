@@ -60,13 +60,13 @@ func NewServerClusterWide(c client.Client) *Server {
 
 // LookupMirrorTarget fetches a MirrorTarget by name. In namespace-bound mode the
 // stored namespace is used; in cluster-wide mode all namespaces are searched.
-func (s *Server) LookupMirrorTarget(ctx context.Context, name string) (*mirrorv1alpha1.MirrorTarget, error) {
+func (s *Server) LookupMirrorTarget(ctx context.Context, c client.Client, name string) (*mirrorv1alpha1.MirrorTarget, error) {
 	if s.namespace != "" {
 		mt := &mirrorv1alpha1.MirrorTarget{}
-		return mt, s.client.Get(ctx, client.ObjectKey{Name: name, Namespace: s.namespace}, mt)
+		return mt, c.Get(ctx, client.ObjectKey{Name: name, Namespace: s.namespace}, mt)
 	}
 	list := &mirrorv1alpha1.MirrorTargetList{}
-	if err := s.client.List(ctx, list); err != nil {
+	if err := c.List(ctx, list); err != nil {
 		return nil, err
 	}
 	for i := range list.Items {
@@ -275,13 +275,18 @@ func RegisterPluginRoutes(serveMux *http.ServeMux) {
 // --- JSON API handlers ---
 
 func (s *Server) handleTargetsList(w http.ResponseWriter, r *http.Request) {
+	c := s.clientForRequest(r)
 	list := &mirrorv1alpha1.MirrorTargetList{}
 	listOpts := []client.ListOption{}
 	if s.namespace != "" {
 		listOpts = append(listOpts, client.InNamespace(s.namespace))
 	}
-	if err := s.client.List(r.Context(), list, listOpts...); err != nil {
-		http.Error(w, fmt.Sprintf("failed to list MirrorTargets: %v", err), http.StatusInternalServerError)
+	if err := c.List(r.Context(), list, listOpts...); err != nil {
+		if apierrors.IsForbidden(err) {
+			http.Error(w, "forbidden: insufficient permissions", http.StatusForbidden)
+		} else {
+			http.Error(w, fmt.Sprintf("failed to list MirrorTargets: %v", err), http.StatusInternalServerError)
+		}
 		return
 	}
 
@@ -302,12 +307,19 @@ func (s *Server) handleTargetsList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
+	c := s.clientForRequest(r)
 	vars := mux.Vars(r)
 	mtName := vars["mt"]
 
-	mt, err := s.LookupMirrorTarget(r.Context(), mtName)
+	mt, err := s.LookupMirrorTarget(r.Context(), c, mtName)
 	if err != nil {
-		http.Error(w, "MirrorTarget not found", http.StatusNotFound)
+		if apierrors.IsNotFound(err) {
+			http.Error(w, "MirrorTarget not found", http.StatusNotFound)
+		} else if apierrors.IsForbidden(err) {
+			http.Error(w, "forbidden: insufficient permissions", http.StatusForbidden)
+		} else {
+			http.Error(w, fmt.Sprintf("get MirrorTarget: %v", err), http.StatusInternalServerError)
+		}
 		return
 	}
 	ns := mt.Namespace
@@ -316,13 +328,13 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
 	cmName := fmt.Sprintf("oc-mirror-%s-resources", mtName)
 	cm := &corev1.ConfigMap{}
 	var resources []ResourceLink
-	if err := s.client.Get(r.Context(), client.ObjectKey{Name: cmName, Namespace: ns}, cm); err == nil {
+	if err := c.Get(r.Context(), client.ObjectKey{Name: cmName, Namespace: ns}, cm); err == nil {
 		resources = buildResourceLinks(mtName, cm)
 	}
 
 	// Add signature resource link if the signatures ConfigMap exists and has data.
 	sigCM := &corev1.ConfigMap{}
-	if err := s.client.Get(r.Context(), client.ObjectKey{Name: mtName + "-signatures", Namespace: ns}, sigCM); err == nil && len(sigCM.BinaryData) > 0 {
+	if err := c.Get(r.Context(), client.ObjectKey{Name: mtName + "-signatures", Namespace: ns}, sigCM); err == nil && len(sigCM.BinaryData) > 0 {
 		resources = append(resources, ResourceLink{
 			Name: fmt.Sprintf("Signatures (%d releases)", len(sigCM.BinaryData)),
 			URL:  fmt.Sprintf("/api/v1/targets/%s/signatures.yaml", mtName),
@@ -333,7 +345,7 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
 	// Discover per-catalog ConfigMaps to build catalog summaries.
 	catalogCMs := &corev1.ConfigMapList{}
 	var catalogs []CatalogSummary
-	if err := s.client.List(r.Context(), catalogCMs,
+	if err := c.List(r.Context(), catalogCMs,
 		client.InNamespace(ns),
 		client.MatchingLabels{"oc-mirror.openshift.io/mirrortarget": mtName},
 	); err == nil {
@@ -403,19 +415,28 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleImageFailures(w http.ResponseWriter, r *http.Request) {
+	c := s.clientForRequest(r)
 	vars := mux.Vars(r)
 	mtName := vars["mt"]
 
-	mt, err := s.LookupMirrorTarget(r.Context(), mtName)
+	mt, err := s.LookupMirrorTarget(r.Context(), c, mtName)
 	if err != nil {
-		http.Error(w, "MirrorTarget not found", http.StatusNotFound)
+		if apierrors.IsForbidden(err) {
+			http.Error(w, "forbidden: insufficient permissions", http.StatusForbidden)
+		} else {
+			http.Error(w, "MirrorTarget not found", http.StatusNotFound)
+		}
 		return
 	}
 
 	// Load the consolidated ImageState for the MirrorTarget.
-	state, err := imagestate.LoadForTarget(r.Context(), s.client, mt.Namespace, mtName)
+	state, err := imagestate.LoadForTarget(r.Context(), c, mt.Namespace, mtName)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to load image state: %v", err), http.StatusInternalServerError)
+		if apierrors.IsForbidden(err) {
+			http.Error(w, "forbidden: insufficient permissions", http.StatusForbidden)
+		} else {
+			http.Error(w, fmt.Sprintf("Failed to load image state: %v", err), http.StatusInternalServerError)
+		}
 		return
 	}
 
@@ -484,14 +505,16 @@ func (s *Server) handleLegacyRedirect(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleIDMS(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	mtName := vars["mt"]
-	ns := s.resolveNamespace(r, mtName)
+	c := s.clientForRequest(r)
+	ns := s.resolveNamespace(r, c, mtName)
 	s.serveConfigMapResource(w, r, ns, fmt.Sprintf("oc-mirror-%s-resources", mtName), "idms.yaml")
 }
 
 func (s *Server) handleITMS(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	mtName := vars["mt"]
-	ns := s.resolveNamespace(r, mtName)
+	c := s.clientForRequest(r)
+	ns := s.resolveNamespace(r, c, mtName)
 	s.serveConfigMapResource(w, r, ns, fmt.Sprintf("oc-mirror-%s-resources", mtName), "itms.yaml")
 }
 
@@ -499,7 +522,8 @@ func (s *Server) handleCatalogSource(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	mtName := vars["mt"]
 	slug := vars["slug"]
-	ns := s.resolveNamespace(r, mtName)
+	c := s.clientForRequest(r)
+	ns := s.resolveNamespace(r, c, mtName)
 	s.serveConfigMapResource(w, r, ns, fmt.Sprintf("oc-mirror-%s-resources", mtName), fmt.Sprintf("catalogsource-%s.yaml", slug))
 }
 
@@ -507,7 +531,8 @@ func (s *Server) handleClusterCatalog(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	mtName := vars["mt"]
 	slug := vars["slug"]
-	ns := s.resolveNamespace(r, mtName)
+	c := s.clientForRequest(r)
+	ns := s.resolveNamespace(r, c, mtName)
 	s.serveConfigMapResource(w, r, ns, fmt.Sprintf("oc-mirror-%s-resources", mtName), fmt.Sprintf("clustercatalog-%s.yaml", slug))
 }
 
@@ -515,7 +540,8 @@ func (s *Server) handleFilteredCatalogPackages(w http.ResponseWriter, r *http.Re
 	vars := mux.Vars(r)
 	mtName := vars["mt"]
 	slug := vars["slug"]
-	ns := s.resolveNamespace(r, mtName)
+	c := s.clientForRequest(r)
+	ns := s.resolveNamespace(r, c, mtName)
 	s.serveConfigMapResource(w, r, ns, fmt.Sprintf("oc-mirror-%s-%s-packages", mtName, slug), "packages.json")
 }
 
@@ -523,23 +549,33 @@ func (s *Server) handleUpstreamCatalogPackages(w http.ResponseWriter, r *http.Re
 	vars := mux.Vars(r)
 	mtName := vars["mt"]
 	slug := vars["slug"]
-	ns := s.resolveNamespace(r, mtName)
+	c := s.clientForRequest(r)
+	ns := s.resolveNamespace(r, c, mtName)
 	s.serveConfigMapResource(w, r, ns, fmt.Sprintf("oc-mirror-%s-%s-upstream-packages", mtName, slug), "packages.json")
 }
 
 func (s *Server) handleSignatures(w http.ResponseWriter, r *http.Request) {
+	c := s.clientForRequest(r)
 	vars := mux.Vars(r)
 	mtName := vars["mt"]
 
-	mt, err := s.LookupMirrorTarget(r.Context(), mtName)
+	mt, err := s.LookupMirrorTarget(r.Context(), c, mtName)
 	if err != nil {
-		http.Error(w, "MirrorTarget not found", http.StatusNotFound)
+		if apierrors.IsForbidden(err) {
+			http.Error(w, "forbidden: insufficient permissions", http.StatusForbidden)
+		} else {
+			http.Error(w, "MirrorTarget not found", http.StatusNotFound)
+		}
 		return
 	}
 
 	cm := &corev1.ConfigMap{}
-	if err := s.client.Get(r.Context(), client.ObjectKey{Name: mtName + "-signatures", Namespace: mt.Namespace}, cm); err != nil {
-		http.Error(w, "Signatures not found", http.StatusNotFound)
+	if err := c.Get(r.Context(), client.ObjectKey{Name: mtName + "-signatures", Namespace: mt.Namespace}, cm); err != nil {
+		if apierrors.IsForbidden(err) {
+			http.Error(w, "forbidden: insufficient permissions", http.StatusForbidden)
+		} else {
+			http.Error(w, "Signatures not found", http.StatusNotFound)
+		}
 		return
 	}
 
@@ -564,11 +600,11 @@ func (s *Server) handleSignatures(w http.ResponseWriter, r *http.Request) {
 // resolveNamespace returns the server's fixed namespace, or looks up the
 // MirrorTarget's namespace in cluster-wide mode. Falls back to "" on error so
 // the downstream ConfigMap Get will fail naturally with a not-found response.
-func (s *Server) resolveNamespace(r *http.Request, mtName string) string {
+func (s *Server) resolveNamespace(r *http.Request, c client.Client, mtName string) string {
 	if s.namespace != "" {
 		return s.namespace
 	}
-	mt, err := s.LookupMirrorTarget(r.Context(), mtName)
+	mt, err := s.LookupMirrorTarget(r.Context(), c, mtName)
 	if err != nil {
 		return ""
 	}
@@ -576,10 +612,15 @@ func (s *Server) resolveNamespace(r *http.Request, mtName string) string {
 }
 
 func (s *Server) serveConfigMapResource(w http.ResponseWriter, r *http.Request, namespace, cmName, key string) {
+	c := s.clientForRequest(r)
 	cm := &corev1.ConfigMap{}
-	err := s.client.Get(r.Context(), client.ObjectKey{Name: cmName, Namespace: namespace}, cm)
+	err := c.Get(r.Context(), client.ObjectKey{Name: cmName, Namespace: namespace}, cm)
 	if err != nil {
-		http.Error(w, "Resource not found", http.StatusNotFound)
+		if apierrors.IsForbidden(err) {
+			http.Error(w, "forbidden: insufficient permissions", http.StatusForbidden)
+		} else {
+			http.Error(w, "Resource not found", http.StatusNotFound)
+		}
 		return
 	}
 
@@ -683,17 +724,27 @@ func (s *Server) handlePatchCatalogPackages(w http.ResponseWriter, r *http.Reque
 		includeSet[p] = true
 	}
 
+	found := false
 	for i, op := range is.Spec.Mirror.Operators {
-		catalogSlug := catalogSlugFromSource(op.Catalog)
+		catalogSlug := mirrorresources.CatalogSlug(op.Catalog)
 		if catalogSlug != slug {
 			continue
 		}
+		found = true
+		fmt.Printf("Patching ImageSet %s/%s catalog %s (slug %s) with %d packages\n", namespace, name, op.Catalog, slug, len(patch.Include))
 		// Rebuild the package list from the include set.
 		var packages []mirrorv1alpha1.IncludePackage
 		for _, pkg := range patch.Include {
 			packages = append(packages, mirrorv1alpha1.IncludePackage{Name: pkg})
 		}
 		is.Spec.Mirror.Operators[i].Packages = packages
+	}
+
+	if !found {
+		fmt.Printf("Warning: Catalog slug %q not found in ImageSet %s/%s\n", slug, namespace, name)
+		for _, op := range is.Spec.Mirror.Operators {
+			fmt.Printf("  Available catalog: %s (slug: %s)\n", op.Catalog, mirrorresources.CatalogSlug(op.Catalog))
+		}
 	}
 
 	if err := c.Update(r.Context(), is); err != nil {
@@ -768,14 +819,6 @@ func (s *Server) handleDeleteImageSet(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
-}
-
-// catalogSlugFromSource derives the catalog slug from the catalog source image
-// in the same way the manager does — last path segment, colon replaced by dash.
-func catalogSlugFromSource(source string) string {
-	parts := strings.Split(source, "/")
-	last := parts[len(parts)-1]
-	return strings.ReplaceAll(last, ":", "-")
 }
 
 // spaHandler implements http.Handler to serve an SPA.

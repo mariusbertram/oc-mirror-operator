@@ -388,7 +388,7 @@ var _ = Describe("ResourceAPI Server", func() {
 			server := resourceapi.NewServer(c, ns)
 
 			ctx := context.Background()
-			found, err := server.LookupMirrorTarget(ctx, mtName)
+			found, err := server.LookupMirrorTarget(ctx, c, mtName)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(found).NotTo(BeNil())
 			Expect(found.Name).To(Equal(mtName))
@@ -404,7 +404,7 @@ var _ = Describe("ResourceAPI Server", func() {
 			server := resourceapi.NewServer(c, ns)
 
 			ctx := context.Background()
-			found, err := server.LookupMirrorTarget(ctx, "nonexistent")
+			found, err := server.LookupMirrorTarget(ctx, c, "nonexistent")
 			Expect(err).To(HaveOccurred())
 			Expect(found).NotTo(BeNil()) // LookupMirrorTarget returns empty object on error
 		})
@@ -438,7 +438,7 @@ var _ = Describe("ResourceAPI Server", func() {
 			server := resourceapi.NewServerClusterWide(c)
 
 			ctx := context.Background()
-			found, err := server.LookupMirrorTarget(ctx, mtName)
+			found, err := server.LookupMirrorTarget(ctx, c, mtName)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(found).NotTo(BeNil())
 			Expect(found.Name).To(Equal(mtName))
@@ -464,7 +464,7 @@ var _ = Describe("ResourceAPI Server", func() {
 			server := resourceapi.NewServerClusterWide(c)
 
 			ctx := context.Background()
-			found, err := server.LookupMirrorTarget(ctx, "nonexistent")
+			found, err := server.LookupMirrorTarget(ctx, c, "nonexistent")
 			Expect(err).To(HaveOccurred())
 			Expect(found).To(BeNil())
 		})
@@ -515,13 +515,13 @@ var _ = Describe("ResourceAPI Server", func() {
 			ctx := context.Background()
 
 			By("finding target-a in namespace-a")
-			found1, err := server.LookupMirrorTarget(ctx, "target-a")
+			found1, err := server.LookupMirrorTarget(ctx, c, "target-a")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(found1.Name).To(Equal("target-a"))
 			Expect(found1.Namespace).To(Equal("namespace-a"))
 
 			By("finding target-b in namespace-b")
-			found2, err := server.LookupMirrorTarget(ctx, "target-b")
+			found2, err := server.LookupMirrorTarget(ctx, c, "target-b")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(found2.Name).To(Equal("target-b"))
 			Expect(found2.Namespace).To(Equal("namespace-b"))

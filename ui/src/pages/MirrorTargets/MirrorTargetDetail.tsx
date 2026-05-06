@@ -108,7 +108,7 @@ export const MirrorTargetDetail: React.FC<Partial<RouteComponentProps<{ name: st
         <Tabs
           activeKey={activeTab}
           onSelect={(_e, k) => setActiveTab(k)}
-          style={{ borderBottom: '1px solid var(--pf-v5-global--BorderColor--100)', background: '#fff', paddingLeft: 24 }}
+          style={{ paddingLeft: 24 }}
         >
           <Tab eventKey="overview" title={<TabTitleText>Overview</TabTitleText>} />
           <Tab eventKey="imagesets" title={<TabTitleText>ImageSets ({target.imageSets.length})</TabTitleText>} />
