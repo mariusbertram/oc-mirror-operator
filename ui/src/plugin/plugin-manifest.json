@@ -7,7 +7,10 @@
     "MirrorTargetListPage": "./src/plugin/pages/MirrorTargetListPage",
     "MirrorTargetDetailPage": "./src/plugin/pages/MirrorTargetDetailPage",
     "FailedImagesPage": "./src/plugin/pages/FailedImagesPage",
-    "CatalogBrowserPage": "./src/plugin/pages/CatalogBrowserPage"
+    "FailedImagesAllPage": "./src/plugin/pages/FailedImagesAllPage",
+    "CatalogBrowserPage": "./src/plugin/pages/CatalogBrowserPage",
+    "ImageSetListPage": "./src/plugin/pages/ImageSetListPage",
+    "ImageSetDetailPage": "./src/plugin/pages/ImageSetDetailPage"
   },
   "dependencies": {
     "@console/pluginAPI": ">=4.14.0"

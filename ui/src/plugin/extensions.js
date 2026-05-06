@@ -1,5 +1,6 @@
 /** @type {import('@openshift-console/dynamic-plugin-sdk/lib/types').Extension[]} */
 const extensions = [
+  // ── Navigation section ──────────────────────────────────────────────────────
   {
     type: 'console.navigation/section',
     properties: {
@@ -8,6 +9,8 @@ const extensions = [
       insertBefore: 'compute',
     },
   },
+
+  // ── Nav items ───────────────────────────────────────────────────────────────
   {
     type: 'console.navigation/href',
     properties: {
@@ -18,11 +21,47 @@ const extensions = [
     },
   },
   {
+    type: 'console.navigation/href',
+    properties: {
+      id: 'oc-mirror-imagesets',
+      name: 'ImageSets',
+      href: '/oc-mirror/imagesets',
+      section: 'oc-mirror',
+    },
+  },
+  {
+    type: 'console.navigation/href',
+    properties: {
+      id: 'oc-mirror-failed',
+      name: 'Failed Images',
+      href: '/oc-mirror/failed',
+      section: 'oc-mirror',
+    },
+  },
+
+  // ── Routes ──────────────────────────────────────────────────────────────────
+  {
     type: 'console.page/route',
     properties: {
       exact: true,
       path: '/oc-mirror/targets',
       component: { $codeRef: 'MirrorTargetListPage' },
+    },
+  },
+  {
+    type: 'console.page/route',
+    properties: {
+      exact: true,
+      path: '/oc-mirror/imagesets',
+      component: { $codeRef: 'ImageSetListPage' },
+    },
+  },
+  {
+    type: 'console.page/route',
+    properties: {
+      exact: true,
+      path: '/oc-mirror/failed',
+      component: { $codeRef: 'FailedImagesAllPage' },
     },
   },
   {
@@ -39,6 +78,14 @@ const extensions = [
       exact: true,
       path: '/oc-mirror/targets/:name/failures',
       component: { $codeRef: 'FailedImagesPage' },
+    },
+  },
+  {
+    type: 'console.page/route',
+    properties: {
+      exact: true,
+      path: '/oc-mirror/targets/:targetName/imagesets/:imageSetName',
+      component: { $codeRef: 'ImageSetDetailPage' },
     },
   },
   {

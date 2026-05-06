@@ -1,0 +1,220 @@
+/* oc-mirror Console Plugin — custom design tokens and components.
+   Supplements @patternfly/react-core/dist/styles/base.css. */
+
+/* ── Status pill ─────────────────────────────────────────────── */
+.mirror-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.mirror-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.mirror-status--healthy { color: var(--pf-v5-global--success-color--100, #3e8635); }
+.mirror-status--healthy .mirror-status-dot { background: var(--pf-v5-global--success-color--100, #3e8635); }
+.mirror-status--mirroring { color: var(--pf-v5-global--info-color--100, #2b9af3); }
+.mirror-status--mirroring .mirror-status-dot { background: var(--pf-v5-global--info-color--100, #2b9af3); }
+.mirror-status--failed { color: var(--pf-v5-global--danger-color--100, #c9190b); }
+.mirror-status--failed .mirror-status-dot { background: var(--pf-v5-global--danger-color--100, #c9190b); }
+.mirror-status--unknown { color: var(--pf-v5-global--Color--200, #6a6e73); }
+.mirror-status--unknown .mirror-status-dot { background: var(--pf-v5-global--Color--200, #6a6e73); }
+
+/* ── Stacked progress bar ────────────────────────────────────── */
+.mirror-progress-stacked {
+  display: flex;
+  height: 8px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--pf-v5-global--BackgroundColor--200, #f0f0f0);
+  min-width: 120px;
+}
+.mirror-progress-stacked__bar {
+  height: 100%;
+  transition: width 200ms ease;
+}
+.mirror-progress-stacked__bar--mirrored {
+  background: var(--pf-v5-global--success-color--100, #3e8635);
+}
+.mirror-progress-stacked__bar--pending {
+  background: var(--pf-v5-global--warning-color--100, #f0ab00);
+}
+.mirror-progress-stacked__bar--failed {
+  background: var(--pf-v5-global--danger-color--100, #c9190b);
+}
+.mirror-progress-meta {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--pf-v5-global--Color--200, #6a6e73);
+  font-variant-numeric: tabular-nums;
+  margin-top: 2px;
+}
+
+/* ── Small tag chips ─────────────────────────────────────────── */
+.mirror-tag {
+  display: inline-block;
+  padding: 1px 6px;
+  background: var(--pf-v5-global--BackgroundColor--200, #f0f0f0);
+  border: 1px solid var(--pf-v5-global--BorderColor--100, #d2d2d2);
+  border-radius: 3px;
+  font-size: 11px;
+  color: var(--pf-v5-global--Color--200, #4f5255);
+  margin-right: 4px;
+  white-space: nowrap;
+}
+
+/* ── KV grid (detail pages) ──────────────────────────────────── */
+.mirror-kv {
+  display: grid;
+  grid-template-columns: minmax(120px, 180px) 1fr;
+  gap: 6px 20px;
+  font-size: 14px;
+}
+.mirror-kv dt {
+  color: var(--pf-v5-global--Color--200, #6a6e73);
+  font-weight: 400;
+}
+.mirror-kv dd {
+  margin: 0;
+}
+
+/* ── YAML viewer ─────────────────────────────────────────────── */
+.mirror-yaml {
+  background: #151515;
+  color: #f0f0f0;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 13px;
+  padding: 16px 20px;
+  border-radius: 4px;
+  white-space: pre;
+  overflow: auto;
+  line-height: 1.55;
+  max-height: 480px;
+}
+.mirror-yaml .yk { color: #73bcf7; }
+.mirror-yaml .ys { color: #a5d6ff; }
+.mirror-yaml .yn { color: #ffb86c; }
+.mirror-yaml .yb { color: #ff7b72; }
+.mirror-yaml .yc { color: #6a737d; font-style: italic; }
+
+/* ── Dual-pane catalog browser ───────────────────────────────── */
+.mirror-dual {
+  display: grid;
+  grid-template-columns: 1fr 56px 1fr;
+  gap: 12px;
+  align-items: start;
+}
+.mirror-dual-pane {
+  border: 1px solid var(--pf-v5-global--BorderColor--100, #d2d2d2);
+  border-radius: 4px;
+  display: flex;
+  flex-direction: column;
+  min-height: 520px;
+  max-height: 520px;
+  background: var(--pf-v5-global--BackgroundColor--100, #fff);
+}
+.mirror-dual-pane__header {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--pf-v5-global--BorderColor--100, #d2d2d2);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.mirror-dual-pane__header h3 {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0;
+}
+.mirror-dual-pane__body {
+  flex: 1;
+  overflow-y: auto;
+}
+.mirror-dual-pane__footer {
+  padding: 10px 14px;
+  border-top: 1px solid var(--pf-v5-global--BorderColor--100, #d2d2d2);
+  font-size: 12px;
+  background: var(--pf-v5-global--BackgroundColor--200, #f0f0f0);
+}
+
+.mirror-dual-row {
+  display: grid;
+  grid-template-columns: 22px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--pf-v5-global--BorderColor--100, #d2d2d2);
+  cursor: pointer;
+}
+.mirror-dual-row:hover { background: var(--pf-v5-global--BackgroundColor--200, #f0f0f0); }
+.mirror-dual-row--selected { background: var(--pf-v5-global--active-color--100, #e7f1fa) !important; }
+.mirror-dual-row__name { font-weight: 500; font-size: 13px; }
+.mirror-dual-row__meta { font-size: 11px; color: var(--pf-v5-global--Color--200, #6a6e73); margin-top: 1px; }
+
+.mirror-dual-channel {
+  display: grid;
+  grid-template-columns: 20px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px 7px 46px;
+  border-bottom: 1px solid var(--pf-v5-global--BorderColor--100, #d2d2d2);
+  background: var(--pf-v5-global--BackgroundColor--200, #f0f0f0);
+  font-size: 12px;
+}
+.mirror-dual-channel__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--pf-v5-global--Color--200, #6a6e73);
+  flex-shrink: 0;
+}
+.mirror-dual-channel__dot--imported {
+  background: var(--pf-v5-global--success-color--100, #3e8635);
+}
+
+.mirror-dual-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding-top: 80px;
+}
+.mirror-dual-action-btn {
+  width: 44px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  background: var(--pf-v5-global--BackgroundColor--100, #fff);
+  border: 1px solid var(--pf-v5-global--BorderColor--200, #b8bbbe);
+  border-radius: 3px;
+  cursor: pointer;
+  color: var(--pf-v5-global--Color--200, #6a6e73);
+  font-size: 16px;
+  transition: background 100ms, color 100ms;
+}
+.mirror-dual-action-btn:hover {
+  background: var(--pf-v5-global--primary-color--100, #0066cc);
+  color: #fff;
+  border-color: var(--pf-v5-global--primary-color--100, #0066cc);
+}
+.mirror-dual-action-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.mirror-dual-action-btn:disabled:hover {
+  background: var(--pf-v5-global--BackgroundColor--200, #f0f0f0);
+  color: var(--pf-v5-global--Color--200, #6a6e73);
+  border-color: var(--pf-v5-global--BorderColor--200, #b8bbbe);
+}
+.mirror-dual-spacer { height: 12px; }
+
+/* ── Misc layout helpers ─────────────────────────────────────── */
+.mirror-row { display: flex; align-items: center; gap: 8px; }
+.mirror-spacer { flex: 1; }
+.mirror-mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12px; }
