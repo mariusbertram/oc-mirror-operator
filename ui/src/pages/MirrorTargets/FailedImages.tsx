@@ -51,16 +51,16 @@ export const FailedImages: React.FC<FailedImagesProps> = ({ match, crossTarget }
         for (const res of results) {
           if (res.status === 'fulfilled') {
             const { target: tName, r } = res.value;
-            all.push(...r.failed.map((f) => ({ ...f, targetName: tName, isPermanent: true })));
-            all.push(...r.pending.map((f) => ({ ...f, targetName: tName, isPermanent: false })));
+            all.push(...(r.failed || []).map((f) => ({ ...f, targetName: tName, isPermanent: true })));
+            all.push(...(r.pending || []).map((f) => ({ ...f, targetName: tName, isPermanent: false })));
           }
         }
         setRows(all);
       } else {
         const r = await getImageFailures(name);
         setRows([
-          ...r.failed.map((f) => ({ ...f, isPermanent: true })),
-          ...r.pending.map((f) => ({ ...f, isPermanent: false })),
+          ...(r.failed || []).map((f) => ({ ...f, isPermanent: true })),
+          ...(r.pending || []).map((f) => ({ ...f, isPermanent: false })),
         ]);
       }
     } catch (e) {

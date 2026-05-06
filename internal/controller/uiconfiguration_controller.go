@@ -324,6 +324,7 @@ func (r *UIConfigurationReconciler) ensureDashboardDeployment(ctx context.Contex
 		ObjectMeta: metav1.ObjectMeta{Name: dashboardName, Namespace: r.Namespace},
 	}
 
+	l.Info("Ensuring dashboard deployment with pass-access-token and user:full scope")
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, dep, func() error {
 		dep.Spec.Replicas = &replicas
 		dep.Spec.Selector = &metav1.LabelSelector{
@@ -354,6 +355,8 @@ func (r *UIConfigurationReconciler) ensureDashboardDeployment(ctx context.Contex
 						"--tls-key=/etc/tls/private/tls.key",
 						"--cookie-secret-file=/etc/proxy/secrets/session_secret",
 						"--openshift-ca=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
+						"--pass-access-token",
+						"--scope=user:full",
 					},
 					Ports: []corev1.ContainerPort{
 						{Name: "https", ContainerPort: oauthProxyPort, Protocol: corev1.ProtocolTCP},
