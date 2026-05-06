@@ -15,7 +15,7 @@ import {
 } from '@patternfly/react-core';
 import { Table, Thead, Tr, Th, Tbody, Td } from '@patternfly/react-table';
 import { Link, useParams, RouteComponentProps } from 'react-router-dom';
-import { getTarget, triggerRecollect, deleteImageSet } from '../../api/client';
+import { getTarget, triggerRecollect, deleteImageSet, getApiUrl } from '../../api/client';
 import type { TargetDetail } from '../../api/types';
 import { StatusPill, computeStatus } from '../../components/StatusPill';
 import { ProgressBar } from '../../components/ProgressBar';
@@ -178,7 +178,7 @@ const OverviewTab: React.FC<{ target: TargetDetail }> = ({ target }) => (
         <CardBody>
           {target.resources.slice(0, 3).map((r) => (
             <div key={r.url} style={{ marginBottom: 4 }}>
-              <a href={r.url} target="_blank" rel="noreferrer">{r.name}</a>
+              <a href={getApiUrl(r.url)} target="_blank" rel="noreferrer">{r.name}</a>
               {' '}
               <span className="mirror-tag">{r.type}</span>
             </div>
@@ -283,8 +283,12 @@ const ImageSetsTab: React.FC<{
 
 const ResourcesTab: React.FC<{ target: TargetDetail }> = ({ target }) => {
   const allResources = [
-    ...target.resources,
-    ...target.imageSets.flatMap((is) => is.resources.map((r) => ({ ...r, imageSet: is.name }))),
+    ...target.resources.map((r) => ({ ...r, imageSet: '' })),
+    ...target.imageSets.flatMap((is) =>
+      is.resources
+        .filter((ir) => !target.resources.some((tr) => tr.url === ir.url))
+        .map((r) => ({ ...r, imageSet: is.name })),
+    ),
   ];
 
   if (allResources.length === 0) {
@@ -304,33 +308,20 @@ const ResourcesTab: React.FC<{ target: TargetDetail }> = ({ target }) => {
             <Tr><Th>Resource</Th><Th>Type</Th><Th>URL</Th></Tr>
           </Thead>
           <Tbody>
-            {target.resources.map((r) => (
-              <Tr key={r.url}>
-                <Td>{r.name}</Td>
+            {allResources.map((r) => (
+              <Tr key={`${r.imageSet}-${r.url}`}>
+                <Td>
+                  {r.imageSet && <span className="mirror-tag" style={{ marginRight: 6 }}>{r.imageSet}</span>}
+                  {r.name}
+                </Td>
                 <Td><span className="mirror-tag">{r.type}</span></Td>
                 <Td>
-                  <a href={r.url} target="_blank" rel="noreferrer">
+                  <a href={getApiUrl(r.url)} target="_blank" rel="noreferrer">
                     <code className="mirror-mono">{r.url}</code>
                   </a>
                 </Td>
               </Tr>
             ))}
-            {target.imageSets.flatMap((is) =>
-              is.resources.map((r) => (
-                <Tr key={`${is.name}-${r.url}`}>
-                  <Td>
-                    <span className="mirror-tag" style={{ marginRight: 6 }}>{is.name}</span>
-                    {r.name}
-                  </Td>
-                  <Td><span className="mirror-tag">{r.type}</span></Td>
-                  <Td>
-                    <a href={r.url} target="_blank" rel="noreferrer">
-                      <code className="mirror-mono">{r.url}</code>
-                    </a>
-                  </Td>
-                </Tr>
-              )),
-            )}
           </Tbody>
         </Table>
       </CardBody>

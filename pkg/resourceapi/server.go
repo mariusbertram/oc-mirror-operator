@@ -393,7 +393,7 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
 			Mirrored:  iss.Mirrored,
 			Pending:   iss.Pending,
 			Failed:    iss.Failed,
-			Resources: resources,
+			Resources: []ResourceLink{}, // ImageSet specific resources are currently managed at the target level
 		})
 	}
 

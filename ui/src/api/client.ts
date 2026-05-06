@@ -23,6 +23,10 @@ export function setApiBaseUrl(baseUrl: string) {
   _baseUrl = baseUrl;
 }
 
+export function getApiUrl(path: string): string {
+  return _baseUrl + path;
+}
+
 async function get<T>(path: string): Promise<T> {
   console.log('API GET:', _baseUrl + path);
   const resp = await _fetch(_baseUrl + path);
