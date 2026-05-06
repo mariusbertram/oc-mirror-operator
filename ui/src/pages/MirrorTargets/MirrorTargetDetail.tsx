@@ -19,10 +19,11 @@ import { Link, useParams, RouteComponentProps } from 'react-router-dom';
 import { getTarget, triggerRecollect, deleteImageSet } from '../../api/client';
 import type { TargetDetail } from '../../api/types';
 
-export const MirrorTargetDetail: React.FC<Partial<RouteComponentProps<{ name: string }>>> = ({ match }) => {
+export const MirrorTargetDetail: React.FC<Partial<RouteComponentProps<{ name: string }>>> = (props) => {
+  const { match } = props;
   const params = useParams<{ name: string }>();
-  const name = match?.params?.name || params.name;
-  console.log('MirrorTargetDetail rendering, name:', name);
+  const name = match?.params?.name || params.name || window.location.pathname.match(/\/oc-mirror\/targets\/([^/]+)/)?.[1];
+  console.log('MirrorTargetDetail name:', name);
   const [target, setTarget] = useState<TargetDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);

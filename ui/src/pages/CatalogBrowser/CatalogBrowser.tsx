@@ -26,9 +26,20 @@ interface CatalogBrowserParams {
   imageSetName: string;
 }
 
-export const CatalogBrowser: React.FC<Partial<RouteComponentProps<CatalogBrowserParams>>> = ({ match }) => {
+export const CatalogBrowser: React.FC<Partial<RouteComponentProps<CatalogBrowserParams>>> = (props) => {
+  const { match } = props;
   const params = useParams<CatalogBrowserParams>();
-  const { targetName, slug, namespace, imageSetName } = match?.params || params;
+  let { targetName, slug, namespace, imageSetName } = match?.params || params;
+
+  if (!targetName) {
+    const m = window.location.pathname.match(/\/oc-mirror\/targets\/([^/]+)\/namespaces\/([^/]+)\/imagesets\/([^/]+)\/catalogs\/([^/]+)/);
+    if (m) {
+      targetName = m[1];
+      namespace = m[2];
+      imageSetName = m[3];
+      slug = m[4];
+    }
+  }
 
   const [upstream, setUpstream] = useState<CatalogPackage[]>([]);
   const [filtered, setFiltered] = useState<Set<string>>(new Set());

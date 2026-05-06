@@ -25,9 +25,10 @@ import { Link, useParams, RouteComponentProps } from 'react-router-dom';
 import { getImageFailures } from '../../api/client';
 import type { FailedImageDetail, ImageFailuresResponse } from '../../api/types';
 
-export const FailedImages: React.FC<Partial<RouteComponentProps<{ name: string }>>> = ({ match }) => {
+export const FailedImages: React.FC<Partial<RouteComponentProps<{ name: string }>>> = (props) => {
+  const { match } = props;
   const params = useParams<{ name: string }>();
-  const name = match?.params?.name || params.name;
+  const name = match?.params?.name || params.name || window.location.pathname.match(/\/oc-mirror\/targets\/([^/]+)/)?.[1];
   const [failures, setFailures] = useState<ImageFailuresResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
