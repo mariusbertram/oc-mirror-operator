@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"os"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -21,6 +22,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -133,7 +135,7 @@ func (r *UIConfigurationReconciler) Reconcile(ctx context.Context, req reconcile
 	}
 
 	l.Info("successfully reconciled UIConfiguration", "name", uic.Name)
-	return reconcile.Result{}, nil
+	return reconcile.Result{RequeueAfter: 10 * time.Minute}, nil
 }
 
 func (r *UIConfigurationReconciler) reconcileDashboardResources(ctx context.Context, uic *mirrorv1alpha1.UIConfiguration, dashImage, oauthImage string) error {
@@ -215,8 +217,10 @@ func (r *UIConfigurationReconciler) ensureServiceAccount(ctx context.Context, ui
 		ObjectMeta: metav1.ObjectMeta{Name: dashboardName, Namespace: r.Namespace},
 	}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, sa, func() error {
-		if err := controllerutil.SetControllerReference(uic, sa, r.Scheme); err != nil {
-			return err
+		if uic.Namespace == r.Namespace {
+			if err := controllerutil.SetControllerReference(uic, sa, r.Scheme); err != nil {
+				return err
+			}
 		}
 		if sa.Annotations == nil {
 			sa.Annotations = map[string]string{}
@@ -299,8 +303,10 @@ func (r *UIConfigurationReconciler) ensureOAuthProxySecret(ctx context.Context, 
 		ObjectMeta: metav1.ObjectMeta{Name: dashboardName + "-proxy", Namespace: r.Namespace},
 	}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
-		if err := controllerutil.SetControllerReference(uic, secret, r.Scheme); err != nil {
-			return err
+		if uic.Namespace == r.Namespace {
+			if err := controllerutil.SetControllerReference(uic, secret, r.Scheme); err != nil {
+				return err
+			}
 		}
 		if secret.Data == nil {
 			secret.Data = map[string][]byte{}
@@ -331,8 +337,10 @@ func (r *UIConfigurationReconciler) ensureDashboardDeployment(ctx context.Contex
 
 	l.Info("Ensuring dashboard deployment with pass-access-token and user:full scope")
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, dep, func() error {
-		if err := controllerutil.SetControllerReference(uiConfig, dep, r.Scheme); err != nil {
-			return err
+		if uiConfig.Namespace == r.Namespace {
+			if err := controllerutil.SetControllerReference(uiConfig, dep, r.Scheme); err != nil {
+				return err
+			}
 		}
 		dep.Spec.Replicas = &replicas
 		dep.Spec.Selector = &metav1.LabelSelector{
@@ -428,8 +436,10 @@ func (r *UIConfigurationReconciler) ensureDashboardService(ctx context.Context, 
 		},
 	}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error {
-		if err := controllerutil.SetControllerReference(uic, svc, r.Scheme); err != nil {
-			return err
+		if uic.Namespace == r.Namespace {
+			if err := controllerutil.SetControllerReference(uic, svc, r.Scheme); err != nil {
+				return err
+			}
 		}
 		svc.Spec.Selector = map[string]string{"app": dashboardName}
 		svc.Spec.Ports = []corev1.ServicePort{
@@ -467,8 +477,10 @@ func (r *UIConfigurationReconciler) generateRoute(ctx context.Context, uiConfig 
 	}
 
 	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, route, func() error {
-		if err := controllerutil.SetControllerReference(uiConfig, route, r.Scheme); err != nil {
-			return err
+		if uiConfig.Namespace == r.Namespace {
+			if err := controllerutil.SetControllerReference(uiConfig, route, r.Scheme); err != nil {
+				return err
+			}
 		}
 		spec := map[string]interface{}{
 			"to": map[string]interface{}{
@@ -512,8 +524,10 @@ func (r *UIConfigurationReconciler) ensurePluginDeployment(ctx context.Context, 
 		ObjectMeta: metav1.ObjectMeta{Name: dashboardName + "-plugin", Namespace: r.Namespace},
 	}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, dep, func() error {
-		if err := controllerutil.SetControllerReference(uiConfig, dep, r.Scheme); err != nil {
-			return err
+		if uiConfig != nil && uiConfig.Namespace == r.Namespace {
+			if err := controllerutil.SetControllerReference(uiConfig, dep, r.Scheme); err != nil {
+				return err
+			}
 		}
 		dep.Spec.Replicas = &replicas
 		dep.Spec.Selector = &metav1.LabelSelector{
@@ -577,8 +591,10 @@ func (r *UIConfigurationReconciler) ensurePluginService(ctx context.Context, uic
 		},
 	}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error {
-		if err := controllerutil.SetControllerReference(uic, svc, r.Scheme); err != nil {
-			return err
+		if uic.Namespace == r.Namespace {
+			if err := controllerutil.SetControllerReference(uic, svc, r.Scheme); err != nil {
+				return err
+			}
 		}
 		svc.Spec.Selector = map[string]string{"app": dashboardName + "-plugin"}
 		svc.Spec.Ports = []corev1.ServicePort{
@@ -721,6 +737,11 @@ func (r *UIConfigurationReconciler) generateIngress(ctx context.Context, uiConfi
 	}
 
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, ingress, func() error {
+		if uiConfig.Namespace == r.Namespace {
+			if err := controllerutil.SetControllerReference(uiConfig, ingress, r.Scheme); err != nil {
+				return err
+			}
+		}
 		ingress.Spec.IngressClassName = nil
 		if uiConfig.Spec.IngressClassName != "" {
 			ingress.Spec.IngressClassName = &uiConfig.Spec.IngressClassName
@@ -980,10 +1001,55 @@ func restrictedContainerSecurityContext() *corev1.SecurityContext {
 }
 
 // SetupWithManager registers the UIConfigurationReconciler with the manager.
-// Single-instance validation is handled inside Reconcile via validateSingleInstance,
-// so no extra cross-object watch is needed here.
+//
+// Drift detection strategy:
+//   - Namespace-scoped owned resources (Deployment, Service, ServiceAccount,
+//     Secret, Ingress): caught via .Owns() because SetControllerReference is
+//     called in every mutate func.
+//   - Cluster-scoped RBAC (ClusterRole, ClusterRoleBinding): caught via
+//     explicit .Watches() with a name-filtered mapper.
+//   - Optional/OpenShift-only resources (Route, ConsolePlugin, ServiceMonitor):
+//     not watchable without optional CRD registration; caught by RequeueAfter.
 func (r *UIConfigurationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mirrorv1alpha1.UIConfiguration{}).
+		Owns(&appsv1.Deployment{}).
+		Owns(&corev1.Service{}).
+		Owns(&corev1.ServiceAccount{}).
+		Owns(&corev1.Secret{}).
+		Owns(&networkingv1.Ingress{}).
+		Watches(
+			&rbacv1.ClusterRole{},
+			handler.EnqueueRequestsFromMapFunc(r.enqueueForDashboardClusterResource),
+		).
+		Watches(
+			&rbacv1.ClusterRoleBinding{},
+			handler.EnqueueRequestsFromMapFunc(r.enqueueForDashboardClusterResource),
+		).
 		Complete(r)
+}
+
+// enqueueForDashboardClusterResource maps a ClusterRole or ClusterRoleBinding
+// event to reconcile requests for all UIConfiguration objects. It ignores any
+// cluster resource whose name is not one of the two well-known dashboard names
+// so that unrelated RBAC changes do not flood the queue.
+func (r *UIConfigurationReconciler) enqueueForDashboardClusterResource(ctx context.Context, obj client.Object) []reconcile.Request {
+	name := obj.GetName()
+	if name != dashboardName && name != dashboardName+"-auth-delegator" {
+		return nil
+	}
+	uicList := &mirrorv1alpha1.UIConfigurationList{}
+	if err := r.List(ctx, uicList); err != nil {
+		return nil
+	}
+	requests := make([]reconcile.Request, 0, len(uicList.Items))
+	for _, uic := range uicList.Items {
+		requests = append(requests, reconcile.Request{
+			NamespacedName: types.NamespacedName{
+				Name:      uic.Name,
+				Namespace: uic.Namespace,
+			},
+		})
+	}
+	return requests
 }

@@ -1,8 +1,0 @@
-apiVersion: mirror.openshift.io/v1alpha1
-kind: UIConfiguration
-metadata:
-  name: oc-mirror-dashboard-test
-  namespace: oc-mirror-system
-spec:
-  exposureType: service
-  replicas: 1

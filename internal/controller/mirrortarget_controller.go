@@ -332,12 +332,15 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, err
 	}
 
-	// Requeue periodically while cleanups are in progress to detect completion.
+	// Requeue more frequently while cleanups are in progress to detect completion.
 	if len(mt.Status.PendingCleanup) > 0 {
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
-	return ctrl.Result{}, nil
+	// Periodic requeue catches drift on resources not covered by .Owns() watches:
+	// shared oc-mirror-resource-api resources (SetOwnerReference, not SetControllerReference)
+	// and optional Route resources managed via unstructured.
+	return ctrl.Result{RequeueAfter: 10 * time.Minute}, nil
 }
 
 // ensureCoordinatorRBAC creates the ServiceAccount, Role, and RoleBinding needed by the manager pod.
@@ -1199,9 +1202,28 @@ func (r *MirrorTargetReconciler) ensureResourceRBAC(ctx context.Context, mt *mir
 	return err
 }
 
+// SetupWithManager registers the MirrorTargetReconciler with the manager.
+//
+// Drift detection strategy:
+//   - All namespace-scoped owned resources are registered via .Owns() so that
+//     external deletions or modifications immediately trigger reconciliation.
+//   - .Watches(ImageSet) propagates per-ImageSet progress onto MirrorTarget
+//     aggregated counters without waiting for the next RequeueAfter tick.
+//   - RequeueAfter: 10 min catches any drift not covered by event-based watches
+//     (e.g. Route/Ingress whose CRDs may be optional, or shared oc-mirror-resource-api
+//     resources that use non-controller owner refs and are therefore not picked up
+//     by .Owns()).
 func (r *MirrorTargetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mirrorv1alpha1.MirrorTarget{}).
+		Owns(&appsv1.Deployment{}).
+		Owns(&corev1.Service{}).
+		Owns(&corev1.ServiceAccount{}).
+		Owns(&rbacv1.Role{}).
+		Owns(&rbacv1.RoleBinding{}).
+		Owns(&networkingv1.NetworkPolicy{}).
+		Owns(&networkingv1.Ingress{}).
+		Owns(&batchv1.Job{}).
 		Watches(
 			&mirrorv1alpha1.ImageSet{},
 			handler.EnqueueRequestsFromMapFunc(r.mirrorTargetsForImageSet),

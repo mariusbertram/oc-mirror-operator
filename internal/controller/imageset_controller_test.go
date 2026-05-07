@@ -27,17 +27,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
-	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror"
-	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
 )
 
 func newImageSetReconciler() *ImageSetReconciler {
-	mc := mirrorclient.NewMirrorClient(nil, "")
 	return &ImageSetReconciler{
 		Client:          k8sClient,
 		Scheme:          k8sClient.Scheme(),
-		MirrorClient:    mc,
-		Collector:       mirror.NewCollector(mc),
 		CatalogBuildMgr: nil,
 	}
 }

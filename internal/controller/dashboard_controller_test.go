@@ -195,9 +195,8 @@ var _ = Describe("Dashboard Controller", func() {
 					UID:       "test-uid",
 				},
 			}
-			By("ensuring oauth proxy secret")
+			By("ensuring OAuth proxy secret")
 			err := reconciler.ensureOAuthProxySecret(ctx, uic)
-
 			Expect(err).NotTo(HaveOccurred())
 
 			By("verifying the secret exists")
@@ -253,7 +252,7 @@ var _ = Describe("Dashboard Controller", func() {
 					UID:       "test-uid",
 				},
 			}
-			By("ensuring oauth proxy secret")
+			By("ensuring OAuth proxy secret")
 			err := reconciler.ensureOAuthProxySecret(ctx, uic)
 
 			Expect(err).NotTo(HaveOccurred())
@@ -303,7 +302,8 @@ var _ = Describe("Dashboard Controller", func() {
 			By("second reconcile: no dashboard resources created without DASHBOARD_IMAGE")
 			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.IsZero()).To(BeTrue())
+			// Successful reconciles always schedule a periodic drift-detection requeue.
+			Expect(result.RequeueAfter).To(Equal(10 * time.Minute))
 
 			By("verifying no deployment was created")
 			deployment := &appsv1.Deployment{}

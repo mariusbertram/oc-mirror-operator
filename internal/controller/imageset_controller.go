@@ -3,7 +3,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -22,9 +21,7 @@ import (
 
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
 	ocmetrics "github.com/mariusbertram/oc-mirror-operator/pkg/metrics"
-	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/catalog/builder"
-	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/imagestate"
 )
 
@@ -32,8 +29,6 @@ import (
 type ImageSetReconciler struct {
 	client.Client
 	Scheme          *runtime.Scheme
-	MirrorClient    *mirrorclient.MirrorClient
-	Collector       *mirror.Collector
 	CatalogBuildMgr *builder.CatalogBuildManager
 }
 
@@ -450,9 +445,6 @@ func catalogTargetRef(registry string, op mirrorv1alpha1.Operator) string {
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *ImageSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	authDir := os.Getenv("DOCKER_CONFIG")
-	r.MirrorClient = mirrorclient.NewMirrorClient(nil, authDir)
-	r.Collector = mirror.NewCollector(r.MirrorClient)
 	bm, err := builder.New()
 	if err != nil {
 		return fmt.Errorf("init catalog build manager: %w", err)
