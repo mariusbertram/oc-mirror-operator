@@ -5,6 +5,8 @@ metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/name: oc-mirror
+    rbac.authorization.k8s.io/aggregate-to-admin: "true"
+    rbac.authorization.k8s.io/aggregate-to-edit: "true"
   name: oc-mirror-mirrortarget-editor-role
 rules:
 - apiGroups:

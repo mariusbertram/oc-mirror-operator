@@ -608,9 +608,6 @@ func (r *UIConfigurationReconciler) generateConsolePlugin(ctx context.Context, u
 	}
 
 	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, plugin, func() error {
-		if err := controllerutil.SetOwnerReference(uiConfig, plugin, r.Scheme); err != nil {
-			return err
-		}
 		plugin.Object["spec"] = map[string]interface{}{
 			"displayName": "oc-mirror-operator",
 			"backend": map[string]interface{}{
