@@ -262,7 +262,7 @@ func TestLoad_ExistingConfigMap(t *testing.T) {
 func TestSaveRaw_CreatesNew(t *testing.T) {
 	c := newFakeClient().Build()
 	state := ImageState{"dest": {Source: "src", State: "Pending"}}
-	if err := SaveRaw(context.Background(), c, "ns", "raw-cm", state); err != nil {
+	if err := SaveRaw(context.Background(), c, "ns", "raw-cm", state, nil, nil); err != nil {
 		t.Fatalf("SaveRaw error: %v", err)
 	}
 	cm := &corev1.ConfigMap{}
@@ -282,7 +282,7 @@ func TestSaveRaw_UpdatesExisting(t *testing.T) {
 	}
 	c := newFakeClient().WithRuntimeObjects(existing).Build()
 	newState := ImageState{"new": {Source: "new", State: "Pending"}}
-	if err := SaveRaw(context.Background(), c, "ns", "raw-cm", newState); err != nil {
+	if err := SaveRaw(context.Background(), c, "ns", "raw-cm", newState, nil, nil); err != nil {
 		t.Fatalf("SaveRaw error: %v", err)
 	}
 	cm := &corev1.ConfigMap{}
@@ -385,7 +385,7 @@ func TestConfigMapNameForTarget(t *testing.T) {
 func TestSaveForTarget_CreatesAndLoads(t *testing.T) {
 	c := newFakeClient().Build()
 	state := ImageState{"dest": {Source: "src", State: "Pending"}}
-	if err := SaveForTarget(context.Background(), c, "ns", "my-mt", state); err != nil {
+	if err := SaveForTarget(context.Background(), c, "ns", "my-mt", state, nil, nil); err != nil {
 		t.Fatalf("SaveForTarget error: %v", err)
 	}
 	loaded, err := LoadForTarget(context.Background(), c, "ns", "my-mt")

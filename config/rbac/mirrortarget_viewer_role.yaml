@@ -11,6 +11,9 @@ metadata:
   labels:
     app.kubernetes.io/name: oc-mirror
     app.kubernetes.io/managed-by: kustomize
+    rbac.authorization.k8s.io/aggregate-to-view: "true"
+    rbac.authorization.k8s.io/aggregate-to-edit: "true"
+    rbac.authorization.k8s.io/aggregate-to-admin: "true"
   name: mirrortarget-viewer-role
 rules:
 - apiGroups:

@@ -17,8 +17,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
 // ImageOrigin identifies which collector source produced a given imagestate
@@ -187,15 +189,15 @@ func LoadForTarget(ctx context.Context, c client.Client, namespace, mtName strin
 }
 
 // SaveForTarget writes the consolidated ImageState to the per-MirrorTarget
-// ConfigMap "<mtName>-images". Owner references must be set by the caller via
-// controllerutil.SetControllerReference if garbage-collection is desired.
-func SaveForTarget(ctx context.Context, c client.Client, namespace, mtName string, state ImageState) error {
-	return SaveRaw(ctx, c, namespace, ConfigMapNameForTarget(mtName), state)
+// ConfigMap "<mtName>-images".
+func SaveForTarget(ctx context.Context, c client.Client, namespace, mtName string, state ImageState, owner metav1.Object, scheme *runtime.Scheme) error {
+	return SaveRaw(ctx, c, namespace, ConfigMapNameForTarget(mtName), state, owner, scheme)
 }
 
 // SaveRaw writes the ImageState to a ConfigMap with the given name.
 // Used for temporary cleanup state that is not owned by an ImageSet.
-func SaveRaw(ctx context.Context, c client.Client, namespace, cmName string, state ImageState) error {
+// If owner and scheme are provided, a ControllerReference is set on the ConfigMap.
+func SaveRaw(ctx context.Context, c client.Client, namespace, cmName string, state ImageState, owner metav1.Object, scheme *runtime.Scheme) error {
 	data, err := encode(state)
 	if err != nil {
 		return fmt.Errorf("encode image state: %w", err)
@@ -212,6 +214,12 @@ func SaveRaw(ctx context.Context, c client.Client, namespace, cmName string, sta
 		BinaryData: map[string][]byte{
 			"images.json.gz": data,
 		},
+	}
+
+	if owner != nil && scheme != nil {
+		if err := controllerutil.SetControllerReference(owner, cm, scheme); err != nil {
+			return fmt.Errorf("set controller reference: %w", err)
+		}
 	}
 
 	if errors.IsNotFound(getErr) {

@@ -188,8 +188,16 @@ var _ = Describe("Dashboard Controller", func() {
 				Namespace: dashboardNamespace,
 			}
 
-			By("ensuring OAuth proxy secret")
-			err := reconciler.ensureOAuthProxySecret(ctx)
+			uic := &mirrorv1alpha1.UIConfiguration{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-uic",
+					Namespace: dashboardNamespace,
+					UID:       "test-uid",
+				},
+			}
+			By("ensuring oauth proxy secret")
+			err := reconciler.ensureOAuthProxySecret(ctx, uic)
+
 			Expect(err).NotTo(HaveOccurred())
 
 			By("verifying the secret exists")
@@ -208,7 +216,7 @@ var _ = Describe("Dashboard Controller", func() {
 			copy(originalSecret, secret.Data["session_secret"])
 
 			By("reconciling again and verifying session_secret is not changed")
-			err = reconciler.ensureOAuthProxySecret(ctx)
+			err = reconciler.ensureOAuthProxySecret(ctx, uic)
 			Expect(err).NotTo(HaveOccurred())
 
 			secret2 := &corev1.Secret{}
@@ -238,8 +246,16 @@ var _ = Describe("Dashboard Controller", func() {
 				Namespace: dashboardNamespace,
 			}
 
-			By("ensuring OAuth proxy secret")
-			err := reconciler.ensureOAuthProxySecret(ctx)
+			uic := &mirrorv1alpha1.UIConfiguration{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-uic",
+					Namespace: dashboardNamespace,
+					UID:       "test-uid",
+				},
+			}
+			By("ensuring oauth proxy secret")
+			err := reconciler.ensureOAuthProxySecret(ctx, uic)
+
 			Expect(err).NotTo(HaveOccurred())
 
 			By("verifying the session_secret is not overwritten")

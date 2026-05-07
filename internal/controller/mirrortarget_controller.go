@@ -676,7 +676,7 @@ func (r *MirrorTargetReconciler) reconcileCleanup(ctx context.Context, mt *mirro
 	}
 
 	if orphansDirty || removedDirty {
-		if err := imagestate.SaveForTarget(ctx, r.Client, mt.Namespace, mt.Name, consolidatedState); err != nil {
+		if err := imagestate.SaveForTarget(ctx, r.Client, mt.Namespace, mt.Name, consolidatedState, mt, r.Scheme); err != nil {
 			return fmt.Errorf("failed to save consolidated state after cleanup partitioning: %w", err)
 		}
 	}
@@ -729,7 +729,7 @@ func (r *MirrorTargetReconciler) reconcileOrphans(ctx context.Context, mt *mirro
 	}
 
 	snapshotName := cleanupSnapshotCMName(mt.Name, "orphans")
-	if err := imagestate.SaveRaw(ctx, r.Client, mt.Namespace, snapshotName, orphans); err != nil {
+	if err := imagestate.SaveRaw(ctx, r.Client, mt.Namespace, snapshotName, orphans, mt, r.Scheme); err != nil {
 		l.Error(err, "Failed to create orphans cleanup snapshot")
 		return false
 	}
@@ -865,7 +865,7 @@ func (r *MirrorTargetReconciler) partitionAndCreateCleanupJob(
 	}
 
 	snapshotName := cleanupSnapshotCMName(mt.Name, isName)
-	if err := imagestate.SaveRaw(ctx, r.Client, mt.Namespace, snapshotName, exclusiveState); err != nil {
+	if err := imagestate.SaveRaw(ctx, r.Client, mt.Namespace, snapshotName, exclusiveState, mt, r.Scheme); err != nil {
 		return false, false, fmt.Errorf("failed to create cleanup snapshot ConfigMap for %s: %w", isName, err)
 	}
 

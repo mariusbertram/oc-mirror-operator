@@ -725,7 +725,7 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 
 	// Phase F: Flush consolidated state to ConfigMap.
 	if m.stateDirty {
-		if err := imagestate.SaveForTarget(ctx, m.Client, m.Namespace, m.TargetName, m.imageState); err != nil {
+		if err := imagestate.SaveForTarget(ctx, m.Client, m.Namespace, m.TargetName, m.imageState, mt, m.Scheme); err != nil {
 			fmt.Printf("Warning: failed to save consolidated state: %v\n", err)
 			// stateDirty remains true; save will be retried on next tick.
 		} else {
@@ -867,6 +867,10 @@ func (m *MirrorManager) saveGlobalResources(ctx context.Context, mt *mirrorv1alp
 			},
 		},
 		Data: data,
+	}
+
+	if err := controllerutil.SetControllerReference(mt, cm, m.Scheme); err != nil {
+		fmt.Printf("Warning: failed to set owner on resources ConfigMap: %v\n", err)
 	}
 
 	existing := &corev1.ConfigMap{}

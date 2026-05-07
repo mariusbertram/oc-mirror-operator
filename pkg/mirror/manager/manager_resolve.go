@@ -24,6 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror"
@@ -117,6 +118,12 @@ func (m *MirrorManager) writeCatalogPackagesCM(ctx context.Context, slug string,
 		Data: map[string]string{"packages.json": string(data)},
 	}
 
+	// Set OwnerReference if MirrorTarget is available
+	mt := &mirrorv1alpha1.MirrorTarget{}
+	if err := m.Client.Get(ctx, client.ObjectKey{Name: m.TargetName, Namespace: m.Namespace}, mt); err == nil {
+		_ = controllerutil.SetControllerReference(mt, cm, m.Scheme)
+	}
+
 	existing := &corev1.ConfigMap{}
 	err = m.Client.Get(ctx, client.ObjectKey{Name: cmName, Namespace: m.Namespace}, existing)
 	if err != nil {
@@ -127,6 +134,9 @@ func (m *MirrorManager) writeCatalogPackagesCM(ctx context.Context, slug string,
 	}
 	existing.Data = cm.Data
 	existing.Labels = cm.Labels
+	if mt.UID != "" {
+		_ = controllerutil.SetControllerReference(mt, existing, m.Scheme)
+	}
 	return m.Client.Update(ctx, existing)
 }
 
@@ -356,14 +366,23 @@ func (m *MirrorManager) downloadSignaturesForNodes(ctx context.Context, nodes []
 		existing.BinaryData[k] = v
 	}
 
+	mt := &mirrorv1alpha1.MirrorTarget{}
+	_ = m.Client.Get(ctx, client.ObjectKey{Name: m.TargetName, Namespace: m.Namespace}, mt)
+
 	if existing.Name == "" {
 		existing.Name = cmName
 		existing.Namespace = m.Namespace
 		existing.ObjectMeta = metav1.ObjectMeta{Name: cmName, Namespace: m.Namespace}
+		if mt.UID != "" {
+			_ = controllerutil.SetControllerReference(mt, existing, m.Scheme)
+		}
 		if err := m.Client.Create(ctx, existing); err != nil && !apierrors.IsAlreadyExists(err) {
 			fmt.Printf("Warning: create signatures ConfigMap: %v\n", err)
 		}
 		return
+	}
+	if mt.UID != "" {
+		_ = controllerutil.SetControllerReference(mt, existing, m.Scheme)
 	}
 	if err := m.Client.Update(ctx, existing); err != nil {
 		fmt.Printf("Warning: update signatures ConfigMap: %v\n", err)

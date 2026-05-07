@@ -139,13 +139,13 @@ func (r *UIConfigurationReconciler) Reconcile(ctx context.Context, req reconcile
 func (r *UIConfigurationReconciler) reconcileDashboardResources(ctx context.Context, uic *mirrorv1alpha1.UIConfiguration, dashImage, oauthImage string) error {
 	l := log.FromContext(ctx)
 
-	if err := r.ensureServiceAccount(ctx); err != nil {
+	if err := r.ensureServiceAccount(ctx, uic); err != nil {
 		return err
 	}
 	if err := r.ensureClusterRBAC(ctx); err != nil {
 		return err
 	}
-	if err := r.ensureOAuthProxySecret(ctx); err != nil {
+	if err := r.ensureOAuthProxySecret(ctx, uic); err != nil {
 		return err
 	}
 
@@ -172,7 +172,7 @@ func (r *UIConfigurationReconciler) reconcileDashboardResources(ctx context.Cont
 	if err := r.ensureDashboardDeployment(ctx, dashImage, oauthImage, uic); err != nil {
 		return err
 	}
-	if err := r.ensureDashboardService(ctx); err != nil {
+	if err := r.ensureDashboardService(ctx, uic); err != nil {
 		return err
 	}
 
@@ -193,7 +193,7 @@ func (r *UIConfigurationReconciler) reconcileDashboardResources(ctx context.Cont
 		if err := r.ensurePluginDeployment(ctx, dashImage, uic); err != nil {
 			return err
 		}
-		if err := r.ensurePluginService(ctx); err != nil {
+		if err := r.ensurePluginService(ctx, uic); err != nil {
 			return err
 		}
 		if err := r.generateConsolePlugin(ctx, uic); err != nil {
@@ -207,14 +207,17 @@ func (r *UIConfigurationReconciler) reconcileDashboardResources(ctx context.Cont
 		r.cleanupOldResourcesForType(ctx, []string{"route", "ingress", "consoleplugin"})
 	}
 
-	return r.ensureServiceMonitor(ctx)
+	return r.ensureServiceMonitor(ctx, uic)
 }
 
-func (r *UIConfigurationReconciler) ensureServiceAccount(ctx context.Context) error {
+func (r *UIConfigurationReconciler) ensureServiceAccount(ctx context.Context, uic *mirrorv1alpha1.UIConfiguration) error {
 	sa := &corev1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{Name: dashboardName, Namespace: r.Namespace},
 	}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, sa, func() error {
+		if err := controllerutil.SetControllerReference(uic, sa, r.Scheme); err != nil {
+			return err
+		}
 		if sa.Annotations == nil {
 			sa.Annotations = map[string]string{}
 		}
@@ -291,11 +294,14 @@ func (r *UIConfigurationReconciler) ensureClusterRBAC(ctx context.Context) error
 	return err
 }
 
-func (r *UIConfigurationReconciler) ensureOAuthProxySecret(ctx context.Context) error {
+func (r *UIConfigurationReconciler) ensureOAuthProxySecret(ctx context.Context, uic *mirrorv1alpha1.UIConfiguration) error {
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: dashboardName + "-proxy", Namespace: r.Namespace},
 	}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
+		if err := controllerutil.SetControllerReference(uic, secret, r.Scheme); err != nil {
+			return err
+		}
 		if secret.Data == nil {
 			secret.Data = map[string][]byte{}
 		}
@@ -325,6 +331,9 @@ func (r *UIConfigurationReconciler) ensureDashboardDeployment(ctx context.Contex
 
 	l.Info("Ensuring dashboard deployment with pass-access-token and user:full scope")
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, dep, func() error {
+		if err := controllerutil.SetControllerReference(uiConfig, dep, r.Scheme); err != nil {
+			return err
+		}
 		dep.Spec.Replicas = &replicas
 		dep.Spec.Selector = &metav1.LabelSelector{
 			MatchLabels: map[string]string{"app": dashboardName},
@@ -408,7 +417,7 @@ func (r *UIConfigurationReconciler) ensureDashboardDeployment(ctx context.Contex
 	return err
 }
 
-func (r *UIConfigurationReconciler) ensureDashboardService(ctx context.Context) error {
+func (r *UIConfigurationReconciler) ensureDashboardService(ctx context.Context, uic *mirrorv1alpha1.UIConfiguration) error {
 	svc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      dashboardName,
@@ -419,9 +428,13 @@ func (r *UIConfigurationReconciler) ensureDashboardService(ctx context.Context) 
 		},
 	}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error {
+		if err := controllerutil.SetControllerReference(uic, svc, r.Scheme); err != nil {
+			return err
+		}
 		svc.Spec.Selector = map[string]string{"app": dashboardName}
 		svc.Spec.Ports = []corev1.ServicePort{
 			{Name: "https", Port: oauthProxyPort, TargetPort: intstr.FromInt32(oauthProxyPort), Protocol: corev1.ProtocolTCP},
+			{Name: "http", Port: dashboardPort, TargetPort: intstr.FromInt32(dashboardPort), Protocol: corev1.ProtocolTCP},
 		}
 		return nil
 	})
@@ -454,6 +467,9 @@ func (r *UIConfigurationReconciler) generateRoute(ctx context.Context, uiConfig 
 	}
 
 	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, route, func() error {
+		if err := controllerutil.SetControllerReference(uiConfig, route, r.Scheme); err != nil {
+			return err
+		}
 		spec := map[string]interface{}{
 			"to": map[string]interface{}{
 				"kind":   "Service",
@@ -496,6 +512,9 @@ func (r *UIConfigurationReconciler) ensurePluginDeployment(ctx context.Context, 
 		ObjectMeta: metav1.ObjectMeta{Name: dashboardName + "-plugin", Namespace: r.Namespace},
 	}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, dep, func() error {
+		if err := controllerutil.SetControllerReference(uiConfig, dep, r.Scheme); err != nil {
+			return err
+		}
 		dep.Spec.Replicas = &replicas
 		dep.Spec.Selector = &metav1.LabelSelector{
 			MatchLabels: map[string]string{"app": dashboardName + "-plugin"},
@@ -547,7 +566,7 @@ func (r *UIConfigurationReconciler) ensurePluginDeployment(ctx context.Context, 
 	return err
 }
 
-func (r *UIConfigurationReconciler) ensurePluginService(ctx context.Context) error {
+func (r *UIConfigurationReconciler) ensurePluginService(ctx context.Context, uic *mirrorv1alpha1.UIConfiguration) error {
 	svc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      dashboardName + "-plugin",
@@ -558,6 +577,9 @@ func (r *UIConfigurationReconciler) ensurePluginService(ctx context.Context) err
 		},
 	}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error {
+		if err := controllerutil.SetControllerReference(uic, svc, r.Scheme); err != nil {
+			return err
+		}
 		svc.Spec.Selector = map[string]string{"app": dashboardName + "-plugin"}
 		svc.Spec.Ports = []corev1.ServicePort{
 			{Name: "https", Port: pluginPort, TargetPort: intstr.FromInt32(pluginPort), Protocol: corev1.ProtocolTCP},
@@ -586,6 +608,9 @@ func (r *UIConfigurationReconciler) generateConsolePlugin(ctx context.Context, u
 	}
 
 	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, plugin, func() error {
+		if err := controllerutil.SetOwnerReference(uiConfig, plugin, r.Scheme); err != nil {
+			return err
+		}
 		plugin.Object["spec"] = map[string]interface{}{
 			"displayName": "oc-mirror-operator",
 			"backend": map[string]interface{}{
@@ -605,8 +630,8 @@ func (r *UIConfigurationReconciler) generateConsolePlugin(ctx context.Context, u
 						"type": "Service",
 						"service": map[string]interface{}{
 							"namespace": r.Namespace,
-							"name":      resourceAPIName,
-							"port":      int64(resourceAPIPort),
+							"name":      dashboardName,
+							"port":      int64(dashboardPort),
 						},
 					},
 				},
@@ -642,7 +667,7 @@ func (r *UIConfigurationReconciler) generateConsolePlugin(ctx context.Context, u
 
 // ensureServiceMonitor creates a ServiceMonitor for controller-manager metrics if
 // prometheus-operator is installed. Silently skips when the CRD is unavailable.
-func (r *UIConfigurationReconciler) ensureServiceMonitor(ctx context.Context) error {
+func (r *UIConfigurationReconciler) ensureServiceMonitor(ctx context.Context, uic *mirrorv1alpha1.UIConfiguration) error {
 	l := log.FromContext(ctx)
 	sm := &unstructured.Unstructured{}
 	sm.SetGroupVersionKind(schema.GroupVersionKind{
@@ -659,6 +684,9 @@ func (r *UIConfigurationReconciler) ensureServiceMonitor(ctx context.Context) er
 		return nil
 	}
 	if errors.IsNotFound(err) {
+		if err := controllerutil.SetControllerReference(uic, sm, r.Scheme); err != nil {
+			return err
+		}
 		sm.Object["spec"] = map[string]interface{}{
 			"endpoints": []interface{}{
 				map[string]interface{}{
