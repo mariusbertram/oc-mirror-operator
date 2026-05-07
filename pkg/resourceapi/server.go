@@ -2,14 +2,17 @@ package resourceapi
 
 import (
 	"context"
+	"crypto/sha256"
 	"embed"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -30,11 +33,17 @@ var pluginFS embed.FS
 //go:embed all:ui
 var uiFS embed.FS
 
+type tokenClientEntry struct {
+	c         client.Client
+	expiresAt time.Time
+}
+
 type Server struct {
-	client    client.Client
-	namespace string // empty = cluster-wide mode
-	scheme    *runtime.Scheme
-	baseCfg   *clientgorest.Config
+	client       client.Client
+	namespace    string // empty = cluster-wide mode
+	scheme       *runtime.Scheme
+	baseCfg      *clientgorest.Config
+	tokenClients sync.Map // sha256(token) -> *tokenClientEntry, TTL 5 min
 }
 
 func NewServer(c client.Client, namespace string) *Server {
@@ -81,6 +90,9 @@ func (s *Server) LookupMirrorTarget(ctx context.Context, c client.Client, name s
 // The token is read from X-Forwarded-Access-Token (set by oauth-proxy) or from
 // the Authorization header (used by the Console Plugin SDK via consoleFetch).
 // If neither is present, the server's own service-account client is returned.
+//
+// Clients are cached by token hash for 5 minutes to avoid creating a new HTTP
+// connection pool on every request (the UI polls every 30 seconds).
 func (s *Server) clientForRequest(r *http.Request) client.Client {
 	token := r.Header.Get("X-Forwarded-Access-Token")
 	if token == "" {
@@ -88,18 +100,30 @@ func (s *Server) clientForRequest(r *http.Request) client.Client {
 		token = strings.TrimPrefix(auth, "Bearer ")
 	}
 	if token == "" || s.baseCfg == nil {
-		fmt.Printf("clientForRequest: no token found, using service account client\n")
 		return s.client
 	}
-	fmt.Printf("clientForRequest: using token from request (%d bytes)\n", len(token))
+
+	h := sha256.Sum256([]byte(token))
+	key := hex.EncodeToString(h[:])
+
+	now := time.Now()
+	if v, ok := s.tokenClients.Load(key); ok {
+		entry := v.(*tokenClientEntry)
+		if entry.expiresAt.After(now) {
+			return entry.c
+		}
+		s.tokenClients.Delete(key)
+	}
+
 	cfg := clientgorest.CopyConfig(s.baseCfg)
 	cfg.BearerToken = token
 	cfg.BearerTokenFile = ""
 	c, err := client.New(cfg, client.Options{Scheme: s.scheme})
 	if err != nil {
-		fmt.Printf("clientForRequest: failed to create client from token: %v\n", err)
 		return s.client
 	}
+
+	s.tokenClients.Store(key, &tokenClientEntry{c: c, expiresAt: now.Add(5 * time.Minute)})
 	return c
 }
 
@@ -418,8 +442,10 @@ func (s *Server) handleImageFailures(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if apierrors.IsForbidden(err) {
 			http.Error(w, "forbidden: insufficient permissions", http.StatusForbidden)
-		} else {
+		} else if apierrors.IsNotFound(err) {
 			http.Error(w, "MirrorTarget not found", http.StatusNotFound)
+		} else {
+			http.Error(w, fmt.Sprintf("failed to get MirrorTarget: %v", err), http.StatusInternalServerError)
 		}
 		return
 	}
@@ -558,8 +584,10 @@ func (s *Server) handleSignatures(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if apierrors.IsForbidden(err) {
 			http.Error(w, "forbidden: insufficient permissions", http.StatusForbidden)
-		} else {
+		} else if apierrors.IsNotFound(err) {
 			http.Error(w, "MirrorTarget not found", http.StatusNotFound)
+		} else {
+			http.Error(w, fmt.Sprintf("failed to get MirrorTarget: %v", err), http.StatusInternalServerError)
 		}
 		return
 	}
@@ -726,7 +754,6 @@ func (s *Server) handlePatchCatalogPackages(w http.ResponseWriter, r *http.Reque
 			continue
 		}
 		found = true
-		fmt.Printf("Patching ImageSet %s/%s catalog %s (slug %s) with %d packages\n", namespace, name, op.Catalog, slug, len(patch.Include))
 		// Rebuild the package list from the include set.
 		var packages []mirrorv1alpha1.IncludePackage
 		for _, pkg := range patch.Include {
@@ -736,10 +763,8 @@ func (s *Server) handlePatchCatalogPackages(w http.ResponseWriter, r *http.Reque
 	}
 
 	if !found {
-		fmt.Printf("Warning: Catalog slug %q not found in ImageSet %s/%s\n", slug, namespace, name)
-		for _, op := range is.Spec.Mirror.Operators {
-			fmt.Printf("  Available catalog: %s (slug: %s)\n", op.Catalog, mirrorresources.CatalogSlug(op.Catalog))
-		}
+		http.Error(w, fmt.Sprintf("catalog slug %q not found in ImageSet", slug), http.StatusNotFound)
+		return
 	}
 
 	if err := c.Update(r.Context(), is); err != nil {

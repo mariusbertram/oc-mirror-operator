@@ -21,7 +21,6 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -956,33 +955,10 @@ func restrictedContainerSecurityContext() *corev1.SecurityContext {
 }
 
 // SetupWithManager registers the UIConfigurationReconciler with the manager.
-// It watches UIConfiguration resources and enqueues all UIConfiguration objects
-// on any change to enforce single-instance validation.
+// Single-instance validation is handled inside Reconcile via validateSingleInstance,
+// so no extra cross-object watch is needed here.
 func (r *UIConfigurationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mirrorv1alpha1.UIConfiguration{}).
-		Watches(
-			&mirrorv1alpha1.UIConfiguration{},
-			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
-				l := log.FromContext(ctx)
-				l.V(1).Info("UIConfiguration changed, enqueuing all UIConfiguration objects")
-
-				uicList := &mirrorv1alpha1.UIConfigurationList{}
-				if err := r.List(ctx, uicList); err != nil {
-					l.Error(err, "failed to list UIConfigurations")
-					return nil
-				}
-
-				requests := make([]reconcile.Request, len(uicList.Items))
-				for i, uic := range uicList.Items {
-					requests[i] = reconcile.Request{
-						NamespacedName: types.NamespacedName{
-							Name: uic.Name,
-						},
-					}
-				}
-				return requests
-			}),
-		).
 		Complete(r)
 }
