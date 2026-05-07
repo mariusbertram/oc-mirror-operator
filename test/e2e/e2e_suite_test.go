@@ -17,9 +17,11 @@ limitations under the License.
 package e2e
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"testing"
 	"time"
 
@@ -144,7 +146,26 @@ var _ = AfterSuite(func() {
 	}
 
 	if !skipOperatorDeploy {
+		By("removing finalizers from all remaining custom resources")
+		for _, kind := range []string{"uiconfiguration", "mirrortarget", "imageset"} {
+			out, _ := exec.Command("kubectl", "get", kind, "--all-namespaces", "--no-headers",
+				"-o", "custom-columns=NS:.metadata.namespace,NAME:.metadata.name").Output()
+			for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+				fields := strings.Fields(line)
+				if len(fields) < 2 {
+					continue
+				}
+				ns, name := fields[0], fields[1]
+				_ = exec.Command("kubectl", "patch", kind, name, "-n", ns,
+					"-p", `{"metadata":{"finalizers":[]}}`, "--type=merge").Run()
+			}
+			_ = exec.Command("kubectl", "delete", kind, "--all", "--all-namespaces",
+				"--ignore-not-found=true", "--timeout=30s").Run()
+		}
+
 		By("undeploying the operator")
-		_ = exec.Command("make", "undeploy").Run()
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		_ = exec.CommandContext(ctx, "make", "undeploy").Run()
 	}
 })

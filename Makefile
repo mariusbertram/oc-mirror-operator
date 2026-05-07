@@ -407,6 +407,11 @@ deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in
 
 .PHONY: undeploy
 undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
+	# Delete CR instances first while the controller is still running so it can process their finalizers.
+	# Without this ordering, kubectl deletes the controller and the CRs simultaneously, leaving CRs
+	# stuck in Terminating state because no controller is left to remove their finalizers.
+	-$(KUBECTL) delete uiconfiguration --all -A --ignore-not-found=true --timeout=60s 2>/dev/null || true
+	-$(KUBECTL) delete mirrortarget,imageset --all -A --ignore-not-found=true --timeout=60s 2>/dev/null || true
 	$(KUSTOMIZE) build config/default | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
 
 .PHONY: deploy-test
