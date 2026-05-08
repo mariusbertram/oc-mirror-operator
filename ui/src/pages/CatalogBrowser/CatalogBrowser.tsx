@@ -401,7 +401,11 @@ export const CatalogBrowser: React.FC = () => {
                       </Button>
                     </div>
                     {expanded && p.channels.map((c) => {
-                      const uniqueVersions = sortVersions([...new Set(c.entries.map((e) => e.version))]);
+                      // Prefer the pre-sorted full version list from the backend; fall back to
+                      // extracting versions from the (heads-only) entries array.
+                      const uniqueVersions = c.versions && c.versions.length > 0
+                        ? c.versions
+                        : sortVersions([...new Set(c.entries.map((e) => e.version).filter(Boolean))]);
                       const displayVersions = uniqueVersions.length > 5
                         ? `${uniqueVersions.slice(0, 5).join(', ')} +${uniqueVersions.length - 5} more`
                         : uniqueVersions.join(', ') || `${c.entries.length} entries`;
@@ -548,7 +552,9 @@ export const CatalogBrowser: React.FC = () => {
                       </button>
                     </div>
                     {expanded && getImportedChannels(p).map((c) => {
-                      const uniqueVersions = sortVersions([...new Set(c.entries.map((e) => e.version))]);
+                      const uniqueVersions = c.versions && c.versions.length > 0
+                        ? c.versions
+                        : sortVersions([...new Set(c.entries.map((e) => e.version).filter(Boolean))]);
                       const constraint = versionMap[p.name]?.[c.name] || { minVersion: '', maxVersion: '' };
                       return (
                         <div key={c.name} className="mirror-dual-channel" style={{ gridTemplateColumns: '20px 1fr auto' }}>

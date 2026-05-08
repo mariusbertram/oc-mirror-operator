@@ -41,7 +41,7 @@ import (
 // logic changes semantically (e.g. heads-only channel filtering).  Old cached
 // annotation values that were written with a different (or no) version prefix
 // will not match the fresh value, forcing a re-resolution.
-const operatorCacheVersion = "v4"
+const operatorCacheVersion = "v5"
 
 // operatorCacheValue builds the cache token written to the ImageSet annotation.
 func operatorCacheValue(digest string) string {

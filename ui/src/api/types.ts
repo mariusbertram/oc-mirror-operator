@@ -80,6 +80,8 @@ export interface CatalogChannel {
     name: string;
     version: string;
   }[];
+  /** All available version strings in this channel, sorted ascending. */
+  versions?: string[];
 }
 
 export interface CatalogPackage {
