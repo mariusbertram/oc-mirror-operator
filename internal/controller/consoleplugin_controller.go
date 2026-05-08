@@ -52,6 +52,11 @@ const (
 	pluginTLSSecretName     = "oc-mirror-plugin-tls"
 	pluginReconcileInterval = 10 * time.Minute
 
+	// pluginCleanupFinalizer is added to the ConsolePlugin CR so that all
+	// namespace-scoped plugin resources (Deployment, Service, SA, RBAC) are
+	// deleted before the CR is fully removed.
+	pluginCleanupFinalizer = "mirror.openshift.io/plugin-cleanup"
+
 	// legacyDashboardServiceName is the name used by the old UIConfiguration-based
 	// dashboard deployment. The consoleplugin reconciler deletes these stale resources
 	// on first reconcile so they don't interfere with the new plugin setup.
@@ -71,6 +76,7 @@ type ConsolePluginReconciler struct {
 // +kubebuilder:rbac:groups="",resources=serviceaccounts;services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=console.openshift.io,resources=consoleplugins,verbs=get;list;watch;create;update;patch;delete
 
 func (r *ConsolePluginReconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
 	l := log.FromContext(ctx)
@@ -88,6 +94,23 @@ func (r *ConsolePluginReconciler) Reconcile(ctx context.Context, req reconcile.R
 	if _, err := r.RESTMapper().RESTMapping(consolePluginGVK.GroupKind(), consolePluginGVK.Version); err != nil {
 		l.Info("ConsolePlugin CRD unavailable, skipping (non-OpenShift cluster)")
 		return reconcile.Result{RequeueAfter: pluginReconcileInterval}, nil
+	}
+
+	// Check if the ConsolePlugin CR is being deleted. If so, clean up all
+	// namespace-scoped plugin resources and remove our finalizer so the CR
+	// can be fully garbage-collected.
+	existing := &unstructured.Unstructured{}
+	existing.SetGroupVersionKind(consolePluginGVK)
+	if err := r.Get(ctx, client.ObjectKey{Name: consolePluginCRName}, existing); err == nil {
+		if !existing.GetDeletionTimestamp().IsZero() {
+			l.Info("ConsolePlugin CR is being deleted, cleaning up plugin resources")
+			r.deletePluginResources(ctx)
+			controllerutil.RemoveFinalizer(existing, pluginCleanupFinalizer)
+			if err := r.Update(ctx, existing); err != nil {
+				return reconcile.Result{}, fmt.Errorf("remove plugin-cleanup finalizer: %w", err)
+			}
+			return reconcile.Result{}, nil
+		}
 	}
 
 	if err := r.ensureServiceAccount(ctx); err != nil {
@@ -332,7 +355,9 @@ func (r *ConsolePluginReconciler) ensureService(ctx context.Context) error {
 	return err
 }
 
-// ensureConsolePlugin creates or updates the cluster-scoped ConsolePlugin CR.
+// ensureConsolePlugin creates or updates the cluster-scoped ConsolePlugin CR
+// and ensures our cleanup finalizer is present so that plugin namespace resources
+// are removed if the CR is ever deleted.
 // Individual spec fields are set via SetNestedField to avoid overwriting
 // admission-defaulted fields such as spec.i18n.
 func (r *ConsolePluginReconciler) ensureConsolePlugin(ctx context.Context) error {
@@ -347,6 +372,10 @@ func (r *ConsolePluginReconciler) ensureConsolePlugin(ctx context.Context) error
 	plugin.SetName(consolePluginCRName)
 
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, plugin, func() error {
+		// Ensure our cleanup finalizer is present so that the namespace-scoped
+		// plugin resources are deleted when the ConsolePlugin CR is removed.
+		controllerutil.AddFinalizer(plugin, pluginCleanupFinalizer)
+
 		if err := unstructured.SetNestedField(plugin.Object, "OC Mirror Operator", "spec", "displayName"); err != nil {
 			return err
 		}
@@ -393,6 +422,49 @@ func (r *ConsolePluginReconciler) ensureConsolePlugin(ctx context.Context) error
 		return err
 	}
 	return nil
+}
+
+// deletePluginResources removes all namespace-scoped resources that were created
+// by the ConsolePlugin reconciler. Called when the ConsolePlugin CR is being
+// deleted so that these resources do not linger after the operator is removed.
+// Errors are logged but not returned so that the finalizer is always removed.
+func (r *ConsolePluginReconciler) deletePluginResources(ctx context.Context) {
+	l := log.FromContext(ctx)
+
+	dep := &appsv1.Deployment{}
+	dep.Name = pluginDeploymentName
+	dep.Namespace = r.Namespace
+	if err := r.Delete(ctx, dep); client.IgnoreNotFound(err) != nil {
+		l.Error(err, "failed to delete plugin Deployment")
+	}
+
+	svc := &corev1.Service{}
+	svc.Name = pluginServiceName
+	svc.Namespace = r.Namespace
+	if err := r.Delete(ctx, svc); client.IgnoreNotFound(err) != nil {
+		l.Error(err, "failed to delete plugin Service")
+	}
+
+	sa := &corev1.ServiceAccount{}
+	sa.Name = pluginSAName
+	sa.Namespace = r.Namespace
+	if err := r.Delete(ctx, sa); client.IgnoreNotFound(err) != nil {
+		l.Error(err, "failed to delete plugin ServiceAccount")
+	}
+
+	rb := &rbacv1.RoleBinding{}
+	rb.Name = pluginRoleName
+	rb.Namespace = r.Namespace
+	if err := r.Delete(ctx, rb); client.IgnoreNotFound(err) != nil {
+		l.Error(err, "failed to delete plugin RoleBinding")
+	}
+
+	role := &rbacv1.Role{}
+	role.Name = pluginRoleName
+	role.Namespace = r.Namespace
+	if err := r.Delete(ctx, role); client.IgnoreNotFound(err) != nil {
+		l.Error(err, "failed to delete plugin Role")
+	}
 }
 
 // SetupWithManager registers the ConsolePluginReconciler.
