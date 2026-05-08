@@ -58,11 +58,6 @@ spec:
       kind: MirrorTarget
       name: mirrortargets.mirror.openshift.io
       version: v1alpha1
-    - description: Configures how the oc-mirror UI dashboard is exposed and accessed
-      displayName: UI Configuration
-      kind: UIConfiguration
-      name: uiconfigurations.mirror.openshift.io
-      version: v1alpha1
   description: |
     The oc-mirror operator brings the functionality of the upstream `oc-mirror`
     plugin to Kubernetes/OpenShift as a fully declarative, in-cluster operator.
