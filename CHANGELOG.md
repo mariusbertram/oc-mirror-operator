@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **OpenShift Console Plugin**: A new `ConsolePlugin` controller deploys a dedicated plugin pod (`oc-mirror-plugin`) into the operator namespace and registers it with the OpenShift Console. The plugin provides an integrated multi-page UI directly in the OCP web console — no external URL needed.
+  - Pages: MirrorTarget overview, ImageSet detail (with image status), CatalogBrowser, Failed Images
+  - Auto-deployed on OpenShift clusters; gracefully skipped on non-OCP Kubernetes
+  - Plugin resources (Deployment, Service, ConsolePlugin CR, RBAC) are cleaned up via finalizer when the operator is uninstalled
+
+- **CatalogBrowser — Per-Channel Import/Remove**: Clicking `+ Add` on a single channel now imports only that channel instead of the entire package. Clicking `×` on a channel in the filtered pane removes just that channel. The whole-package import button still exists to add all channels at once. The filtered pane shows each selected channel individually with its own remove button.
+
+- **CatalogBrowser — All Channel Versions in Dropdowns**: The `minVersion`/`maxVersion` dropdowns now show all available operator versions in a channel, not just the channel-head. A `versions` field is added to `ChannelSummary` in the cached ConfigMap (sorted, deduplicated). Cache version bumped `v4 → v5` to force rebuild of existing caches.
+
+- **CatalogBrowser — Version Constraints per Channel**: Version constraint (`minVersion`/`maxVersion`) can now be set per individual channel in addition to per package.
+
+- **MonitoringReconciler**: Manages optional `ServiceMonitor`, `PrometheusRule`, and Grafana dashboard `ConfigMap` resources. Automatically creates/updates these when Prometheus Operator CRDs are present in the cluster.
+
+- **Prometheus Metrics**: Operator controller, manager pods, and worker pods now expose Prometheus metrics (reconcile durations, mirroring progress, error counters).
+
+- **Single-namespace mode**: Operator can be deployed in a single namespace without cluster-wide permissions. `ConsolePlugin` controller uses a watcher pattern to reconcile cluster-scoped `ConsolePlugin` CR without a `ClusterRole`.
+
+- **React/TypeScript Console Plugin UI** (replaces embedded Go-served HTML dashboard):
+  - Built with PatternFly v6, React 18, react-router v7
+  - Separate `Dockerfile.plugin` and webpack build (`webpack.plugin.js`)
+  - Published as `oc-mirror-plugin` container image
+  - Dark theme support with PF v6 CSS variables; transparent backgrounds
+
+### Fixed
+- **Dark theme**: Removed hardcoded white background in `plugin-styles.css` and `ImageSetDetail` Tabs — plugin now correctly inherits the OCP console dark theme.
+- **ConsolePlugin ownership**: Removed illegal namespace-scoped owner reference from the cluster-scoped `ConsolePlugin` CR; cleanup is now handled by a finalizer on the controller pod instead.
+- **ConsolePlugin resource cleanup on deletion**: Added `pluginCleanupFinalizer` to ensure Deployment, Service, and ConsolePlugin CR are deleted when the operator is uninstalled.
+- **react-router `Link` imports**: Downgraded SDK to 4.21.0 and fixed `Link`/`useParams` imports broken by react-router v7 module layout.
+- **Docker build platform**: Added `--platform=$BUILDPLATFORM` to the Node.js build stage in `Dockerfile.plugin` to support cross-compilation from ARM hosts.
+- **UI `node_modules` in Docker context**: Excluded `ui/node_modules` from Docker build context via `.dockerignore`.
+- **ToolbarItem `align` prop**: Updated deprecated `alignEnd` → `alignRight` for PatternFly v6 compatibility.
+- **Stale UIConfiguration CRD**: Removed leftover `UIConfiguration` CRD, ClusterServiceVersion entry, and bundle manifests from OLM bundle.
+- **oauth-proxy removal**: Removed leftover oauth-proxy Deployment/Service/Secret from bundle kustomize config.
+- **E2E tests**: Replaced hardcoded namespace strings with `operatorNamespace` variable; fixed `IMG_DASHBOARD → IMG_PLUGIN` env var references.
+
+### Changed
+- **UIConfiguration CRD removed**: Replaced by the always-on `ConsolePlugin` controller. The CRD is no longer needed — the plugin is automatically enabled on OpenShift clusters.
+- **DashboardReconciler merged into ConsolePlugin controller**: Unified reconciliation path for all plugin-related resources.
+- **Operator catalog cache version**: Bumped from `v4` to `v5` to force re-population of the operator cache ConfigMaps with the new `versions` field.
+
 ---
 
 ## [v0.0.15] - 2026-05-02

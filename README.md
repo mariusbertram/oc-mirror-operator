@@ -44,6 +44,7 @@ Unlike the static `oc-mirror` CLI tool, this operator works cloud-natively and d
 | **Blob Replication Planning** | ✗ | ✅ | Greedy set cover algorithm optimizes mirror order for maximum blob reuse |
 | **Automatic Catalog Rebuild** | ✗ | ✅ | Build signature detects changes to packages/catalogs and triggers automatic rebuild |
 | **Resource API + Web UI** | ✗ | ✅ | IDMS, ITMS, CatalogSource, ClusterCatalog and signature ConfigMaps retrievable via REST API + Web Dashboard — with OpenShift Route, Ingress or Service |
+| **OpenShift Console Plugin** | ✗ | ✅ | Integrated plugin tab in the OCP web console — MirrorTarget overview, ImageSet detail, CatalogBrowser (per-channel import, version constraints), Failed Images. Auto-deployed on OpenShift; no config required |
 | **Worker Pod Lifecycle** | ✗ | ✅ | Automatic cleanup of completed/failed worker and orphan pods |
 | **KubeVirt Container Disk** | ✅ | ✅ | `platform.kubeVirtContainer: true` extracts KubeVirt disk images from the release payload (RHCOS per architecture) |
 
@@ -82,6 +83,7 @@ Unlike the static `oc-mirror` CLI tool, this operator works cloud-natively and d
 | **Blob Replication Planning** | Greedy set cover optimizes mirror order: shared layers are pushed first → subsequent images use blob mount (zero-copy) |
 | **Catalog Build Signature** | SHA256 hash over operator image + catalog + package list automatically detects when a rebuild is needed |
 | **Resource API + Web UI** | Provides IDMS/ITMS, CatalogSource, ClusterCatalog and signature ConfigMaps via REST API + Web Dashboard — Route (OpenShift), Ingress or Service |
+| **OpenShift Console Plugin** | Integrated plugin tab in the OCP web console: MirrorTarget overview, ImageSet detail with image status, CatalogBrowser (per-channel import, min/max version constraints), Failed Images list. Built with PatternFly v6 + React 18. Auto-deployed on OpenShift clusters via `ConsolePlugin` controller |
 | **HTTP Proxy Support** | Configurable `spec.proxy` injects HTTP/HTTPS/NO_PROXY into all pods for corporate proxy environments |
 | **Custom CA Bundle** | `spec.caBundle` mounts a ConfigMap-based CA into all pods and sets `SSL_CERT_FILE` — supports private registries with custom CAs |
 | **Ephemeral PVC for Large Images** | `spec.workerStorage` replaces the default emptyDir with a dynamically-provisioned PVC (generic ephemeral volume) for LLMs and other oversized images |
@@ -100,6 +102,7 @@ The oc-mirror operator now uses a **modular 3-component architecture** for impro
 | **Manager** | `oc-mirror-manager` | `oc-mirror-manager:v0.1.0+` | Per-MirrorTarget orchestrator: manages Worker Pod batches, owns ImageState ConfigMap, serves Status API |
 | **Worker** | `oc-mirror-worker` | `oc-mirror-worker:v0.1.0+` | Ephemeral Pods for image mirroring; mirrors batches, buffers large blobs, reports progress to Manager |
 | **Cleanup** | `oc-mirror-worker cleanup` | `oc-mirror-worker:v0.1.0+` | Job subcommand for deleting orphaned images from target registry |
+| **Plugin** | — | `oc-mirror-plugin:v0.1.0+` | OpenShift Console Plugin (React/PF v6): MirrorTarget overview, ImageSet detail, CatalogBrowser, Failed Images; auto-registered with OCP Console |
 
 ### Architecture Diagram
 
@@ -150,10 +153,11 @@ The oc-mirror operator now uses a **modular 3-component architecture** for impro
 
 | Component | Responsibilities | Launch | Lifetime |
 |-----------|-----------------|--------|----------|
-| **Controller** | Reconciles MirrorTarget/ImageSet CRs; creates Manager Deployments; schedules catalog build Jobs; triggers cleanup on deletion; owns RBAC roles | `1×` per operator deployment | Long-lived |
+| **Controller** | Reconciles MirrorTarget/ImageSet CRs; creates Manager Deployments; schedules catalog build Jobs; triggers cleanup on deletion; owns RBAC roles; deploys Console Plugin on OpenShift | `1×` per operator deployment | Long-lived |
 | **Manager** | Orchestrates Workers; loads/updates ImageState ConfigMap; serves Status API; coordinates cleanup; verifies target registry state | `1×` per MirrorTarget | Long-lived (pod restart on error) |
 | **Worker** | Mirrors image batches; buffers large layers; reports progress; skips obsolete images; cleans up on exit | `N×` batches (configurable) | Ephemeral (auto-deleted on completion) |
 | **Cleanup Job** | Deletes images from target registry when ImageSet is removed or spec is narrowed | `1×` per cleanup operation | Runs to completion, auto-cleaned |
+| **Plugin** | OpenShift Console Plugin — serves the React UI integrated into the OCP web console | `1×` per namespace | Long-lived |
 
 ### Data Flow
 
