@@ -39,7 +39,7 @@ import (
 // instead of the large quay.io/operatorhubio/catalog (~2 GB). They run in standard CI.
 var _ = Describe("Catalog Build Job E2E", Ordered, Label("cluster", "catalog-cluster"), func() {
 	const (
-		ns             = "default"
+		ns             = operatorNamespace
 		targetName     = "catalog-test-target"
 		imageSetName   = "catalog-test-imageset"
 		sourceCatalog  = "ghcr.io/mariusbertram/brtrm-dev-catalog/catalog:latest"
@@ -55,7 +55,7 @@ var _ = Describe("Catalog Build Job E2E", Ordered, Label("cluster", "catalog-clu
 
 		By("waiting for the registry to be ready")
 		cmd = exec.Command("kubectl", "rollout", "status", "deployment/registry",
-			"-n", ns, "--timeout=120s")
+			"-n", "default", "--timeout=120s")
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Registry deployment did not become ready")
 	})

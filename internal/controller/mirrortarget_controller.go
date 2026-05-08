@@ -29,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
+	ocmetrics "github.com/mariusbertram/oc-mirror-operator/pkg/metrics"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/imagestate"
 )
 
@@ -70,8 +71,14 @@ type MirrorTargetReconciler struct {
 // of the pod creator (the coordinator/manager).
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;delete
 
-func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ctrl.Result, rerr error) {
 	l := log.FromContext(ctx)
+
+	defer func() {
+		if rerr != nil {
+			ocmetrics.ReconcileErrorsTotal.WithLabelValues(req.Namespace, req.Name, "mirrortarget").Inc()
+		}
+	}()
 
 	mt := &mirrorv1alpha1.MirrorTarget{}
 	if err := r.Get(ctx, req.NamespacedName, mt); err != nil {
@@ -108,7 +115,7 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// The manager deployment runs as coordinator and needs permissions to manage ImageSet status and worker pods.
 	if err := r.ensureCoordinatorRBAC(ctx, mt); err != nil {
 		l.Error(err, "Failed to ensure coordinator RBAC")
-		setCondition(&mt.Status.Conditions, "Ready", metav1.ConditionFalse, "ReconcileError", err.Error(), mt.Generation)
+		setCondition(&mt.Status.Conditions, conditionTypeReady, metav1.ConditionFalse, "ReconcileError", err.Error(), mt.Generation)
 		_ = r.Status().Update(ctx, mt)
 		return ctrl.Result{}, err
 	}
@@ -119,7 +126,7 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// stricter policies if needed.
 	if err := r.ensureNetworkPolicies(ctx, mt); err != nil {
 		l.Error(err, "Failed to ensure network policies")
-		setCondition(&mt.Status.Conditions, "Ready", metav1.ConditionFalse, "ReconcileError", err.Error(), mt.Generation)
+		setCondition(&mt.Status.Conditions, conditionTypeReady, metav1.ConditionFalse, "ReconcileError", err.Error(), mt.Generation)
 		_ = r.Status().Update(ctx, mt)
 		return ctrl.Result{}, err
 	}
@@ -127,7 +134,7 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// Ensure global Resource API Deployment and Service (Phase 7d)
 	if err := r.ensureResourceAPI(ctx, mt); err != nil {
 		l.Error(err, "Failed to ensure Resource API")
-		setCondition(&mt.Status.Conditions, "Ready", metav1.ConditionFalse, "ReconcileError", err.Error(), mt.Generation)
+		setCondition(&mt.Status.Conditions, conditionTypeReady, metav1.ConditionFalse, "ReconcileError", err.Error(), mt.Generation)
 		_ = r.Status().Update(ctx, mt)
 		return ctrl.Result{}, err
 	}
@@ -148,8 +155,12 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		}
 
 		labels := map[string]string{
-			"app":          "oc-mirror-manager",
-			"mirrortarget": mt.Name,
+			"app":                                 "oc-mirror-manager",
+			"mirrortarget":                        mt.Name,
+			"app.kubernetes.io/component":         "manager",
+			"app.kubernetes.io/name":              "oc-mirror",
+			"app.kubernetes.io/instance":          mt.Name,
+			"oc-mirror.openshift.io/mirrortarget": mt.Name,
 		}
 		deployment.Labels = labels
 
@@ -190,6 +201,7 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 							Resources:    mt.Spec.Manager.Resources,
 							Ports: []corev1.ContainerPort{
 								{Name: "status", ContainerPort: 8080, Protocol: corev1.ProtocolTCP},
+								{Name: "metrics", ContainerPort: 9090, Protocol: corev1.ProtocolTCP},
 							},
 						},
 					},
@@ -203,7 +215,7 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	})
 	if err != nil {
 		l.Error(err, "Failed to create or update manager deployment")
-		setCondition(&mt.Status.Conditions, "Ready", metav1.ConditionFalse, "ReconcileError", err.Error(), mt.Generation)
+		setCondition(&mt.Status.Conditions, conditionTypeReady, metav1.ConditionFalse, "ReconcileError", err.Error(), mt.Generation)
 		_ = r.Status().Update(ctx, mt)
 		return ctrl.Result{}, err
 	}
@@ -221,15 +233,26 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			return err
 		}
 		service.Labels = map[string]string{
-			"app":          "oc-mirror-manager",
-			"mirrortarget": mt.Name,
+			"app":                                 "oc-mirror-manager",
+			"mirrortarget":                        mt.Name,
+			"app.kubernetes.io/component":         "manager",
+			"app.kubernetes.io/name":              "oc-mirror",
+			"app.kubernetes.io/instance":          mt.Name,
+			"oc-mirror.openshift.io/mirrortarget": mt.Name,
 		}
 		service.Spec = corev1.ServiceSpec{
-			Selector: service.Labels,
+			Selector: map[string]string{
+				"app":          "oc-mirror-manager",
+				"mirrortarget": mt.Name,
+			},
 			Ports: []corev1.ServicePort{
 				{
 					Name: "http",
 					Port: 8080,
+				},
+				{
+					Name: "metrics",
+					Port: 9090,
 				},
 			},
 		}
@@ -237,7 +260,7 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	})
 	if err != nil {
 		l.Error(err, "Failed to create or update manager service")
-		setCondition(&mt.Status.Conditions, "Ready", metav1.ConditionFalse, "ReconcileError", err.Error(), mt.Generation)
+		setCondition(&mt.Status.Conditions, conditionTypeReady, metav1.ConditionFalse, "ReconcileError", err.Error(), mt.Generation)
 		_ = r.Status().Update(ctx, mt)
 		return ctrl.Result{}, err
 	}
@@ -273,7 +296,7 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	})
 	if err != nil {
 		l.Error(err, "Failed to create or update resources service")
-		setCondition(&mt.Status.Conditions, "Ready", metav1.ConditionFalse, "ReconcileError", err.Error(), mt.Generation)
+		setCondition(&mt.Status.Conditions, conditionTypeReady, metav1.ConditionFalse, "ReconcileError", err.Error(), mt.Generation)
 		_ = r.Status().Update(ctx, mt)
 		return ctrl.Result{}, err
 	}
@@ -281,10 +304,10 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// Create Route/Ingress for the resource server based on ExposeConfig.
 	if err := r.reconcileExposure(ctx, mt); err != nil {
 		l.Error(err, "Failed to reconcile resource server exposure; continuing with status aggregation")
-		setCondition(&mt.Status.Conditions, "Ready", metav1.ConditionFalse, "ExposureError", err.Error(), mt.Generation)
+		setCondition(&mt.Status.Conditions, conditionTypeReady, metav1.ConditionFalse, "ExposureError", err.Error(), mt.Generation)
 		// We don't return here so that image counts are still aggregated and surfaced to the UI.
 	} else {
-		setCondition(&mt.Status.Conditions, "Ready", metav1.ConditionTrue, "DeploymentReady", "Manager deployment is active", mt.Generation)
+		setCondition(&mt.Status.Conditions, conditionTypeReady, metav1.ConditionTrue, "DeploymentReady", "Manager deployment is active", mt.Generation)
 	}
 
 	// Only advance KnownImageSets when no pending cleanups remain.
@@ -301,16 +324,23 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if err := r.aggregateImageSetStatus(ctx, mt); err != nil {
 		l.Error(err, "Failed to aggregate ImageSet status; continuing with stale counters")
 	}
+	ocmetrics.MirrorTargetImagesTotal.WithLabelValues(mt.Namespace, mt.Name).Set(float64(mt.Status.TotalImages))
+	ocmetrics.MirrorTargetImagesMirrored.WithLabelValues(mt.Namespace, mt.Name).Set(float64(mt.Status.MirroredImages))
+	ocmetrics.MirrorTargetImagesFailed.WithLabelValues(mt.Namespace, mt.Name).Set(float64(mt.Status.FailedImages))
+	ocmetrics.MirrorTargetImagesPending.WithLabelValues(mt.Namespace, mt.Name).Set(float64(mt.Status.PendingImages))
 	if err := r.Status().Update(ctx, mt); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	// Requeue periodically while cleanups are in progress to detect completion.
+	// Requeue more frequently while cleanups are in progress to detect completion.
 	if len(mt.Status.PendingCleanup) > 0 {
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
-	return ctrl.Result{}, nil
+	// Periodic requeue catches drift on resources not covered by .Owns() watches:
+	// shared oc-mirror-resource-api resources (SetOwnerReference, not SetControllerReference)
+	// and optional Route resources managed via unstructured.
+	return ctrl.Result{RequeueAfter: 10 * time.Minute}, nil
 }
 
 // ensureCoordinatorRBAC creates the ServiceAccount, Role, and RoleBinding needed by the manager pod.
@@ -469,13 +499,17 @@ func (r *MirrorTargetReconciler) ensureNetworkPolicies(ctx context.Context, mt *
 	tcp := corev1.ProtocolTCP
 	statusPort := intstr.FromInt32(8080)
 	resourcesPort := intstr.FromInt32(8081)
+	metricsPort := intstr.FromInt32(9090)
 
 	policies := []*networkingv1.NetworkPolicy{
-		// 1. Manager ingress policy. Two rules:
+		// 1. Manager ingress policy. Three rules:
 		//    a) Status endpoint (8080): only worker pods of the same
 		//       MirrorTarget may report status.
 		//    b) Resource API (8081): open to all sources so that users,
 		//       Ingress controllers, and Routes can reach it.
+		//    c) Metrics endpoint (9090): open to all in-cluster sources so
+		//       that Prometheus (OpenShift UWM or standalone) can scrape.
+		//       The endpoint is read-only; no authentication is required.
 		// Egress is left unrestricted because the manager talks to the
 		// kube-apiserver and remote registries.
 		{
@@ -502,6 +536,13 @@ func (r *MirrorTargetReconciler) ensureNetworkPolicies(ctx context.Context, mt *
 					{
 						Ports: []networkingv1.NetworkPolicyPort{
 							{Protocol: &tcp, Port: &resourcesPort},
+						},
+					},
+					// Metrics — open to all in-cluster so any Prometheus
+					// instance (OpenShift UWM, standalone operator) can scrape.
+					{
+						Ports: []networkingv1.NetworkPolicyPort{
+							{Protocol: &tcp, Port: &metricsPort},
 						},
 					},
 				},
@@ -649,7 +690,7 @@ func (r *MirrorTargetReconciler) reconcileCleanup(ctx context.Context, mt *mirro
 	}
 
 	if orphansDirty || removedDirty {
-		if err := imagestate.SaveForTarget(ctx, r.Client, mt.Namespace, mt.Name, consolidatedState); err != nil {
+		if err := imagestate.SaveForTarget(ctx, r.Client, mt.Namespace, mt.Name, consolidatedState, mt, r.Scheme); err != nil {
 			return fmt.Errorf("failed to save consolidated state after cleanup partitioning: %w", err)
 		}
 	}
@@ -702,7 +743,7 @@ func (r *MirrorTargetReconciler) reconcileOrphans(ctx context.Context, mt *mirro
 	}
 
 	snapshotName := cleanupSnapshotCMName(mt.Name, "orphans")
-	if err := imagestate.SaveRaw(ctx, r.Client, mt.Namespace, snapshotName, orphans); err != nil {
+	if err := imagestate.SaveRaw(ctx, r.Client, mt.Namespace, snapshotName, orphans, mt, r.Scheme); err != nil {
 		l.Error(err, "Failed to create orphans cleanup snapshot")
 		return false
 	}
@@ -838,7 +879,7 @@ func (r *MirrorTargetReconciler) partitionAndCreateCleanupJob(
 	}
 
 	snapshotName := cleanupSnapshotCMName(mt.Name, isName)
-	if err := imagestate.SaveRaw(ctx, r.Client, mt.Namespace, snapshotName, exclusiveState); err != nil {
+	if err := imagestate.SaveRaw(ctx, r.Client, mt.Namespace, snapshotName, exclusiveState, mt, r.Scheme); err != nil {
 		return false, false, fmt.Errorf("failed to create cleanup snapshot ConfigMap for %s: %w", isName, err)
 	}
 
@@ -1172,9 +1213,28 @@ func (r *MirrorTargetReconciler) ensureResourceRBAC(ctx context.Context, mt *mir
 	return err
 }
 
+// SetupWithManager registers the MirrorTargetReconciler with the manager.
+//
+// Drift detection strategy:
+//   - All namespace-scoped owned resources are registered via .Owns() so that
+//     external deletions or modifications immediately trigger reconciliation.
+//   - .Watches(ImageSet) propagates per-ImageSet progress onto MirrorTarget
+//     aggregated counters without waiting for the next RequeueAfter tick.
+//   - RequeueAfter: 10 min catches any drift not covered by event-based watches
+//     (e.g. Route/Ingress whose CRDs may be optional, or shared oc-mirror-resource-api
+//     resources that use non-controller owner refs and are therefore not picked up
+//     by .Owns()).
 func (r *MirrorTargetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mirrorv1alpha1.MirrorTarget{}).
+		Owns(&appsv1.Deployment{}).
+		Owns(&corev1.Service{}).
+		Owns(&corev1.ServiceAccount{}).
+		Owns(&rbacv1.Role{}).
+		Owns(&rbacv1.RoleBinding{}).
+		Owns(&networkingv1.NetworkPolicy{}).
+		Owns(&networkingv1.Ingress{}).
+		Owns(&batchv1.Job{}).
 		Watches(
 			&mirrorv1alpha1.ImageSet{},
 			handler.EnqueueRequestsFromMapFunc(r.mirrorTargetsForImageSet),

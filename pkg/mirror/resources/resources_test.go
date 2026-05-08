@@ -588,29 +588,6 @@ var _ = Describe("CatalogSlug", func() {
 	})
 })
 
-var _ = Describe("FindCatalog", func() {
-	catalogs := []CatalogInfo{
-		{SourceCatalog: "registry.redhat.io/redhat/redhat-operator-index:v4.21", TargetImage: "mirror/redhat-operator-index"},
-		{SourceCatalog: "registry.redhat.io/redhat/certified-operator-index:v4.21", TargetImage: "mirror/certified-operator-index"},
-	}
-
-	It("finds a catalog by slug", func() {
-		cat, found := FindCatalog(catalogs, "redhat-operator-index")
-		Expect(found).To(BeTrue())
-		Expect(cat.TargetImage).To(Equal("mirror/redhat-operator-index"))
-	})
-
-	It("returns false when slug not found", func() {
-		_, found := FindCatalog(catalogs, "nonexistent")
-		Expect(found).To(BeFalse())
-	})
-
-	It("returns false for empty catalog list", func() {
-		_, found := FindCatalog(nil, "anything")
-		Expect(found).To(BeFalse())
-	})
-})
-
 var _ = Describe("BuildCatalogPackagesResponse", func() {
 	It("builds complete response from DeclarativeConfig", func() {
 		cfg := &declcfg.DeclarativeConfig{

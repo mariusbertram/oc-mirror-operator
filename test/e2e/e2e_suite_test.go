@@ -17,9 +17,11 @@ limitations under the License.
 package e2e
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"testing"
 	"time"
 
@@ -66,16 +68,17 @@ func TestE2E(t *testing.T) {
 
 var _ = BeforeSuite(func() {
 	if !skipClusterSetup {
-		By("building the component images (controller, manager, worker)")
-		// Build all 3 component images for the modular architecture
+		By("building the component images (controller, manager, worker, plugin)")
 		controllerImage := "example.com/oc-mirror-controller:v0.0.1"
 		managerImage := "example.com/oc-mirror-manager:v0.0.1"
 		workerImage := "example.com/oc-mirror-worker:v0.0.1"
+		pluginImage := "example.com/oc-mirror-plugin:v0.0.1"
 
 		cmd := exec.Command("make", "docker-build-all",
 			fmt.Sprintf("IMG_CONTROLLER=%s", controllerImage),
 			fmt.Sprintf("IMG_MANAGER=%s", managerImage),
-			fmt.Sprintf("IMG_WORKER=%s", workerImage))
+			fmt.Sprintf("IMG_WORKER=%s", workerImage),
+			fmt.Sprintf("IMG_PLUGIN=%s", pluginImage))
 		_, err := utils.Run(cmd)
 		ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the component images")
 
@@ -84,8 +87,8 @@ var _ = BeforeSuite(func() {
 		if p := os.Getenv("KIND_EXPERIMENTAL_PROVIDER"); p != "" {
 			Expect(os.Setenv("KIND_EXPERIMENTAL_PROVIDER", p)).To(Succeed())
 		}
-		// Load all 3 component images into Kind cluster
-		for _, img := range []string{controllerImage, managerImage, workerImage} {
+		// Load all 4 component images into Kind cluster
+		for _, img := range []string{controllerImage, managerImage, workerImage, pluginImage} {
 			err = utils.LoadImageToKindClusterWithName(img)
 			ExpectWithOffset(1, err).NotTo(HaveOccurred(), fmt.Sprintf("Failed to load image %s into Kind", img))
 		}
@@ -113,12 +116,12 @@ var _ = BeforeSuite(func() {
 		_, err := utils.Run(cmd)
 		ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to install CRDs")
 
-		By("deploying the operator (controller, manager, worker components)")
-		// Deploy all 3 component images via environment variables
+		By("deploying the operator (controller, manager, worker, plugin components)")
 		cmd = exec.Command("sh", "-c",
 			"IMG_CONTROLLER=example.com/oc-mirror-controller:v0.0.1 "+
 				"IMG_MANAGER=example.com/oc-mirror-manager:v0.0.1 "+
 				"IMG_WORKER=example.com/oc-mirror-worker:v0.0.1 "+
+				"IMG_PLUGIN=example.com/oc-mirror-plugin:v0.0.1 "+
 				"make deploy")
 		_, err = utils.Run(cmd)
 		ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to deploy the operator")
@@ -143,7 +146,26 @@ var _ = AfterSuite(func() {
 	}
 
 	if !skipOperatorDeploy {
+		By("removing finalizers from all remaining custom resources")
+		for _, kind := range []string{"mirrortarget", "imageset"} {
+			out, _ := exec.Command("kubectl", "get", kind, "--all-namespaces", "--no-headers",
+				"-o", "custom-columns=NS:.metadata.namespace,NAME:.metadata.name").Output()
+			for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+				fields := strings.Fields(line)
+				if len(fields) < 2 {
+					continue
+				}
+				ns, name := fields[0], fields[1]
+				_ = exec.Command("kubectl", "patch", kind, name, "-n", ns,
+					"-p", `{"metadata":{"finalizers":[]}}`, "--type=merge").Run()
+			}
+			_ = exec.Command("kubectl", "delete", kind, "--all", "--all-namespaces",
+				"--ignore-not-found=true", "--timeout=30s").Run()
+		}
+
 		By("undeploying the operator")
-		_ = exec.Command("make", "undeploy").Run()
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		_ = exec.CommandContext(ctx, "make", "undeploy").Run()
 	}
 })

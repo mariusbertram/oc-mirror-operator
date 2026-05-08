@@ -1,0 +1,17 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: manager-metrics-monitor
+  namespace: system
+  labels:
+    app.kubernetes.io/name: oc-mirror
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  endpoints:
+    - path: /metrics
+      port: metrics
+      scheme: http
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: manager
+      app.kubernetes.io/name: oc-mirror

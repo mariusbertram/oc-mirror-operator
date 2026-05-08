@@ -124,7 +124,7 @@ var _ = Describe("MirrorTarget Controller", func() {
 					return false
 				}
 				for _, c := range mt.Status.Conditions {
-					if c.Type == "Ready" && c.Status == metav1.ConditionTrue {
+					if c.Type == conditionTypeReady && c.Status == metav1.ConditionTrue {
 						return true
 					}
 				}

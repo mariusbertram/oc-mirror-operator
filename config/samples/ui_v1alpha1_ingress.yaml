@@ -1,0 +1,66 @@
+# UIConfiguration - Ingress with TLS
+# ==================================================
+# This example exposes the oc-mirror dashboard via a Kubernetes Ingress with TLS/HTTPS support.
+# This configuration is suitable for production environments where secure, external access is required.
+#
+# WHEN TO USE:
+# - Production environments with TLS requirements
+# - When the dashboard needs to be accessed from outside the cluster
+# - When using standard Kubernetes Ingress controllers (nginx, traefik, etc.)
+# - When you have a valid TLS certificate for your domain
+#
+# PREREQUISITES:
+# - Ingress controller installed and running (e.g., nginx-ingress, traefik)
+# - TLS certificate secret named 'dashboard-tls' in 'oc-mirror-operator' namespace
+#   Create the secret with:
+#     kubectl create secret tls dashboard-tls \
+#       --cert=path/to/cert.crt \
+#       --key=path/to/private.key \
+#       -n oc-mirror-operator
+#
+# APPLY:
+#   kubectl apply -f config/samples/ui_v1alpha1_ingress.yaml
+#
+# VERIFY:
+#   kubectl get ingress -n oc-mirror-operator
+#   kubectl get uiconfiguration -n oc-mirror-operator
+#   kubectl describe ingress oc-mirror-dashboard -n oc-mirror-operator
+#
+# ACCESS:
+#   # Update your /etc/hosts or DNS to point dashboard.example.com to ingress IP
+#   # For testing: kubectl port-forward -n oc-mirror-operator svc/oc-mirror-dashboard 8443:443
+#   # Then access: https://localhost:8443 (ignore certificate warning for testing)
+#
+# RESOURCES CREATED:
+#   - Service (ClusterIP) named oc-mirror-dashboard
+#   - Ingress named oc-mirror-dashboard with TLS configuration
+#   - Deployment with 2 replicas
+#
+# HOSTNAME:
+# - Change 'dashboard.example.com' to your actual domain
+#
+# INGRESS CLASS:
+# - Change 'ingressClassName' to match your ingress controller (nginx, traefik, etc.)
+#
+apiVersion: mirror.openshift.io/v1alpha1
+kind: UIConfiguration
+metadata:
+  name: dashboard-ingress
+  namespace: oc-mirror-operator
+spec:
+  exposureType: ingress
+  hostname: dashboard.example.com
+  ingressClassName: nginx
+  replicas: 2
+  tls:
+    enabled: true
+    certSecretRef:
+      name: dashboard-tls
+      namespace: oc-mirror-operator
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi

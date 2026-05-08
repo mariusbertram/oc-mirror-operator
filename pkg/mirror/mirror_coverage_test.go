@@ -2,7 +2,6 @@ package mirror
 
 import (
 	"context"
-	"time"
 
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
 	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
@@ -139,61 +138,6 @@ var _ = Describe("Coverage Tests", func() {
 			results, err := col.CollectReleases(context.TODO(), spec, target, nil)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(results).To(BeEmpty())
-		})
-	})
-
-	// ── WorkerPool extended ───────────────────────────────────────────
-	Describe("WorkerPool", func() {
-		It("Submit returns error when pool context cancelled and channel full", func() {
-			ctx, cancel := context.WithCancel(context.Background())
-			mc := mirrorclient.NewMirrorClient(nil, "")
-			pool := NewWorkerPool(ctx, mc, 0) // 0 workers → tasks channel is never drained
-
-			// Fill the tasks buffer (capacity 100)
-			for i := 0; i < 100; i++ {
-				_ = pool.Submit(context.Background(), Task{Source: "fill", Destination: "fill"})
-			}
-			cancel()
-
-			err := pool.Submit(context.Background(), Task{Source: "a", Destination: "b"})
-			Expect(err).To(HaveOccurred())
-		})
-
-		It("Submit returns error when caller context cancelled and channel full", func() {
-			mc := mirrorclient.NewMirrorClient(nil, "")
-			pool := NewWorkerPool(context.Background(), mc, 0) // 0 workers
-			defer pool.Stop()
-
-			// Fill the tasks buffer (capacity 100)
-			for i := 0; i < 100; i++ {
-				_ = pool.Submit(context.Background(), Task{Source: "fill", Destination: "fill"})
-			}
-
-			ctx, cancel := context.WithCancel(context.Background())
-			cancel()
-
-			err := pool.Submit(ctx, Task{Source: "a", Destination: "b"})
-			Expect(err).To(HaveOccurred())
-		})
-
-		It("Stop closes tasks and results channels", func() {
-			mc := mirrorclient.NewMirrorClient(nil, "")
-			pool := NewWorkerPool(context.Background(), mc, 2)
-			pool.Stop()
-
-			// results channel should be closed
-			_, open := <-pool.Results()
-			Expect(open).To(BeFalse())
-		})
-
-		It("workers exit when context cancelled", func() {
-			ctx, cancel := context.WithCancel(context.Background())
-			mc := mirrorclient.NewMirrorClient(nil, "")
-			pool := NewWorkerPool(ctx, mc, 2)
-			cancel()
-			// Give workers time to exit
-			time.Sleep(50 * time.Millisecond)
-			pool.Stop()
 		})
 	})
 

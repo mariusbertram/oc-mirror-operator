@@ -27,17 +27,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
-	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror"
-	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
 )
 
 func newImageSetReconciler() *ImageSetReconciler {
-	mc := mirrorclient.NewMirrorClient(nil, "")
 	return &ImageSetReconciler{
 		Client:          k8sClient,
 		Scheme:          k8sClient.Scheme(),
-		MirrorClient:    mc,
-		Collector:       mirror.NewCollector(mc),
 		CatalogBuildMgr: nil,
 	}
 }
@@ -87,7 +82,7 @@ var _ = Describe("ImageSet Controller", func() {
 					return false
 				}
 				for _, c := range is.Status.Conditions {
-					if c.Type == "Ready" && c.Status == metav1.ConditionFalse && c.Reason == "Unbound" {
+					if c.Type == conditionTypeReady && c.Status == metav1.ConditionFalse && c.Reason == "Unbound" {
 						return true
 					}
 				}

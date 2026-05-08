@@ -3,7 +3,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -21,9 +20,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
-	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror"
+	ocmetrics "github.com/mariusbertram/oc-mirror-operator/pkg/metrics"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/catalog/builder"
-	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/imagestate"
 )
 
@@ -31,8 +29,6 @@ import (
 type ImageSetReconciler struct {
 	client.Client
 	Scheme          *runtime.Scheme
-	MirrorClient    *mirrorclient.MirrorClient
-	Collector       *mirror.Collector
 	CatalogBuildMgr *builder.CatalogBuildManager
 }
 
@@ -45,8 +41,14 @@ const conditionCatalogReady = "CatalogReady"
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 
-func (r *ImageSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *ImageSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ctrl.Result, rerr error) {
 	l := log.FromContext(ctx)
+
+	defer func() {
+		if rerr != nil {
+			ocmetrics.ReconcileErrorsTotal.WithLabelValues(req.Namespace, req.Name, "imageset").Inc()
+		}
+	}()
 
 	is := &mirrorv1alpha1.ImageSet{}
 	if err := r.Get(ctx, req.NamespacedName, is); err != nil {
@@ -60,7 +62,7 @@ func (r *ImageSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	mt, err := r.findOwningMirrorTarget(ctx, is)
 	if err != nil {
 		l.Info("No MirrorTarget references this ImageSet", "imageSet", is.Name, "reason", err.Error())
-		setCondition(&is.Status.Conditions, "Ready", metav1.ConditionFalse, "Unbound", err.Error(), is.Generation)
+		setCondition(&is.Status.Conditions, conditionTypeReady, metav1.ConditionFalse, "Unbound", err.Error(), is.Generation)
 		_ = r.Status().Update(ctx, is)
 		return ctrl.Result{RequeueAfter: 1 * time.Minute}, nil
 	}
@@ -443,9 +445,6 @@ func catalogTargetRef(registry string, op mirrorv1alpha1.Operator) string {
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *ImageSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	authDir := os.Getenv("DOCKER_CONFIG")
-	r.MirrorClient = mirrorclient.NewMirrorClient(nil, authDir)
-	r.Collector = mirror.NewCollector(r.MirrorClient)
 	bm, err := builder.New()
 	if err != nil {
 		return fmt.Errorf("init catalog build manager: %w", err)

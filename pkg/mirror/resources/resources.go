@@ -349,16 +349,6 @@ func CatalogSlug(source string) string {
 	return "unknown"
 }
 
-// FindCatalog returns the CatalogInfo matching the given slug.
-func FindCatalog(catalogs []CatalogInfo, slug string) (CatalogInfo, bool) {
-	for _, c := range catalogs {
-		if CatalogSlug(c.SourceCatalog) == slug {
-			return c, true
-		}
-	}
-	return CatalogInfo{}, false
-}
-
 // --- Catalog packages response types ---
 
 // CatalogPackagesResponse is the JSON envelope for the packages endpoint.
@@ -379,6 +369,10 @@ type PackageSummary struct {
 type ChannelSummary struct {
 	Name    string        `json:"name"`
 	Entries []BundleEntry `json:"entries"`
+	// Versions is the sorted, deduplicated list of all available version strings
+	// in this channel. Populated by BuildUpstreamCatalogPackagesResponse to allow
+	// full version range selection in the UI without storing every bundle entry.
+	Versions []string `json:"versions,omitempty"`
 }
 
 // BundleEntry describes a single bundle version within a channel.
@@ -425,7 +419,22 @@ func BuildUpstreamCatalogPackagesResponse(cat CatalogInfo, cfg *declcfg.Declarat
 				entries = append(entries, BundleEntry{Name: h, Version: bundleVersions[h]})
 			}
 			sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
-			chSummaries = append(chSummaries, ChannelSummary{Name: ch.Name, Entries: entries})
+
+			// Collect all unique non-empty version strings across every bundle in
+			// the channel so the UI version-range dropdowns can show the full list.
+			versionSet := make(map[string]struct{}, len(ch.Entries))
+			for _, e := range ch.Entries {
+				if v := bundleVersions[e.Name]; v != "" {
+					versionSet[v] = struct{}{}
+				}
+			}
+			versions := make([]string, 0, len(versionSet))
+			for v := range versionSet {
+				versions = append(versions, v)
+			}
+			sortVersionStrings(versions)
+
+			chSummaries = append(chSummaries, ChannelSummary{Name: ch.Name, Entries: entries, Versions: versions})
 		}
 
 		packages = append(packages, PackageSummary{
@@ -539,4 +548,26 @@ func bundleVersion(b declcfg.Bundle) string {
 		}
 	}
 	return ""
+}
+
+// sortVersionStrings sorts a slice of semver-like version strings in ascending
+// order (major.minor.patch numeric comparison, then lexicographic fallback).
+func sortVersionStrings(versions []string) {
+	sort.Slice(versions, func(i, j int) bool {
+		ai := strings.SplitN(versions[i], ".", 4)
+		aj := strings.SplitN(versions[j], ".", 4)
+		for k := 0; k < 3; k++ {
+			var a, b int
+			if k < len(ai) {
+				_, _ = fmt.Sscanf(ai[k], "%d", &a)
+			}
+			if k < len(aj) {
+				_, _ = fmt.Sscanf(aj[k], "%d", &b)
+			}
+			if a != b {
+				return a < b
+			}
+		}
+		return versions[i] < versions[j]
+	})
 }

@@ -1,0 +1,47 @@
+# Dockerfile.plugin — multi-stage build for the Console Plugin binary.
+#
+# Stage 1: Build the React Console Plugin assets.
+# Stage 2: Build the Go plugin binary with embedded UI.
+# Stage 3: Minimal distroless runtime image.
+#
+# To rebuild after UI changes:
+#   make docker-build-plugin IMG_PLUGIN=<registry>/<image>:<tag>
+
+FROM --platform=$BUILDPLATFORM docker.io/library/node:20-alpine AS ui-build
+WORKDIR /build
+COPY ui/package.json ui/package-lock.json* ./ui/
+RUN npm --prefix ui ci --ignore-scripts
+
+COPY ui/ ./ui/
+# Build the OpenShift Console Plugin assets.
+RUN npm --prefix ui run build:plugin
+
+# -----------------------------------------------------------------------
+FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.25@sha256:4c22673170524e09a47a6e1a5f1ca99692f4796c9b4f2de25ec7137bcd897edd AS go-build
+ARG TARGETOS
+ARG TARGETARCH
+
+WORKDIR /workspace
+
+COPY go.mod go.mod
+COPY go.sum go.sum
+RUN go mod download
+
+COPY cmd/ cmd/
+COPY api/ api/
+COPY pkg/ pkg/
+COPY internal/ internal/
+
+# Replace the placeholder embedded UI with the React build output.
+COPY --from=ui-build /build/ui/dist/plugin/ pkg/resourceapi/plugin/
+
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
+    go build -a -o plugin ./cmd/dashboard/
+
+# -----------------------------------------------------------------------
+FROM gcr.io/distroless/static:nonroot@sha256:64c43684e6d2b581d1eb362ea47b6a4defee6a9cac5f7ebbda3daa67e8c9b8e6
+WORKDIR /
+COPY --from=go-build /workspace/plugin .
+USER 65532:65532
+
+ENTRYPOINT ["/plugin"]

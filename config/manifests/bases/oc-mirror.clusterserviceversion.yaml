@@ -30,9 +30,10 @@ metadata:
       ]
     capabilities: Basic Install
     categories: OpenShift Optional, Integration & Delivery
-    containerImage: quay.lab.brtrm.dev/marius/oc-mirror-operator:latest
-    oc-mirror-manager-image: ghcr.io/mariusbertram/oc-mirror-operator-manager:latest
-    oc-mirror-worker-image: ghcr.io/mariusbertram/oc-mirror-operator-worker:latest
+    containerImage: controller:latest
+    oc-mirror-manager-image: manager:latest
+    oc-mirror-plugin-image: plugin:latest
+    oc-mirror-worker-image: worker:latest
     operatorframework.io/suggested-namespace: oc-mirror-operator
     repository: https://github.com/mariusbertram/oc-mirror-operator
     support: Marius Bertram
@@ -43,19 +44,19 @@ spec:
   customresourcedefinitions:
     owned:
     - description: |
+        An ImageSet describes the desired content (release channels, operator
+        catalogs, additional images) to mirror to one or more MirrorTargets.
+      displayName: Image Set
+      kind: ImageSet
+      name: imagesets.mirror.openshift.io
+      version: v1alpha1
+    - description: |
         A MirrorTarget defines a destination registry for one or more ImageSets.
         It owns the manager Deployment that orchestrates per-image worker pods
         and exposes aggregated mirroring progress (Total/Mirrored/Pending/Failed).
       displayName: Mirror Target
       kind: MirrorTarget
       name: mirrortargets.mirror.openshift.io
-      version: v1alpha1
-    - description: |
-        An ImageSet describes the desired content (release channels, operator
-        catalogs, additional images) to mirror to one or more MirrorTargets.
-      displayName: Image Set
-      kind: ImageSet
-      name: imagesets.mirror.openshift.io
       version: v1alpha1
   description: |
     The oc-mirror operator brings the functionality of the upstream `oc-mirror`
@@ -114,6 +115,12 @@ spec:
                   value: manager:latest
                 - name: WORKER_IMAGE
                   value: worker:latest
+                - name: PLUGIN_IMAGE
+                  value: plugin:latest
+                - name: OPERATOR_NAMESPACE
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.namespace
                 image: controller:latest
                 livenessProbe:
                   httpGet:
@@ -180,9 +187,9 @@ spec:
         serviceAccountName: oc-mirror-manager
     strategy: deployment
   installModes:
-  - supported: false
+  - supported: true
     type: OwnNamespace
-  - supported: false
+  - supported: true
     type: SingleNamespace
   - supported: false
     type: MultiNamespace
@@ -204,12 +211,17 @@ spec:
   - email: marius@brtrm.de
     name: Marius Bertram
   maturity: alpha
+  minKubeVersion: 1.22.0
   provider:
     name: Marius Bertram
     url: github.com/mariusbertram/oc-mirror-operator
   relatedImages:
-  - image: ghcr.io/mariusbertram/oc-mirror-operator-manager:latest
+  - image: controller:latest
+    name: controller
+  - image: manager:latest
     name: manager
-  - image: ghcr.io/mariusbertram/oc-mirror-operator-worker:latest
+  - image: worker:latest
     name: worker
+  - image: plugin:latest
+    name: plugin
   version: 0.0.0

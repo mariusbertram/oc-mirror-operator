@@ -26,8 +26,9 @@ spec:
     metadata:
       annotations:
         kubectl.kubernetes.io/default-container: manager
-        oc-mirror-manager-image: ghcr.io/mariusbertram/oc-mirror-operator-manager:latest
-        oc-mirror-worker-image: ghcr.io/mariusbertram/oc-mirror-operator-worker:latest
+        oc-mirror-manager-image: manager:latest
+        oc-mirror-worker-image: worker:latest
+        oc-mirror-plugin-image: plugin:latest
       labels:
         control-plane: controller-manager
         app.kubernetes.io/name: oc-mirror
@@ -65,15 +66,21 @@ spec:
         args:
           - --leader-elect
           - --health-probe-bind-address=:8081
-        image: ghcr.io/mariusbertram/oc-mirror-operator-controller:latest
+        image: controller:latest
         name: manager
         env:
         - name: OPERATOR_IMAGE
-          value: ghcr.io/mariusbertram/oc-mirror-operator-controller:latest
+          value: controller:latest
         - name: MANAGER_IMAGE
-          value: ghcr.io/mariusbertram/oc-mirror-operator-manager:latest
+          value: manager:latest
         - name: WORKER_IMAGE
-          value: ghcr.io/mariusbertram/oc-mirror-operator-worker:latest
+          value: worker:latest
+        - name: PLUGIN_IMAGE
+          value: plugin:latest
+        - name: OPERATOR_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
         ports: []
         securityContext:
           allowPrivilegeEscalation: false

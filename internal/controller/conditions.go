@@ -4,6 +4,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+const conditionTypeReady = "Ready"
+
 // setCondition merges a new condition into the slice keyed by Type. It updates
 // Status, Reason, and Message in place, bumping LastTransitionTime only when
 // Status actually flips. ObservedGeneration is set so consumers can tell which

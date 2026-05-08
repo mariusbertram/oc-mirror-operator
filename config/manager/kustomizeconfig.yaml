@@ -3,3 +3,5 @@ images:
   path: spec/template/metadata/annotations/oc-mirror-manager-image
 - kind: Deployment
   path: spec/template/metadata/annotations/oc-mirror-worker-image
+- kind: Deployment
+  path: spec/template/metadata/annotations/oc-mirror-plugin-image

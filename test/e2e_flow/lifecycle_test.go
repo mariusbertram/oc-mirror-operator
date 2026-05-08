@@ -14,9 +14,7 @@ import (
 
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
 	"github.com/mariusbertram/oc-mirror-operator/internal/controller"
-	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/catalog/builder"
-	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/manager"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -63,15 +61,12 @@ var _ = Describe("Operator Lifecycle", func() {
 		cs := k8sfake.NewSimpleClientset()
 
 		// 3. Run ImageSet Reconciler
-		mc := mirrorclient.NewMirrorClient(nil, "")
 		_ = os.Setenv(builder.OperatorImageEnvVar, "test-operator:latest")
 		bm, bmErr := builder.New()
 		Expect(bmErr).NotTo(HaveOccurred())
 		r := &controller.ImageSetReconciler{
 			Client:          cl,
 			Scheme:          scheme,
-			MirrorClient:    mc,
-			Collector:       mirror.NewCollector(mc),
 			CatalogBuildMgr: bm,
 		}
 

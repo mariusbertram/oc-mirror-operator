@@ -227,19 +227,6 @@ func TestDecode_CorruptGzippedJSON(t *testing.T) {
 	}
 }
 
-// --- ptr ---
-
-func TestPtr(t *testing.T) {
-	v := ptr(true)
-	if v == nil || *v != true {
-		t.Fatal("ptr(true) failed")
-	}
-	s := ptr("hello")
-	if s == nil || *s != "hello" {
-		t.Fatal("ptr(string) failed")
-	}
-}
-
 // --- Load / LoadByConfigMapName (with fake client) ---
 
 func TestLoad_MissingConfigMap(t *testing.T) {
@@ -270,108 +257,12 @@ func TestLoad_ExistingConfigMap(t *testing.T) {
 	}
 }
 
-// --- LoadWithExistence ---
-
-func TestLoadWithExistence_Missing(t *testing.T) {
-	c := newFakeClient().Build()
-	state, exists, err := LoadWithExistence(context.Background(), c, "ns", "missing")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if exists {
-		t.Fatal("expected exists=false")
-	}
-	if state == nil || len(state) != 0 {
-		t.Fatalf("expected empty non-nil state")
-	}
-}
-
-func TestLoadWithExistence_Exists(t *testing.T) {
-	original := ImageState{"dest": {Source: "src", State: "Pending"}}
-	data, _ := encode(original)
-	cm := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-is-images", Namespace: "ns"},
-		BinaryData: map[string][]byte{"images.json.gz": data},
-	}
-	c := newFakeClient().WithRuntimeObjects(cm).Build()
-	state, exists, err := LoadWithExistence(context.Background(), c, "ns", "test-is")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !exists {
-		t.Fatal("expected exists=true")
-	}
-	if len(state) != 1 {
-		t.Fatalf("expected 1 entry, got %d", len(state))
-	}
-}
-
-func TestLoadWithExistence_CorruptData(t *testing.T) {
-	cm := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-is-images", Namespace: "ns"},
-		BinaryData: map[string][]byte{"images.json.gz": []byte("corrupt")},
-	}
-	c := newFakeClient().WithRuntimeObjects(cm).Build()
-	_, exists, err := LoadWithExistence(context.Background(), c, "ns", "test-is")
-	if err == nil {
-		t.Fatal("expected error for corrupt data")
-	}
-	if !exists {
-		t.Fatal("ConfigMap exists even though data is corrupt")
-	}
-}
-
-// --- Save ---
-
-func TestSave_CreatesNew(t *testing.T) {
-	c := newFakeClient().Build()
-	is := &mirrorv1alpha1.ImageSet{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-is", Namespace: "ns", UID: "uid-123"},
-	}
-	state := ImageState{"dest": {Source: "src", State: "Pending"}}
-	if err := Save(context.Background(), c, "ns", is, state); err != nil {
-		t.Fatalf("Save error: %v", err)
-	}
-	cm := &corev1.ConfigMap{}
-	if err := c.Get(context.Background(), types.NamespacedName{Namespace: "ns", Name: "test-is-images"}, cm); err != nil {
-		t.Fatalf("ConfigMap not found: %v", err)
-	}
-	if len(cm.OwnerReferences) != 1 || cm.OwnerReferences[0].Name != "test-is" {
-		t.Fatal("missing or wrong owner reference")
-	}
-}
-
-func TestSave_UpdatesExisting(t *testing.T) {
-	oldData, _ := encode(ImageState{"old": {Source: "old-src", State: testStateMirrored}})
-	existing := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-is-images", Namespace: "ns"},
-		BinaryData: map[string][]byte{"images.json.gz": oldData},
-	}
-	c := newFakeClient().WithRuntimeObjects(existing).Build()
-	is := &mirrorv1alpha1.ImageSet{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-is", Namespace: "ns", UID: "uid-123"},
-	}
-	newState := ImageState{"new": {Source: "new-src", State: "Pending"}}
-	if err := Save(context.Background(), c, "ns", is, newState); err != nil {
-		t.Fatalf("Save error: %v", err)
-	}
-	cm := &corev1.ConfigMap{}
-	_ = c.Get(context.Background(), types.NamespacedName{Namespace: "ns", Name: "test-is-images"}, cm)
-	decoded, _ := decode(cm)
-	if _, ok := decoded["old"]; ok {
-		t.Fatal("old entry should be gone")
-	}
-	if len(decoded) != 1 || decoded["new"].Source != "new-src" {
-		t.Fatalf("unexpected state: %v", decoded)
-	}
-}
-
 // --- SaveRaw ---
 
 func TestSaveRaw_CreatesNew(t *testing.T) {
 	c := newFakeClient().Build()
 	state := ImageState{"dest": {Source: "src", State: "Pending"}}
-	if err := SaveRaw(context.Background(), c, "ns", "raw-cm", state); err != nil {
+	if err := SaveRaw(context.Background(), c, "ns", "raw-cm", state, nil, nil); err != nil {
 		t.Fatalf("SaveRaw error: %v", err)
 	}
 	cm := &corev1.ConfigMap{}
@@ -391,7 +282,7 @@ func TestSaveRaw_UpdatesExisting(t *testing.T) {
 	}
 	c := newFakeClient().WithRuntimeObjects(existing).Build()
 	newState := ImageState{"new": {Source: "new", State: "Pending"}}
-	if err := SaveRaw(context.Background(), c, "ns", "raw-cm", newState); err != nil {
+	if err := SaveRaw(context.Background(), c, "ns", "raw-cm", newState, nil, nil); err != nil {
 		t.Fatalf("SaveRaw error: %v", err)
 	}
 	cm := &corev1.ConfigMap{}
@@ -489,56 +380,12 @@ func TestConfigMapNameForTarget(t *testing.T) {
 	}
 }
 
-// --- CountsForImageSet ---
-
-func TestCountsForImageSet_FiltersCorrectly(t *testing.T) {
-	state := ImageState{
-		"img1": {
-			Source: "s1", State: testStateMirrored,
-			Refs: []ImageRef{{ImageSet: "is-a"}},
-		},
-		"img2": {
-			Source: "s2", State: "Pending",
-			Refs: []ImageRef{{ImageSet: "is-b"}},
-		},
-		"img3": {
-			Source: "s3", State: "Failed", PermanentlyFailed: true,
-			Refs: []ImageRef{{ImageSet: "is-a"}, {ImageSet: "is-b"}},
-		},
-	}
-	total, mirrored, pending, failed := CountsForImageSet(state, "is-a")
-	if total != 2 {
-		t.Fatalf("expected total=2, got %d", total)
-	}
-	if mirrored != 1 {
-		t.Fatalf("expected mirrored=1, got %d", mirrored)
-	}
-	if pending != 0 {
-		t.Fatalf("expected pending=0, got %d", pending)
-	}
-	if failed != 1 {
-		t.Fatalf("expected failed=1, got %d", failed)
-	}
-}
-
-func TestCountsForImageSet_LegacyNoRefs(t *testing.T) {
-	// Legacy entries without Refs are included for all ISes
-	state := ImageState{
-		"img1": {Source: "s1", State: testStateMirrored},
-		"img2": {Source: "s2", State: "Pending"},
-	}
-	total, mirrored, _, _ := CountsForImageSet(state, "any-is")
-	if total != 2 || mirrored != 1 {
-		t.Fatalf("expected total=2 mirrored=1, got total=%d mirrored=%d", total, mirrored)
-	}
-}
-
 // --- SaveForTarget / LoadForTarget ---
 
 func TestSaveForTarget_CreatesAndLoads(t *testing.T) {
 	c := newFakeClient().Build()
 	state := ImageState{"dest": {Source: "src", State: "Pending"}}
-	if err := SaveForTarget(context.Background(), c, "ns", "my-mt", state); err != nil {
+	if err := SaveForTarget(context.Background(), c, "ns", "my-mt", state, nil, nil); err != nil {
 		t.Fatalf("SaveForTarget error: %v", err)
 	}
 	loaded, err := LoadForTarget(context.Background(), c, "ns", "my-mt")

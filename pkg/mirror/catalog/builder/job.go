@@ -90,16 +90,6 @@ func New() (*CatalogBuildManager, error) {
 	return &CatalogBuildManager{operatorImage: img}, nil
 }
 
-// MustNew is the panicking variant of New, intended for use after the
-// operator's main entrypoint has already validated OPERATOR_IMAGE.
-func MustNew() *CatalogBuildManager {
-	m, err := New()
-	if err != nil {
-		panic(err)
-	}
-	return m
-}
-
 // JobName returns a deterministic, DNS-safe Job name for the given ImageSet
 // name and source catalog image reference. To avoid collisions when long names
 // get truncated, the final 8 characters are derived from a SHA-256 of all

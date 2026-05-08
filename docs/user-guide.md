@@ -48,6 +48,7 @@ This document describes the complete configuration and operation of the `oc-mirr
     - [Retrieving IDMS and ITMS](#101-retrieving-idms-and-itms)
     - [CatalogSource and ClusterCatalog](#102-catalogsource-and-clustercatalog)
     - [Release Signatures](#103-release-signatures)
+    - [OpenShift Console Plugin](#107-openshift-console-plugin)
 11. [Full Configuration Reference](#11-full-configuration-reference)
     - [ImageSet Fields](#111-imageset-fields)
     - [MirrorTarget Fields](#112-mirrortarget-fields)
@@ -1238,6 +1239,53 @@ curl https://${MIRROR_URL}/api/v1/targets/<mirrortarget-name>/imagesets/<imagese
 ### 10.6 Legacy Compatibility
 
 Old `/resources/{imageset}/...` URLs are redirected to the new `/api/v1/...` paths for backward compatibility. Existing scripts using the old paths will continue to work during the migration period.
+
+---
+
+## 10.7 OpenShift Console Plugin
+
+On OpenShift clusters, the operator automatically deploys an integrated **Console Plugin** (`oc-mirror-operator`) in the operator namespace. The plugin appears as a dedicated tab in the OpenShift web console and provides a full UI for monitoring and configuring the operator — no external URL or additional `Route` configuration needed.
+
+### What the Plugin Provides
+
+| Page | Description |
+|------|-------------|
+| **MirrorTargets** | Overview of all targets with progress bars (Total / Mirrored / Pending / Failed) |
+| **ImageSet Detail** | Per-ImageSet image status with filtering by state; links to IDMS/ITMS/CatalogSource download |
+| **CatalogBrowser** | Browse upstream operator catalogs; add packages or individual channels to the filtered catalog; set `minVersion`/`maxVersion` per channel or package; save changes via PATCH API |
+| **Failed Images** | List of images in `Failed` or `PermanentlyFailed` state with registry error details |
+
+### Auto-Deployment
+
+The `ConsolePlugin` controller reconciles the following resources in the operator namespace:
+
+- `Deployment` — `oc-mirror-plugin` (one per namespace)
+- `Service` — `oc-mirror-plugin`
+- `ConsolePlugin` CR (cluster-scoped) — registers the plugin with the OpenShift Console at `/api/plugins/oc-mirror-operator/`
+- `ServiceAccount`, `Role`, `RoleBinding` — least-privilege RBAC for plugin pod
+
+The plugin is only created when the `ConsolePlugin` CRD is present in the cluster (i.e., OpenShift). On plain Kubernetes the controller skips plugin deployment gracefully.
+
+### CatalogBrowser Usage
+
+The CatalogBrowser shows the upstream operator catalog split into two panes:
+
+- **Left pane** — all packages available in the upstream catalog
+- **Right pane** — packages currently included in the filtered catalog (your selection)
+
+**Adding a package (all channels):** Click `+ Add Package` on any row in the left pane. All channels of that package are imported.
+
+**Adding a single channel:** Expand a package in the left pane to see its channels. Click `+ Add` on a specific channel to import only that channel.
+
+**Setting version constraints:** After adding a package or channel, expand it in the right pane and set `minVersion`/`maxVersion` from the dropdown (populated with all available versions in that channel).
+
+**Removing a channel:** Click `×` next to a specific channel in the right pane to remove only that channel. If no channels remain selected, the whole package is removed.
+
+**Saving:** Click **Save** to apply changes — the operator reconciles immediately and rebuilds the filtered catalog.
+
+### Plugin Cleanup
+
+When the operator is uninstalled, a finalizer (`mirror.openshift.io/plugin-cleanup`) ensures all plugin resources are deleted before the operator pod terminates — no orphaned `ConsolePlugin` CR or Deployment is left behind.
 
 ---
 

@@ -17,10 +17,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-
-	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
 // ImageOrigin identifies which collector source produced a given imagestate
@@ -161,52 +161,10 @@ func Counts(state ImageState) (total, mirrored, pending, failed int) {
 	return
 }
 
-// CountsForImageSet returns aggregate counts filtered to entries that have a
-// Ref for the given ImageSet name. Entries without Refs are included if they
-// carry the legacy flat Origin/EntrySig fields (backward compat).
-func CountsForImageSet(state ImageState, isName string) (total, mirrored, pending, failed int) {
-	for _, e := range state {
-		if e == nil {
-			continue
-		}
-		if len(e.Refs) > 0 && !e.HasImageSet(isName) {
-			continue
-		}
-		total++
-		switch {
-		case e.State == "Mirrored":
-			mirrored++
-		case e.PermanentlyFailed:
-			failed++
-		default:
-			pending++
-		}
-	}
-	return
-}
-
 // Deprecated: Load reads from a per-ImageSet ConfigMap.
 // Use LoadForTarget for the consolidated per-MirrorTarget state store.
 func Load(ctx context.Context, c client.Client, namespace, imageSetName string) (ImageState, error) {
 	return LoadByConfigMapName(ctx, c, namespace, ConfigMapName(imageSetName))
-}
-
-// Deprecated: LoadWithExistence reads from a per-ImageSet ConfigMap.
-// Use LoadForTarget for the consolidated per-MirrorTarget state store.
-func LoadWithExistence(ctx context.Context, c client.Client, namespace, imageSetName string) (state ImageState, exists bool, err error) {
-	cm := &corev1.ConfigMap{}
-	getErr := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: ConfigMapName(imageSetName)}, cm)
-	if getErr != nil {
-		if errors.IsNotFound(getErr) {
-			return make(ImageState), false, nil
-		}
-		return nil, false, fmt.Errorf("get image state configmap: %w", getErr)
-	}
-	s, decodeErr := decode(cm)
-	if decodeErr != nil {
-		return nil, true, decodeErr
-	}
-	return s, true, nil
 }
 
 // LoadByConfigMapName reads the ImageState from a ConfigMap with the given name.
@@ -231,55 +189,15 @@ func LoadForTarget(ctx context.Context, c client.Client, namespace, mtName strin
 }
 
 // SaveForTarget writes the consolidated ImageState to the per-MirrorTarget
-// ConfigMap "<mtName>-images". Owner references must be set by the caller via
-// controllerutil.SetControllerReference if garbage-collection is desired.
-func SaveForTarget(ctx context.Context, c client.Client, namespace, mtName string, state ImageState) error {
-	return SaveRaw(ctx, c, namespace, ConfigMapNameForTarget(mtName), state)
-}
-
-// Deprecated: Save writes to a per-ImageSet ConfigMap.
-// Use SaveForTarget for the consolidated per-MirrorTarget state store.
-func Save(ctx context.Context, c client.Client, namespace string, is *mirrorv1alpha1.ImageSet, state ImageState) error {
-	data, err := encode(state)
-	if err != nil {
-		return fmt.Errorf("encode image state: %w", err)
-	}
-
-	cmName := ConfigMapName(is.Name)
-	existing := &corev1.ConfigMap{}
-	getErr := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: cmName}, existing)
-
-	cm := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      cmName,
-			Namespace: namespace,
-			OwnerReferences: []metav1.OwnerReference{{
-				APIVersion:         mirrorv1alpha1.GroupVersion.String(),
-				Kind:               "ImageSet",
-				Name:               is.Name,
-				UID:                is.UID,
-				Controller:         ptr(true),
-				BlockOwnerDeletion: ptr(false),
-			}},
-		},
-		BinaryData: map[string][]byte{
-			"images.json.gz": data,
-		},
-	}
-
-	if errors.IsNotFound(getErr) {
-		return c.Create(ctx, cm)
-	}
-	if getErr != nil {
-		return getErr
-	}
-	cm.ResourceVersion = existing.ResourceVersion
-	return c.Update(ctx, cm)
+// ConfigMap "<mtName>-images".
+func SaveForTarget(ctx context.Context, c client.Client, namespace, mtName string, state ImageState, owner metav1.Object, scheme *runtime.Scheme) error {
+	return SaveRaw(ctx, c, namespace, ConfigMapNameForTarget(mtName), state, owner, scheme)
 }
 
 // SaveRaw writes the ImageState to a ConfigMap with the given name.
 // Used for temporary cleanup state that is not owned by an ImageSet.
-func SaveRaw(ctx context.Context, c client.Client, namespace, cmName string, state ImageState) error {
+// If owner and scheme are provided, a ControllerReference is set on the ConfigMap.
+func SaveRaw(ctx context.Context, c client.Client, namespace, cmName string, state ImageState, owner metav1.Object, scheme *runtime.Scheme) error {
 	data, err := encode(state)
 	if err != nil {
 		return fmt.Errorf("encode image state: %w", err)
@@ -296,6 +214,12 @@ func SaveRaw(ctx context.Context, c client.Client, namespace, cmName string, sta
 		BinaryData: map[string][]byte{
 			"images.json.gz": data,
 		},
+	}
+
+	if owner != nil && scheme != nil {
+		if err := controllerutil.SetControllerReference(owner, cm, scheme); err != nil {
+			return fmt.Errorf("set controller reference: %w", err)
+		}
 	}
 
 	if errors.IsNotFound(getErr) {
@@ -341,5 +265,3 @@ func decode(cm *corev1.ConfigMap) (ImageState, error) {
 	}
 	return state, nil
 }
-
-func ptr[T any](v T) *T { return &v }

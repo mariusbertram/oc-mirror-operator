@@ -57,19 +57,6 @@ var _ = Describe("Manager Coverage", func() {
 		})
 	})
 
-	Context("resourcePtr", func() {
-		It("parses a quantity string", func() {
-			q := resourcePtr("10Gi")
-			Expect(q).NotTo(BeNil())
-			Expect(q.String()).To(Equal("10Gi"))
-		})
-		It("parses a small quantity", func() {
-			q := resourcePtr("500Mi")
-			Expect(q).NotTo(BeNil())
-			Expect(q.String()).To(Equal("500Mi"))
-		})
-	})
-
 	Context("containsString", func() {
 		It("returns true when string is in slice", func() {
 			Expect(containsString([]string{"a", "b", "c"}, "b")).To(BeTrue())
@@ -488,7 +475,7 @@ var _ = Describe("Manager Coverage", func() {
 			sig := mirrorv1alpha1.OperatorEntrySignature(op)
 			key := mirrorv1alpha1.CatalogDigestAnnotationKey(sig)
 			annotations := map[string]string{
-				key: "v4:sha256:abc",
+				key: "v5:sha256:abc",
 			}
 			is := &mirrorv1alpha1.ImageSet{
 				Spec: mirrorv1alpha1.ImageSetSpec{
@@ -1584,7 +1571,7 @@ var _ = Describe("Manager Coverage", func() {
 			m = NewWithClients(c, m.Clientset, "test", "default", "test-image:latest", "", scheme)
 
 			desired := map[string]string{
-				mirrorv1alpha1.CatalogDigestAnnotationPrefix + "sig1": "v4:sha256:abc",
+				mirrorv1alpha1.CatalogDigestAnnotationPrefix + "sig1": "v5:sha256:abc",
 				"unrelated": "should-be-ignored",
 			}
 			err := m.patchImageSetAnnotations(context.TODO(), is, desired)
@@ -1622,7 +1609,7 @@ var _ = Describe("Manager Coverage", func() {
 			m = NewWithClients(c, m.Clientset, "test", "default", "test-image:latest", "", scheme)
 
 			desired := map[string]string{
-				mirrorv1alpha1.CatalogDigestAnnotationPrefix + "new": "v4:sha256:new",
+				mirrorv1alpha1.CatalogDigestAnnotationPrefix + "new": "v5:sha256:new",
 			}
 			err := m.patchImageSetAnnotations(context.TODO(), is, desired)
 			Expect(err).NotTo(HaveOccurred())

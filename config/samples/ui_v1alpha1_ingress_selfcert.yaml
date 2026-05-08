@@ -1,0 +1,87 @@
+# UIConfiguration - Ingress with Self-Signed Certificate
+# ==================================================
+# This example demonstrates how to use the oc-mirror dashboard with a self-signed TLS certificate
+# for testing and development purposes. Self-signed certificates are NOT recommended for production
+# but are useful for rapid testing without managing a Certificate Authority.
+#
+# WHEN TO USE:
+# - Development/testing environments
+# - When you don't have a valid TLS certificate yet
+# - For internal testing before production deployment
+# - Local cluster testing (Minikube, Kind, etc.)
+#
+# PREREQUISITES:
+# - Ingress controller running
+# - OpenSSL installed (for generating the self-signed certificate)
+# - Ability to modify /etc/hosts or DNS for testing
+#
+# GENERATE SELF-SIGNED CERTIFICATE:
+#   # Generate a self-signed certificate valid for 365 days
+#   openssl req -x509 -newkey rsa:4096 -keyout tls.key -out tls.crt -days 365 -nodes \
+#     -subj "/CN=dashboard.local/O=oc-mirror/C=US"
+#
+# CREATE SECRET:
+#   kubectl create secret tls dashboard-tls-selfsigned \
+#     --cert=tls.crt \
+#     --key=tls.key \
+#     -n oc-mirror-operator
+#
+# APPLY:
+#   kubectl apply -f config/samples/ui_v1alpha1_ingress_selfcert.yaml
+#
+# CONFIGURE LOCAL ACCESS:
+#   # Add to /etc/hosts (Linux/Mac):
+#   127.0.0.1 dashboard.local
+#
+#   # For port-forwarding test:
+#   kubectl port-forward -n oc-mirror-operator svc/oc-mirror-dashboard 8443:443
+#
+# VERIFY:
+#   kubectl get ingress -n oc-mirror-operator
+#   kubectl describe ingress oc-mirror-dashboard-selfcert -n oc-mirror-operator
+#
+# ACCESS:
+#   # Via port-forward (for testing):
+#   https://localhost:8443
+#   # Accept the self-signed certificate warning in your browser
+#
+#   # Via Ingress (after configuring DNS):
+#   https://dashboard.local
+#   # Accept the self-signed certificate warning in your browser
+#
+# CURL TESTING (ignore certificate verification):
+#   curl -k https://dashboard.local
+#   curl -k https://localhost:8443
+#
+# CHROME/FIREFOX TESTING:
+#   Most browsers will show a warning about the self-signed certificate.
+#   Click "Advanced" -> "Proceed" to continue to the dashboard.
+#
+# NOTES:
+# - The certificate will expire in 365 days; regenerate if needed
+# - Browser will show certificate warnings (expected for self-signed certs)
+# - This is for testing ONLY; use a valid certificate in production
+# - If using multiple test environments, generate unique certs for each
+#
+apiVersion: mirror.openshift.io/v1alpha1
+kind: UIConfiguration
+metadata:
+  name: dashboard-ingress-selfcert
+  namespace: oc-mirror-operator
+spec:
+  exposureType: ingress
+  hostname: dashboard.local
+  ingressClassName: nginx
+  replicas: 1
+  tls:
+    enabled: true
+    certSecretRef:
+      name: dashboard-tls-selfsigned
+      namespace: oc-mirror-operator
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi

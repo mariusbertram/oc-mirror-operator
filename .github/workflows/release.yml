@@ -19,6 +19,7 @@ env:
   CONTROLLER_IMAGE: ghcr.io/${{ github.repository }}-controller
   MANAGER_IMAGE: ghcr.io/${{ github.repository }}-manager
   WORKER_IMAGE: ghcr.io/${{ github.repository }}-worker
+  PLUGIN_IMAGE: ghcr.io/${{ github.repository }}-plugin
   BUNDLE_IMAGE: ghcr.io/${{ github.repository }}-bundle
   CATALOG_REPO: mariusbertram/brtrm-dev-catalog
 
@@ -56,6 +57,7 @@ jobs:
       controller_digest: ${{ steps.build-controller.outputs.digest }}
       manager_digest: ${{ steps.build-manager.outputs.digest }}
       worker_digest: ${{ steps.build-worker.outputs.digest }}
+      plugin_digest: ${{ steps.build-plugin.outputs.digest }}
       version: ${{ steps.meta.outputs.version }}
       tag: ${{ steps.meta.outputs.tag }}
 
@@ -131,6 +133,23 @@ jobs:
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
 
+      - name: Build and push plugin image
+        id: build-plugin
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.plugin
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.PLUGIN_IMAGE }}:${{ steps.meta.outputs.tag }}
+            ${{ env.PLUGIN_IMAGE }}:latest
+          labels: |
+            org.opencontainers.image.title=oc-mirror-operator-plugin
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
   # ── 3. Build & push bundle image (multi-arch) ────────────────────────────
   build-bundle:
     name: Build bundle image
@@ -174,7 +193,9 @@ jobs:
             || { echo "ERROR: manager not in spec.relatedImages"; exit 1; }
           yq '.spec.relatedImages[].image' "$CSV" | grep -q "oc-mirror-operator-worker@sha256:" \
             || { echo "ERROR: worker not in spec.relatedImages"; exit 1; }
-          echo "OK: all 3 images verified in spec.relatedImages"
+          yq '.spec.relatedImages[].image' "$CSV" | grep -q "oc-mirror-operator-plugin" \
+            || { echo "ERROR: plugin not in spec.relatedImages"; exit 1; }
+          echo "OK: all 4 images verified in spec.relatedImages"
 
       # QEMU is required for cross-compilation of the arm64 layer during
       # multi-arch bundle builds. The bundle contains only YAML (no binaries),
@@ -257,6 +278,7 @@ jobs:
             | Controller (multi-arch) | `${{ env.CONTROLLER_IMAGE }}:${{ github.ref_name }}` | `${{ needs.build-operator.outputs.controller_digest }}` |
             | Manager (multi-arch) | `${{ env.MANAGER_IMAGE }}:${{ github.ref_name }}` | `${{ needs.build-operator.outputs.manager_digest }}` |
             | Worker (multi-arch) | `${{ env.WORKER_IMAGE }}:${{ github.ref_name }}` | `${{ needs.build-operator.outputs.worker_digest }}` |
+            | Plugin (multi-arch) | `${{ env.PLUGIN_IMAGE }}:${{ github.ref_name }}` | `${{ needs.build-operator.outputs.plugin_digest }}` |
             | Bundle (multi-arch)   | `${{ needs.build-bundle.outputs.bundle_image }}` | `${{ needs.build-bundle.outputs.bundle_digest }}` |
 
             ### Changes
@@ -375,6 +397,7 @@ jobs:
           Controller: ${{ env.CONTROLLER_IMAGE }}:${{ github.ref_name }}@${{ needs.build-operator.outputs.controller_digest }}
           Manager: ${{ env.MANAGER_IMAGE }}:${{ github.ref_name }}@${{ needs.build-operator.outputs.manager_digest }}
           Worker: ${{ env.WORKER_IMAGE }}:${{ github.ref_name }}@${{ needs.build-operator.outputs.worker_digest }}
+          Dashboard: ${{ env.PLUGIN_IMAGE }}:${{ github.ref_name }}@${{ needs.build-operator.outputs.plugin_digest }}
           \`\`\`
 
           Opened automatically by the [release workflow](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."

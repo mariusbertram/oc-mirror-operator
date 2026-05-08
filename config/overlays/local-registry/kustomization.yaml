@@ -12,12 +12,12 @@ images:
   - name: controller
     newName: 192.168.1.14:5001/oc-mirror-operator-controller
     newTag: latest
-  - name: ghcr.io/mariusbertram/oc-mirror-operator-controller
-    newName: 192.168.1.14:5001/oc-mirror-operator-controller
-    newTag: latest
-  - name: ghcr.io/mariusbertram/oc-mirror-operator-manager
+  - name: manager
     newName: 192.168.1.14:5001/oc-mirror-operator-manager
     newTag: latest
-  - name: ghcr.io/mariusbertram/oc-mirror-operator-worker
+  - name: worker
     newName: 192.168.1.14:5001/oc-mirror-operator-worker
+    newTag: latest
+  - name: plugin
+    newName: 192.168.1.14:5001/oc-mirror-operator-plugin
     newTag: latest

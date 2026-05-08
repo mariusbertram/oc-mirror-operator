@@ -18,13 +18,17 @@ resources:
 - ../crd
 - ../rbac
 - ../manager
+- ../consoleplugin
+# [PROMETHEUS] ServiceMonitor, PrometheusRule, and the Grafana dashboard ConfigMap
+# are now managed programmatically by the MonitoringReconciler at runtime.
+# The static YAML in ../prometheus and ../grafana are kept as reference only.
+#- ../prometheus
+#- ../grafana
 # [WEBHOOK] To enable webhook, uncomment all the sections with [WEBHOOK] prefix including the one in
 # crd/kustomization.yaml
 #- ../webhook
 # [CERTMANAGER] To enable cert-manager, uncomment all sections with 'CERTMANAGER'. 'WEBHOOK' components are required.
 #- ../certmanager
-# [PROMETHEUS] To enable prometheus monitor, uncomment all sections with 'PROMETHEUS'.
-#- ../prometheus
 # [METRICS] Expose the controller manager metrics service.
 - metrics_service.yaml
 # [NETWORK POLICY] Protect the /metrics endpoint and Webhook Server with NetworkPolicy.
@@ -32,6 +36,8 @@ resources:
 # Only CR(s) which requires webhooks and are applied on namespaces labeled with 'webhooks: enabled' will
 # be able to communicate with the Webhook Server.
 #- ../network-policy
+# [UICONFIGURATION] Default UIConfiguration for the oc-mirror dashboard.
+# - uiconfiguration_patch.yaml
 
 # Uncomment the patches line if you enable Metrics
 patches:
@@ -74,6 +80,31 @@ replacements:
       name: controller-manager
     fieldPaths:
     - spec.template.spec.containers.[name=manager].env.[name=WORKER_IMAGE].value
+- source:
+    kind: Deployment
+    name: controller-manager
+    fieldPath: spec.template.metadata.annotations.oc-mirror-plugin-image
+  targets:
+  - select:
+      kind: Deployment
+      name: controller-manager
+    fieldPaths:
+    - spec.template.spec.containers.[name=manager].env.[name=PLUGIN_IMAGE].value
+
+# Image overrides for container references
+images:
+- name: controller
+  newName: quay.lab.brtrm.dev/marius/oc-mirror-operator-controller
+  newTag: latest
+- name: manager
+  newName: quay.lab.brtrm.dev/marius/oc-mirror-operator-manager
+  newTag: latest
+- name: worker
+  newName: quay.lab.brtrm.dev/marius/oc-mirror-operator-worker
+  newTag: latest
+- name: plugin
+  newName: quay.lab.brtrm.dev/marius/oc-mirror-operator-plugin
+  newTag: latest
 
 # Uncomment the patches line if you enable Metrics and CertManager
 # [METRICS-WITH-CERTS] To enable metrics protected with certManager, uncomment the following line.

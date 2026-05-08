@@ -2,7 +2,6 @@ package release
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,12 +10,6 @@ import (
 
 	"github.com/regclient/regclient"
 )
-
-// ErrNotImplemented is returned when a feature is recognised but the
-// implementation is incomplete. Callers should inspect this sentinel via
-// errors.Is to skip the feature gracefully without surfacing it as a real
-// error.
-var ErrNotImplemented = errors.New("not implemented")
 
 // signatureBaseURL is the upstream source for OpenShift release GPG signatures.
 // It is a var (not const) so tests can replace it with a local httptest server.
@@ -77,12 +70,4 @@ func (c *SignatureClient) DownloadSignature(ctx context.Context, releaseDigest s
 		return nil, fmt.Errorf("empty signature body for %s", releaseDigest)
 	}
 	return data, nil
-}
-
-// ReplicateSignature is a no-op stub that returns ErrNotImplemented. The
-// previous implementation downloaded a signature blob but never persisted it,
-// silently swallowing the failure. Returning a sentinel error makes the
-// missing functionality visible to callers and tests.
-func (c *SignatureClient) ReplicateSignature(_ context.Context, _, _ string) error {
-	return ErrNotImplemented
 }

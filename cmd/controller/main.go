@@ -27,12 +27,14 @@ import (
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
@@ -98,6 +100,20 @@ func main() {
 			os.Exit(1)
 		}
 	}
+
+	// Determine the namespace this operator instance owns. All namespace-scoped informers are
+	// restricted to this namespace so the operator only ever touches resources in its own
+	// namespace (single-namespace install mode). The value comes from the Downward API env var
+	// injected by the Deployment spec.
+	operatorNamespace := os.Getenv("OPERATOR_NAMESPACE")
+	if operatorNamespace == "" {
+		operatorNamespace = os.Getenv("POD_NAMESPACE")
+	}
+	if operatorNamespace == "" {
+		setupLog.Error(nil, "OPERATOR_NAMESPACE or POD_NAMESPACE must be set; the operator runs in single-namespace mode and requires the namespace to be explicitly configured")
+		os.Exit(1)
+	}
+	setupLog.Info("single-namespace mode", "namespace", operatorNamespace)
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
@@ -191,10 +207,34 @@ func main() {
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "143c4491.mirror.openshift.io",
+		// Leader election is namespace-scoped so multiple instances running in different
+		// namespaces each maintain their own independent leader election lease.
+		LeaderElectionNamespace: operatorNamespace,
+		// DefaultNamespaces restricts all namespace-scoped informers to the operator namespace.
+		// Cluster-scoped resources (ConsolePlugin, ClusterRole, ClusterRoleBinding) are always
+		// watched cluster-wide and are unaffected by this setting.
 		// SyncPeriod ensures all watched resources are periodically re-reconciled.
 		// This makes poll-based image collection durable across operator restarts —
 		// the actual poll decision is gated on LastSuccessfulPollTime in the ImageSet status.
-		Cache: cache.Options{SyncPeriod: &syncPeriod},
+		//
+		// ByObject overrides the default for ConfigMaps to also include
+		// openshift-config-managed, where the MonitoringReconciler creates the
+		// Grafana dashboard ConfigMap so that OpenShift's monitoring console
+		// plugin can discover it under Observe > Dashboards.
+		Cache: cache.Options{
+			SyncPeriod: &syncPeriod,
+			DefaultNamespaces: map[string]cache.Config{
+				operatorNamespace: {},
+			},
+			ByObject: map[client.Object]cache.ByObject{
+				&corev1.ConfigMap{}: {
+					Namespaces: map[string]cache.Config{
+						operatorNamespace:          {},
+						"openshift-config-managed": {},
+					},
+				},
+			},
+		},
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
@@ -214,6 +254,26 @@ func main() {
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ImageSet")
+		os.Exit(1)
+	}
+
+	pluginImage := os.Getenv("PLUGIN_IMAGE")
+	if err := (&controller.ConsolePluginReconciler{
+		Client:      mgr.GetClient(),
+		Scheme:      mgr.GetScheme(),
+		Namespace:   operatorNamespace,
+		PluginImage: pluginImage,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "ConsolePlugin")
+		os.Exit(1)
+	}
+
+	if err := (&controller.MonitoringReconciler{
+		Client:    mgr.GetClient(),
+		Scheme:    mgr.GetScheme(),
+		Namespace: operatorNamespace,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "Monitoring")
 		os.Exit(1)
 	}
 

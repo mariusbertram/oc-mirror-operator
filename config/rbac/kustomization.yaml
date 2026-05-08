@@ -7,7 +7,10 @@ resources:
 - service_account.yaml
 - role.yaml
 - role_binding.yaml
-- controller_role.yaml
+# Cluster-scoped permissions (ConsolePlugin, ClusterRole, ClusterRoleBinding).
+# These require a ClusterRoleBinding and are intentionally separate from the
+# namespace-scoped role above.
+- cluster_permissions.yaml
 - manager_role.yaml
 - worker_role.yaml
 - leader_election_role.yaml

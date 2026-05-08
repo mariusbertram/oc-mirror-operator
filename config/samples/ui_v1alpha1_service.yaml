@@ -1,0 +1,39 @@
+# UIConfiguration - Service (Minimal)
+# ==================================================
+# This example exposes the oc-mirror dashboard via a simple Kubernetes ClusterIP Service.
+# This is the most minimal configuration and is suitable for development/testing environments
+# where TLS and external access are not required.
+#
+# WHEN TO USE:
+# - Local/internal development environments
+# - Testing within a cluster (accessible only by pod-to-pod communication)
+# - When the dashboard is accessed through port-forwarding
+# - When you plan to add ingress/route separately
+#
+# PREREQUISITES:
+# - None! This is the simplest exposure type
+#
+# APPLY:
+#   kubectl apply -f config/samples/ui_v1alpha1_service.yaml
+#
+# VERIFY:
+#   kubectl get svc -n oc-mirror-operator
+#   kubectl get uiconfiguration -n oc-mirror-operator
+#
+# ACCESS:
+#   # Port-forward to access locally
+#   kubectl port-forward -n oc-mirror-operator svc/oc-mirror-dashboard 3000:3000
+#   # Open browser to http://localhost:3000
+#
+# RESOURCES CREATED:
+#   - Service (ClusterIP) named oc-mirror-dashboard
+#   - Deployment with 1 replica
+#
+apiVersion: mirror.openshift.io/v1alpha1
+kind: UIConfiguration
+metadata:
+  name: dashboard-service-only
+  namespace: oc-mirror-operator
+spec:
+  exposureType: service
+  replicas: 1
