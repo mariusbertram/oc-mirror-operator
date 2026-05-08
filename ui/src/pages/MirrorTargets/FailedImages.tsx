@@ -11,7 +11,8 @@ import {
   ToolbarItem,
 } from '@patternfly/react-core';
 import { Table, Thead, Tr, Th, Tbody, Td } from '@patternfly/react-table';
-import { Link, useParams } from 'react-router';
+import { useParams } from 'react-router';
+import { Link } from 'react-router-dom';
 import { getImageFailures, listTargets } from '../../api/client';
 import type { FailedImageDetail } from '../../api/types';
 import '../../components/plugin-styles.css';

@@ -14,7 +14,8 @@ import {
   Title,
 } from '@patternfly/react-core';
 import { Table, Thead, Tr, Th, Tbody, Td } from '@patternfly/react-table';
-import { Link, useParams } from 'react-router';
+import { useParams } from 'react-router';
+import { Link } from 'react-router-dom';
 import { getTarget, triggerRecollect } from '../../api/client';
 import type { TargetDetail, ImageSetSummary } from '../../api/types';
 import { StatusPill, computeStatus } from '../../components/StatusPill';
