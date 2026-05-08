@@ -4,6 +4,8 @@
 #
 # Cluster-scoped resources managed by this operator:
 #   - consoleplugins.console.openshift.io  (ConsolePlugin CR, OpenShift-specific)
+#   - namespaces (list/watch required for ConsolePluginReconciler and MonitoringReconciler
+#                 namespace trigger — cache informer is always cluster-scoped)
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -12,6 +14,14 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: manager-cluster-role
 rules:
+- apiGroups:
+  - ""
+  resources:
+  - namespaces
+  verbs:
+  - get
+  - list
+  - watch
 - apiGroups:
   - console.openshift.io
   resources:

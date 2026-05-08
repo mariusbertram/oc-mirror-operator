@@ -68,17 +68,17 @@ func TestE2E(t *testing.T) {
 
 var _ = BeforeSuite(func() {
 	if !skipClusterSetup {
-		By("building the component images (controller, manager, worker, dashboard)")
+		By("building the component images (controller, manager, worker, plugin)")
 		controllerImage := "example.com/oc-mirror-controller:v0.0.1"
 		managerImage := "example.com/oc-mirror-manager:v0.0.1"
 		workerImage := "example.com/oc-mirror-worker:v0.0.1"
-		dashboardImage := "example.com/oc-mirror-dashboard:v0.0.1"
+		pluginImage := "example.com/oc-mirror-plugin:v0.0.1"
 
 		cmd := exec.Command("make", "docker-build-all",
 			fmt.Sprintf("IMG_CONTROLLER=%s", controllerImage),
 			fmt.Sprintf("IMG_MANAGER=%s", managerImage),
 			fmt.Sprintf("IMG_WORKER=%s", workerImage),
-			fmt.Sprintf("IMG_DASHBOARD=%s", dashboardImage))
+			fmt.Sprintf("IMG_PLUGIN=%s", pluginImage))
 		_, err := utils.Run(cmd)
 		ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the component images")
 
@@ -88,7 +88,7 @@ var _ = BeforeSuite(func() {
 			Expect(os.Setenv("KIND_EXPERIMENTAL_PROVIDER", p)).To(Succeed())
 		}
 		// Load all 4 component images into Kind cluster
-		for _, img := range []string{controllerImage, managerImage, workerImage, dashboardImage} {
+		for _, img := range []string{controllerImage, managerImage, workerImage, pluginImage} {
 			err = utils.LoadImageToKindClusterWithName(img)
 			ExpectWithOffset(1, err).NotTo(HaveOccurred(), fmt.Sprintf("Failed to load image %s into Kind", img))
 		}
@@ -116,12 +116,12 @@ var _ = BeforeSuite(func() {
 		_, err := utils.Run(cmd)
 		ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to install CRDs")
 
-		By("deploying the operator (controller, manager, worker, dashboard components)")
+		By("deploying the operator (controller, manager, worker, plugin components)")
 		cmd = exec.Command("sh", "-c",
 			"IMG_CONTROLLER=example.com/oc-mirror-controller:v0.0.1 "+
 				"IMG_MANAGER=example.com/oc-mirror-manager:v0.0.1 "+
 				"IMG_WORKER=example.com/oc-mirror-worker:v0.0.1 "+
-				"IMG_DASHBOARD=example.com/oc-mirror-dashboard:v0.0.1 "+
+				"IMG_PLUGIN=example.com/oc-mirror-plugin:v0.0.1 "+
 				"make deploy")
 		_, err = utils.Run(cmd)
 		ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to deploy the operator")
