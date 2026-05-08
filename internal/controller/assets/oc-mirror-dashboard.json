@@ -262,23 +262,131 @@
           "instant": true
         }
       ],
-      "transformations": [
+      "columns": [
+        { "text": "Namespace", "value": "namespace" },
+        { "text": "Target",    "value": "target"    },
+        { "text": "Total",     "value": "Value #A"  },
+        { "text": "Mirrored",  "value": "Value #B"  },
+        { "text": "Pending",   "value": "Value #C"  },
+        { "text": "Failed",    "value": "Value #D"  }
+      ],
+      "styles": [
         {
-          "id": "merge",
-          "options": {}
+          "alias": "Time",
+          "colorMode": null,
+          "colors": [],
+          "dateFormat": "YYYY-MM-DD HH:mm:ss",
+          "decimals": 2,
+          "link": false,
+          "linkTooltip": "Drill down",
+          "linkUrl": "",
+          "pattern": "Time",
+          "thresholds": [],
+          "type": "hidden",
+          "unit": "short"
         },
         {
-          "id": "organize",
-          "options": {
-            "renameByName": {
-              "Value #A": "Total",
-              "Value #B": "Mirrored",
-              "Value #C": "Pending",
-              "Value #D": "Failed"
-            }
-          }
+          "alias": "Namespace",
+          "colorMode": null,
+          "colors": [],
+          "dateFormat": "YYYY-MM-DD HH:mm:ss",
+          "decimals": 2,
+          "link": false,
+          "linkTooltip": "Drill down",
+          "linkUrl": "",
+          "pattern": "namespace",
+          "thresholds": [],
+          "type": "string",
+          "unit": "short"
+        },
+        {
+          "alias": "Target",
+          "colorMode": null,
+          "colors": [],
+          "dateFormat": "YYYY-MM-DD HH:mm:ss",
+          "decimals": 2,
+          "link": false,
+          "linkTooltip": "Drill down",
+          "linkUrl": "",
+          "pattern": "target",
+          "thresholds": [],
+          "type": "string",
+          "unit": "short"
+        },
+        {
+          "alias": "Total",
+          "colorMode": null,
+          "colors": [],
+          "dateFormat": "YYYY-MM-DD HH:mm:ss",
+          "decimals": 0,
+          "link": false,
+          "linkTooltip": "Drill down",
+          "linkUrl": "",
+          "pattern": "Value #A",
+          "thresholds": [],
+          "type": "number",
+          "unit": "short"
+        },
+        {
+          "alias": "Mirrored",
+          "colorMode": null,
+          "colors": [],
+          "dateFormat": "YYYY-MM-DD HH:mm:ss",
+          "decimals": 0,
+          "link": false,
+          "linkTooltip": "Drill down",
+          "linkUrl": "",
+          "pattern": "Value #B",
+          "thresholds": [],
+          "type": "number",
+          "unit": "short"
+        },
+        {
+          "alias": "Pending",
+          "colorMode": null,
+          "colors": [],
+          "dateFormat": "YYYY-MM-DD HH:mm:ss",
+          "decimals": 0,
+          "link": false,
+          "linkTooltip": "Drill down",
+          "linkUrl": "",
+          "pattern": "Value #C",
+          "thresholds": [],
+          "type": "number",
+          "unit": "short"
+        },
+        {
+          "alias": "Failed",
+          "colorMode": "cell",
+          "colors": [
+            "rgba(50, 172, 45, 0.97)",
+            "rgba(237, 129, 40, 0.89)",
+            "rgba(245, 54, 54, 0.9)"
+          ],
+          "dateFormat": "YYYY-MM-DD HH:mm:ss",
+          "decimals": 0,
+          "link": false,
+          "linkTooltip": "Drill down",
+          "linkUrl": "",
+          "pattern": "Value #D",
+          "thresholds": ["1", "10"],
+          "type": "number",
+          "unit": "short"
         }
-      ]
+      ],
+      "fill": 1,
+      "fontSize": "100%",
+      "lines": true,
+      "linewidth": 1,
+      "links": [],
+      "nullPointMode": "null as zero",
+      "renderer": "flot",
+      "scroll": true,
+      "showHeader": true,
+      "sort": { "col": 0, "desc": false },
+      "spaceLength": 10,
+      "timeFrom": null,
+      "timeShift": null
     },
     {
       "id": 11,
