@@ -1,11 +1,11 @@
-# Dockerfile.dashboard — multi-stage build for the cluster-wide dashboard binary.
+# Dockerfile.plugin — multi-stage build for the Console Plugin binary.
 #
-# Stage 1: Build the React SPA and Console Plugin assets.
-# Stage 2: Build the Go dashboard binary with embedded UI.
+# Stage 1: Build the React Console Plugin assets.
+# Stage 2: Build the Go plugin binary with embedded UI.
 # Stage 3: Minimal distroless runtime image.
 #
 # To rebuild after UI changes:
-#   make docker-build-dashboard IMG_DASHBOARD=<registry>/<image>:<tag>
+#   make docker-build-plugin IMG_PLUGIN=<registry>/<image>:<tag>
 
 FROM docker.io/library/node:20-alpine AS ui-build
 WORKDIR /build
@@ -13,8 +13,6 @@ COPY ui/package.json ui/package-lock.json* ./ui/
 RUN npm --prefix ui ci --ignore-scripts
 
 COPY ui/ ./ui/
-# Build the standalone SPA (dashboard).
-RUN npm --prefix ui run build:dashboard
 # Build the OpenShift Console Plugin assets.
 RUN npm --prefix ui run build:plugin
 
@@ -35,16 +33,15 @@ COPY pkg/ pkg/
 COPY internal/ internal/
 
 # Replace the placeholder embedded UI with the React build output.
-COPY --from=ui-build /build/ui/dist/dashboard/ pkg/resourceapi/ui/
 COPY --from=ui-build /build/ui/dist/plugin/ pkg/resourceapi/plugin/
 
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
-    go build -a -o dashboard ./cmd/dashboard/
+    go build -a -o plugin ./cmd/dashboard/
 
 # -----------------------------------------------------------------------
 FROM gcr.io/distroless/static:nonroot@sha256:64c43684e6d2b581d1eb362ea47b6a4defee6a9cac5f7ebbda3daa67e8c9b8e6
 WORKDIR /
-COPY --from=go-build /workspace/dashboard .
+COPY --from=go-build /workspace/plugin .
 USER 65532:65532
 
-ENTRYPOINT ["/dashboard"]
+ENTRYPOINT ["/plugin"]

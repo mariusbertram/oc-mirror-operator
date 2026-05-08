@@ -57,16 +57,16 @@ jobs:
           echo "Built images:"
           docker images | grep "oc-mirror"
 
-      - name: Build dashboard image
+      - name: Build plugin image
         run: |
           set -x
-          echo "Building dashboard image..."
-          CONTAINER_TOOL=docker make docker-build-dashboard \
-            IMG_DASHBOARD=example.com/oc-mirror-dashboard:v0.0.1
+          echo "Building plugin image..."
+          CONTAINER_TOOL=docker make docker-build-plugin \
+            IMG_PLUGIN=example.com/oc-mirror-plugin:v0.0.1
           
           # Verify built image exists
-          echo "Dashboard image:"
-          docker images | grep "oc-mirror-dashboard"
+          echo "Plugin image:"
+          docker images | grep "oc-mirror-plugin"
 
       - name: Export images to tar
         run: |
@@ -77,8 +77,8 @@ jobs:
           docker save example.com/oc-mirror-manager:v0.0.1 -o operator-manager-image.tar
           echo "Exporting worker image..."
           docker save example.com/oc-mirror-worker:v0.0.1 -o operator-worker-image.tar
-          echo "Exporting dashboard image..."
-          docker save example.com/oc-mirror-dashboard:v0.0.1 -o operator-dashboard-image.tar
+          echo "Exporting plugin image..."
+          docker save example.com/oc-mirror-plugin:v0.0.1 -o operator-plugin-image.tar
           
           # Verify exported files exist and have content
           echo "Exported tar files:"
@@ -146,11 +146,11 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: false
 
-      - name: Build dashboard image (linux/amd64 + linux/arm64, no push)
+      - name: Build plugin image (linux/amd64 + linux/arm64, no push)
         uses: docker/build-push-action@v7
         with:
           context: .
-          file: Dockerfile.dashboard
+          file: Dockerfile.plugin
           platforms: linux/amd64,linux/arm64
           push: false
 
@@ -255,7 +255,7 @@ jobs:
           docker load -i operator-controller-image.tar
           docker load -i operator-manager-image.tar
           docker load -i operator-worker-image.tar
-          docker load -i operator-dashboard-image.tar
+          docker load -i operator-plugin-image.tar
           
           # Verify images exist in Docker
           echo "Verifying loaded images..."
@@ -266,7 +266,7 @@ jobs:
           kind load docker-image example.com/oc-mirror-controller:v0.0.1 --name oc-mirror-e2e
           kind load docker-image example.com/oc-mirror-manager:v0.0.1 --name oc-mirror-e2e
           kind load docker-image example.com/oc-mirror-worker:v0.0.1 --name oc-mirror-e2e
-          kind load docker-image example.com/oc-mirror-dashboard:v0.0.1 --name oc-mirror-e2e
+          kind load docker-image example.com/oc-mirror-plugin:v0.0.1 --name oc-mirror-e2e
       - name: Install cert-manager v1.16.3
         run: |
           kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.16.3/cert-manager.yaml
@@ -325,6 +325,7 @@ jobs:
           IMG_CONTROLLER=example.com/oc-mirror-controller:v0.0.1 \
           IMG_MANAGER=example.com/oc-mirror-manager:v0.0.1 \
           IMG_WORKER=example.com/oc-mirror-worker:v0.0.1 \
+          IMG_PLUGIN=example.com/oc-mirror-plugin:v0.0.1 \
           VERSION=${{ steps.bundle-ver.outputs.new_ver }} \
           USE_IMAGE_DIGESTS=false \
             PATH=$PATH:$(go env GOPATH)/bin make bundle

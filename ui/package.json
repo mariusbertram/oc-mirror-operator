@@ -3,10 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "build:dashboard": "webpack --config webpack.dashboard.js --mode production",
     "build:plugin": "webpack --config webpack.plugin.js --mode production",
-    "build": "npm run build:dashboard && npm run build:plugin",
-    "start:dashboard": "webpack serve --config webpack.dashboard.js --mode development",
+    "build": "npm run build:plugin",
     "start:plugin": "webpack serve --config webpack.plugin.js --mode development",
     "lint": "eslint src --ext .ts,.tsx",
     "test": "jest"

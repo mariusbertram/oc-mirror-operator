@@ -14,14 +14,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// cmd/dashboard runs the cluster-wide resource API and web dashboard.
-// It is deployed as a standalone Deployment (with an oauth-proxy sidecar for
-// OpenShift auth) by the DashboardReconciler.
-//
-// The binary supports two modes:
-//
-//	dashboard  (default) – serves the SPA + JSON API on :8080.
-//	plugin               – serves Console Plugin static assets over HTTPS on :9001.
+// cmd/dashboard is the Console Plugin binary.
+// It serves the plugin's static React assets and resource API over HTTPS
+// and is deployed by the ConsolePluginReconciler.
 package main
 
 import (
@@ -57,37 +52,7 @@ func init() {
 }
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "plugin" {
-		runPlugin()
-		return
-	}
-	runDashboard()
-}
-
-func runDashboard() {
-	var addr string
-	opts := zap.Options{Development: false}
-	opts.BindFlags(flag.CommandLine)
-	flag.StringVar(&addr, "bind-address", ":8080", "Address the dashboard HTTP server listens on")
-	flag.Parse()
-
-	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
-
-	cfg := ctrl.GetConfigOrDie()
-	c, err := client.New(cfg, client.Options{Scheme: scheme})
-	if err != nil {
-		setupLog.Error(err, "unable to create cluster-wide client")
-		os.Exit(1)
-	}
-
-	srv := resourceapi.NewServerClusterWide(c)
-
-	ctx := ctrl.SetupSignalHandler()
-	setupLog.Info("starting cluster-wide dashboard", "address", addr)
-
-	// Run serves the embedded SPA and JSON API on addr.
-	// We wrap it to use the custom addr instead of the default :8081.
-	srv.RunOn(ctx, addr)
+	runPlugin()
 }
 
 func runPlugin() {
@@ -96,7 +61,7 @@ func runPlugin() {
 	fs.StringVar(&addr, "bind-address", ":9001", "Address the plugin HTTPS server listens on")
 	fs.StringVar(&certFile, "cert-file", "/var/serving-cert/tls.crt", "TLS certificate file")
 	fs.StringVar(&keyFile, "key-file", "/var/serving-cert/tls.key", "TLS key file")
-	if err := fs.Parse(os.Args[2:]); err != nil {
+	if err := fs.Parse(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "flag parse error:", err)
 		os.Exit(1)
 	}

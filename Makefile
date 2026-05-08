@@ -54,7 +54,7 @@ IMG ?= quay.lab.brtrm.dev/marius/oc-mirror-operator:latest
 IMG_CONTROLLER ?= quay.lab.brtrm.dev/marius/oc-mirror-operator-controller:latest
 IMG_MANAGER ?= quay.lab.brtrm.dev/marius/oc-mirror-operator-manager:latest
 IMG_WORKER ?= quay.lab.brtrm.dev/marius/oc-mirror-operator-worker:latest
-IMG_DASHBOARD ?= quay.lab.brtrm.dev/marius/oc-mirror-operator-dashboard:latest
+IMG_PLUGIN ?= quay.lab.brtrm.dev/marius/oc-mirror-operator-plugin:latest
 
 # Test/OLM deployment variables
 OPERATOR_NAMESPACE ?= oc-mirror-operator
@@ -106,7 +106,6 @@ endef
 export SUBSCRIPTION_YAML
 
 # External images used by the operator
-IMG_OAUTH_PROXY ?= quay.io/openshift/origin-oauth-proxy:latest
 IMG_PROMETHEUS_OPERATOR ?= quay.io/prometheus-operator/prometheus-operator:latest
 IMG_PROMETHEUS ?= quay.io/prometheus/prometheus:latest
 IMG_GRAFANA ?= docker.io/grafana/grafana:latest
@@ -251,9 +250,8 @@ build: manifests generate fmt vet ## Build manager binary.
 	go build -o bin/manager cmd/main.go
 
 .PHONY: build-ui
-build-ui: ## Build the React dashboard UI and Console Plugin assets.
+build-ui: ## Build the React Console Plugin assets.
 	npm --prefix ui ci --ignore-scripts
-	npm --prefix ui run build:dashboard
 	npm --prefix ui run build:plugin
 
 .PHONY: run
@@ -284,12 +282,12 @@ docker-build-manager: ## Build docker image with the manager.
 docker-build-worker: ## Build docker image with the worker (cleanup runs as a subcommand).
 	$(CONTAINER_TOOL) build -t ${IMG_WORKER} -f Dockerfile.worker .
 
-.PHONY: docker-build-dashboard
-docker-build-dashboard: ## Build docker image for the cluster-wide dashboard (includes React UI build).
-	$(CONTAINER_TOOL) build -t ${IMG_DASHBOARD} -f Dockerfile.dashboard .
+.PHONY: docker-build-plugin
+docker-build-plugin: ## Build docker image for the Console Plugin (includes React UI build).
+	$(CONTAINER_TOOL) build -t ${IMG_PLUGIN} -f Dockerfile.plugin .
 
 .PHONY: docker-build-all
-docker-build-all: docker-build-controller docker-build-manager docker-build-worker docker-build-dashboard ## (deprecated) Build all modular images. Use build-images instead.
+docker-build-all: docker-build-controller docker-build-manager docker-build-worker docker-build-plugin ## (deprecated) Build all modular images. Use build-images instead.
 
 .PHONY: docker-push-controller
 docker-push-controller: ## Push controller image.
@@ -303,12 +301,12 @@ docker-push-manager: ## Push manager image.
 docker-push-worker: ## Push worker image.
 	$(CONTAINER_TOOL) push ${IMG_WORKER}
 
-.PHONY: docker-push-dashboard
-docker-push-dashboard: ## Push dashboard image.
-	$(CONTAINER_TOOL) push ${IMG_DASHBOARD}
+.PHONY: docker-push-plugin
+docker-push-plugin: ## Push plugin image.
+	$(CONTAINER_TOOL) push ${IMG_PLUGIN}
 
 .PHONY: docker-push-all
-docker-push-all: docker-push-controller docker-push-manager docker-push-worker docker-push-dashboard ## (deprecated) Push all modular images. Use push-images instead.
+docker-push-all: docker-push-controller docker-push-manager docker-push-worker docker-push-plugin ## (deprecated) Push all modular images. Use push-images instead.
 
 # PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
 # architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:
@@ -358,25 +356,24 @@ build-installer: manifests generate kustomize ## Generate a consolidated YAML wi
 		controller=${IMG_CONTROLLER} \
 		manager=${IMG_MANAGER} \
 		worker=${IMG_WORKER} \
-		dashboard=${IMG_DASHBOARD} \
-		oauth-proxy=${IMG_OAUTH_PROXY}
+		plugin=${IMG_PLUGIN}
 	$(KUSTOMIZE) build config/default > dist/install.yaml
 
 ##@ Images
 
 .PHONY: build-images
-build-images: ## Build all operator images (controller, manager, worker, dashboard).
+build-images: ## Build all operator images (controller, manager, worker, plugin).
 	$(CONTAINER_TOOL) build -t $(IMG_CONTROLLER) -f Dockerfile.controller .
 	$(CONTAINER_TOOL) build -t $(IMG_MANAGER) -f Dockerfile.manager .
 	$(CONTAINER_TOOL) build -t $(IMG_WORKER) -f Dockerfile.worker .
-	$(CONTAINER_TOOL) build -t $(IMG_DASHBOARD) -f Dockerfile.dashboard .
+	$(CONTAINER_TOOL) build -t $(IMG_PLUGIN) -f Dockerfile.plugin .
 
 .PHONY: push-images
 push-images: ## Push all operator images to registry.
 	$(CONTAINER_TOOL) push $(IMG_CONTROLLER)
 	$(CONTAINER_TOOL) push $(IMG_MANAGER)
 	$(CONTAINER_TOOL) push $(IMG_WORKER)
-	$(CONTAINER_TOOL) push $(IMG_DASHBOARD)
+	$(CONTAINER_TOOL) push $(IMG_PLUGIN)
 
 .PHONY: build-push-images
 build-push-images: build-images push-images ## Build and push all operator images.
@@ -401,8 +398,7 @@ deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in
 		controller=${IMG_CONTROLLER} \
 		manager=${IMG_MANAGER} \
 		worker=${IMG_WORKER} \
-		dashboard=${IMG_DASHBOARD} \
-		oauth-proxy=${IMG_OAUTH_PROXY}
+		plugin=${IMG_PLUGIN}
 	$(KUSTOMIZE) build config/default | $(KUBECTL) apply -f -
 
 .PHONY: undeploy
@@ -410,7 +406,6 @@ undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.
 	# Delete CR instances first while the controller is still running so it can process their finalizers.
 	# Without this ordering, kubectl deletes the controller and the CRs simultaneously, leaving CRs
 	# stuck in Terminating state because no controller is left to remove their finalizers.
-	-$(KUBECTL) delete uiconfiguration --all -A --ignore-not-found=true --timeout=60s 2>/dev/null || true
 	-$(KUBECTL) delete mirrortarget,imageset --all -A --ignore-not-found=true --timeout=60s 2>/dev/null || true
 	$(KUSTOMIZE) build config/default | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
 
@@ -536,8 +531,7 @@ bundle: manifests kustomize operator-sdk ## Generate bundle manifests and metada
 		controller=$(IMG_CONTROLLER) \
 		manager=$(IMG_MANAGER) \
 		worker=$(IMG_WORKER) \
-		dashboard=$(IMG_DASHBOARD) \
-		oauth-proxy=$(IMG_OAUTH_PROXY)
+		plugin=$(IMG_PLUGIN)
 	$(KUSTOMIZE) build config/manifests | $(OPERATOR_SDK) generate bundle $(BUNDLE_GEN_FLAGS)
 	$(OPERATOR_SDK) bundle validate ./bundle
 

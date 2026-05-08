@@ -59,7 +59,7 @@ type ConsolePluginReconciler struct {
 	client.Client
 	Scheme    *runtime.Scheme
 	Namespace string // operator namespace
-	DashImage string // DASHBOARD_IMAGE env var
+	DashImage string // PLUGIN_IMAGE env var
 }
 
 // +kubebuilder:rbac:groups="",resources=serviceaccounts;services,verbs=get;list;watch;create;update;patch;delete
@@ -70,7 +70,7 @@ func (r *ConsolePluginReconciler) Reconcile(ctx context.Context, req reconcile.R
 	l := log.FromContext(ctx)
 
 	if r.DashImage == "" {
-		l.Info("DASHBOARD_IMAGE not configured, skipping ConsolePlugin reconciliation")
+		l.Info("PLUGIN_IMAGE not configured, skipping ConsolePlugin reconciliation")
 		return reconcile.Result{RequeueAfter: pluginReconcileInterval}, nil
 	}
 

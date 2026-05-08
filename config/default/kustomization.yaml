@@ -82,23 +82,13 @@ replacements:
 - source:
     kind: Deployment
     name: controller-manager
-    fieldPath: spec.template.metadata.annotations.oc-mirror-dashboard-image
+    fieldPath: spec.template.metadata.annotations.oc-mirror-plugin-image
   targets:
   - select:
       kind: Deployment
       name: controller-manager
     fieldPaths:
-    - spec.template.spec.containers.[name=manager].env.[name=DASHBOARD_IMAGE].value
-- source:
-    kind: Deployment
-    name: controller-manager
-    fieldPath: spec.template.metadata.annotations.oc-mirror-oauth-proxy-image
-  targets:
-  - select:
-      kind: Deployment
-      name: controller-manager
-    fieldPaths:
-    - spec.template.spec.containers.[name=manager].env.[name=OAUTH_PROXY_IMAGE].value
+    - spec.template.spec.containers.[name=manager].env.[name=PLUGIN_IMAGE].value
 
 # Image overrides for container references
 images:
@@ -111,11 +101,8 @@ images:
 - name: worker
   newName: quay.lab.brtrm.dev/marius/oc-mirror-operator-worker
   newTag: latest
-- name: dashboard
-  newName: quay.lab.brtrm.dev/marius/oc-mirror-operator-dashboard
-  newTag: latest
-- name: oauth-proxy
-  newName: quay.io/openshift/origin-oauth-proxy
+- name: plugin
+  newName: quay.lab.brtrm.dev/marius/oc-mirror-operator-plugin
   newTag: latest
 
 # Uncomment the patches line if you enable Metrics and CertManager

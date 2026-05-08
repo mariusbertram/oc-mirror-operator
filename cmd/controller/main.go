@@ -242,7 +242,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	dashImage := os.Getenv("DASHBOARD_IMAGE")
+	dashImage := os.Getenv("PLUGIN_IMAGE")
 	if err := (&controller.ConsolePluginReconciler{
 		Client:    mgr.GetClient(),
 		Scheme:    mgr.GetScheme(),

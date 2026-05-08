@@ -28,8 +28,7 @@ spec:
         kubectl.kubernetes.io/default-container: manager
         oc-mirror-manager-image: manager:latest
         oc-mirror-worker-image: worker:latest
-        oc-mirror-dashboard-image: dashboard:latest
-        oc-mirror-oauth-proxy-image: oauth-proxy:latest
+        oc-mirror-plugin-image: plugin:latest
       labels:
         control-plane: controller-manager
         app.kubernetes.io/name: oc-mirror
@@ -76,10 +75,8 @@ spec:
           value: manager:latest
         - name: WORKER_IMAGE
           value: worker:latest
-        - name: DASHBOARD_IMAGE
-          value: dashboard:latest
-        - name: OAUTH_PROXY_IMAGE
-          value: oauth-proxy:latest
+        - name: PLUGIN_IMAGE
+          value: plugin:latest
         - name: OPERATOR_NAMESPACE
           valueFrom:
             fieldRef:

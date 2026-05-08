@@ -30,9 +30,6 @@ import (
 //go:embed plugin
 var pluginFS embed.FS
 
-//go:embed all:ui
-var uiFS embed.FS
-
 type tokenClientEntry struct {
 	c         client.Client
 	expiresAt time.Time
@@ -244,11 +241,6 @@ func (s *Server) RegisterAPIRoutes(r *mux.Router) {
 
 func (s *Server) RegisterRoutes(r *mux.Router) {
 	s.RegisterAPIRoutes(r)
-
-	// Dashboard SPA static assets
-	uiSub, _ := fs.Sub(uiFS, "ui")
-	spa := &spaHandler{staticFS: http.FS(uiSub), indexFile: "index.html"}
-	r.PathPrefix("/").Handler(spa)
 }
 
 // RegisterPluginStaticRoutes appends a catch-all route that serves embedded
@@ -844,33 +836,4 @@ func (s *Server) handleDeleteImageSet(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
-}
-
-// spaHandler implements http.Handler to serve an SPA.
-type spaHandler struct {
-	staticFS  http.FileSystem
-	indexFile string
-}
-
-func (h *spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// If the request path has a file extension, try to serve the file.
-	// Trim leading slash for Open() but keep it for http.FileServer which handles it.
-	path := strings.TrimPrefix(r.URL.Path, "/")
-	if strings.Contains(path, ".") {
-		f, err := h.staticFS.Open(path)
-		if err == nil {
-			_ = f.Close()
-			http.FileServer(h.staticFS).ServeHTTP(w, r)
-			return
-		}
-	}
-	// Otherwise, serve the index file (History API fallback).
-	index, err := h.staticFS.Open(h.indexFile)
-	if err != nil {
-		http.Error(w, "SPA index not found", http.StatusNotFound)
-		return
-	}
-	defer func() { _ = index.Close() }()
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = io.Copy(w, index)
 }
