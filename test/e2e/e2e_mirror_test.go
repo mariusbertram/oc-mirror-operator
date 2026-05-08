@@ -42,7 +42,8 @@ var _ = Describe("oc-mirror Operator E2E", Ordered, Label("cluster"), func() {
 		Expect(err).NotTo(HaveOccurred(), "Failed to deploy local registry")
 
 		By("waiting for registry to be ready")
-		cmd = exec.Command("kubectl", "rollout", "status", "deployment/registry", "--timeout=120s")
+		cmd = exec.Command("kubectl", "rollout", "status", "deployment/registry",
+			"-n", "default", "--timeout=120s")
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Registry failed to become ready")
 	})
