@@ -31,9 +31,8 @@ metadata:
     capabilities: Basic Install
     categories: OpenShift Optional, Integration & Delivery
     containerImage: controller:latest
-    oc-mirror-dashboard-image: dashboard:latest
     oc-mirror-manager-image: manager:latest
-    oc-mirror-oauth-proxy-image: oauth-proxy:latest
+    oc-mirror-plugin-image: plugin:latest
     oc-mirror-worker-image: worker:latest
     operatorframework.io/suggested-namespace: oc-mirror-operator
     repository: https://github.com/mariusbertram/oc-mirror-operator
@@ -121,10 +120,8 @@ spec:
                   value: manager:latest
                 - name: WORKER_IMAGE
                   value: worker:latest
-                - name: DASHBOARD_IMAGE
-                  value: dashboard:latest
-                - name: OAUTH_PROXY_IMAGE
-                  value: oauth-proxy:latest
+                - name: PLUGIN_IMAGE
+                  value: plugin:latest
                 - name: OPERATOR_NAMESPACE
                   valueFrom:
                     fieldRef:
@@ -230,8 +227,6 @@ spec:
     name: manager
   - image: worker:latest
     name: worker
-  - image: dashboard:latest
-    name: dashboard
-  - image: oauth-proxy:latest
-    name: oauth-proxy
+  - image: plugin:latest
+    name: plugin
   version: 0.0.0
