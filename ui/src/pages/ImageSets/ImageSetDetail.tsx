@@ -114,7 +114,7 @@ export const ImageSetDetail: React.FC = () => {
         <Tabs
           activeKey={activeTab}
           onSelect={(_e, k) => setActiveTab(k)}
-          style={{ borderBottom: '1px solid var(--pf-v6-global--BorderColor--100)', background: '#fff', paddingLeft: 24 }}
+          style={{ borderBottom: '1px solid var(--pf-v6-global--BorderColor--100)', paddingLeft: 24 }}
         >
           <Tab eventKey="overview" title={<TabTitleText>Overview</TabTitleText>} />
           {is.resources.length > 0 && (
