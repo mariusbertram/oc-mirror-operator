@@ -11,14 +11,11 @@ images:
 - name: controller
   newName: quay.lab.brtrm.dev/marius/oc-mirror-operator-controller
   newTag: latest
-- name: dashboard
-  newName: quay.lab.brtrm.dev/marius/oc-mirror-operator-dashboard
-  newTag: latest
 - name: manager
   newName: quay.lab.brtrm.dev/marius/oc-mirror-operator-manager
   newTag: latest
-- name: oauth-proxy
-  newName: quay.io/openshift/origin-oauth-proxy
+- name: plugin
+  newName: quay.lab.brtrm.dev/marius/oc-mirror-operator-plugin
   newTag: latest
 - name: worker
   newName: quay.lab.brtrm.dev/marius/oc-mirror-operator-worker

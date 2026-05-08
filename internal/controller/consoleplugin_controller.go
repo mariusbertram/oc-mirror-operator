@@ -51,6 +51,11 @@ const (
 	pluginPort              = int32(9443)
 	pluginTLSSecretName     = "oc-mirror-plugin-tls"
 	pluginReconcileInterval = 10 * time.Minute
+
+	// legacyDashboardServiceName is the name used by the old UIConfiguration-based
+	// dashboard deployment. The consoleplugin reconciler deletes these stale resources
+	// on first reconcile so they don't interfere with the new plugin setup.
+	legacyDashboardServiceName = "oc-mirror-dashboard"
 )
 
 // ConsolePluginReconciler is a singleton controller that automatically manages
@@ -100,9 +105,47 @@ func (r *ConsolePluginReconciler) Reconcile(ctx context.Context, req reconcile.R
 	if err := r.ensureConsolePlugin(ctx); err != nil {
 		return reconcile.Result{}, err
 	}
+	r.cleanupLegacyDashboard(ctx)
 
 	l.Info("successfully reconciled ConsolePlugin resources")
 	return reconcile.Result{RequeueAfter: pluginReconcileInterval}, nil
+}
+
+// cleanupLegacyDashboard removes stale Service and Route resources from the old
+// UIConfiguration-based dashboard deployment. These have no ownerReferences so
+// Kubernetes garbage collection will not clean them up automatically. Errors are
+// logged but not returned — missing resources are not an error.
+func (r *ConsolePluginReconciler) cleanupLegacyDashboard(ctx context.Context) {
+	l := log.FromContext(ctx)
+
+	// Delete legacy dashboard Service.
+	svc := &corev1.Service{}
+	svc.Name = legacyDashboardServiceName
+	svc.Namespace = r.Namespace
+	if err := r.Delete(ctx, svc); err != nil {
+		if client.IgnoreNotFound(err) != nil {
+			l.Info("could not delete legacy dashboard service", "err", err)
+		}
+	} else {
+		l.Info("deleted legacy dashboard service", "name", legacyDashboardServiceName)
+	}
+
+	// Delete legacy dashboard Route (OpenShift-specific; ignore if Route API unavailable).
+	route := &unstructured.Unstructured{}
+	route.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "route.openshift.io",
+		Version: "v1",
+		Kind:    "Route",
+	})
+	route.SetName(legacyDashboardServiceName)
+	route.SetNamespace(r.Namespace)
+	if err := r.Delete(ctx, route); err != nil {
+		if client.IgnoreNotFound(err) != nil && !apimeta.IsNoMatchError(err) {
+			l.Info("could not delete legacy dashboard route", "err", err)
+		}
+	} else {
+		l.Info("deleted legacy dashboard route", "name", legacyDashboardServiceName)
+	}
 }
 
 func (r *ConsolePluginReconciler) ensureServiceAccount(ctx context.Context) error {
