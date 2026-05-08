@@ -65,6 +65,9 @@ export const CatalogBrowser: React.FC = () => {
 
   const [upstream, setUpstream] = useState<CatalogPackage[]>([]);
   const [imported, setImported] = useState<Set<string>>(new Set());
+  // importedChannels[pkgName] = Set of channel names explicitly selected.
+  // If absent for an imported package → all channels are included.
+  const [importedChannels, setImportedChannels] = useState<Record<string, Set<string>>>({});
   // versionMap[packageName][channelName] = { minVersion, maxVersion }
   const [versionMap, setVersionMap] = useState<Record<string, Record<string, VersionConstraint>>>({});
   const [loading, setLoading] = useState(true);
@@ -92,7 +95,13 @@ export const CatalogBrowser: React.FC = () => {
         setUpstream(upResp.packages);
         setImported(new Set(fpResp.packages.map((p) => p.name)));
         const vm: Record<string, Record<string, VersionConstraint>> = {};
+        const ic: Record<string, Set<string>> = {};
         for (const pkg of constraints) {
+          // If the package has an explicit channel list, those are the only
+          // channels selected (not all channels).
+          if (pkg.channels && pkg.channels.length > 0) {
+            ic[pkg.name] = new Set(pkg.channels.map((ch: { name: string }) => ch.name));
+          }
           for (const ch of pkg.channels || []) {
             if (ch.minVersion || ch.maxVersion) {
               if (!vm[pkg.name]) vm[pkg.name] = {};
@@ -104,6 +113,7 @@ export const CatalogBrowser: React.FC = () => {
           }
         }
         setVersionMap(vm);
+        setImportedChannels(ic);
       })
       .catch((e: Error) => setError(e.message))
       .finally(() => setLoading(false));
@@ -122,6 +132,22 @@ export const CatalogBrowser: React.FC = () => {
 
   const importPackage = (name: string) => {
     setImported((prev) => new Set([...prev, name]));
+    // Whole-package import — clear any per-channel filter so all channels are included.
+    setImportedChannels((prev) => { const n = { ...prev }; delete n[name]; return n; });
+    setDirty(true);
+  };
+
+  const importChannel = (pkgName: string, channelName: string) => {
+    setImported((prev) => new Set([...prev, pkgName]));
+    setImportedChannels((prev) => {
+      const existing = prev[pkgName];
+      if (existing === undefined) {
+        // Package not yet imported — start with just this one channel.
+        return { ...prev, [pkgName]: new Set([channelName]) };
+      }
+      // Package already imported with a specific channel set — add to it.
+      return { ...prev, [pkgName]: new Set([...existing, channelName]) };
+    });
     setDirty(true);
   };
 
@@ -131,17 +157,44 @@ export const CatalogBrowser: React.FC = () => {
       next.delete(name);
       return next;
     });
+    setImportedChannels((prev) => { const n = { ...prev }; delete n[name]; return n; });
     if (selectedFiltered === name) setSelectedFiltered(null);
+    setDirty(true);
+  };
+
+  const removeChannel = (pkgName: string, channelName: string) => {
+    setImportedChannels((prev) => {
+      const existing = prev[pkgName];
+      let next: Set<string>;
+      if (!existing || existing.size === 0) {
+        // Package was "all channels" — convert to "all channels except this one".
+        const pkg = upstream.find((p) => p.name === pkgName);
+        if (!pkg) return prev;
+        next = new Set(pkg.channels.map((c) => c.name).filter((n) => n !== channelName));
+      } else {
+        next = new Set(existing);
+        next.delete(channelName);
+      }
+      if (next.size === 0) {
+        // No channels left — remove the whole package.
+        setImported((p2) => { const s = new Set(p2); s.delete(pkgName); return s; });
+        if (selectedFiltered === pkgName) setSelectedFiltered(null);
+        const n = { ...prev }; delete n[pkgName]; return n;
+      }
+      return { ...prev, [pkgName]: next };
+    });
     setDirty(true);
   };
 
   const importAll = () => {
     setImported(new Set(upstream.map((p) => p.name)));
+    setImportedChannels({});
     setDirty(true);
   };
 
   const removeAll = () => {
     setImported(new Set());
+    setImportedChannels({});
     setSelectedFiltered(null);
     setDirty(true);
   };
@@ -167,13 +220,25 @@ export const CatalogBrowser: React.FC = () => {
     setSuccessMsg(null);
     const packages = importedPackages.map((p) => {
       const pkgConstraints = versionMap[p.name] || {};
-      const channels = p.channels
-        .filter((c) => pkgConstraints[c.name]?.minVersion || pkgConstraints[c.name]?.maxVersion)
-        .map((c) => ({
-          name: c.name,
-          minVersion: pkgConstraints[c.name]?.minVersion || undefined,
-          maxVersion: pkgConstraints[c.name]?.maxVersion || undefined,
+      const selectedChans = importedChannels[p.name];
+      let channels: Array<{ name: string; minVersion?: string; maxVersion?: string }>;
+      if (selectedChans && selectedChans.size > 0) {
+        // Specific channels selected — send all of them with any version constraints.
+        channels = [...selectedChans].map((chName) => ({
+          name: chName,
+          minVersion: pkgConstraints[chName]?.minVersion || undefined,
+          maxVersion: pkgConstraints[chName]?.maxVersion || undefined,
         }));
+      } else {
+        // All channels included — only attach version constraints where set.
+        channels = p.channels
+          .filter((c) => pkgConstraints[c.name]?.minVersion || pkgConstraints[c.name]?.maxVersion)
+          .map((c) => ({
+            name: c.name,
+            minVersion: pkgConstraints[c.name]?.minVersion || undefined,
+            maxVersion: pkgConstraints[c.name]?.maxVersion || undefined,
+          }));
+      }
       return { name: p.name, channels };
     });
     const exclude = upstream.filter((p) => !imported.has(p.name)).map((p) => p.name);
@@ -209,6 +274,22 @@ export const CatalogBrowser: React.FC = () => {
   if (loading) return <PageSection><Spinner /></PageSection>;
 
   const importedPackages = upstream.filter((p) => imported.has(p.name));
+
+  // Returns the channels to display in the filtered pane for an imported package.
+  // If only specific channels were selected, returns only those; otherwise all.
+  const getImportedChannels = (p: CatalogPackage) => {
+    const sel = importedChannels[p.name];
+    if (!sel || sel.size === 0) return p.channels;
+    return p.channels.filter((c) => sel.has(c.name));
+  };
+
+  // True when a specific channel of a package is already part of the import selection.
+  const isChannelAdded = (pkgName: string, channelName: string): boolean => {
+    if (!imported.has(pkgName)) return false;
+    const sel = importedChannels[pkgName];
+    if (!sel || sel.size === 0) return true; // whole package = all channels included
+    return sel.has(channelName);
+  };
 
   const selectedUpPkg = upstream.find((p) => p.name === selectedUp);
   const selectedFiltPkg = importedPackages.find((p) => p.name === selectedFiltered);
@@ -324,6 +405,7 @@ export const CatalogBrowser: React.FC = () => {
                       const displayVersions = uniqueVersions.length > 5
                         ? `${uniqueVersions.slice(0, 5).join(', ')} +${uniqueVersions.length - 5} more`
                         : uniqueVersions.join(', ') || `${c.entries.length} entries`;
+                      const chAdded = isChannelAdded(p.name, c.name);
                       return (
                         <div key={c.name} className="mirror-dual-channel">
                           <span className="mirror-dual-channel__dot" />
@@ -336,11 +418,11 @@ export const CatalogBrowser: React.FC = () => {
                           <Button
                             variant="link"
                             size="sm"
-                            isDisabled={isImported}
+                            isDisabled={chAdded}
                             style={{ paddingLeft: 0 }}
-                            onClick={() => importPackage(p.name)}
+                            onClick={() => importChannel(p.name, c.name)}
                           >
-                            {isImported ? 'added' : '+ add'}
+                            {chAdded ? 'added' : '+ add'}
                           </Button>
                         </div>
                       );
@@ -465,7 +547,7 @@ export const CatalogBrowser: React.FC = () => {
                         ×
                       </button>
                     </div>
-                    {expanded && p.channels.map((c) => {
+                    {expanded && getImportedChannels(p).map((c) => {
                       const uniqueVersions = sortVersions([...new Set(c.entries.map((e) => e.version))]);
                       const constraint = versionMap[p.name]?.[c.name] || { minVersion: '', maxVersion: '' };
                       return (
@@ -501,6 +583,21 @@ export const CatalogBrowser: React.FC = () => {
                               <option value="">any</option>
                               {uniqueVersions.map((v) => <option key={v} value={v}>{v}</option>)}
                             </select>
+                            <button
+                              style={{
+                                background: 'none',
+                                border: 'none',
+                                cursor: 'pointer',
+                                padding: '0 2px',
+                                fontSize: 14,
+                                color: 'var(--pf-v6-global--danger-color--100)',
+                                lineHeight: 1,
+                              }}
+                              onClick={() => removeChannel(p.name, c.name)}
+                              title="Remove channel"
+                            >
+                              ×
+                            </button>
                           </div>
                         </div>
                       );
