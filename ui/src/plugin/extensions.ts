@@ -19,6 +19,7 @@ const extensions: Extension[] = [
       name: 'Mirror Targets',
       href: '/oc-mirror/targets',
       section: 'oc-mirror',
+      perspective: 'admin',
     },
   },
   {
@@ -28,6 +29,7 @@ const extensions: Extension[] = [
       name: 'ImageSets',
       href: '/oc-mirror/imagesets',
       section: 'oc-mirror',
+      perspective: 'admin',
     },
   },
   {
@@ -37,6 +39,7 @@ const extensions: Extension[] = [
       name: 'Failed Images',
       href: '/oc-mirror/failed',
       section: 'oc-mirror',
+      perspective: 'admin',
     },
   },
 

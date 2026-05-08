@@ -242,12 +242,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	dashImage := os.Getenv("PLUGIN_IMAGE")
+	pluginImage := os.Getenv("PLUGIN_IMAGE")
 	if err := (&controller.ConsolePluginReconciler{
-		Client:    mgr.GetClient(),
-		Scheme:    mgr.GetScheme(),
-		Namespace: operatorNamespace,
-		DashImage: dashImage,
+		Client:      mgr.GetClient(),
+		Scheme:      mgr.GetScheme(),
+		Namespace:   operatorNamespace,
+		PluginImage: pluginImage,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ConsolePlugin")
 		os.Exit(1)

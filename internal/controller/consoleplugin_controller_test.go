@@ -29,8 +29,8 @@ import (
 
 var _ = Describe("ConsolePlugin Controller", func() {
 	const (
-		testNamespace = "default"
-		testDashImage = "test-dashboard:latest"
+		testNamespace   = "default"
+		testPluginImage = "test-plugin:latest"
 	)
 
 	var (
@@ -40,10 +40,10 @@ var _ = Describe("ConsolePlugin Controller", func() {
 
 	BeforeEach(func() {
 		reconciler = &ConsolePluginReconciler{
-			Client:    k8sClient,
-			Scheme:    k8sClient.Scheme(),
-			Namespace: testNamespace,
-			DashImage: testDashImage,
+			Client:      k8sClient,
+			Scheme:      k8sClient.Scheme(),
+			Namespace:   testNamespace,
+			PluginImage: testPluginImage,
 		}
 	})
 
@@ -102,8 +102,8 @@ var _ = Describe("ConsolePlugin Controller", func() {
 			By("verifying the container command")
 			Expect(dep.Spec.Template.Spec.Containers).To(HaveLen(1))
 			container := dep.Spec.Template.Spec.Containers[0]
-			Expect(container.Command).To(Equal([]string{"/dashboard", "plugin"}))
-			Expect(container.Image).To(Equal(testDashImage))
+			Expect(container.Command).To(Equal([]string{"/plugin"}))
+			Expect(container.Image).To(Equal(testPluginImage))
 		})
 	})
 })

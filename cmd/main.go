@@ -675,12 +675,12 @@ func runController() {
 	if legacyNamespace == "" {
 		legacyNamespace = os.Getenv("POD_NAMESPACE")
 	}
-	dashImageLegacy := os.Getenv("DASHBOARD_IMAGE")
+	pluginImageLegacy := os.Getenv("PLUGIN_IMAGE")
 	if err := (&controller.ConsolePluginReconciler{
-		Client:    mgr.GetClient(),
-		Scheme:    mgr.GetScheme(),
-		Namespace: legacyNamespace,
-		DashImage: dashImageLegacy,
+		Client:      mgr.GetClient(),
+		Scheme:      mgr.GetScheme(),
+		Namespace:   legacyNamespace,
+		PluginImage: pluginImageLegacy,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ConsolePlugin")
 		os.Exit(1)

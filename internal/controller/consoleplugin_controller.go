@@ -25,6 +25,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -57,9 +58,9 @@ const (
 // is available (OpenShift clusters). It requires no user-facing CRD.
 type ConsolePluginReconciler struct {
 	client.Client
-	Scheme    *runtime.Scheme
-	Namespace string // operator namespace
-	DashImage string // PLUGIN_IMAGE env var
+	Scheme      *runtime.Scheme
+	Namespace   string // operator namespace
+	PluginImage string // PLUGIN_IMAGE env var
 }
 
 // +kubebuilder:rbac:groups="",resources=serviceaccounts;services,verbs=get;list;watch;create;update;patch;delete
@@ -69,7 +70,7 @@ type ConsolePluginReconciler struct {
 func (r *ConsolePluginReconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
 	l := log.FromContext(ctx)
 
-	if r.DashImage == "" {
+	if r.PluginImage == "" {
 		l.Info("PLUGIN_IMAGE not configured, skipping ConsolePlugin reconciliation")
 		return reconcile.Result{RequeueAfter: pluginReconcileInterval}, nil
 	}
@@ -192,8 +193,8 @@ func (r *ConsolePluginReconciler) ensureDeployment(ctx context.Context) error {
 				Containers: []corev1.Container{
 					{
 						Name:    "plugin",
-						Image:   r.DashImage,
-						Command: []string{"/dashboard", "plugin"},
+						Image:   r.PluginImage,
+						Command: []string{"/plugin"},
 						Args: []string{
 							fmt.Sprintf("--bind-address=:%d", pluginPort),
 							"--cert-file=/var/serving-cert/tls.crt",
@@ -204,6 +205,42 @@ func (r *ConsolePluginReconciler) ensureDeployment(ctx context.Context) error {
 						},
 						Env: []corev1.EnvVar{
 							{Name: "POD_NAMESPACE", Value: r.Namespace},
+						},
+						Resources: corev1.ResourceRequirements{
+							Requests: corev1.ResourceList{
+								corev1.ResourceCPU:    resource.MustParse("10m"),
+								corev1.ResourceMemory: resource.MustParse("50Mi"),
+							},
+							Limits: corev1.ResourceList{
+								corev1.ResourceCPU:    resource.MustParse("100m"),
+								corev1.ResourceMemory: resource.MustParse("100Mi"),
+							},
+						},
+						ReadinessProbe: &corev1.Probe{
+							ProbeHandler: corev1.ProbeHandler{
+								HTTPGet: &corev1.HTTPGetAction{
+									Path:   "/plugin-manifest.json",
+									Port:   intstr.FromInt32(pluginPort),
+									Scheme: corev1.URISchemeHTTPS,
+								},
+							},
+							InitialDelaySeconds: 5,
+							PeriodSeconds:       10,
+							TimeoutSeconds:      3,
+							FailureThreshold:    3,
+						},
+						LivenessProbe: &corev1.Probe{
+							ProbeHandler: corev1.ProbeHandler{
+								HTTPGet: &corev1.HTTPGetAction{
+									Path:   "/plugin-manifest.json",
+									Port:   intstr.FromInt32(pluginPort),
+									Scheme: corev1.URISchemeHTTPS,
+								},
+							},
+							InitialDelaySeconds: 15,
+							PeriodSeconds:       30,
+							TimeoutSeconds:      5,
+							FailureThreshold:    3,
 						},
 						VolumeMounts: []corev1.VolumeMount{
 							{Name: "serving-cert", MountPath: "/var/serving-cert"},
@@ -267,7 +304,7 @@ func (r *ConsolePluginReconciler) ensureConsolePlugin(ctx context.Context) error
 	plugin.SetName(consolePluginCRName)
 
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, plugin, func() error {
-		if err := unstructured.SetNestedField(plugin.Object, consolePluginCRName, "spec", "displayName"); err != nil {
+		if err := unstructured.SetNestedField(plugin.Object, "OC Mirror Operator", "spec", "displayName"); err != nil {
 			return err
 		}
 		if err := unstructured.SetNestedField(plugin.Object, "Service", "spec", "backend", "type"); err != nil {
@@ -299,7 +336,10 @@ func (r *ConsolePluginReconciler) ensureConsolePlugin(ctx context.Context) error
 				},
 			},
 		}
-		return unstructured.SetNestedSlice(plugin.Object, proxies, "spec", "proxy")
+		if err := unstructured.SetNestedSlice(plugin.Object, proxies, "spec", "proxy"); err != nil {
+			return err
+		}
+		return unstructured.SetNestedField(plugin.Object, "Preload", "spec", "i18n", "loadType")
 	})
 	if err != nil {
 		if apimeta.IsNoMatchError(err) {
