@@ -43,8 +43,8 @@ metadata:
       ]
     capabilities: Basic Install
     categories: OpenShift Optional, Integration & Delivery
-    containerImage: quay.lab.brtrm.dev/marius/oc-mirror-operator-controller@sha256:76f8312f6f867504eb6cde6695946880b71953f106d2d11c638b0989652971a1
-    createdAt: "2026-05-07T13:27:50Z"
+    containerImage: quay.lab.brtrm.dev/marius/oc-mirror-operator-controller@sha256:9c5b2891239ec92747960bcaf275fd8f87690bde087cfa2d415b06ee3c672d96
+    createdAt: "2026-05-07T14:21:38Z"
     oc-mirror-dashboard-image: quay.lab.brtrm.dev/marius/oc-mirror-operator-dashboard@sha256:d109f0e8f6d3dc9188839f90edab9be8402963526f7e37dabd0a9d82d6d4b9a3
     oc-mirror-manager-image: quay.lab.brtrm.dev/marius/oc-mirror-operator-manager@sha256:4d7629b9187749768cdf0252dc8188187862e4e38f246d04758e1ab301fc88f0
     oc-mirror-oauth-proxy-image: quay.io/openshift/origin-oauth-proxy@sha256:502dc73e5438f0d61fb3d285e462dcabc82e705754dde53c644c02684f1c429b
@@ -318,7 +318,7 @@ spec:
                       - /controller
                     env:
                       - name: OPERATOR_IMAGE
-                        value: quay.lab.brtrm.dev/marius/oc-mirror-operator-controller@sha256:76f8312f6f867504eb6cde6695946880b71953f106d2d11c638b0989652971a1
+                        value: quay.lab.brtrm.dev/marius/oc-mirror-operator-controller@sha256:9c5b2891239ec92747960bcaf275fd8f87690bde087cfa2d415b06ee3c672d96
                       - name: MANAGER_IMAGE
                         value: quay.lab.brtrm.dev/marius/oc-mirror-operator-manager@sha256:4d7629b9187749768cdf0252dc8188187862e4e38f246d04758e1ab301fc88f0
                       - name: WORKER_IMAGE
@@ -331,7 +331,7 @@ spec:
                         valueFrom:
                           fieldRef:
                             fieldPath: metadata.namespace
-                    image: quay.lab.brtrm.dev/marius/oc-mirror-operator-controller@sha256:76f8312f6f867504eb6cde6695946880b71953f106d2d11c638b0989652971a1
+                    image: quay.lab.brtrm.dev/marius/oc-mirror-operator-controller@sha256:9c5b2891239ec92747960bcaf275fd8f87690bde087cfa2d415b06ee3c672d96
                     livenessProbe:
                       httpGet:
                         path: /healthz
@@ -429,16 +429,16 @@ spec:
     name: Marius Bertram
     url: github.com/mariusbertram/oc-mirror-operator
   relatedImages:
-    - image: quay.lab.brtrm.dev/marius/oc-mirror-operator-manager@sha256:4d7629b9187749768cdf0252dc8188187862e4e38f246d04758e1ab301fc88f0
-      name: oc-mirror-operator-manager-4d7629b9187749768cdf0252dc8188187862e4e38f246d04758e1ab301fc88f0-annotation
+    - image: quay.lab.brtrm.dev/marius/oc-mirror-operator-controller@sha256:9c5b2891239ec92747960bcaf275fd8f87690bde087cfa2d415b06ee3c672d96
+      name: oc-mirror-operator-controller-9c5b2891239ec92747960bcaf275fd8f87690bde087cfa2d415b06ee3c672d96-annotation
     - image: quay.lab.brtrm.dev/marius/oc-mirror-operator-dashboard@sha256:d109f0e8f6d3dc9188839f90edab9be8402963526f7e37dabd0a9d82d6d4b9a3
       name: oc-mirror-operator-dashboard-d109f0e8f6d3dc9188839f90edab9be8402963526f7e37dabd0a9d82d6d4b9a3-annotation
-    - image: quay.lab.brtrm.dev/marius/oc-mirror-operator-controller@sha256:76f8312f6f867504eb6cde6695946880b71953f106d2d11c638b0989652971a1
-      name: manager
-    - image: quay.lab.brtrm.dev/marius/oc-mirror-operator-controller@sha256:76f8312f6f867504eb6cde6695946880b71953f106d2d11c638b0989652971a1
-      name: oc-mirror-operator-controller-76f8312f6f867504eb6cde6695946880b71953f106d2d11c638b0989652971a1-annotation
     - image: quay.lab.brtrm.dev/marius/oc-mirror-operator-worker@sha256:b5756df0563c7079bd513a3d164cf71b863557d84cdf394e3ef30c6d851c3d33
       name: oc-mirror-operator-worker-b5756df0563c7079bd513a3d164cf71b863557d84cdf394e3ef30c6d851c3d33-annotation
     - image: quay.io/openshift/origin-oauth-proxy@sha256:502dc73e5438f0d61fb3d285e462dcabc82e705754dde53c644c02684f1c429b
       name: origin-oauth-proxy-502dc73e5438f0d61fb3d285e462dcabc82e705754dde53c644c02684f1c429b-annotation
+    - image: quay.lab.brtrm.dev/marius/oc-mirror-operator-manager@sha256:4d7629b9187749768cdf0252dc8188187862e4e38f246d04758e1ab301fc88f0
+      name: oc-mirror-operator-manager-4d7629b9187749768cdf0252dc8188187862e4e38f246d04758e1ab301fc88f0-annotation
+    - image: quay.lab.brtrm.dev/marius/oc-mirror-operator-controller@sha256:9c5b2891239ec92747960bcaf275fd8f87690bde087cfa2d415b06ee3c672d96
+      name: manager
   version: 0.0.2

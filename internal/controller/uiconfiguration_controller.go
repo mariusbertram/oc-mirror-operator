@@ -643,8 +643,8 @@ func (r *UIConfigurationReconciler) generateConsolePlugin(ctx context.Context, u
 						"type": "Service",
 						"service": map[string]interface{}{
 							"namespace": r.Namespace,
-							"name":      dashboardName,
-							"port":      int64(dashboardPort),
+							"name":      dashboardName + "-plugin",
+							"port":      int64(pluginPort),
 						},
 					},
 				},
