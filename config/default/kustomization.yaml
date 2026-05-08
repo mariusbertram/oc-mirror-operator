@@ -19,10 +19,11 @@ resources:
 - ../rbac
 - ../manager
 - ../consoleplugin
-# [PROMETHEUS] Requires prometheus-operator CRDs (ServiceMonitor, PrometheusRule).
-# Uncomment when deploying to a cluster with prometheus-operator installed.
+# [PROMETHEUS] ServiceMonitor, PrometheusRule, and the Grafana dashboard ConfigMap
+# are now managed programmatically by the MonitoringReconciler at runtime.
+# The static YAML in ../prometheus and ../grafana are kept as reference only.
 #- ../prometheus
-- ../grafana
+#- ../grafana
 # [WEBHOOK] To enable webhook, uncomment all the sections with [WEBHOOK] prefix including the one in
 # crd/kustomization.yaml
 #- ../webhook
