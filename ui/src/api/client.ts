@@ -1,6 +1,7 @@
 import type {
   CatalogPackagesResponse,
   ImageFailuresResponse,
+  PackageConstraint,
   TargetDetail,
   TargetSummary,
 } from './types';
@@ -100,10 +101,13 @@ export const getFilteredPackages = (targetName: string, slug: string) =>
 export const getUpstreamPackages = (targetName: string, slug: string) =>
   get<CatalogPackagesResponse>(`/api/v1/targets/${targetName}/catalogs/${slug}/upstream-packages.json`);
 
+export const getPackageConstraints = (namespace: string, imageSetName: string, slug: string) =>
+  get<PackageConstraint[]>(`/api/v1/imagesets/${namespace}/${imageSetName}/catalogs/${slug}/packages`);
+
 // --- Edit API ---
 
 export interface PackagePatchBody {
-  include: string[];
+  packages: PackageConstraint[];
   exclude: string[];
 }
 

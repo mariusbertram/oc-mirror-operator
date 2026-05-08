@@ -31,7 +31,7 @@
   height: 8px;
   border-radius: 4px;
   overflow: hidden;
-  background: var(--pf-v6-global--BackgroundColor--200, #f0f0f0);
+  background: var(--pf-v6-global--BackgroundColor--200, rgba(0,0,0,0.04));
   min-width: 120px;
 }
 .mirror-progress-stacked__bar {
@@ -60,7 +60,7 @@
 .mirror-tag {
   display: inline-block;
   padding: 1px 6px;
-  background: var(--pf-v6-global--BackgroundColor--200, #f0f0f0);
+  background: var(--pf-v6-global--BackgroundColor--200, rgba(0,0,0,0.04));
   border: 1px solid var(--pf-v6-global--BorderColor--100, #d2d2d2);
   border-radius: 3px;
   font-size: 11px;
@@ -117,7 +117,7 @@
   flex-direction: column;
   min-height: 520px;
   max-height: 520px;
-  background: var(--pf-v6-global--BackgroundColor--100, #fff);
+  background: var(--pf-v6-global--BackgroundColor--100, transparent);
 }
 .mirror-dual-pane__header {
   padding: 10px 14px;
@@ -139,7 +139,7 @@
   padding: 10px 14px;
   border-top: 1px solid var(--pf-v6-global--BorderColor--100, #d2d2d2);
   font-size: 12px;
-  background: var(--pf-v6-global--BackgroundColor--200, #f0f0f0);
+  background: var(--pf-v6-global--BackgroundColor--200, transparent);
 }
 
 .mirror-dual-row {
@@ -151,7 +151,7 @@
   border-bottom: 1px solid var(--pf-v6-global--BorderColor--100, #d2d2d2);
   cursor: pointer;
 }
-.mirror-dual-row:hover { background: var(--pf-v6-global--BackgroundColor--200, #f0f0f0); }
+.mirror-dual-row:hover { background: var(--pf-v6-global--BackgroundColor--200, rgba(0,0,0,0.05)); }
 .mirror-dual-row--selected { background: var(--pf-v6-global--active-color--100, #e7f1fa) !important; }
 .mirror-dual-row__name { font-weight: 500; font-size: 13px; }
 .mirror-dual-row__meta { font-size: 11px; color: var(--pf-v6-global--Color--200, #6a6e73); margin-top: 1px; }
@@ -163,7 +163,7 @@
   gap: 8px;
   padding: 7px 14px 7px 46px;
   border-bottom: 1px solid var(--pf-v6-global--BorderColor--100, #d2d2d2);
-  background: var(--pf-v6-global--BackgroundColor--200, #f0f0f0);
+  background: var(--pf-v6-global--BackgroundColor--200, rgba(0,0,0,0.03));
   font-size: 12px;
 }
 .mirror-dual-channel__dot {
@@ -190,7 +190,7 @@
   height: 32px;
   display: grid;
   place-items: center;
-  background: var(--pf-v6-global--BackgroundColor--100, #fff);
+  background: var(--pf-v6-global--BackgroundColor--100, transparent);
   border: 1px solid var(--pf-v6-global--BorderColor--200, #b8bbbe);
   border-radius: 3px;
   cursor: pointer;
@@ -208,7 +208,7 @@
   cursor: not-allowed;
 }
 .mirror-dual-action-btn:disabled:hover {
-  background: var(--pf-v6-global--BackgroundColor--200, #f0f0f0);
+  background: var(--pf-v6-global--BackgroundColor--200, rgba(0,0,0,0.04));
   color: var(--pf-v6-global--Color--200, #6a6e73);
   border-color: var(--pf-v6-global--BorderColor--200, #b8bbbe);
 }

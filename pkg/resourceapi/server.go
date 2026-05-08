@@ -219,6 +219,7 @@ func (s *Server) RegisterAPIRoutes(r *mux.Router) {
 	api.HandleFunc("/targets/{mt}/image-failures", s.handleImageFailures).Methods("GET")
 
 	// Edit endpoints (token-scoped writes — RBAC of the requesting user applies)
+	api.HandleFunc("/imagesets/{namespace}/{name}/catalogs/{slug}/packages", s.handleGetPackageConstraints).Methods("GET")
 	api.HandleFunc("/imagesets/{namespace}/{name}/catalogs/{slug}/packages", s.handlePatchCatalogPackages).Methods("PATCH")
 	api.HandleFunc("/imagesets/{namespace}/{name}/recollect", s.handleTriggerRecollect).Methods("PATCH")
 	api.HandleFunc("/imagesets/{namespace}/{name}", s.handleDeleteImageSet).Methods("DELETE")
@@ -704,8 +705,24 @@ func writeJSON(w http.ResponseWriter, v any) {
 
 // --- Edit handlers ---
 
+type packageChannelConstraint struct {
+	Name       string `json:"name"`
+	MinVersion string `json:"minVersion,omitempty"`
+	MaxVersion string `json:"maxVersion,omitempty"`
+}
+
+type packageConstraint struct {
+	Name       string                     `json:"name"`
+	MinVersion string                     `json:"minVersion,omitempty"`
+	MaxVersion string                     `json:"maxVersion,omitempty"`
+	Channels   []packageChannelConstraint `json:"channels,omitempty"`
+}
+
 type packagePatchBody struct {
-	Include []string `json:"include"`
+	// Packages carries per-package version constraints (new format).
+	Packages []packageConstraint `json:"packages,omitempty"`
+	// Include is the legacy simple-name list (no version constraints).
+	Include []string `json:"include,omitempty"`
 	Exclude []string `json:"exclude"`
 }
 
@@ -739,11 +756,6 @@ func (s *Server) handlePatchCatalogPackages(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	includeSet := make(map[string]bool, len(patch.Include))
-	for _, p := range patch.Include {
-		includeSet[p] = true
-	}
-
 	found := false
 	for i, op := range is.Spec.Mirror.Operators {
 		catalogSlug := mirrorresources.CatalogSlug(op.Catalog)
@@ -751,10 +763,34 @@ func (s *Server) handlePatchCatalogPackages(w http.ResponseWriter, r *http.Reque
 			continue
 		}
 		found = true
-		// Rebuild the package list from the include set.
+		// Rebuild the package list. Prefer the extended `packages` format
+		// (which carries per-channel version constraints) over the legacy
+		// `include` string array.
 		var packages []mirrorv1alpha1.IncludePackage
-		for _, pkg := range patch.Include {
-			packages = append(packages, mirrorv1alpha1.IncludePackage{Name: pkg})
+		if len(patch.Packages) > 0 {
+			for _, pc := range patch.Packages {
+				p := mirrorv1alpha1.IncludePackage{
+					Name: pc.Name,
+					IncludeBundle: mirrorv1alpha1.IncludeBundle{
+						MinVersion: pc.MinVersion,
+						MaxVersion: pc.MaxVersion,
+					},
+				}
+				for _, ch := range pc.Channels {
+					p.Channels = append(p.Channels, mirrorv1alpha1.IncludeChannel{
+						Name: ch.Name,
+						IncludeBundle: mirrorv1alpha1.IncludeBundle{
+							MinVersion: ch.MinVersion,
+							MaxVersion: ch.MaxVersion,
+						},
+					})
+				}
+				packages = append(packages, p)
+			}
+		} else {
+			for _, name := range patch.Include {
+				packages = append(packages, mirrorv1alpha1.IncludePackage{Name: name})
+			}
 		}
 		is.Spec.Mirror.Operators[i].Packages = packages
 	}
@@ -774,6 +810,52 @@ func (s *Server) handlePatchCatalogPackages(w http.ResponseWriter, r *http.Reque
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleGetPackageConstraints returns the current per-package version constraints
+// stored in the ImageSet spec for a given catalog slug.
+func (s *Server) handleGetPackageConstraints(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	namespace, name, slug := vars["namespace"], vars["name"], vars["slug"]
+
+	c := s.clientForRequest(r)
+	is := &mirrorv1alpha1.ImageSet{}
+	if err := c.Get(r.Context(), client.ObjectKey{Namespace: namespace, Name: name}, is); err != nil {
+		if apierrors.IsNotFound(err) {
+			http.Error(w, "ImageSet not found", http.StatusNotFound)
+		} else {
+			http.Error(w, fmt.Sprintf("get ImageSet: %v", err), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	var result []packageConstraint
+	for _, op := range is.Spec.Mirror.Operators {
+		if mirrorresources.CatalogSlug(op.Catalog) != slug {
+			continue
+		}
+		for _, pkg := range op.Packages {
+			pc := packageConstraint{
+				Name:       pkg.Name,
+				MinVersion: pkg.MinVersion,
+				MaxVersion: pkg.MaxVersion,
+			}
+			for _, ch := range pkg.Channels {
+				pc.Channels = append(pc.Channels, packageChannelConstraint{
+					Name:       ch.Name,
+					MinVersion: ch.MinVersion,
+					MaxVersion: ch.MaxVersion,
+				})
+			}
+			result = append(result, pc)
+		}
+	}
+	if result == nil {
+		result = []packageConstraint{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(result)
 }
 
 // handleTriggerRecollect sets the recollect annotation on an ImageSet to force

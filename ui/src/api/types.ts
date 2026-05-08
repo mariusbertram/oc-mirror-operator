@@ -61,6 +61,19 @@ export interface ImageFailuresResponse {
   pending: FailedImageDetail[];
 }
 
+export interface ChannelConstraint {
+  name: string;
+  minVersion?: string;
+  maxVersion?: string;
+}
+
+export interface PackageConstraint {
+  name: string;
+  minVersion?: string;
+  maxVersion?: string;
+  channels?: ChannelConstraint[];
+}
+
 export interface CatalogChannel {
   name: string;
   entries: {

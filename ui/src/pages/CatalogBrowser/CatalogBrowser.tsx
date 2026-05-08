@@ -14,6 +14,7 @@ import { useParams } from 'react-router';
 import { Link } from 'react-router-dom';
 import {
   getFilteredPackages,
+  getPackageConstraints,
   getUpstreamPackages,
   patchCatalogPackages,
 } from '../../api/client';
@@ -21,6 +22,30 @@ import type { CatalogPackage } from '../../api/types';
 import '../../components/plugin-styles.css';
 
 type CatalogBrowserParams = 'targetName' | 'slug' | 'namespace' | 'imageSetName';
+
+type VersionConstraint = { minVersion: string; maxVersion: string };
+
+function sortVersions(versions: string[]): string[] {
+  return [...versions].sort((a, b) => {
+    const pa = a.split('.').map((s) => parseInt(s, 10) || 0);
+    const pb = b.split('.').map((s) => parseInt(s, 10) || 0);
+    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+      const diff = (pa[i] || 0) - (pb[i] || 0);
+      if (diff !== 0) return diff;
+    }
+    return a.localeCompare(b);
+  });
+}
+
+const versionSelectStyle: React.CSSProperties = {
+  fontSize: 11,
+  padding: '1px 4px',
+  background: 'var(--pf-v6-global--BackgroundColor--100, transparent)',
+  color: 'var(--pf-v6-global--Color--100, inherit)',
+  border: '1px solid var(--pf-v6-global--BorderColor--100, #d2d2d2)',
+  borderRadius: 2,
+  maxWidth: 90,
+};
 
 export const CatalogBrowser: React.FC = () => {
   const params = useParams<CatalogBrowserParams>();
@@ -40,6 +65,8 @@ export const CatalogBrowser: React.FC = () => {
 
   const [upstream, setUpstream] = useState<CatalogPackage[]>([]);
   const [imported, setImported] = useState<Set<string>>(new Set());
+  // versionMap[packageName][channelName] = { minVersion, maxVersion }
+  const [versionMap, setVersionMap] = useState<Record<string, Record<string, VersionConstraint>>>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -54,19 +81,33 @@ export const CatalogBrowser: React.FC = () => {
   const [dirty, setDirty] = useState(false);
 
   useEffect(() => {
-    if (!targetName || !slug) return;
+    if (!targetName || !slug || !namespace || !imageSetName) return;
     setLoading(true);
     Promise.all([
       getUpstreamPackages(targetName, slug),
       getFilteredPackages(targetName, slug),
+      getPackageConstraints(namespace, imageSetName, slug).catch(() => [] as never[]),
     ])
-      .then(([upResp, fpResp]) => {
+      .then(([upResp, fpResp, constraints]) => {
         setUpstream(upResp.packages);
         setImported(new Set(fpResp.packages.map((p) => p.name)));
+        const vm: Record<string, Record<string, VersionConstraint>> = {};
+        for (const pkg of constraints) {
+          for (const ch of pkg.channels || []) {
+            if (ch.minVersion || ch.maxVersion) {
+              if (!vm[pkg.name]) vm[pkg.name] = {};
+              vm[pkg.name][ch.name] = {
+                minVersion: ch.minVersion || '',
+                maxVersion: ch.maxVersion || '',
+              };
+            }
+          }
+        }
+        setVersionMap(vm);
       })
       .catch((e: Error) => setError(e.message))
       .finally(() => setLoading(false));
-  }, [targetName, slug]);
+  }, [targetName, slug, namespace, imageSetName]);
 
   const visibleUpstream = useMemo(
     () =>
@@ -105,18 +146,41 @@ export const CatalogBrowser: React.FC = () => {
     setDirty(true);
   };
 
+  const setVersionConstraint = (
+    pkgName: string,
+    channelName: string,
+    field: 'minVersion' | 'maxVersion',
+    value: string,
+  ) => {
+    setVersionMap((prev) => {
+      const pkg = prev[pkgName] || {};
+      const ch = pkg[channelName] || { minVersion: '', maxVersion: '' };
+      return { ...prev, [pkgName]: { ...pkg, [channelName]: { ...ch, [field]: value } } };
+    });
+    setDirty(true);
+  };
+
   const handleSave = async () => {
     if (!namespace || !imageSetName || !slug) return;
     setSaving(true);
     setError(null);
     setSuccessMsg(null);
-    const allNames = upstream.map((p) => p.name);
-    const include = allNames.filter((n) => imported.has(n));
-    const exclude = allNames.filter((n) => !imported.has(n));
+    const packages = importedPackages.map((p) => {
+      const pkgConstraints = versionMap[p.name] || {};
+      const channels = p.channels
+        .filter((c) => pkgConstraints[c.name]?.minVersion || pkgConstraints[c.name]?.maxVersion)
+        .map((c) => ({
+          name: c.name,
+          minVersion: pkgConstraints[c.name]?.minVersion || undefined,
+          maxVersion: pkgConstraints[c.name]?.maxVersion || undefined,
+        }));
+      return { name: p.name, channels };
+    });
+    const exclude = upstream.filter((p) => !imported.has(p.name)).map((p) => p.name);
     try {
-      await patchCatalogPackages(namespace, imageSetName, slug, { include, exclude });
+      await patchCatalogPackages(namespace, imageSetName, slug, { packages, exclude });
       setDirty(false);
-      setSuccessMsg(`Saved — ${include.length} packages included, ${exclude.length} excluded.`);
+      setSuccessMsg(`Saved — ${packages.length} packages included, ${exclude.length} excluded.`);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -256,13 +320,17 @@ export const CatalogBrowser: React.FC = () => {
                       </Button>
                     </div>
                     {expanded && p.channels.map((c) => {
+                      const uniqueVersions = sortVersions([...new Set(c.entries.map((e) => e.version))]);
+                      const displayVersions = uniqueVersions.length > 5
+                        ? `${uniqueVersions.slice(0, 5).join(', ')} +${uniqueVersions.length - 5} more`
+                        : uniqueVersions.join(', ') || `${c.entries.length} entries`;
                       return (
                         <div key={c.name} className="mirror-dual-channel">
                           <span className="mirror-dual-channel__dot" />
                           <div>
                             <div style={{ fontWeight: 500 }}>{c.name}</div>
                             <div style={{ color: 'var(--pf-v6-global--Color--200)', fontSize: 10 }}>
-                              {c.entries.length} entries
+                              {displayVersions}
                             </div>
                           </div>
                           <Button
@@ -397,17 +465,46 @@ export const CatalogBrowser: React.FC = () => {
                         ×
                       </button>
                     </div>
-                    {expanded && p.channels.map((c) => (
-                      <div key={c.name} className="mirror-dual-channel">
-                        <span className="mirror-dual-channel__dot mirror-dual-channel__dot--imported" />
-                        <div>
-                          <div style={{ fontWeight: 500 }}>{c.name}</div>
-                          <div style={{ color: 'var(--pf-v6-global--Color--200)', fontSize: 10 }}>
-                            {c.entries.length} entries
+                    {expanded && p.channels.map((c) => {
+                      const uniqueVersions = sortVersions([...new Set(c.entries.map((e) => e.version))]);
+                      const constraint = versionMap[p.name]?.[c.name] || { minVersion: '', maxVersion: '' };
+                      return (
+                        <div key={c.name} className="mirror-dual-channel" style={{ gridTemplateColumns: '20px 1fr auto' }}>
+                          <span className="mirror-dual-channel__dot mirror-dual-channel__dot--imported" />
+                          <div>
+                            <div style={{ fontWeight: 500 }}>{c.name}</div>
+                            <div style={{ color: 'var(--pf-v6-global--Color--200)', fontSize: 10 }}>
+                              {uniqueVersions.length} versions
+                            </div>
+                          </div>
+                          <div
+                            style={{ display: 'flex', gap: 4, alignItems: 'center' }}
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <label style={{ fontSize: 10, color: 'var(--pf-v6-global--Color--200)', whiteSpace: 'nowrap' }}>Min</label>
+                            <select
+                              value={constraint.minVersion}
+                              onChange={(e) => setVersionConstraint(p.name, c.name, 'minVersion', e.target.value)}
+                              style={versionSelectStyle}
+                              title="Minimum version (inclusive)"
+                            >
+                              <option value="">any</option>
+                              {uniqueVersions.map((v) => <option key={v} value={v}>{v}</option>)}
+                            </select>
+                            <label style={{ fontSize: 10, color: 'var(--pf-v6-global--Color--200)', whiteSpace: 'nowrap' }}>Max</label>
+                            <select
+                              value={constraint.maxVersion}
+                              onChange={(e) => setVersionConstraint(p.name, c.name, 'maxVersion', e.target.value)}
+                              style={versionSelectStyle}
+                              title="Maximum version (inclusive)"
+                            >
+                              <option value="">any</option>
+                              {uniqueVersions.map((v) => <option key={v} value={v}>{v}</option>)}
+                            </select>
                           </div>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </React.Fragment>
                 );
               })}
