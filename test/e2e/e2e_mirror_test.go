@@ -30,7 +30,7 @@ import (
 
 var _ = Describe("oc-mirror Operator E2E", Ordered, Label("cluster"), func() {
 	const (
-		mirrorNamespace = "default"
+		mirrorNamespace = operatorNamespace
 		targetName      = "internal-registry"
 		imageSetName    = "test-sync-e2e"
 	)
@@ -71,12 +71,13 @@ apiVersion: mirror.openshift.io/v1alpha1
 kind: MirrorTarget
 metadata:
   name: %s
+  namespace: %s
 spec:
   registry: registry.default.svc.cluster.local:5000/mirror
   insecure: true
   imageSets:
     - %s
-`, targetName, imageSetName)
+`, targetName, mirrorNamespace, imageSetName)
 			cmd := exec.Command("kubectl", "apply", "-f", "-")
 			cmd.Stdin = strings.NewReader(mirrorTargetYaml)
 			_, err := utils.Run(cmd)
@@ -88,11 +89,12 @@ apiVersion: mirror.openshift.io/v1alpha1
 kind: ImageSet
 metadata:
   name: %s
+  namespace: %s
 spec:
   mirror:
     additionalImages:
       - name: docker.io/library/alpine:latest
-`, imageSetName)
+`, imageSetName, mirrorNamespace)
 			cmd = exec.Command("kubectl", "apply", "-f", "-")
 			cmd.Stdin = strings.NewReader(imageSetYaml)
 			_, err = utils.Run(cmd)
@@ -105,6 +107,7 @@ spec:
 				// Note: integer fields with omitempty are absent from JSON when 0, so
 				// jsonpath returns "" instead of "0" — treat "" and "0" as equivalent.
 				cmd := exec.Command("kubectl", "get", "imageset", imageSetName,
+					"-n", mirrorNamespace,
 					"-o", "jsonpath={.status.totalImages}:{.status.mirroredImages}:{.status.pendingImages}")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())

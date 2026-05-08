@@ -39,7 +39,7 @@ import (
 // instead of the large quay.io/operatorhubio/catalog (~2 GB). They run in standard CI.
 var _ = Describe("Catalog Build Job E2E", Ordered, Label("cluster", "catalog-cluster"), func() {
 	const (
-		ns             = "default"
+		ns             = operatorNamespace
 		targetName     = "catalog-test-target"
 		imageSetName   = "catalog-test-imageset"
 		sourceCatalog  = "ghcr.io/mariusbertram/brtrm-dev-catalog/catalog:latest"
