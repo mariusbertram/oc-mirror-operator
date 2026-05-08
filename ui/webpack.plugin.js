@@ -49,7 +49,7 @@ module.exports = {
   },
   plugins: [
     new MiniCssExtractPlugin({ filename: isProd ? 'plugin-[contenthash].css' : 'plugin.css' }),
-    new ConsoleRemotePlugin({ pluginMetadata, extensions }),
+    new ConsoleRemotePlugin({ pluginMetadata, extensions, validateSharedModules: false }),
     new ForkTsCheckerWebpackPlugin({
       typescript: { configFile: path.resolve(__dirname, 'tsconfig.json') },
     }),
