@@ -6,6 +6,12 @@
 #   - consoleplugins.console.openshift.io  (ConsolePlugin CR, OpenShift-specific)
 #   - namespaces (list/watch required for ConsolePluginReconciler and MonitoringReconciler
 #                 namespace trigger — cache informer is always cluster-scoped)
+#
+# Cross-namespace namespace-scoped access:
+#   - configmaps: the MonitoringReconciler must write the Grafana dashboard ConfigMap
+#     into openshift-config-managed so that the OpenShift monitoring console plugin
+#     can discover it under Observe > Dashboards.  A namespace-scoped RoleBinding
+#     cannot grant this; a ClusterRoleBinding is required.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -21,6 +27,17 @@ rules:
   verbs:
   - get
   - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
   - watch
 - apiGroups:
   - console.openshift.io

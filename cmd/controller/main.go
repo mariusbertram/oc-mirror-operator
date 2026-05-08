@@ -27,12 +27,14 @@ import (
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
@@ -214,10 +216,23 @@ func main() {
 		// SyncPeriod ensures all watched resources are periodically re-reconciled.
 		// This makes poll-based image collection durable across operator restarts —
 		// the actual poll decision is gated on LastSuccessfulPollTime in the ImageSet status.
+		//
+		// ByObject overrides the default for ConfigMaps to also include
+		// openshift-config-managed, where the MonitoringReconciler creates the
+		// Grafana dashboard ConfigMap so that OpenShift's monitoring console
+		// plugin can discover it under Observe > Dashboards.
 		Cache: cache.Options{
 			SyncPeriod: &syncPeriod,
 			DefaultNamespaces: map[string]cache.Config{
 				operatorNamespace: {},
+			},
+			ByObject: map[client.Object]cache.ByObject{
+				&corev1.ConfigMap{}: {
+					Namespaces: map[string]cache.Config{
+						operatorNamespace:          {},
+						"openshift-config-managed": {},
+					},
+				},
 			},
 		},
 	})

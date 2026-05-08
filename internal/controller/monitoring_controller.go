@@ -47,6 +47,12 @@ const (
 	managerServiceMonitorName    = "oc-mirror-manager"
 	prometheusRuleName           = "oc-mirror-alerts"
 	dashboardConfigMapName       = "oc-mirror-dashboard"
+
+	// dashboardConfigMapNamespace is the namespace watched by the OpenShift
+	// monitoring console plugin for custom dashboard ConfigMaps. ConfigMaps
+	// with the label console.openshift.io/dashboard: "true" must reside here
+	// to appear under Observe > Dashboards in the web console.
+	dashboardConfigMapNamespace = "openshift-config-managed"
 )
 
 var serviceMonitorGVK = schema.GroupVersionKind{
@@ -102,14 +108,15 @@ func (r *MonitoringReconciler) Reconcile(ctx context.Context, req reconcile.Requ
 	return reconcile.Result{RequeueAfter: monitoringReconcileInterval}, nil
 }
 
-// ensureDashboardConfigMap creates or updates the Grafana dashboard ConfigMap.
-// The label console.openshift.io/dashboard: "true" causes the OpenShift web
-// console monitoring plugin to expose it under Observe > Dashboards.
+// ensureDashboardConfigMap creates or updates the Grafana dashboard ConfigMap
+// in the openshift-config-managed namespace. The OpenShift monitoring console
+// plugin discovers ConfigMaps with console.openshift.io/dashboard: "true" in
+// that namespace and exposes them under Observe > Dashboards in the web console.
 func (r *MonitoringReconciler) ensureDashboardConfigMap(ctx context.Context) error {
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      dashboardConfigMapName,
-			Namespace: r.Namespace,
+			Namespace: dashboardConfigMapNamespace,
 		},
 	}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, cm, func() error {
@@ -312,7 +319,7 @@ func (r *MonitoringReconciler) SetupWithManager(mgr ctrl.Manager) error {
 // enqueueForDashboardConfigMap re-enqueues the singleton reconcile request
 // when the dashboard ConfigMap is changed or deleted.
 func (r *MonitoringReconciler) enqueueForDashboardConfigMap(_ context.Context, obj client.Object) []reconcile.Request {
-	if obj.GetName() != dashboardConfigMapName || obj.GetNamespace() != r.Namespace {
+	if obj.GetName() != dashboardConfigMapName || obj.GetNamespace() != dashboardConfigMapNamespace {
 		return nil
 	}
 	return []reconcile.Request{
