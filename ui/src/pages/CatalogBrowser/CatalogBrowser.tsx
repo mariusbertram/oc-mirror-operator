@@ -10,7 +10,7 @@ import {
   ToolbarContent,
   ToolbarItem,
 } from '@patternfly/react-core';
-import { Link, useParams, RouteComponentProps } from 'react-router-dom';
+import { Link, useParams } from 'react-router';
 import {
   getFilteredPackages,
   getUpstreamPackages,
@@ -19,17 +19,11 @@ import {
 import type { CatalogPackage } from '../../api/types';
 import '../../components/plugin-styles.css';
 
-interface CatalogBrowserParams {
-  targetName: string;
-  slug: string;
-  namespace: string;
-  imageSetName: string;
-}
+type CatalogBrowserParams = 'targetName' | 'slug' | 'namespace' | 'imageSetName';
 
-export const CatalogBrowser: React.FC<Partial<RouteComponentProps<CatalogBrowserParams>>> = (props) => {
-  const { match } = props;
+export const CatalogBrowser: React.FC = () => {
   const params = useParams<CatalogBrowserParams>();
-  let { targetName, slug, namespace, imageSetName } = match?.params || params;
+  let { targetName, slug, namespace, imageSetName } = params;
 
   if (!targetName) {
     const m = window.location.pathname.match(
@@ -156,7 +150,7 @@ export const CatalogBrowser: React.FC<Partial<RouteComponentProps<CatalogBrowser
 
   return (
     <>
-      <PageSection style={{ paddingBottom: 0, borderBottom: '1px solid var(--pf-v5-global--BorderColor--100)' }}>
+      <PageSection style={{ paddingBottom: 0, borderBottom: '1px solid var(--pf-v6-global--BorderColor--100)' }}>
         <div style={{ marginBottom: 6 }}>
           <Link to={`/oc-mirror/targets/${targetName}`} style={{ fontSize: 13 }}>
             ← Back to {targetName}
@@ -176,7 +170,7 @@ export const CatalogBrowser: React.FC<Partial<RouteComponentProps<CatalogBrowser
             </Button>
           )}
         </div>
-        <p style={{ margin: '0 0 12px', color: 'var(--pf-v5-global--Color--200)', fontSize: 13 }}>
+        <p style={{ margin: '0 0 12px', color: 'var(--pf-v6-global--Color--200)', fontSize: 13 }}>
           Import packages from <strong>{slug}</strong> into ImageSet{' '}
           <span className="mirror-tag">{imageSetName}</span>
         </p>
@@ -195,11 +189,11 @@ export const CatalogBrowser: React.FC<Partial<RouteComponentProps<CatalogBrowser
           <div className="mirror-dual-pane">
             <div className="mirror-dual-pane__header">
               <h3>Upstream catalog</h3>
-              <span style={{ fontSize: 12, color: 'var(--pf-v5-global--Color--200)' }}>
+              <span style={{ fontSize: 12, color: 'var(--pf-v6-global--Color--200)' }}>
                 {visibleUpstream.length} packages
               </span>
             </div>
-            <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--pf-v5-global--BorderColor--100)' }}>
+            <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--pf-v6-global--BorderColor--100)' }}>
               <SearchInput
                 placeholder="Filter packages…"
                 value={search}
@@ -224,7 +218,7 @@ export const CatalogBrowser: React.FC<Partial<RouteComponentProps<CatalogBrowser
                           cursor: 'pointer',
                           padding: 0,
                           fontSize: 12,
-                          color: 'var(--pf-v5-global--Color--200)',
+                          color: 'var(--pf-v6-global--Color--200)',
                           transform: expanded ? 'rotate(90deg)' : 'none',
                           transition: 'transform 100ms',
                           width: 20,
@@ -241,7 +235,7 @@ export const CatalogBrowser: React.FC<Partial<RouteComponentProps<CatalogBrowser
                         <div className="mirror-dual-row__name">
                           {p.name}
                           {isImported && (
-                            <span className="mirror-tag" style={{ marginLeft: 6, color: 'var(--pf-v5-global--success-color--100)', borderColor: 'var(--pf-v5-global--success-color--100)' }}>
+                            <span className="mirror-tag" style={{ marginLeft: 6, color: 'var(--pf-v6-global--success-color--100)', borderColor: 'var(--pf-v6-global--success-color--100)' }}>
                               imported
                             </span>
                           )}
@@ -266,7 +260,7 @@ export const CatalogBrowser: React.FC<Partial<RouteComponentProps<CatalogBrowser
                           <span className="mirror-dual-channel__dot" />
                           <div>
                             <div style={{ fontWeight: 500 }}>{c.name}</div>
-                            <div style={{ color: 'var(--pf-v5-global--Color--200)', fontSize: 10 }}>
+                            <div style={{ color: 'var(--pf-v6-global--Color--200)', fontSize: 10 }}>
                               {c.entries.length} entries
                             </div>
                           </div>
@@ -342,13 +336,13 @@ export const CatalogBrowser: React.FC<Partial<RouteComponentProps<CatalogBrowser
               <h3>
                 In ImageSet <code style={{ fontSize: 11, marginLeft: 4 }}>{imageSetName}</code>
               </h3>
-              <span style={{ fontSize: 12, color: 'var(--pf-v5-global--Color--200)' }}>
+              <span style={{ fontSize: 12, color: 'var(--pf-v6-global--Color--200)' }}>
                 {importedPackages.length} packages
               </span>
             </div>
             <div className="mirror-dual-pane__body">
               {importedPackages.length === 0 && (
-                <div style={{ padding: 32, textAlign: 'center', color: 'var(--pf-v5-global--Color--200)', fontSize: 13 }}>
+                <div style={{ padding: 32, textAlign: 'center', color: 'var(--pf-v6-global--Color--200)', fontSize: 13 }}>
                   No packages imported yet. Select a package on the left and click Import.
                 </div>
               )}
@@ -367,7 +361,7 @@ export const CatalogBrowser: React.FC<Partial<RouteComponentProps<CatalogBrowser
                           cursor: 'pointer',
                           padding: 0,
                           fontSize: 12,
-                          color: 'var(--pf-v5-global--Color--200)',
+                          color: 'var(--pf-v6-global--Color--200)',
                           transform: expanded ? 'rotate(90deg)' : 'none',
                           transition: 'transform 100ms',
                           width: 20,
@@ -393,7 +387,7 @@ export const CatalogBrowser: React.FC<Partial<RouteComponentProps<CatalogBrowser
                           cursor: 'pointer',
                           padding: '0 4px',
                           fontSize: 16,
-                          color: 'var(--pf-v5-global--danger-color--100)',
+                          color: 'var(--pf-v6-global--danger-color--100)',
                           lineHeight: 1,
                         }}
                         onClick={(e) => { e.stopPropagation(); removePackage(p.name); }}
@@ -407,7 +401,7 @@ export const CatalogBrowser: React.FC<Partial<RouteComponentProps<CatalogBrowser
                         <span className="mirror-dual-channel__dot mirror-dual-channel__dot--imported" />
                         <div>
                           <div style={{ fontWeight: 500 }}>{c.name}</div>
-                          <div style={{ color: 'var(--pf-v5-global--Color--200)', fontSize: 10 }}>
+                          <div style={{ color: 'var(--pf-v6-global--Color--200)', fontSize: 10 }}>
                             {c.entries.length} entries
                           </div>
                         </div>

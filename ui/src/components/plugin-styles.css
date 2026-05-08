@@ -16,14 +16,14 @@
   border-radius: 50%;
   flex-shrink: 0;
 }
-.mirror-status--healthy { color: var(--pf-v5-global--success-color--100, #3e8635); }
-.mirror-status--healthy .mirror-status-dot { background: var(--pf-v5-global--success-color--100, #3e8635); }
-.mirror-status--mirroring { color: var(--pf-v5-global--info-color--100, #2b9af3); }
-.mirror-status--mirroring .mirror-status-dot { background: var(--pf-v5-global--info-color--100, #2b9af3); }
-.mirror-status--failed { color: var(--pf-v5-global--danger-color--100, #c9190b); }
-.mirror-status--failed .mirror-status-dot { background: var(--pf-v5-global--danger-color--100, #c9190b); }
-.mirror-status--unknown { color: var(--pf-v5-global--Color--200, #6a6e73); }
-.mirror-status--unknown .mirror-status-dot { background: var(--pf-v5-global--Color--200, #6a6e73); }
+.mirror-status--healthy { color: var(--pf-v6-global--success-color--100, #3e8635); }
+.mirror-status--healthy .mirror-status-dot { background: var(--pf-v6-global--success-color--100, #3e8635); }
+.mirror-status--mirroring { color: var(--pf-v6-global--info-color--100, #2b9af3); }
+.mirror-status--mirroring .mirror-status-dot { background: var(--pf-v6-global--info-color--100, #2b9af3); }
+.mirror-status--failed { color: var(--pf-v6-global--danger-color--100, #c9190b); }
+.mirror-status--failed .mirror-status-dot { background: var(--pf-v6-global--danger-color--100, #c9190b); }
+.mirror-status--unknown { color: var(--pf-v6-global--Color--200, #6a6e73); }
+.mirror-status--unknown .mirror-status-dot { background: var(--pf-v6-global--Color--200, #6a6e73); }
 
 /* ── Stacked progress bar ────────────────────────────────────── */
 .mirror-progress-stacked {
@@ -31,7 +31,7 @@
   height: 8px;
   border-radius: 4px;
   overflow: hidden;
-  background: var(--pf-v5-global--BackgroundColor--200, #f0f0f0);
+  background: var(--pf-v6-global--BackgroundColor--200, #f0f0f0);
   min-width: 120px;
 }
 .mirror-progress-stacked__bar {
@@ -39,19 +39,19 @@
   transition: width 200ms ease;
 }
 .mirror-progress-stacked__bar--mirrored {
-  background: var(--pf-v5-global--success-color--100, #3e8635);
+  background: var(--pf-v6-global--success-color--100, #3e8635);
 }
 .mirror-progress-stacked__bar--pending {
-  background: var(--pf-v5-global--warning-color--100, #f0ab00);
+  background: var(--pf-v6-global--warning-color--100, #f0ab00);
 }
 .mirror-progress-stacked__bar--failed {
-  background: var(--pf-v5-global--danger-color--100, #c9190b);
+  background: var(--pf-v6-global--danger-color--100, #c9190b);
 }
 .mirror-progress-meta {
   display: flex;
   justify-content: space-between;
   font-size: 12px;
-  color: var(--pf-v5-global--Color--200, #6a6e73);
+  color: var(--pf-v6-global--Color--200, #6a6e73);
   font-variant-numeric: tabular-nums;
   margin-top: 2px;
 }
@@ -60,11 +60,11 @@
 .mirror-tag {
   display: inline-block;
   padding: 1px 6px;
-  background: var(--pf-v5-global--BackgroundColor--200, #f0f0f0);
-  border: 1px solid var(--pf-v5-global--BorderColor--100, #d2d2d2);
+  background: var(--pf-v6-global--BackgroundColor--200, #f0f0f0);
+  border: 1px solid var(--pf-v6-global--BorderColor--100, #d2d2d2);
   border-radius: 3px;
   font-size: 11px;
-  color: var(--pf-v5-global--Color--200, #4f5255);
+  color: var(--pf-v6-global--Color--200, #4f5255);
   margin-right: 4px;
   white-space: nowrap;
 }
@@ -77,7 +77,7 @@
   font-size: 14px;
 }
 .mirror-kv dt {
-  color: var(--pf-v5-global--Color--200, #6a6e73);
+  color: var(--pf-v6-global--Color--200, #6a6e73);
   font-weight: 400;
 }
 .mirror-kv dd {
@@ -111,17 +111,17 @@
   align-items: start;
 }
 .mirror-dual-pane {
-  border: 1px solid var(--pf-v5-global--BorderColor--100, #d2d2d2);
+  border: 1px solid var(--pf-v6-global--BorderColor--100, #d2d2d2);
   border-radius: 4px;
   display: flex;
   flex-direction: column;
   min-height: 520px;
   max-height: 520px;
-  background: var(--pf-v5-global--BackgroundColor--100, #fff);
+  background: var(--pf-v6-global--BackgroundColor--100, #fff);
 }
 .mirror-dual-pane__header {
   padding: 10px 14px;
-  border-bottom: 1px solid var(--pf-v5-global--BorderColor--100, #d2d2d2);
+  border-bottom: 1px solid var(--pf-v6-global--BorderColor--100, #d2d2d2);
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -137,9 +137,9 @@
 }
 .mirror-dual-pane__footer {
   padding: 10px 14px;
-  border-top: 1px solid var(--pf-v5-global--BorderColor--100, #d2d2d2);
+  border-top: 1px solid var(--pf-v6-global--BorderColor--100, #d2d2d2);
   font-size: 12px;
-  background: var(--pf-v5-global--BackgroundColor--200, #f0f0f0);
+  background: var(--pf-v6-global--BackgroundColor--200, #f0f0f0);
 }
 
 .mirror-dual-row {
@@ -148,13 +148,13 @@
   align-items: center;
   gap: 8px;
   padding: 9px 14px;
-  border-bottom: 1px solid var(--pf-v5-global--BorderColor--100, #d2d2d2);
+  border-bottom: 1px solid var(--pf-v6-global--BorderColor--100, #d2d2d2);
   cursor: pointer;
 }
-.mirror-dual-row:hover { background: var(--pf-v5-global--BackgroundColor--200, #f0f0f0); }
-.mirror-dual-row--selected { background: var(--pf-v5-global--active-color--100, #e7f1fa) !important; }
+.mirror-dual-row:hover { background: var(--pf-v6-global--BackgroundColor--200, #f0f0f0); }
+.mirror-dual-row--selected { background: var(--pf-v6-global--active-color--100, #e7f1fa) !important; }
 .mirror-dual-row__name { font-weight: 500; font-size: 13px; }
-.mirror-dual-row__meta { font-size: 11px; color: var(--pf-v5-global--Color--200, #6a6e73); margin-top: 1px; }
+.mirror-dual-row__meta { font-size: 11px; color: var(--pf-v6-global--Color--200, #6a6e73); margin-top: 1px; }
 
 .mirror-dual-channel {
   display: grid;
@@ -162,19 +162,19 @@
   align-items: center;
   gap: 8px;
   padding: 7px 14px 7px 46px;
-  border-bottom: 1px solid var(--pf-v5-global--BorderColor--100, #d2d2d2);
-  background: var(--pf-v5-global--BackgroundColor--200, #f0f0f0);
+  border-bottom: 1px solid var(--pf-v6-global--BorderColor--100, #d2d2d2);
+  background: var(--pf-v6-global--BackgroundColor--200, #f0f0f0);
   font-size: 12px;
 }
 .mirror-dual-channel__dot {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--pf-v5-global--Color--200, #6a6e73);
+  background: var(--pf-v6-global--Color--200, #6a6e73);
   flex-shrink: 0;
 }
 .mirror-dual-channel__dot--imported {
-  background: var(--pf-v5-global--success-color--100, #3e8635);
+  background: var(--pf-v6-global--success-color--100, #3e8635);
 }
 
 .mirror-dual-actions {
@@ -190,27 +190,27 @@
   height: 32px;
   display: grid;
   place-items: center;
-  background: var(--pf-v5-global--BackgroundColor--100, #fff);
-  border: 1px solid var(--pf-v5-global--BorderColor--200, #b8bbbe);
+  background: var(--pf-v6-global--BackgroundColor--100, #fff);
+  border: 1px solid var(--pf-v6-global--BorderColor--200, #b8bbbe);
   border-radius: 3px;
   cursor: pointer;
-  color: var(--pf-v5-global--Color--200, #6a6e73);
+  color: var(--pf-v6-global--Color--200, #6a6e73);
   font-size: 16px;
   transition: background 100ms, color 100ms;
 }
 .mirror-dual-action-btn:hover {
-  background: var(--pf-v5-global--primary-color--100, #0066cc);
+  background: var(--pf-v6-global--primary-color--100, #0066cc);
   color: #fff;
-  border-color: var(--pf-v5-global--primary-color--100, #0066cc);
+  border-color: var(--pf-v6-global--primary-color--100, #0066cc);
 }
 .mirror-dual-action-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
 }
 .mirror-dual-action-btn:disabled:hover {
-  background: var(--pf-v5-global--BackgroundColor--200, #f0f0f0);
-  color: var(--pf-v5-global--Color--200, #6a6e73);
-  border-color: var(--pf-v5-global--BorderColor--200, #b8bbbe);
+  background: var(--pf-v6-global--BackgroundColor--200, #f0f0f0);
+  color: var(--pf-v6-global--Color--200, #6a6e73);
+  border-color: var(--pf-v6-global--BorderColor--200, #b8bbbe);
 }
 .mirror-dual-spacer { height: 12px; }
 

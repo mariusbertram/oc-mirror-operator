@@ -4,13 +4,13 @@
   "displayName": "OC Mirror",
   "description": "Manage OC Mirror Operator ImageSets and MirrorTargets from the OpenShift Console",
   "exposedModules": {
-    "MirrorTargetListPage": "./src/plugin/pages/MirrorTargetListPage",
-    "MirrorTargetDetailPage": "./src/plugin/pages/MirrorTargetDetailPage",
-    "FailedImagesPage": "./src/plugin/pages/FailedImagesPage",
-    "FailedImagesAllPage": "./src/plugin/pages/FailedImagesAllPage",
-    "CatalogBrowserPage": "./src/plugin/pages/CatalogBrowserPage",
-    "ImageSetListPage": "./src/plugin/pages/ImageSetListPage",
-    "ImageSetDetailPage": "./src/plugin/pages/ImageSetDetailPage"
+    "MirrorTargetListPage": "./plugin/pages/MirrorTargetListPage",
+    "MirrorTargetDetailPage": "./plugin/pages/MirrorTargetDetailPage",
+    "FailedImagesPage": "./plugin/pages/FailedImagesPage",
+    "FailedImagesAllPage": "./plugin/pages/FailedImagesAllPage",
+    "CatalogBrowserPage": "./plugin/pages/CatalogBrowserPage",
+    "ImageSetListPage": "./plugin/pages/ImageSetListPage",
+    "ImageSetDetailPage": "./plugin/pages/ImageSetDetailPage"
   },
   "dependencies": {
     "@console/pluginAPI": ">=4.14.0"

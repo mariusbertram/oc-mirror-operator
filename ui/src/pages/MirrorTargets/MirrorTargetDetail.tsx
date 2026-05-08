@@ -14,18 +14,16 @@ import {
   Title,
 } from '@patternfly/react-core';
 import { Table, Thead, Tr, Th, Tbody, Td } from '@patternfly/react-table';
-import { Link, useParams, RouteComponentProps } from 'react-router-dom';
+import { Link, useParams } from 'react-router';
 import { getTarget, triggerRecollect, deleteImageSet, getApiUrl } from '../../api/client';
 import type { TargetDetail } from '../../api/types';
 import { StatusPill, computeStatus } from '../../components/StatusPill';
 import { ProgressBar } from '../../components/ProgressBar';
 import '../../components/plugin-styles.css';
 
-export const MirrorTargetDetail: React.FC<Partial<RouteComponentProps<{ name: string }>>> = (props) => {
-  const { match } = props;
+export const MirrorTargetDetail: React.FC = () => {
   const params = useParams<{ name: string }>();
   const name =
-    match?.params?.name ||
     params.name ||
     window.location.pathname.match(/\/oc-mirror\/targets\/([^/]+)/)?.[1];
 
@@ -85,7 +83,7 @@ export const MirrorTargetDetail: React.FC<Partial<RouteComponentProps<{ name: st
 
   return (
     <>
-      <PageSection style={{ paddingBottom: 0, borderBottom: '1px solid var(--pf-v5-global--BorderColor--100)' }}>
+      <PageSection style={{ paddingBottom: 0, borderBottom: '1px solid var(--pf-v6-global--BorderColor--100)' }}>
         <div style={{ marginBottom: 6 }}>
           <Link to="/oc-mirror/targets" style={{ fontSize: 13 }}>← MirrorTargets</Link>
           {' / '}
@@ -93,7 +91,7 @@ export const MirrorTargetDetail: React.FC<Partial<RouteComponentProps<{ name: st
         </div>
         <div className="mirror-row" style={{ marginBottom: 8 }}>
           <Title headingLevel="h1">{target.name}</Title>
-          <code className="mirror-mono" style={{ marginLeft: 8, color: 'var(--pf-v5-global--Color--200)' }}>
+          <code className="mirror-mono" style={{ marginLeft: 8, color: 'var(--pf-v6-global--Color--200)' }}>
             {target.registry}
           </code>
           <div className="mirror-spacer" />
@@ -156,9 +154,9 @@ const OverviewTab: React.FC<{ target: TargetDetail }> = ({ target }) => (
         />
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginTop: 16 }}>
           <StatBox label="Total" value={target.totalImages} />
-          <StatBox label="Mirrored" value={target.mirroredImages} color="var(--pf-v5-global--success-color--100)" />
-          <StatBox label="Pending" value={target.pendingImages} color="var(--pf-v5-global--warning-color--100)" />
-          <StatBox label="Failed" value={target.failedImages} color="var(--pf-v5-global--danger-color--100)" />
+          <StatBox label="Mirrored" value={target.mirroredImages} color="var(--pf-v6-global--success-color--100)" />
+          <StatBox label="Pending" value={target.pendingImages} color="var(--pf-v6-global--warning-color--100)" />
+          <StatBox label="Failed" value={target.failedImages} color="var(--pf-v6-global--danger-color--100)" />
         </div>
       </CardBody>
     </Card>
@@ -196,10 +194,10 @@ const OverviewTab: React.FC<{ target: TargetDetail }> = ({ target }) => (
 
 const StatBox: React.FC<{ label: string; value: number; color?: string }> = ({ label, value, color }) => (
   <div>
-    <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--pf-v5-global--Color--200)', fontWeight: 600 }}>
+    <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--pf-v6-global--Color--200)', fontWeight: 600 }}>
       {label}
     </div>
-    <div style={{ fontFamily: 'var(--pf-v5-global--FontFamily--heading--sans-serif)', fontSize: 26, fontWeight: 600, fontVariantNumeric: 'tabular-nums', color: color || 'inherit', letterSpacing: '-0.01em' }}>
+    <div style={{ fontFamily: 'var(--pf-v6-global--FontFamily--heading--sans-serif)', fontSize: 26, fontWeight: 600, fontVariantNumeric: 'tabular-nums', color: color || 'inherit', letterSpacing: '-0.01em' }}>
       {value.toLocaleString()}
     </div>
   </div>
@@ -214,7 +212,7 @@ const ImageSetsTab: React.FC<{
     <CardTitle>ImageSets ({target.imageSets.length})</CardTitle>
     <CardBody style={{ padding: 0 }}>
       {target.imageSets.length === 0 ? (
-        <div style={{ padding: 24, color: 'var(--pf-v5-global--Color--200)' }}>No ImageSets configured.</div>
+        <div style={{ padding: 24, color: 'var(--pf-v6-global--Color--200)' }}>No ImageSets configured.</div>
       ) : (
         <Table aria-label="ImageSets" variant="compact">
           <Thead>
@@ -244,7 +242,7 @@ const ImageSetsTab: React.FC<{
                   </Td>
                   <Td style={{ fontVariantNumeric: 'tabular-nums' }}>{is.total.toLocaleString()}</Td>
                   <Td style={{ fontVariantNumeric: 'tabular-nums' }}>{is.mirrored.toLocaleString()}</Td>
-                  <Td style={{ fontVariantNumeric: 'tabular-nums', color: is.failed > 0 ? 'var(--pf-v5-global--danger-color--100)' : undefined }}>
+                  <Td style={{ fontVariantNumeric: 'tabular-nums', color: is.failed > 0 ? 'var(--pf-v6-global--danger-color--100)' : undefined }}>
                     {is.failed.toLocaleString()}
                   </Td>
                   <Td>
@@ -264,7 +262,7 @@ const ImageSetsTab: React.FC<{
                       <Button
                         variant="plain"
                         size="sm"
-                        style={{ color: 'var(--pf-v5-global--danger-color--100)' }}
+                        style={{ color: 'var(--pf-v6-global--danger-color--100)' }}
                         onClick={() => onDelete(target.namespace, is.name)}
                       >
                         Delete
@@ -293,7 +291,7 @@ const ResourcesTab: React.FC<{ target: TargetDetail }> = ({ target }) => {
 
   if (allResources.length === 0) {
     return (
-      <div style={{ color: 'var(--pf-v5-global--Color--200)', padding: 16 }}>
+      <div style={{ color: 'var(--pf-v6-global--Color--200)', padding: 16 }}>
         No resources available yet. Resources are exposed once an ImageSet reaches Ready.
       </div>
     );
@@ -332,7 +330,7 @@ const ResourcesTab: React.FC<{ target: TargetDetail }> = ({ target }) => {
 const CatalogsTab: React.FC<{ target: TargetDetail }> = ({ target }) => {
   if (target.catalogs.length === 0) {
     return (
-      <div style={{ color: 'var(--pf-v5-global--Color--200)', padding: 16 }}>
+      <div style={{ color: 'var(--pf-v6-global--Color--200)', padding: 16 }}>
         No catalogs tracked by this MirrorTarget.
       </div>
     );
@@ -370,7 +368,7 @@ const CatalogsTab: React.FC<{ target: TargetDetail }> = ({ target }) => {
 
 const ConditionsTab: React.FC<{ target: TargetDetail }> = ({ target }) => {
   if (target.conditions.length === 0) {
-    return <div style={{ color: 'var(--pf-v5-global--Color--200)', padding: 16 }}>No conditions reported.</div>;
+    return <div style={{ color: 'var(--pf-v6-global--Color--200)', padding: 16 }}>No conditions reported.</div>;
   }
 
   return (
@@ -386,10 +384,10 @@ const ConditionsTab: React.FC<{ target: TargetDetail }> = ({ target }) => {
               <Tr key={c.type}>
                 <Td><strong>{c.type}</strong></Td>
                 <Td>
-                  <Badge isRead style={{
+                  <Badge style={{
                     backgroundColor: c.status === 'True'
-                      ? 'var(--pf-v5-global--success-color--100)'
-                      : 'var(--pf-v5-global--danger-color--100)',
+                      ? 'var(--pf-v6-global--success-color--100)'
+                      : 'var(--pf-v6-global--danger-color--100)',
                     color: '#fff',
                   }}>
                     {c.status}

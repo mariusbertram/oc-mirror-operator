@@ -14,22 +14,18 @@ import {
   Title,
 } from '@patternfly/react-core';
 import { Table, Thead, Tr, Th, Tbody, Td } from '@patternfly/react-table';
-import { Link, useParams, RouteComponentProps } from 'react-router-dom';
+import { Link, useParams } from 'react-router';
 import { getTarget, triggerRecollect } from '../../api/client';
 import type { TargetDetail, ImageSetSummary } from '../../api/types';
 import { StatusPill, computeStatus } from '../../components/StatusPill';
 import { ProgressBar } from '../../components/ProgressBar';
 import '../../components/plugin-styles.css';
 
-interface ImageSetDetailParams {
-  targetName: string;
-  imageSetName: string;
-}
+type ImageSetDetailParams = 'targetName' | 'imageSetName';
 
-export const ImageSetDetail: React.FC<Partial<RouteComponentProps<ImageSetDetailParams>>> = (props) => {
-  const { match } = props;
+export const ImageSetDetail: React.FC = () => {
   const params = useParams<ImageSetDetailParams>();
-  let { targetName, imageSetName } = match?.params || params;
+  let { targetName, imageSetName } = params;
 
   if (!targetName) {
     const m = window.location.pathname.match(/\/oc-mirror\/targets\/([^/]+)\/imagesets\/([^/]+)/);
@@ -80,7 +76,7 @@ export const ImageSetDetail: React.FC<Partial<RouteComponentProps<ImageSetDetail
 
   return (
     <>
-      <PageSection style={{ paddingBottom: 0, borderBottom: '1px solid var(--pf-v5-global--BorderColor--100)' }}>
+      <PageSection style={{ paddingBottom: 0, borderBottom: '1px solid var(--pf-v6-global--BorderColor--100)' }}>
         <div style={{ marginBottom: 6 }}>
           <Link to="/oc-mirror/imagesets" style={{ fontSize: 13 }}>← ImageSets</Link>
           {' / '}
@@ -108,7 +104,7 @@ export const ImageSetDetail: React.FC<Partial<RouteComponentProps<ImageSetDetail
             Refresh
           </Button>
         </div>
-        <p style={{ margin: '0 0 12px', color: 'var(--pf-v5-global--Color--200)', fontSize: 13 }}>
+        <p style={{ margin: '0 0 12px', color: 'var(--pf-v6-global--Color--200)', fontSize: 13 }}>
           Targeting <span className="mirror-tag">{targetName}</span>
         </p>
       </PageSection>
@@ -117,7 +113,7 @@ export const ImageSetDetail: React.FC<Partial<RouteComponentProps<ImageSetDetail
         <Tabs
           activeKey={activeTab}
           onSelect={(_e, k) => setActiveTab(k)}
-          style={{ borderBottom: '1px solid var(--pf-v5-global--BorderColor--100)', background: '#fff', paddingLeft: 24 }}
+          style={{ borderBottom: '1px solid var(--pf-v6-global--BorderColor--100)', background: '#fff', paddingLeft: 24 }}
         >
           <Tab eventKey="overview" title={<TabTitleText>Overview</TabTitleText>} />
           {is.resources.length > 0 && (
@@ -138,9 +134,9 @@ export const ImageSetDetail: React.FC<Partial<RouteComponentProps<ImageSetDetail
                 <ProgressBar total={is.total} mirrored={is.mirrored} pending={is.pending} failed={is.failed} />
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginTop: 16 }}>
                   <StatBox label="Total" value={is.total} />
-                  <StatBox label="Mirrored" value={is.mirrored} color="var(--pf-v5-global--success-color--100)" />
-                  <StatBox label="Pending" value={is.pending} color="var(--pf-v5-global--warning-color--100)" />
-                  <StatBox label="Failed" value={is.failed} color="var(--pf-v5-global--danger-color--100)" />
+                  <StatBox label="Mirrored" value={is.mirrored} color="var(--pf-v6-global--success-color--100)" />
+                  <StatBox label="Pending" value={is.pending} color="var(--pf-v6-global--warning-color--100)" />
+                  <StatBox label="Failed" value={is.failed} color="var(--pf-v6-global--danger-color--100)" />
                 </div>
               </CardBody>
             </Card>
@@ -158,7 +154,7 @@ export const ImageSetDetail: React.FC<Partial<RouteComponentProps<ImageSetDetail
                   <dt>Namespace</dt><dd>{target.namespace}</dd>
                   <dt>Found</dt>
                   <dd>
-                    <Badge isRead style={{ background: is.found ? 'var(--pf-v5-global--success-color--100)' : 'var(--pf-v5-global--danger-color--100)', color: '#fff' }}>
+                    <Badge style={{ background: is.found ? 'var(--pf-v6-global--success-color--100)' : 'var(--pf-v6-global--danger-color--100)', color: '#fff' }}>
                       {is.found ? 'Yes' : 'No'}
                     </Badge>
                   </dd>
@@ -227,10 +223,10 @@ export const ImageSetDetail: React.FC<Partial<RouteComponentProps<ImageSetDetail
 
 const StatBox: React.FC<{ label: string; value: number; color?: string }> = ({ label, value, color }) => (
   <div>
-    <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--pf-v5-global--Color--200)', fontWeight: 600 }}>
+    <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--pf-v6-global--Color--200)', fontWeight: 600 }}>
       {label}
     </div>
-    <div style={{ fontFamily: 'var(--pf-v5-global--FontFamily--heading--sans-serif)', fontSize: 26, fontWeight: 600, fontVariantNumeric: 'tabular-nums', color: color || 'inherit', letterSpacing: '-0.01em' }}>
+    <div style={{ fontFamily: 'var(--pf-v6-global--FontFamily--heading--sans-serif)', fontSize: 26, fontWeight: 600, fontVariantNumeric: 'tabular-nums', color: color || 'inherit', letterSpacing: '-0.01em' }}>
       {value.toLocaleString()}
     </div>
   </div>

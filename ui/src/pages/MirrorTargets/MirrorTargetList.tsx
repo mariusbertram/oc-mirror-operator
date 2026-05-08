@@ -14,7 +14,7 @@ import {
   ToolbarItem,
 } from '@patternfly/react-core';
 import { Table, Thead, Tr, Th, Tbody, Td } from '@patternfly/react-table';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { listTargets } from '../../api/client';
 import type { TargetSummary } from '../../api/types';
 import { StatusPill, computeStatus } from '../../components/StatusPill';
@@ -75,7 +75,7 @@ export const MirrorTargetList: React.FC = () => {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
         <div>
           <Title headingLevel="h1">MirrorTargets</Title>
-          <p style={{ margin: '4px 0 0', color: 'var(--pf-v5-global--Color--200)' }}>
+          <p style={{ margin: '4px 0 0', color: 'var(--pf-v6-global--Color--200)' }}>
             Each MirrorTarget defines a destination registry and the set of ImageSets to mirror into it.
           </p>
         </div>
@@ -96,8 +96,8 @@ export const MirrorTargetList: React.FC = () => {
               {loading ? <Spinner size="sm" /> : 'Refresh'}
             </Button>
           </ToolbarItem>
-          <ToolbarItem align={{ default: 'alignRight' }}>
-            <span style={{ fontSize: 13, color: 'var(--pf-v5-global--Color--200)' }}>
+          <ToolbarItem align={{ default: 'alignEnd' }}>
+            <span style={{ fontSize: 13, color: 'var(--pf-v6-global--Color--200)' }}>
               {filtered.length} of {targets.length}
             </span>
           </ToolbarItem>
@@ -105,7 +105,7 @@ export const MirrorTargetList: React.FC = () => {
       </Toolbar>
 
       {filtered.length === 0 ? (
-        <EmptyState variant={EmptyStateVariant.full}>
+        <EmptyState variant={EmptyStateVariant.lg}>
           <Title headingLevel="h2">{targets.length === 0 ? 'No MirrorTargets found' : 'No results match filter'}</Title>
           <EmptyStateBody>
             {targets.length === 0
@@ -134,7 +134,7 @@ export const MirrorTargetList: React.FC = () => {
                 <Tr key={t.name}>
                   <Td>
                     <Link to={`/oc-mirror/targets/${t.name}`} style={{ fontWeight: 500 }}>{t.name}</Link>
-                    <div style={{ fontSize: 12, color: 'var(--pf-v5-global--Color--200)' }}>{t.namespace}</div>
+                    <div style={{ fontSize: 12, color: 'var(--pf-v6-global--Color--200)' }}>{t.namespace}</div>
                   </Td>
                   <Td>
                     <code className="mirror-mono">{t.registry}</code>
@@ -151,13 +151,13 @@ export const MirrorTargetList: React.FC = () => {
                     />
                   </Td>
                   <Td style={{ fontVariantNumeric: 'tabular-nums' }}>{t.totalImages.toLocaleString()}</Td>
-                  <Td style={{ fontVariantNumeric: 'tabular-nums', color: 'var(--pf-v5-global--success-color--100)' }}>
+                  <Td style={{ fontVariantNumeric: 'tabular-nums', color: 'var(--pf-v6-global--success-color--100)' }}>
                     {t.mirroredImages.toLocaleString()}
                   </Td>
-                  <Td style={{ fontVariantNumeric: 'tabular-nums', color: t.pendingImages > 0 ? 'var(--pf-v5-global--warning-color--100)' : undefined }}>
+                  <Td style={{ fontVariantNumeric: 'tabular-nums', color: t.pendingImages > 0 ? 'var(--pf-v6-global--warning-color--100)' : undefined }}>
                     {t.pendingImages.toLocaleString()}
                   </Td>
-                  <Td style={{ fontVariantNumeric: 'tabular-nums', color: t.failedImages > 0 ? 'var(--pf-v5-global--danger-color--100)' : undefined }}>
+                  <Td style={{ fontVariantNumeric: 'tabular-nums', color: t.failedImages > 0 ? 'var(--pf-v6-global--danger-color--100)' : undefined }}>
                     {t.failedImages.toLocaleString()}
                   </Td>
                 </Tr>

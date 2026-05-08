@@ -14,7 +14,7 @@ import {
   ToolbarItem,
 } from '@patternfly/react-core';
 import { Table, Thead, Tr, Th, Tbody, Td } from '@patternfly/react-table';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { listTargets, getTarget } from '../../api/client';
 import type { ImageSetSummary, TargetSummary } from '../../api/types';
 import { StatusPill, computeStatus } from '../../components/StatusPill';
@@ -89,7 +89,7 @@ export const ImageSetList: React.FC = () => {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
         <div>
           <Title headingLevel="h1">ImageSets</Title>
-          <p style={{ margin: '4px 0 0', color: 'var(--pf-v5-global--Color--200)' }}>
+          <p style={{ margin: '4px 0 0', color: 'var(--pf-v6-global--Color--200)' }}>
             An ImageSet declares a slice of releases, operator catalogs, and additional images to mirror.
           </p>
         </div>
@@ -112,9 +112,9 @@ export const ImageSetList: React.FC = () => {
               onChange={(e) => setFilterTarget(e.target.value)}
               style={{
                 padding: '6px 10px',
-                border: '1px solid var(--pf-v5-global--BorderColor--100)',
+                border: '1px solid var(--pf-v6-global--BorderColor--100)',
                 borderRadius: 3,
-                background: 'var(--pf-v5-global--BackgroundColor--100)',
+                background: 'var(--pf-v6-global--BackgroundColor--100)',
                 color: 'inherit',
                 font: 'inherit',
                 fontSize: 14,
@@ -127,8 +127,8 @@ export const ImageSetList: React.FC = () => {
               ))}
             </select>
           </ToolbarItem>
-          <ToolbarItem align={{ default: 'alignRight' }}>
-            <span style={{ fontSize: 13, color: 'var(--pf-v5-global--Color--200)' }}>
+          <ToolbarItem align={{ default: 'alignEnd' }}>
+            <span style={{ fontSize: 13, color: 'var(--pf-v6-global--Color--200)' }}>
               {filtered.length} of {rows.length}
             </span>
           </ToolbarItem>
@@ -136,7 +136,7 @@ export const ImageSetList: React.FC = () => {
       </Toolbar>
 
       {filtered.length === 0 ? (
-        <EmptyState variant={EmptyStateVariant.full}>
+        <EmptyState variant={EmptyStateVariant.lg}>
           <Title headingLevel="h2">{rows.length === 0 ? 'No ImageSets found' : 'No results match filter'}</Title>
           <EmptyStateBody>
             {rows.length === 0
@@ -180,13 +180,13 @@ export const ImageSetList: React.FC = () => {
                     <ProgressBar total={is.total} mirrored={is.mirrored} pending={is.pending} failed={is.failed} />
                   </Td>
                   <Td style={{ fontVariantNumeric: 'tabular-nums' }}>{is.total.toLocaleString()}</Td>
-                  <Td style={{ fontVariantNumeric: 'tabular-nums', color: 'var(--pf-v5-global--success-color--100)' }}>
+                  <Td style={{ fontVariantNumeric: 'tabular-nums', color: 'var(--pf-v6-global--success-color--100)' }}>
                     {is.mirrored.toLocaleString()}
                   </Td>
-                  <Td style={{ fontVariantNumeric: 'tabular-nums', color: is.failed > 0 ? 'var(--pf-v5-global--danger-color--100)' : undefined }}>
+                  <Td style={{ fontVariantNumeric: 'tabular-nums', color: is.failed > 0 ? 'var(--pf-v6-global--danger-color--100)' : undefined }}>
                     {is.failed.toLocaleString()}
                   </Td>
-                  <Td style={{ fontVariantNumeric: 'tabular-nums', color: 'var(--pf-v5-global--Color--200)' }}>
+                  <Td style={{ fontVariantNumeric: 'tabular-nums', color: 'var(--pf-v6-global--Color--200)' }}>
                     {is.resources.length}
                   </Td>
                 </Tr>

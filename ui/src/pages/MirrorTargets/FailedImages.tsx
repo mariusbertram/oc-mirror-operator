@@ -11,7 +11,7 @@ import {
   ToolbarItem,
 } from '@patternfly/react-core';
 import { Table, Thead, Tr, Th, Tbody, Td } from '@patternfly/react-table';
-import { Link, useParams, RouteComponentProps } from 'react-router-dom';
+import { Link, useParams } from 'react-router';
 import { getImageFailures, listTargets } from '../../api/client';
 import type { FailedImageDetail } from '../../api/types';
 import '../../components/plugin-styles.css';
@@ -21,14 +21,13 @@ interface FailedImageRow extends FailedImageDetail {
   isPermanent: boolean;
 }
 
-interface FailedImagesProps extends Partial<RouteComponentProps<{ name: string }>> {
+interface FailedImagesProps {
   crossTarget?: boolean;
 }
 
-export const FailedImages: React.FC<FailedImagesProps> = ({ match, crossTarget }) => {
+export const FailedImages: React.FC<FailedImagesProps> = ({ crossTarget }) => {
   const params = useParams<{ name: string }>();
   const name =
-    match?.params?.name ||
     params.name ||
     (!crossTarget ? window.location.pathname.match(/\/oc-mirror\/targets\/([^/]+)/)?.[1] : undefined);
 
@@ -111,7 +110,7 @@ export const FailedImages: React.FC<FailedImagesProps> = ({ match, crossTarget }
           <Title headingLevel="h1">
             {crossTarget ? 'Failed Images' : `Image Failures — ${name}`}
           </Title>
-          <p style={{ margin: '4px 0 0', color: 'var(--pf-v5-global--Color--200)' }}>
+          <p style={{ margin: '4px 0 0', color: 'var(--pf-v6-global--Color--200)' }}>
             Images that exhausted all retries. Fix the upstream error or spec, then trigger a re-poll.
           </p>
         </div>
@@ -130,16 +129,16 @@ export const FailedImages: React.FC<FailedImagesProps> = ({ match, crossTarget }
               onClear={() => setSearch('')}
             />
           </ToolbarItem>
-          <ToolbarItem align={{ default: 'alignRight' }}>
-            <span style={{ fontSize: 13, color: 'var(--pf-v5-global--Color--200)' }}>
+          <ToolbarItem align={{ default: 'alignEnd' }}>
+            <span style={{ fontSize: 13, color: 'var(--pf-v6-global--Color--200)' }}>
               {filtered.length} items
               {permanentCount > 0 && (
-                <span style={{ marginLeft: 8, color: 'var(--pf-v5-global--danger-color--100)' }}>
+                <span style={{ marginLeft: 8, color: 'var(--pf-v6-global--danger-color--100)' }}>
                   {permanentCount} failed
                 </span>
               )}
               {pendingCount > 0 && (
-                <span style={{ marginLeft: 8, color: 'var(--pf-v5-global--warning-color--100)' }}>
+                <span style={{ marginLeft: 8, color: 'var(--pf-v6-global--warning-color--100)' }}>
                   {pendingCount} pending
                 </span>
               )}
@@ -149,7 +148,7 @@ export const FailedImages: React.FC<FailedImagesProps> = ({ match, crossTarget }
       </Toolbar>
 
       {filtered.length === 0 ? (
-        <div style={{ padding: '48px 0', textAlign: 'center', color: 'var(--pf-v5-global--Color--200)' }}>
+        <div style={{ padding: '48px 0', textAlign: 'center', color: 'var(--pf-v6-global--Color--200)' }}>
           {rows.length === 0 ? 'No failed or pending images.' : 'No items match the filter.'}
         </div>
       ) : (
@@ -174,7 +173,7 @@ export const FailedImages: React.FC<FailedImagesProps> = ({ match, crossTarget }
                   <code className="mirror-mono" style={{ fontSize: 11, wordBreak: 'break-all' }}>
                     {f.destination}
                   </code>
-                  <div style={{ fontSize: 11, color: 'var(--pf-v5-global--Color--200)', marginTop: 2 }}>
+                  <div style={{ fontSize: 11, color: 'var(--pf-v6-global--Color--200)', marginTop: 2 }}>
                     from {f.source}
                   </div>
                 </Td>
@@ -188,7 +187,7 @@ export const FailedImages: React.FC<FailedImagesProps> = ({ match, crossTarget }
                     ) : '—'}
                   </Td>
                 )}
-                <Td style={{ maxWidth: 360, wordBreak: 'break-word', fontSize: '0.875rem', color: 'var(--pf-v5-global--danger-color--100)' }}>
+                <Td style={{ maxWidth: 360, wordBreak: 'break-word', fontSize: '0.875rem', color: 'var(--pf-v6-global--danger-color--100)' }}>
                   {f.lastError || '—'}
                 </Td>
                 <Td style={{ fontVariantNumeric: 'tabular-nums' }}>{f.retryCount ?? 0}</Td>
@@ -208,7 +207,7 @@ const StatusBadge: React.FC<{ permanent: boolean }> = ({ permanent }) => (
     borderRadius: 12,
     fontSize: 12,
     fontWeight: 600,
-    background: permanent ? 'var(--pf-v5-global--danger-color--100)' : 'var(--pf-v5-global--warning-color--100)',
+    background: permanent ? 'var(--pf-v6-global--danger-color--100)' : 'var(--pf-v6-global--warning-color--100)',
     color: '#fff',
     whiteSpace: 'nowrap',
   }}>
