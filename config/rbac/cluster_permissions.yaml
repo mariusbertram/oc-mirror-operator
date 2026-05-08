@@ -1,0 +1,56 @@
+# ClusterRole and ClusterRoleBinding for resources that are truly cluster-scoped.
+# All namespace-scoped permissions are granted via the manager-role ClusterRole bound
+# through a namespace-scoped RoleBinding (see role_binding.yaml).
+#
+# Cluster-scoped resources managed by this operator:
+#   - consoleplugins.console.openshift.io  (ConsolePlugin CR, OpenShift-specific)
+#   - clusterroles / clusterrolebindings   (created for the dashboard Service Account)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: oc-mirror
+    app.kubernetes.io/managed-by: kustomize
+  name: manager-cluster-role
+rules:
+- apiGroups:
+  - console.openshift.io
+  resources:
+  - consoleplugins
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - clusterroles
+  - clusterrolebindings
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  labels:
+    app.kubernetes.io/name: oc-mirror
+    app.kubernetes.io/managed-by: kustomize
+  name: manager-cluster-rolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: manager-cluster-role
+subjects:
+- kind: ServiceAccount
+  name: controller-manager
+  namespace: system

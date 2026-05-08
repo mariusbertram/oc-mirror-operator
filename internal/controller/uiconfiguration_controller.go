@@ -45,6 +45,9 @@ const (
 	pluginPort      = 9443
 	resourceAPIName = "oc-mirror-resource-api"
 	resourceAPIPort = 8081
+
+	// consolePluginCRName is the cluster-scoped name of the ConsolePlugin CR managed by this controller.
+	consolePluginCRName = "oc-mirror-operator"
 )
 
 // UIConfigurationReconciler reconciles a UIConfiguration object and owns all
@@ -614,7 +617,7 @@ func (r *UIConfigurationReconciler) generateConsolePlugin(ctx context.Context, u
 		Version: "v1",
 		Kind:    "ConsolePlugin",
 	})
-	plugin.SetName("oc-mirror-operator")
+	plugin.SetName(consolePluginCRName)
 
 	existing := plugin.DeepCopy()
 	err := r.Get(ctx, client.ObjectKeyFromObject(existing), existing)
@@ -625,7 +628,7 @@ func (r *UIConfigurationReconciler) generateConsolePlugin(ctx context.Context, u
 
 	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, plugin, func() error {
 		plugin.Object["spec"] = map[string]interface{}{
-			"displayName": "oc-mirror-operator",
+			"displayName": consolePluginCRName,
 			"backend": map[string]interface{}{
 				"type": "Service",
 				"service": map[string]interface{}{
@@ -834,7 +837,7 @@ func (r *UIConfigurationReconciler) cleanupOldResourcesForType(ctx context.Conte
 				Version: "v1",
 				Kind:    "ConsolePlugin",
 			})
-			plugin.SetName("oc-mirror-operator")
+			plugin.SetName(consolePluginCRName)
 			if err := r.Delete(ctx, plugin, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil && !errors.IsNotFound(err) && !apimeta.IsNoMatchError(err) {
 				l.Error(err, "failed to delete old ConsolePlugin")
 			}
@@ -969,7 +972,7 @@ func (r *UIConfigurationReconciler) handleDeletion(ctx context.Context, uic *mir
 
 			plugin := &unstructured.Unstructured{}
 			plugin.SetGroupVersionKind(schema.GroupVersionKind{Group: "console.openshift.io", Version: "v1", Kind: "ConsolePlugin"})
-			plugin.SetName("oc-mirror-operator")
+			plugin.SetName(consolePluginCRName)
 			_ = r.Delete(ctx, plugin, client.PropagationPolicy(metav1.DeletePropagationBackground))
 
 			_ = r.Delete(ctx, &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: dashboardName}}, client.PropagationPolicy(metav1.DeletePropagationBackground))
@@ -1008,10 +1011,13 @@ func restrictedContainerSecurityContext() *corev1.SecurityContext {
 //     called in every mutate func.
 //   - Cluster-scoped RBAC (ClusterRole, ClusterRoleBinding): caught via
 //     explicit .Watches() with a name-filtered mapper.
-//   - Optional/OpenShift-only resources (Route, ConsolePlugin, ServiceMonitor):
+//   - ConsolePlugin: watched conditionally when the CRD is present (OpenShift).
+//     If deleted externally the controller reacts immediately instead of waiting
+//     for the next RequeueAfter tick.
+//   - Optional/OpenShift-only resources (Route, ServiceMonitor):
 //     not watchable without optional CRD registration; caught by RequeueAfter.
 func (r *UIConfigurationReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
+	bld := ctrl.NewControllerManagedBy(mgr).
 		For(&mirrorv1alpha1.UIConfiguration{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
@@ -1025,8 +1031,50 @@ func (r *UIConfigurationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(
 			&rbacv1.ClusterRoleBinding{},
 			handler.EnqueueRequestsFromMapFunc(r.enqueueForDashboardClusterResource),
-		).
-		Complete(r)
+		)
+
+	// Conditionally watch ConsolePlugin when the CRD is available (OpenShift only).
+	// This provides immediate reconciliation when the CR is deleted or modified
+	// externally, rather than relying solely on RequeueAfter.
+	consolePluginGVK := schema.GroupVersionKind{
+		Group:   "console.openshift.io",
+		Version: "v1",
+		Kind:    "ConsolePlugin",
+	}
+	if _, err := mgr.GetRESTMapper().RESTMapping(consolePluginGVK.GroupKind(), consolePluginGVK.Version); err == nil {
+		consolePluginObj := &unstructured.Unstructured{}
+		consolePluginObj.SetGroupVersionKind(consolePluginGVK)
+		bld = bld.Watches(
+			consolePluginObj,
+			handler.EnqueueRequestsFromMapFunc(r.enqueueForConsolePlugin),
+		)
+	}
+
+	return bld.Complete(r)
+}
+
+// enqueueForConsolePlugin maps a ConsolePlugin event to reconcile requests for
+// all UIConfiguration objects. It ignores ConsolePlugin resources whose name is
+// not the well-known plugin name so that unrelated plugin changes do not flood
+// the queue.
+func (r *UIConfigurationReconciler) enqueueForConsolePlugin(ctx context.Context, obj client.Object) []reconcile.Request {
+	if obj.GetName() != consolePluginCRName {
+		return nil
+	}
+	uicList := &mirrorv1alpha1.UIConfigurationList{}
+	if err := r.List(ctx, uicList); err != nil {
+		return nil
+	}
+	requests := make([]reconcile.Request, 0, len(uicList.Items))
+	for _, uic := range uicList.Items {
+		requests = append(requests, reconcile.Request{
+			NamespacedName: types.NamespacedName{
+				Name:      uic.Name,
+				Namespace: uic.Namespace,
+			},
+		})
+	}
+	return requests
 }
 
 // enqueueForDashboardClusterResource maps a ClusterRole or ClusterRoleBinding

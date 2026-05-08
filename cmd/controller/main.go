@@ -99,6 +99,20 @@ func main() {
 		}
 	}
 
+	// Determine the namespace this operator instance owns. All namespace-scoped informers are
+	// restricted to this namespace so the operator only ever touches resources in its own
+	// namespace (single-namespace install mode). The value comes from the Downward API env var
+	// injected by the Deployment spec.
+	operatorNamespace := os.Getenv("OPERATOR_NAMESPACE")
+	if operatorNamespace == "" {
+		operatorNamespace = os.Getenv("POD_NAMESPACE")
+	}
+	if operatorNamespace == "" {
+		setupLog.Error(nil, "OPERATOR_NAMESPACE or POD_NAMESPACE must be set; the operator runs in single-namespace mode and requires the namespace to be explicitly configured")
+		os.Exit(1)
+	}
+	setupLog.Info("single-namespace mode", "namespace", operatorNamespace)
+
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
 	// prevent from being vulnerable to the HTTP/2 Stream Cancellation and
@@ -191,10 +205,21 @@ func main() {
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "143c4491.mirror.openshift.io",
+		// Leader election is namespace-scoped so multiple instances running in different
+		// namespaces each maintain their own independent leader election lease.
+		LeaderElectionNamespace: operatorNamespace,
+		// DefaultNamespaces restricts all namespace-scoped informers to the operator namespace.
+		// Cluster-scoped resources (ConsolePlugin, ClusterRole, ClusterRoleBinding) are always
+		// watched cluster-wide and are unaffected by this setting.
 		// SyncPeriod ensures all watched resources are periodically re-reconciled.
 		// This makes poll-based image collection durable across operator restarts —
 		// the actual poll decision is gated on LastSuccessfulPollTime in the ImageSet status.
-		Cache: cache.Options{SyncPeriod: &syncPeriod},
+		Cache: cache.Options{
+			SyncPeriod: &syncPeriod,
+			DefaultNamespaces: map[string]cache.Config{
+				operatorNamespace: {},
+			},
+		},
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
@@ -215,14 +240,6 @@ func main() {
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ImageSet")
 		os.Exit(1)
-	}
-
-	operatorNamespace := os.Getenv("OPERATOR_NAMESPACE")
-	if operatorNamespace == "" {
-		operatorNamespace = os.Getenv("POD_NAMESPACE")
-	}
-	if operatorNamespace == "" {
-		setupLog.Info("OPERATOR_NAMESPACE / POD_NAMESPACE not set, registering UIConfiguration controller without dashboard namespace")
 	}
 
 	if err := (&controller.UIConfigurationReconciler{
