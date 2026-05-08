@@ -9,7 +9,6 @@ rules:
   resources:
   - configmaps
   - pods
-  - secrets
   - serviceaccounts
   - services
   verbs:
@@ -29,6 +28,16 @@ rules:
   - delete
   - get
   - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - create
+  - get
+  - list
+  - update
   - watch
 - apiGroups:
   - apps
@@ -55,23 +64,10 @@ rules:
   - update
   - watch
 - apiGroups:
-  - console.openshift.io
-  resources:
-  - consoleplugins
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
   - mirror.openshift.io
   resources:
   - imagesets
   - mirrortargets
-  - uiconfigurations
   verbs:
   - create
   - delete
@@ -85,7 +81,6 @@ rules:
   resources:
   - imagesets/finalizers
   - mirrortargets/finalizers
-  - uiconfigurations/finalizers
   verbs:
   - update
 - apiGroups:
@@ -102,22 +97,10 @@ rules:
   - mirror.openshift.io
   resources:
   - mirrortargets/status
-  - uiconfigurations/status
   verbs:
   - get
   - patch
   - update
-- apiGroups:
-  - monitoring.coreos.com
-  resources:
-  - servicemonitors
-  verbs:
-  - create
-  - get
-  - list
-  - patch
-  - update
-  - watch
 - apiGroups:
   - networking.k8s.io
   resources:
@@ -134,8 +117,6 @@ rules:
 - apiGroups:
   - rbac.authorization.k8s.io
   resources:
-  - clusterrolebindings
-  - clusterroles
   - rolebindings
   - roles
   verbs:

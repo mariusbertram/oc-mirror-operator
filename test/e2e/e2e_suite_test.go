@@ -147,7 +147,7 @@ var _ = AfterSuite(func() {
 
 	if !skipOperatorDeploy {
 		By("removing finalizers from all remaining custom resources")
-		for _, kind := range []string{"uiconfiguration", "mirrortarget", "imageset"} {
+		for _, kind := range []string{"mirrortarget", "imageset"} {
 			out, _ := exec.Command("kubectl", "get", kind, "--all-namespaces", "--no-headers",
 				"-o", "custom-columns=NS:.metadata.namespace,NAME:.metadata.name").Output()
 			for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {

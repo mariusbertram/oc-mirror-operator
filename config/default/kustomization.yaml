@@ -36,7 +36,7 @@ resources:
 # be able to communicate with the Webhook Server.
 #- ../network-policy
 # [UICONFIGURATION] Default UIConfiguration for the oc-mirror dashboard.
-- uiconfiguration_patch.yaml
+# - uiconfiguration_patch.yaml
 
 # Uncomment the patches line if you enable Metrics
 patches:

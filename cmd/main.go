@@ -671,16 +671,18 @@ func runController() {
 		setupLog.Error(err, "unable to create controller", "controller", "ImageSet")
 		os.Exit(1)
 	}
-	uiNamespace := os.Getenv("OPERATOR_NAMESPACE")
-	if uiNamespace == "" {
-		uiNamespace = os.Getenv("POD_NAMESPACE")
+	legacyNamespace := os.Getenv("OPERATOR_NAMESPACE")
+	if legacyNamespace == "" {
+		legacyNamespace = os.Getenv("POD_NAMESPACE")
 	}
-	if err := (&controller.UIConfigurationReconciler{
+	dashImageLegacy := os.Getenv("DASHBOARD_IMAGE")
+	if err := (&controller.ConsolePluginReconciler{
 		Client:    mgr.GetClient(),
 		Scheme:    mgr.GetScheme(),
-		Namespace: uiNamespace,
+		Namespace: legacyNamespace,
+		DashImage: dashImageLegacy,
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "UIConfiguration")
+		setupLog.Error(err, "unable to create controller", "controller", "ConsolePlugin")
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder

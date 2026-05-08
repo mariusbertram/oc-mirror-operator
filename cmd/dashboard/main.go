@@ -110,7 +110,8 @@ func runPlugin() {
 		setupLog.Error(err, "unable to create k8s client for plugin resource API")
 		os.Exit(1)
 	}
-	apiSrv := resourceapi.NewServerClusterWide(c)
+	ns := os.Getenv("POD_NAMESPACE")
+	apiSrv := resourceapi.NewServer(c, ns)
 
 	r := mux.NewRouter()
 	apiSrv.RegisterAPIRoutes(r)

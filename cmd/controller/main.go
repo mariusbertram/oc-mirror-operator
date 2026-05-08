@@ -242,12 +242,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := (&controller.UIConfigurationReconciler{
+	dashImage := os.Getenv("DASHBOARD_IMAGE")
+	if err := (&controller.ConsolePluginReconciler{
 		Client:    mgr.GetClient(),
 		Scheme:    mgr.GetScheme(),
 		Namespace: operatorNamespace,
+		DashImage: dashImage,
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "UIConfiguration")
+		setupLog.Error(err, "unable to create controller", "controller", "ConsolePlugin")
 		os.Exit(1)
 	}
 
