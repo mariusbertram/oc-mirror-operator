@@ -8,7 +8,7 @@ This guide describes how to build, deploy, and test the `oc-mirror-operator` in 
 
 Ensure you have the following tools installed:
 
-- **Go**: ≥ 1.24
+- **Go**: ≥ 1.25
 - **Container Tool**: `podman` (preferred) or `docker`
 - **Operator SDK**: ≥ 1.37
 - **kubectl** & **oc** (for OpenShift)
@@ -169,7 +169,7 @@ kubectl port-forward service/oc-mirror-resource-api 8081:8081
 
 ## 6. Iterative Development: Testing a Single Component via OLM
 
-When an OLM-managed operator is already running, you do **not** need to rebuild the bundle or catalog to test a change in a single component. OLM forwards any `env` entries defined in the `Subscription` directly into the controller-manager Deployment, which causes a rolling restart. Because the operator reads `DASHBOARD_IMAGE`, `MANAGER_IMAGE`, `WORKER_IMAGE`, `OPERATOR_IMAGE`, and `OAUTH_PROXY_IMAGE` from its own environment at runtime, you only need to:
+When an OLM-managed operator is already running, you do **not** need to rebuild the bundle or catalog to test a change in a single component. OLM forwards any `env` entries defined in the `Subscription` directly into the controller-manager Deployment, which causes a rolling restart. Because the operator reads `PLUGIN_IMAGE`, `MANAGER_IMAGE`, `WORKER_IMAGE`, and `OPERATOR_IMAGE` from its own environment at runtime, you only need to:
 
 1. Build and push the modified image.
 2. Patch the Subscription with the new image reference.
@@ -180,9 +180,9 @@ When an OLM-managed operator is already running, you do **not** need to rebuild 
 Each component has its own Makefile target. Override `IMG_<COMPONENT>` to point to your personal dev tag:
 
 ```bash
-# Dashboard only
-make docker-build-dashboard docker-push-dashboard \
-  IMG_DASHBOARD=quay.io/your-user/oc-mirror-operator-dashboard:dev
+# Console Plugin only
+make docker-build-plugin docker-push-plugin \
+  IMG_PLUGIN=quay.io/your-user/oc-mirror-operator-plugin:dev
 
 # Manager only
 make docker-build-manager docker-push-manager \
@@ -202,7 +202,7 @@ make docker-build-controller docker-push-controller \
 Patch the `Subscription` with `spec.config.env` to replace the desired env var. OLM will detect the change and roll out a new controller-manager pod automatically.
 
 ```bash
-# Replace only the dashboard image (all other images stay at their bundle-defined values)
+# Replace only the plugin image (all other images stay at their bundle-defined values)
 oc patch subscription oc-mirror \
   -n oc-mirror-operator \
   --type merge \
@@ -211,8 +211,8 @@ oc patch subscription oc-mirror \
       "config": {
         "env": [
           {
-            "name": "DASHBOARD_IMAGE",
-            "value": "quay.io/your-user/oc-mirror-operator-dashboard:dev"
+            "name": "PLUGIN_IMAGE",
+            "value": "quay.io/your-user/oc-mirror-operator-plugin:dev"
           }
         ]
       }
@@ -230,8 +230,8 @@ oc patch subscription oc-mirror \
     "spec": {
       "config": {
         "env": [
-          {"name": "MANAGER_IMAGE",   "value": "quay.io/your-user/oc-mirror-operator-manager:dev"},
-          {"name": "WORKER_IMAGE",    "value": "quay.io/your-user/oc-mirror-operator-worker:dev"}
+          {"name": "MANAGER_IMAGE", "value": "quay.io/your-user/oc-mirror-operator-manager:dev"},
+          {"name": "WORKER_IMAGE",  "value": "quay.io/your-user/oc-mirror-operator-worker:dev"}
         ]
       }
     }
@@ -251,18 +251,17 @@ oc rollout status deployment/oc-mirror-controller-manager -n oc-mirror-operator
 # Confirm the env var value in the running pod
 oc set env deployment/oc-mirror-controller-manager \
   -n oc-mirror-operator --list \
-  | grep -E 'DASHBOARD|MANAGER|WORKER|OPERATOR|OAUTH'
+  | grep -E 'PLUGIN|MANAGER|WORKER|OPERATOR'
 ```
 
 ### 6.4 Trigger Downstream Re-creation
 
-The controller reads the image env vars once on startup and passes them through to child workloads (manager Deployments, worker Pods, dashboard Deployment). After the controller-manager pod restarts, existing child resources are **not** automatically updated — you need to trigger a reconcile:
+The controller reads the image env vars once on startup and passes them through to child workloads (manager Deployments, worker Pods, plugin Deployment). After the controller-manager pod restarts, existing child resources are **not** automatically updated — you need to trigger a reconcile:
 
-**Dashboard** (UIConfiguration controller):
+**Console Plugin** (ConsolePlugin controller):
 ```bash
-# Delete and recreate the UIConfiguration to force the dashboard Deployment to be rebuilt
-oc delete uiconfiguration oc-mirror-dashboard-config -n oc-mirror-operator
-oc apply -f config/samples/mirror_v1alpha1_uiconfiguration.yaml
+# Delete the plugin Deployment to force the controller to recreate it with the new image
+oc delete deployment oc-mirror-plugin -n oc-mirror-operator
 ```
 
 **Manager / Worker** (MirrorTarget controller):

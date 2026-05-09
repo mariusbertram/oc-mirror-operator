@@ -26,7 +26,7 @@ the project layout, development workflow, CI pipeline, and how to run tests.
 
 | Tool | Version | Purpose |
 |---|---|---|
-| Go | ≥ 1.24 (see `go.mod`) | Build and test |
+| Go | ≥ 1.25 (see `go.mod`) | Build and test |
 | Docker or Podman | any recent | Build container images |
 | KinD | ≥ 0.25 | Local E2E cluster |
 | kubectl | ≥ 1.29 | Cluster interaction |

@@ -21,8 +21,8 @@ kubectl get mirrortargets -n <namespace>
 | `imageSets` | `[]string` | no | Names of ImageSet objects (same namespace) to mirror to this target. One ImageSet may only be referenced by a single MirrorTarget. |
 | `insecure` | `bool` | no | Allow plaintext HTTP or self-signed TLS for the target registry. |
 | `authSecret` | `string` | no | Name of a Secret containing registry credentials. Supports `username`/`password` keys or `.dockerconfigjson`. |
-| `concurrency` | `int` | no | Maximum number of worker pods running in parallel. Range: 1–100. Default: `20`. |
-| `batchSize` | `int` | no | Number of images per worker pod. Range: 1–100. Default: `10`. |
+| `concurrency` | `int` | no | Maximum number of worker pods running in parallel. Range: 1–100. Default: `1`. |
+| `batchSize` | `int` | no | Number of images per worker pod. Range: 1–100. Default: `50`. |
 | `pollInterval` | `duration` | no | How often to re-check upstream sources for new content. Minimum `1h`. Set `0s` to disable. Default: `24h`. |
 | `checkExistInterval` | `duration` | no | How often to verify mirrored images still exist in the target. Minimum `1h`. Default: `6h`. Also triggers retry for permanently-failed images. |
 | `expose` | `ExposeConfig` | no | How the Resource API HTTP endpoint is exposed. Auto-creates a Route on OpenShift if omitted. |
@@ -80,7 +80,7 @@ References a ConfigMap in the same namespace containing a PEM CA bundle.
 | `configMapName` | `string` | **yes** | Name of the ConfigMap. |
 | `key` | `string` | no | Key inside the ConfigMap. Default: `ca-bundle.crt`. |
 
-The bundle is mounted into all pods at `/etc/ssl/certs/ca-bundle.crt` and
+The bundle is mounted into all pods at `/run/secrets/ca/` and
 `SSL_CERT_FILE` is set to point to it.
 
 **Example**:
