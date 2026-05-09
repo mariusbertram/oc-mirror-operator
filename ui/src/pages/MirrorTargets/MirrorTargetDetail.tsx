@@ -6,6 +6,7 @@ import {
   Button,
   Card,
   CardBody,
+  CardHeader,
   CardTitle,
   Content,
   DescriptionList,
@@ -28,6 +29,7 @@ import {
   Title,
 } from '@patternfly/react-core';
 import { Table, Thead, Tr, Th, Tbody, Td } from '@patternfly/react-table';
+import { DatabaseIcon } from '@patternfly/react-icons';
 import { useParams } from 'react-router';
 import { Link } from 'react-router-dom';
 import { getTarget, triggerRecollect, deleteImageSet } from '../../api/client';
@@ -332,36 +334,83 @@ const ResourcesTab: React.FC<{ target: TargetDetail }> = ({ target }) => {
 
 const CatalogsTab: React.FC<{ target: TargetDetail }> = ({ target }) => {
   if (target.catalogs.length === 0) {
-    return <div className="mirror-empty-body">No catalogs tracked by this MirrorTarget.</div>;
+    return <div className="mirror-empty-body">No operator catalogs tracked by this MirrorTarget.</div>;
   }
 
+  const allResources = [
+    ...target.resources,
+    ...target.imageSets.flatMap((is) => is.resources),
+  ];
+
   return (
-    <Card>
-      <CardTitle>Operator catalogs</CardTitle>
-      <CardBody style={{ padding: 0 }}>
-        <Table aria-label="Catalogs" variant="compact">
-          <Thead>
-            <Tr><Th>Slug</Th><Th>Source</Th><Th>Target image</Th><Th>Browse</Th></Tr>
-          </Thead>
-          <Tbody>
-            {target.catalogs.map((c) => (
-              <Tr key={c.slug}>
-                <Td dataLabel="Slug"><strong>{c.slug}</strong></Td>
-                <Td dataLabel="Source"><code className="mirror-mono">{c.source}</code></Td>
-                <Td dataLabel="Target image"><code className="mirror-mono">{c.targetImage}</code></Td>
-                <Td dataLabel="Browse">
-                  {target.imageSets.length > 0 && (
-                    <Link to={`/oc-mirror/targets/${target.name}/namespaces/${target.namespace}/imagesets/${target.imageSets[0]?.name}/catalogs/${c.slug}`}>
-                      <Button variant="link" size="sm" isInline>Browse packages</Button>
+    <Flex direction={{ default: 'column' }} gap={{ default: 'gapMd' }}>
+      {target.catalogs.map((c) => {
+        const imageset = target.imageSets[0];
+        const browseUrl = imageset
+          ? `/oc-mirror/targets/${target.name}/namespaces/${target.namespace}/imagesets/${imageset.name}/catalogs/${c.slug}`
+          : null;
+
+        const catalogResources = allResources.filter((r) =>
+          r.name.toLowerCase().includes(c.slug.toLowerCase()),
+        );
+
+        return (
+          <FlexItem key={c.slug}>
+            <Card>
+              <CardHeader
+                actions={{
+                  actions: browseUrl ? (
+                    <Link to={browseUrl}>
+                      <Button variant="primary" size="sm">Browse packages</Button>
                     </Link>
-                  )}
-                </Td>
-              </Tr>
-            ))}
-          </Tbody>
-        </Table>
-      </CardBody>
-    </Card>
+                  ) : undefined,
+                }}
+              >
+                <CardTitle>
+                  <Flex alignItems={{ default: 'alignItemsCenter' }} gap={{ default: 'gapSm' }}>
+                    <FlexItem><DatabaseIcon /></FlexItem>
+                    <FlexItem>
+                      <Title headingLevel="h3">{c.slug}</Title>
+                    </FlexItem>
+                  </Flex>
+                </CardTitle>
+              </CardHeader>
+              <CardBody>
+                {(c.source || c.targetImage) && (
+                  <DescriptionList isCompact isHorizontal style={{ marginBottom: 'var(--pf-v6-global--spacer--md)' }}>
+                    {c.source && (
+                      <DescriptionListGroup>
+                        <DescriptionListTerm>Source</DescriptionListTerm>
+                        <DescriptionListDescription>
+                          <code className="mirror-mono">{c.source}</code>
+                        </DescriptionListDescription>
+                      </DescriptionListGroup>
+                    )}
+                    {c.targetImage && (
+                      <DescriptionListGroup>
+                        <DescriptionListTerm>Mirror image</DescriptionListTerm>
+                        <DescriptionListDescription>
+                          <code className="mirror-mono">{c.targetImage}</code>
+                        </DescriptionListDescription>
+                      </DescriptionListGroup>
+                    )}
+                  </DescriptionList>
+                )}
+
+                {catalogResources.length > 0 && (
+                  <>
+                    <Content component="h4" style={{ marginBottom: 'var(--pf-v6-global--spacer--sm)' }}>
+                      Generated resources
+                    </Content>
+                    <ResourcesView resources={catalogResources} />
+                  </>
+                )}
+              </CardBody>
+            </Card>
+          </FlexItem>
+        );
+      })}
+    </Flex>
   );
 };
 
