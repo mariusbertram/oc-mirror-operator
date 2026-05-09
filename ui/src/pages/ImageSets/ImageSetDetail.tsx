@@ -30,6 +30,7 @@ import { getTarget, triggerRecollect } from '../../api/client';
 import type { TargetDetail, ImageSetSummary } from '../../api/types';
 import { StatusPill, computeStatus } from '../../components/StatusPill';
 import { ProgressBar } from '../../components/ProgressBar';
+import { ResourcesView } from '../../components/ResourcesView';
 import '../../components/plugin-styles.css';
 
 type ImageSetDetailParams = 'targetName' | 'imageSetName';
@@ -209,29 +210,7 @@ export const ImageSetDetail: React.FC = () => {
         )}
 
         {activeTab === 'resources' && (
-          <Card>
-            <CardTitle>Generated resources</CardTitle>
-            <CardBody style={{ padding: 0 }}>
-              <Table aria-label="Resources" variant="compact">
-                <Thead>
-                  <Tr><Th>Resource</Th><Th>Type</Th><Th>URL</Th></Tr>
-                </Thead>
-                <Tbody>
-                  {is.resources.map((r) => (
-                    <Tr key={r.url}>
-                      <Td dataLabel="Resource">{r.name}</Td>
-                      <Td dataLabel="Type"><Label isCompact color="grey">{r.type}</Label></Td>
-                      <Td dataLabel="URL">
-                        <a href={r.url} target="_blank" rel="noreferrer">
-                          <code className="mirror-mono">{r.url}</code>
-                        </a>
-                      </Td>
-                    </Tr>
-                  ))}
-                </Tbody>
-              </Table>
-            </CardBody>
-          </Card>
+          <ResourcesView resources={is.resources} />
         )}
 
         {activeTab === 'catalogs' && (

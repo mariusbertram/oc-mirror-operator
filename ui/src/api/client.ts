@@ -123,3 +123,9 @@ export const triggerRecollect = (namespace: string, imageSetName: string) =>
 
 export const deleteImageSet = (namespace: string, imageSetName: string) =>
   del(`/api/v1/imagesets/${namespace}/${imageSetName}`);
+
+export async function fetchRawText(path: string): Promise<string> {
+  const resp = await _fetch(_baseUrl + path);
+  if (!resp.ok) throw new Error(`${resp.status} ${resp.statusText}`);
+  return resp.text();
+}

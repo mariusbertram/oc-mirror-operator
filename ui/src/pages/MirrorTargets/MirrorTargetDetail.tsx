@@ -31,10 +31,11 @@ import {
 import { Table, Thead, Tr, Th, Tbody, Td } from '@patternfly/react-table';
 import { useParams } from 'react-router';
 import { Link } from 'react-router-dom';
-import { getTarget, triggerRecollect, deleteImageSet, getApiUrl } from '../../api/client';
+import { getTarget, triggerRecollect, deleteImageSet } from '../../api/client';
 import type { TargetDetail } from '../../api/types';
 import { StatusPill, computeStatus } from '../../components/StatusPill';
 import { ProgressBar } from '../../components/ProgressBar';
+import { ResourcesView } from '../../components/ResourcesView';
 import '../../components/plugin-styles.css';
 
 export const MirrorTargetDetail: React.FC = () => {
@@ -240,30 +241,9 @@ const OverviewTab: React.FC<{ target: TargetDetail }> = ({ target }) => (
 
     {target.resources.length > 0 && (
       <Card className="mirror-overview-full">
-        <CardTitle>Resource API</CardTitle>
+        <CardTitle>Resources</CardTitle>
         <CardBody>
-          <DescriptionList isCompact>
-            {target.resources.slice(0, 3).map((r) => (
-              <DescriptionListGroup key={r.url}>
-                <DescriptionListTerm>
-                  <a href={getApiUrl(r.url)} target="_blank" rel="noreferrer">{r.name}</a>
-                </DescriptionListTerm>
-                <DescriptionListDescription>
-                  <Label isCompact color="grey">{r.type}</Label>
-                </DescriptionListDescription>
-              </DescriptionListGroup>
-            ))}
-          </DescriptionList>
-          {target.resources.length > 3 && (
-            <Button
-              variant="link"
-              isInline
-              onClick={() => {}}
-              style={{ marginTop: 'var(--pf-v6-global--spacer--sm)', padding: 0 }}
-            >
-              +{target.resources.length - 3} more — see Resources tab
-            </Button>
-          )}
+          <ResourcesView resources={target.resources} />
         </CardBody>
       </Card>
     )}
@@ -345,50 +325,12 @@ const ImageSetsTab: React.FC<{
 
 const ResourcesTab: React.FC<{ target: TargetDetail }> = ({ target }) => {
   const allResources = [
-    ...target.resources.map((r) => ({ ...r, imageSet: '' })),
+    ...target.resources,
     ...target.imageSets.flatMap((is) =>
-      is.resources
-        .filter((ir) => !target.resources.some((tr) => tr.url === ir.url))
-        .map((r) => ({ ...r, imageSet: is.name })),
+      is.resources.filter((ir) => !target.resources.some((tr) => tr.url === ir.url)),
     ),
   ];
-
-  if (allResources.length === 0) {
-    return (
-      <div className="mirror-empty-body">
-        No resources available yet. Resources are exposed once an ImageSet reaches Ready.
-      </div>
-    );
-  }
-
-  return (
-    <Card>
-      <CardTitle>Generated resources</CardTitle>
-      <CardBody style={{ padding: 0 }}>
-        <Table aria-label="Resources" variant="compact">
-          <Thead>
-            <Tr><Th>Resource</Th><Th>Type</Th><Th>URL</Th></Tr>
-          </Thead>
-          <Tbody>
-            {allResources.map((r) => (
-              <Tr key={`${r.imageSet}-${r.url}`}>
-                <Td dataLabel="Resource">
-                  {r.imageSet && <Label isCompact color="grey" style={{ marginRight: 6 }}>{r.imageSet}</Label>}
-                  {r.name}
-                </Td>
-                <Td dataLabel="Type"><Label isCompact color="grey">{r.type}</Label></Td>
-                <Td dataLabel="URL">
-                  <a href={getApiUrl(r.url)} target="_blank" rel="noreferrer">
-                    <code className="mirror-mono">{r.url}</code>
-                  </a>
-                </Td>
-              </Tr>
-            ))}
-          </Tbody>
-        </Table>
-      </CardBody>
-    </Card>
-  );
+  return <ResourcesView resources={allResources} />;
 };
 
 const CatalogsTab: React.FC<{ target: TargetDetail }> = ({ target }) => {
