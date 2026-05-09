@@ -1,11 +1,20 @@
 import React, { useEffect, useState } from 'react';
 import {
   Alert,
-  Badge,
+  Breadcrumb,
+  BreadcrumbItem,
   Button,
   Card,
   CardBody,
   CardTitle,
+  Content,
+  DescriptionList,
+  DescriptionListDescription,
+  DescriptionListGroup,
+  DescriptionListTerm,
+  Flex,
+  FlexItem,
+  Label,
   PageSection,
   Spinner,
   Tab,
@@ -20,9 +29,19 @@ import { getTarget, triggerRecollect } from '../../api/client';
 import type { TargetDetail, ImageSetSummary } from '../../api/types';
 import { StatusPill, computeStatus } from '../../components/StatusPill';
 import { ProgressBar } from '../../components/ProgressBar';
+import { ResourcesView } from '../../components/ResourcesView';
 import '../../components/plugin-styles.css';
 
 type ImageSetDetailParams = 'targetName' | 'imageSetName';
+
+const StatBox: React.FC<{ label: string; value: number; color?: string }> = ({ label, value, color }) => (
+  <div>
+    <div className="mirror-stat-label">{label}</div>
+    <div className="mirror-stat-value" style={color ? { color } : undefined}>
+      {value.toLocaleString()}
+    </div>
+  </div>
+);
 
 export const ImageSetDetail: React.FC = () => {
   const params = useParams<ImageSetDetailParams>();
@@ -77,37 +96,44 @@ export const ImageSetDetail: React.FC = () => {
 
   return (
     <>
-      <PageSection style={{ paddingBottom: 0, borderBottom: '1px solid var(--pf-v6-global--BorderColor--100)' }}>
-        <div style={{ marginBottom: 6 }}>
-          <Link to="/oc-mirror/imagesets" style={{ fontSize: 13 }}>← ImageSets</Link>
-          {' / '}
-          <Link to={`/oc-mirror/targets/${targetName}`} style={{ fontSize: 13 }}>{targetName}</Link>
-          {' / '}
-          <code style={{ fontSize: 13 }}>{imageSetName}</code>
-        </div>
-        <div className="mirror-row" style={{ marginBottom: 8 }}>
-          <Title headingLevel="h1">{imageSetName}</Title>
-          <div className="mirror-spacer" />
-          <StatusPill status={status} />
-          {targetCatalogs.length > 0 && (
-            <Link to={`/oc-mirror/targets/${targetName}/namespaces/${target.namespace}/imagesets/${imageSetName}/catalogs/${targetCatalogs[0].slug}`}>
-              <Button variant="secondary" size="sm">Browse catalog</Button>
-            </Link>
-          )}
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => triggerRecollect(target.namespace, imageSetName!).catch(console.error)}
-          >
-            Recollect
-          </Button>
-          <Button variant="secondary" size="sm" onClick={load} isDisabled={loading}>
-            Refresh
-          </Button>
-        </div>
-        <p style={{ margin: '0 0 12px', color: 'var(--pf-v6-global--Color--200)', fontSize: 13 }}>
-          Targeting <span className="mirror-tag">{targetName}</span>
-        </p>
+      <PageSection>
+        <Breadcrumb style={{ marginBottom: 'var(--pf-v6-global--spacer--md)' }}>
+          <BreadcrumbItem><Link to="/oc-mirror/imagesets">ImageSets</Link></BreadcrumbItem>
+          <BreadcrumbItem><Link to={`/oc-mirror/targets/${targetName}`}>{targetName}</Link></BreadcrumbItem>
+          <BreadcrumbItem isActive>{imageSetName}</BreadcrumbItem>
+        </Breadcrumb>
+
+        <Flex alignItems={{ default: 'alignItemsCenter' }} style={{ rowGap: 'var(--pf-v6-global--spacer--sm)' }}>
+          <FlexItem>
+            <Title headingLevel="h1">{imageSetName}</Title>
+          </FlexItem>
+          <FlexItem align={{ default: 'alignRight' }}>
+            <Flex gap={{ default: 'gapSm' }} alignItems={{ default: 'alignItemsCenter' }}>
+              <FlexItem><StatusPill status={status} /></FlexItem>
+              {targetCatalogs.length > 0 && (
+                <FlexItem>
+                  <Link to={`/oc-mirror/targets/${targetName}/namespaces/${target.namespace}/imagesets/${imageSetName}/catalogs/${targetCatalogs[0].slug}`}>
+                    <Button variant="secondary" size="sm">Browse catalog</Button>
+                  </Link>
+                </FlexItem>
+              )}
+              <FlexItem>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => triggerRecollect(target.namespace, imageSetName!).catch(console.error)}
+                >
+                  Recollect
+                </Button>
+              </FlexItem>
+              <FlexItem>
+                <Button variant="secondary" size="sm" onClick={load} isDisabled={loading}>
+                  Refresh
+                </Button>
+              </FlexItem>
+            </Flex>
+          </FlexItem>
+        </Flex>
       </PageSection>
 
       <PageSection padding={{ default: 'noPadding' }}>
@@ -128,68 +154,60 @@ export const ImageSetDetail: React.FC = () => {
 
       <PageSection>
         {activeTab === 'overview' && (
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+          <div className="mirror-overview-grid">
             <Card>
               <CardTitle>Mirroring progress</CardTitle>
               <CardBody>
                 <ProgressBar total={is.total} mirrored={is.mirrored} pending={is.pending} failed={is.failed} />
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginTop: 16 }}>
-                  <StatBox label="Total" value={is.total} />
+                <div className="mirror-stat-grid">
+                  <StatBox label="Total"    value={is.total} />
                   <StatBox label="Mirrored" value={is.mirrored} color="var(--pf-v6-global--success-color--100)" />
-                  <StatBox label="Pending" value={is.pending} color="var(--pf-v6-global--warning-color--100)" />
-                  <StatBox label="Failed" value={is.failed} color="var(--pf-v6-global--danger-color--100)" />
+                  <StatBox label="Pending"  value={is.pending}  color="var(--pf-v6-global--warning-color--100)" />
+                  <StatBox label="Failed"   value={is.failed}   color="var(--pf-v6-global--danger-color--100)"  />
                 </div>
               </CardBody>
             </Card>
+
             <Card>
               <CardTitle>Details</CardTitle>
               <CardBody>
-                <dl className="mirror-kv">
-                  <dt>Name</dt><dd>{is.name}</dd>
-                  <dt>MirrorTarget</dt>
-                  <dd>
-                    <Link to={`/oc-mirror/targets/${targetName}`}>
-                      <span className="mirror-tag">{targetName}</span>
-                    </Link>
-                  </dd>
-                  <dt>Namespace</dt><dd>{target.namespace}</dd>
-                  <dt>Found</dt>
-                  <dd>
-                    <Badge style={{ background: is.found ? 'var(--pf-v6-global--success-color--100)' : 'var(--pf-v6-global--danger-color--100)', color: '#fff' }}>
-                      {is.found ? 'Yes' : 'No'}
-                    </Badge>
-                  </dd>
-                  <dt>Resources</dt><dd>{is.resources.length} available</dd>
-                </dl>
+                <DescriptionList isCompact>
+                  <DescriptionListGroup>
+                    <DescriptionListTerm>Name</DescriptionListTerm>
+                    <DescriptionListDescription>{is.name}</DescriptionListDescription>
+                  </DescriptionListGroup>
+                  <DescriptionListGroup>
+                    <DescriptionListTerm>MirrorTarget</DescriptionListTerm>
+                    <DescriptionListDescription>
+                      <Link to={`/oc-mirror/targets/${targetName}`}>
+                        <Label isCompact color="grey">{targetName}</Label>
+                      </Link>
+                    </DescriptionListDescription>
+                  </DescriptionListGroup>
+                  <DescriptionListGroup>
+                    <DescriptionListTerm>Namespace</DescriptionListTerm>
+                    <DescriptionListDescription>{target.namespace}</DescriptionListDescription>
+                  </DescriptionListGroup>
+                  <DescriptionListGroup>
+                    <DescriptionListTerm>Found</DescriptionListTerm>
+                    <DescriptionListDescription>
+                      <Label isCompact color={is.found ? 'green' : 'red'}>
+                        {is.found ? 'Yes' : 'No'}
+                      </Label>
+                    </DescriptionListDescription>
+                  </DescriptionListGroup>
+                  <DescriptionListGroup>
+                    <DescriptionListTerm>Resources</DescriptionListTerm>
+                    <DescriptionListDescription>{is.resources.length} available</DescriptionListDescription>
+                  </DescriptionListGroup>
+                </DescriptionList>
               </CardBody>
             </Card>
           </div>
         )}
 
         {activeTab === 'resources' && (
-          <Card>
-            <CardTitle>Generated resources</CardTitle>
-            <CardBody style={{ padding: 0 }}>
-              <Table aria-label="Resources" variant="compact">
-                <Thead>
-                  <Tr><Th>Resource</Th><Th>Type</Th><Th>URL</Th></Tr>
-                </Thead>
-                <Tbody>
-                  {is.resources.map((r) => (
-                    <Tr key={r.url}>
-                      <Td>{r.name}</Td>
-                      <Td><span className="mirror-tag">{r.type}</span></Td>
-                      <Td>
-                        <a href={r.url} target="_blank" rel="noreferrer">
-                          <code className="mirror-mono">{r.url}</code>
-                        </a>
-                      </Td>
-                    </Tr>
-                  ))}
-                </Tbody>
-              </Table>
-            </CardBody>
-          </Card>
+          <ResourcesView resources={is.resources} />
         )}
 
         {activeTab === 'catalogs' && (
@@ -203,11 +221,11 @@ export const ImageSetDetail: React.FC = () => {
                 <Tbody>
                   {targetCatalogs.map((c) => (
                     <Tr key={c.slug}>
-                      <Td><strong>{c.slug}</strong></Td>
-                      <Td><code className="mirror-mono">{c.source}</code></Td>
-                      <Td>
+                      <Td dataLabel="Slug"><strong>{c.slug}</strong></Td>
+                      <Td dataLabel="Source"><code className="mirror-mono">{c.source}</code></Td>
+                      <Td dataLabel="Browse">
                         <Link to={`/oc-mirror/targets/${targetName}/namespaces/${target.namespace}/imagesets/${imageSetName}/catalogs/${c.slug}`}>
-                          <Button variant="link" size="sm" style={{ paddingLeft: 0 }}>Browse packages</Button>
+                          <Button variant="link" size="sm" isInline>Browse packages</Button>
                         </Link>
                       </Td>
                     </Tr>
@@ -221,14 +239,3 @@ export const ImageSetDetail: React.FC = () => {
     </>
   );
 };
-
-const StatBox: React.FC<{ label: string; value: number; color?: string }> = ({ label, value, color }) => (
-  <div>
-    <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--pf-v6-global--Color--200)', fontWeight: 600 }}>
-      {label}
-    </div>
-    <div style={{ fontFamily: 'var(--pf-v6-global--FontFamily--heading--sans-serif)', fontSize: 26, fontWeight: 600, fontVariantNumeric: 'tabular-nums', color: color || 'inherit', letterSpacing: '-0.01em' }}>
-      {value.toLocaleString()}
-    </div>
-  </div>
-);

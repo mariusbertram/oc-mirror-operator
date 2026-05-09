@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Button,
+  Content,
   EmptyState,
   EmptyStateBody,
   EmptyStateVariant,
@@ -72,16 +73,14 @@ export const MirrorTargetList: React.FC = () => {
 
   return (
     <PageSection>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-        <div>
-          <Title headingLevel="h1">MirrorTargets</Title>
-          <p style={{ margin: '4px 0 0', color: 'var(--pf-v6-global--Color--200)' }}>
-            Each MirrorTarget defines a destination registry and the set of ImageSets to mirror into it.
-          </p>
-        </div>
-      </div>
+      <Content style={{ marginBottom: 'var(--pf-v6-global--spacer--md)' }}>
+        <Content component="h1">MirrorTargets</Content>
+        <Content component="p">
+          Each MirrorTarget defines a destination registry and the set of ImageSets to mirror into it.
+        </Content>
+      </Content>
 
-      <Toolbar style={{ marginBottom: 0, paddingLeft: 0 }}>
+      <Toolbar>
         <ToolbarContent>
           <ToolbarItem>
             <SearchInput
@@ -96,8 +95,8 @@ export const MirrorTargetList: React.FC = () => {
               {loading ? <Spinner size="sm" /> : 'Refresh'}
             </Button>
           </ToolbarItem>
-          <ToolbarItem align={{ default: 'alignEnd' }}>
-            <span style={{ fontSize: 13, color: 'var(--pf-v6-global--Color--200)' }}>
+          <ToolbarItem align={{ default: 'alignEnd' }} variant="pagination">
+            <span className="mirror-toolbar-count">
               {filtered.length} of {targets.length}
             </span>
           </ToolbarItem>
@@ -106,7 +105,9 @@ export const MirrorTargetList: React.FC = () => {
 
       {filtered.length === 0 ? (
         <EmptyState variant={EmptyStateVariant.lg}>
-          <Title headingLevel="h2">{targets.length === 0 ? 'No MirrorTargets found' : 'No results match filter'}</Title>
+          <Title headingLevel="h2">
+            {targets.length === 0 ? 'No MirrorTargets found' : 'No results match filter'}
+          </Title>
           <EmptyStateBody>
             {targets.length === 0
               ? 'Create a MirrorTarget to declare a destination registry and start mirroring.'
@@ -120,11 +121,7 @@ export const MirrorTargetList: React.FC = () => {
               <Th>Name</Th>
               <Th>Registry</Th>
               <Th>Status</Th>
-              <Th style={{ minWidth: 200 }}>Progress</Th>
-              <Th>Total</Th>
-              <Th>Mirrored</Th>
-              <Th>Pending</Th>
-              <Th>Failed</Th>
+              <Th style={{ minWidth: 220 }}>Progress</Th>
             </Tr>
           </Thead>
           <Tbody>
@@ -132,33 +129,23 @@ export const MirrorTargetList: React.FC = () => {
               const status = computeStatus(t.totalImages, t.mirroredImages, t.pendingImages, t.failedImages);
               return (
                 <Tr key={t.name}>
-                  <Td>
-                    <Link to={`/oc-mirror/targets/${t.name}`} style={{ fontWeight: 500 }}>{t.name}</Link>
-                    <div style={{ fontSize: 12, color: 'var(--pf-v6-global--Color--200)' }}>{t.namespace}</div>
+                  <Td dataLabel="Name">
+                    <Link to={`/oc-mirror/targets/${t.name}`} className="mirror-link-strong">{t.name}</Link>
+                    <div className="mirror-sub-text">{t.namespace}</div>
                   </Td>
-                  <Td>
+                  <Td dataLabel="Registry">
                     <code className="mirror-mono">{t.registry}</code>
                   </Td>
-                  <Td>
+                  <Td dataLabel="Status">
                     <StatusPill status={status} />
                   </Td>
-                  <Td>
+                  <Td dataLabel="Progress">
                     <ProgressBar
                       total={t.totalImages}
                       mirrored={t.mirroredImages}
                       pending={t.pendingImages}
                       failed={t.failedImages}
                     />
-                  </Td>
-                  <Td style={{ fontVariantNumeric: 'tabular-nums' }}>{t.totalImages.toLocaleString()}</Td>
-                  <Td style={{ fontVariantNumeric: 'tabular-nums', color: 'var(--pf-v6-global--success-color--100)' }}>
-                    {t.mirroredImages.toLocaleString()}
-                  </Td>
-                  <Td style={{ fontVariantNumeric: 'tabular-nums', color: t.pendingImages > 0 ? 'var(--pf-v6-global--warning-color--100)' : undefined }}>
-                    {t.pendingImages.toLocaleString()}
-                  </Td>
-                  <Td style={{ fontVariantNumeric: 'tabular-nums', color: t.failedImages > 0 ? 'var(--pf-v6-global--danger-color--100)' : undefined }}>
-                    {t.failedImages.toLocaleString()}
                   </Td>
                 </Tr>
               );
