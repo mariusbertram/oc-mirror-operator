@@ -90,7 +90,21 @@ async function del(path: string): Promise<void> {
 
 export const listTargets = () => get<TargetSummary[]>('/api/v1/targets');
 
-export const getTarget = (name: string) => get<TargetDetail>(`/api/v1/targets/${name}`);
+function normalizeTargetDetail(t: TargetDetail): TargetDetail {
+  return {
+    ...t,
+    conditions: t.conditions ?? [],
+    imageSets: (t.imageSets ?? []).map((is) => ({
+      ...is,
+      resources: is.resources ?? [],
+    })),
+    resources: t.resources ?? [],
+    catalogs: t.catalogs ?? [],
+  };
+}
+
+export const getTarget = (name: string) =>
+  get<TargetDetail>(`/api/v1/targets/${name}`).then(normalizeTargetDetail);
 
 export const getImageFailures = (targetName: string) =>
   get<ImageFailuresResponse>(`/api/v1/targets/${targetName}/image-failures`);
