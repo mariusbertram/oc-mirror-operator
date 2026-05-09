@@ -11,11 +11,11 @@ This document describes the complete configuration and operation of the `oc-mirr
    - [Via OLM (recommended)](#21-via-olm-recommended)
    - [Manually via kubectl](#22-manually-via-kubectl)
 3. [Concepts](#3-concepts)
-   - [MirrorTarget](#31-mirrortarget)
-   - [ImageSet](#32-imageset)
-   - [Manager Pod](#33-manager-pod)
-   - [Worker Pods](#34-worker-pods)
-   - [Image State (ConfigMap)](#35-image-state-configmap)
+   - [Controller](#31-controller)
+   - [Manager Pod](#32-manager-pod)
+   - [Worker Pods](#33-worker-pods)
+   - [ImageState (ConfigMap)](#34-imagestate-configmap)
+   - [Cleanup Policy](#35-cleanup-policy)
 4. [Quick Start](#4-quick-start)
 5. [Configuring Registry Credentials](#5-configuring-registry-credentials)
    - [Standard Kubernetes Pull Secret](#51-standard-kubernetes-pull-secret)
@@ -214,46 +214,7 @@ Each entry contains:
 
 ### 3.5 Cleanup Policy
 
-When an `ImageSet` is removed or its spec is narrowed (e.g., an operator is no longer needed), the operator can trigger cleanup Jobs that delete now-obsolete images from the target registry. This is controlled by the `mirror.openshift.io/cleanup-policy: Delete` annotation on the `ImageSet`.
-
----
-
-## 4. MirrorTarget CRD
-
-A `MirrorTarget` defines **where** to mirror to:
-
-- Target registry URL and credentials
-- List of `ImageSet` objects to use
-- Performance parameters (concurrency, batchSize)
-- Polling and CheckExist intervals
-- Exposure of the Resource API (IDMS/ITMS/Web UI endpoint)
-
-For each `MirrorTarget`, the operator starts **one manager pod** in the same namespace. This manager is responsible for worker orchestration, image state management, and writing generated resources to ConfigMaps. Additionally, the operator deploys a **Resource API** pod (one per namespace) that serves these resources via REST API and Web UI.
-
-#### Multiple MirrorTargets per Namespace
-
-Multiple `MirrorTarget` CRs can coexist in the same namespace. Each `MirrorTarget` creates its own isolated set of RBAC resources (`{mt.Name}-coordinator`, `{mt.Name}-worker`) — there are no naming conflicts.
-
-Use cases:
-- Mirror to different target registries from the same namespace
-- Separate ImageSets with different concurrency/performance settings
-- Isolate different teams' mirror configurations
-
-## 5. ImageSet CRD
-
-An `ImageSet` defines **what** to mirror:
-
-- OpenShift release channels (with version filters)
-- Operator catalogs (with package filters)
-- Individual additional images
-
-An `ImageSet` is independent of a specific target — it is referenced via `MirrorTarget.spec.imageSets`. The same `ImageSet` can be used in a `MirrorTarget`. However, an `ImageSet` should only be referenced by **one** `MirrorTarget`.
-
----
-
-## 6. MirrorTarget
-- `origin`: Source (release/operator/additional)
-- `originRef`: Human-readable description of the spec entry that produced this image
+When an `ImageSet` is removed or its spec is narrowed (e.g., an operator is no longer needed), the operator can trigger cleanup Jobs that delete now-obsolete images from the target registry. This is controlled by the `mirror.openshift.io/cleanup-policy: Delete` annotation on the `MirrorTarget`.
 
 ---
 

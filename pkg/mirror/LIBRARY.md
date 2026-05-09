@@ -169,9 +169,10 @@ Separate binary that runs in Pods for parallel mirroring:
 - Uses `pkg/mirror/client.MirrorClient` (shared lib)
 - Pulls batches from manager status API
 
-### `cmd/cleanup/main.go`
-One-shot binary that cleans up orphaned images:
+### `cmd/worker/main.go` (cleanup subcommand)
+One-shot cleanup that runs as a Kubernetes Job:
 - Uses `pkg/mirror/client.MirrorClient` (shared lib)
+- Invoked as `oc-mirror-worker cleanup` — same binary as the worker, different subcommand
 - Deletes images when ImageSet narrows or is deleted
 
 ---
@@ -252,4 +253,3 @@ When adding new functionality:
 
 ---
 
-**Last Updated**: Phase 5 (2026-01-21)

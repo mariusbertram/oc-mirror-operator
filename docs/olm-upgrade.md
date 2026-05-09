@@ -27,7 +27,7 @@ CatalogSource that serves the operator bundle and then triggering an InstallPlan
 The operator uses `replaces:` in its CSV to declare a linear upgrade graph:
 
 ```
-v0.0.1 → v0.0.2 → v0.0.3 → v0.0.4 → v0.0.5 → v0.0.6 → … → v0.0.11 (latest)
+v0.0.1 → v0.0.2 → v0.0.3 → v0.0.4 → v0.0.5 → v0.0.6 → … → v0.0.11 → v0.0.13 → v0.0.15 (latest)
 ```
 
 OLM will apply each intermediate step automatically when upgrading across
@@ -49,6 +49,8 @@ multiple versions.
 | v0.0.8 | v0.0.9 | Pre-commit hook, gofmt alignment fixes. No functional changes. |
 | v0.0.9 | v0.0.10 | Resource API ingress fix (`8081`); forced cache re-resolution on upgrade. |
 | v0.0.10 | v0.0.11 | OCI layout catalog builder; HTTP-first TLS fallback; polling & resource-leak fixes; ≥75% test coverage. See [Migration Notes](#migration-notes-by-version). |
+| v0.0.11 | v0.0.13 | Developer Guide added; image status redesign in Web UI; UI scroll/font fixes; worker storage default changed to emptyDir; CRD spec cleanup. |
+| v0.0.13 | v0.0.15 | OLM upgrade e2e test fixes; bundle image tag format fix; `spec.relatedImages` now includes all three images via `USE_IMAGE_DIGESTS=true`; release workflow streamlined. |
 
 ---
 

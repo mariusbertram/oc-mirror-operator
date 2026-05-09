@@ -39,15 +39,18 @@ Container tool defaults to **podman** (`CONTAINER_TOOL ?= podman`). Override wit
 
 ## Architecture
 
-The operator uses a three-tier runtime — all tiers share the same binary (`cmd/main.go`) with different subcommands:
+The operator uses a modular 3-component architecture with separate binaries and container images:
 
-| Tier | Code | Responsibility |
-|------|------|----------------|
-| **Operator Controller** | `internal/controller/` | Two reconcilers: `MirrorTargetReconciler` (manages Manager Deployment, RBAC, cleanup jobs) and `ImageSetReconciler` (manages catalog build Jobs, poll-based re-collection) |
-| **Manager Pod** | `pkg/mirror/manager/` | One per MirrorTarget. Coordinates worker pods, owns imagestate ConfigMap, serves IDMS/ITMS via HTTP resource server |
-| **Worker Pods** | `cmd/main.go` worker subcommand | Ephemeral. Mirror image batches and report status back to Manager |
+| Component | Binary | Responsibility |
+|-----------|--------|----------------|
+| **Controller** | `cmd/controller/main.go` | Two reconcilers: `MirrorTargetReconciler` (manages Manager Deployment, RBAC, cleanup jobs) and `ImageSetReconciler` (manages catalog build Jobs, poll-based re-collection) |
+| **Manager Pod** | `cmd/manager/main.go` | One per MirrorTarget. Coordinates worker pods, owns imagestate ConfigMap, writes IDMS/ITMS resources |
+| **Worker Pods** | `cmd/worker/main.go` | Ephemeral. Mirror image batches and report status back to Manager |
+| **Console Plugin** | `cmd/dashboard/main.go` | Serves React UI as OpenShift Console Plugin; reads resource ConfigMaps via Resource API |
 
-Additional entrypoints: `cmd/main.go cleanup` (deletes orphaned images from registry), `cmd/catalog-builder/main.go` (separate binary for OLM FBC filtering, runs in Jobs).
+Additional entrypoints: `cmd/worker/main.go cleanup` subcommand (deletes orphaned images from registry), `cmd/catalog-builder/main.go` (OLM FBC filtering, runs in Jobs).
+
+> **Note**: `cmd/main.go` is the deprecated v0.0.x single-binary entrypoint — it is no longer used in production deployments. See `docs/migration-v0.0-to-v0.1.md`.
 
 ### CRDs (`api/v1alpha1/`)
 
