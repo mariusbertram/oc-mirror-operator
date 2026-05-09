@@ -80,7 +80,14 @@
   cursor: pointer;
 }
 .mirror-dual-row:hover { background: var(--pf-v6-global--BackgroundColor--200, rgba(0,0,0,0.05)); }
-.mirror-dual-row--selected { background: var(--pf-v6-global--active-color--100, #e7f1fa) !important; }
+.mirror-dual-row--selected {
+  background: rgba(0, 102, 204, 0.18) !important;
+  box-shadow: inset 2px 0 0 var(--pf-v6-global--primary-color--100, #0066cc);
+}
+.mirror-dual-row--selected .mirror-dual-row__name,
+.mirror-dual-row--selected .mirror-dual-row__meta {
+  color: inherit;
+}
 .mirror-dual-row__name { font-weight: 500; font-size: 13px; }
 .mirror-dual-row__meta { font-size: 11px; color: var(--pf-v6-global--Color--200, #6a6e73); margin-top: 1px; }
 .mirror-dual-channel {
