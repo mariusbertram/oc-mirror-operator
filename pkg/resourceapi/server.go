@@ -344,7 +344,7 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
 	// Build resource links from the resources ConfigMap
 	cmName := fmt.Sprintf("oc-mirror-%s-resources", mtName)
 	cm := &corev1.ConfigMap{}
-	var resources []ResourceLink
+	resources := make([]ResourceLink, 0)
 	if err := c.Get(r.Context(), client.ObjectKey{Name: cmName, Namespace: ns}, cm); err == nil {
 		resources = buildResourceLinks(mtName, cm)
 	}
@@ -361,7 +361,7 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
 
 	// Discover per-catalog ConfigMaps to build catalog summaries.
 	catalogCMs := &corev1.ConfigMapList{}
-	var catalogs []CatalogSummary
+	catalogs := make([]CatalogSummary, 0)
 	if err := c.List(r.Context(), catalogCMs,
 		client.InNamespace(ns),
 		client.MatchingLabels{"oc-mirror.openshift.io/mirrortarget": mtName},
@@ -662,7 +662,7 @@ func (s *Server) serveConfigMapResource(w http.ResponseWriter, r *http.Request, 
 // --- helpers ---
 
 func buildResourceLinks(mtName string, cm *corev1.ConfigMap) []ResourceLink {
-	var links []ResourceLink
+	links := make([]ResourceLink, 0)
 	base := fmt.Sprintf("/api/v1/targets/%s/imagesets/latest", mtName)
 
 	if _, ok := cm.Data["idms.yaml"]; ok {
