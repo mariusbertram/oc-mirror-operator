@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Button,
+  Content,
   EmptyState,
   EmptyStateBody,
   EmptyStateVariant,
@@ -13,9 +14,7 @@ import {
   PageSection,
   SearchInput,
   Spinner,
-  Text,
-  TextContent,
-  TextVariants,
+  Title,
   Toolbar,
   ToolbarContent,
   ToolbarItem,
@@ -95,12 +94,12 @@ export const ImageSetList: React.FC = () => {
     <PageSection>
       <Flex alignItems={{ default: 'alignItemsFlexStart' }} style={{ marginBottom: 'var(--pf-v6-global--spacer--md)' }}>
         <FlexItem grow={{ default: 'grow' }}>
-          <TextContent>
-            <Text component={TextVariants.h1}>ImageSets</Text>
-            <Text component={TextVariants.p}>
+          <Content>
+            <Content component="h1">ImageSets</Content>
+            <Content component="p">
               An ImageSet declares a slice of releases, operator catalogs, and additional images to mirror.
-            </Text>
-          </TextContent>
+            </Content>
+          </Content>
         </FlexItem>
         <FlexItem>
           <Button variant="secondary" onClick={load} isDisabled={loading}>Refresh</Button>
@@ -140,11 +139,9 @@ export const ImageSetList: React.FC = () => {
 
       {filtered.length === 0 ? (
         <EmptyState variant={EmptyStateVariant.lg}>
-          <TextContent>
-            <Text component={TextVariants.h2}>
-              {rows.length === 0 ? 'No ImageSets found' : 'No results match filter'}
-            </Text>
-          </TextContent>
+          <Title headingLevel="h2">
+            {rows.length === 0 ? 'No ImageSets found' : 'No results match filter'}
+          </Title>
           <EmptyStateBody>
             {rows.length === 0
               ? 'Create an ImageSet and assign it to a MirrorTarget to start mirroring.'

@@ -7,6 +7,7 @@ import {
   Card,
   CardBody,
   CardTitle,
+  Content,
   DescriptionList,
   DescriptionListDescription,
   DescriptionListGroup,
@@ -24,9 +25,7 @@ import {
   Tab,
   Tabs,
   TabTitleText,
-  Text,
-  TextContent,
-  TextVariants,
+  Title,
 } from '@patternfly/react-core';
 import { Table, Thead, Tr, Th, Tbody, Td } from '@patternfly/react-table';
 import { useParams } from 'react-router';
@@ -110,9 +109,7 @@ export const MirrorTargetDetail: React.FC = () => {
 
         <Flex alignItems={{ default: 'alignItemsCenter' }} style={{ rowGap: 'var(--pf-v6-global--spacer--sm)' }}>
           <FlexItem>
-            <TextContent>
-              <Text component={TextVariants.h1}>{target.name}</Text>
-            </TextContent>
+            <Title headingLevel="h1">{target.name}</Title>
           </FlexItem>
           <FlexItem>
             <code className="mirror-mono mirror-registry-label">{target.registry}</code>

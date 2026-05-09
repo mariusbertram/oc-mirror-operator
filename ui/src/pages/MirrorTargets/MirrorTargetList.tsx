@@ -2,15 +2,14 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Button,
+  Content,
   EmptyState,
   EmptyStateBody,
   EmptyStateVariant,
   PageSection,
   SearchInput,
   Spinner,
-  Text,
-  TextContent,
-  TextVariants,
+  Title,
   Toolbar,
   ToolbarContent,
   ToolbarItem,
@@ -74,12 +73,12 @@ export const MirrorTargetList: React.FC = () => {
 
   return (
     <PageSection>
-      <TextContent style={{ marginBottom: 'var(--pf-v6-global--spacer--md)' }}>
-        <Text component={TextVariants.h1}>MirrorTargets</Text>
-        <Text component={TextVariants.p}>
+      <Content style={{ marginBottom: 'var(--pf-v6-global--spacer--md)' }}>
+        <Content component="h1">MirrorTargets</Content>
+        <Content component="p">
           Each MirrorTarget defines a destination registry and the set of ImageSets to mirror into it.
-        </Text>
-      </TextContent>
+        </Content>
+      </Content>
 
       <Toolbar>
         <ToolbarContent>
@@ -106,11 +105,9 @@ export const MirrorTargetList: React.FC = () => {
 
       {filtered.length === 0 ? (
         <EmptyState variant={EmptyStateVariant.lg}>
-          <TextContent>
-            <Text component={TextVariants.h2}>
-              {targets.length === 0 ? 'No MirrorTargets found' : 'No results match filter'}
-            </Text>
-          </TextContent>
+          <Title headingLevel="h2">
+            {targets.length === 0 ? 'No MirrorTargets found' : 'No results match filter'}
+          </Title>
           <EmptyStateBody>
             {targets.length === 0
               ? 'Create a MirrorTarget to declare a destination registry and start mirroring.'

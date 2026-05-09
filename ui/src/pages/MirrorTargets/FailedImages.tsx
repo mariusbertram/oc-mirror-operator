@@ -2,15 +2,14 @@ import React, { useEffect, useState } from 'react';
 import {
   Alert,
   Button,
+  Content,
   Flex,
   FlexItem,
   Label,
   PageSection,
   SearchInput,
   Spinner,
-  Text,
-  TextContent,
-  TextVariants,
+  Title,
   Toolbar,
   ToolbarContent,
   ToolbarItem,
@@ -115,14 +114,14 @@ export const FailedImages: React.FC<FailedImagesProps> = ({ crossTarget }) => {
         style={{ marginBottom: 'var(--pf-v6-global--spacer--md)' }}
       >
         <FlexItem grow={{ default: 'grow' }}>
-          <TextContent>
-            <Text component={TextVariants.h1}>
+          <Content>
+            <Title headingLevel="h1">
               {crossTarget ? 'Failed Images' : `Image Failures — ${name}`}
-            </Text>
-            <Text component={TextVariants.p}>
+            </Title>
+            <Content component="p">
               Images that exhausted all retries. Fix the upstream error or spec, then trigger a re-poll.
-            </Text>
-          </TextContent>
+            </Content>
+          </Content>
         </FlexItem>
         <FlexItem>
           <Button variant="secondary" onClick={load} isDisabled={loading}>

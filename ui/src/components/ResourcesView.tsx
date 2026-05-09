@@ -5,15 +5,14 @@ import {
   CardBody,
   CardHeader,
   CardTitle,
+  Content,
   EmptyState,
   EmptyStateBody,
   Flex,
   FlexItem,
   Label,
   Spinner,
-  Text,
-  TextContent,
-  TextVariants,
+  Title,
 } from '@patternfly/react-core';
 import {
   CopyIcon,
@@ -213,14 +212,12 @@ interface ResourceGroupCardProps {
 }
 
 const ResourceGroupCard: React.FC<ResourceGroupCardProps> = ({ group }) => (
-  <Card isFlat>
+  <Card isPlain>
     <CardHeader>
       <CardTitle>
         <Flex alignItems={{ default: 'alignItemsCenter' }} gap={{ default: 'gapSm' }}>
           <FlexItem>
-            <TextContent>
-              <Text component={TextVariants.h3}>{group.title}</Text>
-            </TextContent>
+            <Title headingLevel="h3">{group.title}</Title>
           </FlexItem>
           {group.subtitle && (
             <FlexItem>
@@ -228,9 +225,7 @@ const ResourceGroupCard: React.FC<ResourceGroupCardProps> = ({ group }) => (
             </FlexItem>
           )}
         </Flex>
-        <TextContent>
-          <Text component={TextVariants.small}>{group.description}</Text>
-        </TextContent>
+        <Content component="small">{group.description}</Content>
       </CardTitle>
     </CardHeader>
     <CardBody style={{ paddingTop: 0 }}>

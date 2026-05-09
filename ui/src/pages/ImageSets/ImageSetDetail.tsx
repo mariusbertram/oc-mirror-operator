@@ -7,6 +7,7 @@ import {
   Card,
   CardBody,
   CardTitle,
+  Content,
   DescriptionList,
   DescriptionListDescription,
   DescriptionListGroup,
@@ -19,9 +20,7 @@ import {
   Tab,
   Tabs,
   TabTitleText,
-  Text,
-  TextContent,
-  TextVariants,
+  Title,
 } from '@patternfly/react-core';
 import { Table, Thead, Tr, Th, Tbody, Td } from '@patternfly/react-table';
 import { useParams } from 'react-router';
@@ -106,9 +105,7 @@ export const ImageSetDetail: React.FC = () => {
 
         <Flex alignItems={{ default: 'alignItemsCenter' }} style={{ rowGap: 'var(--pf-v6-global--spacer--sm)' }}>
           <FlexItem>
-            <TextContent>
-              <Text component={TextVariants.h1}>{imageSetName}</Text>
-            </TextContent>
+            <Title headingLevel="h1">{imageSetName}</Title>
           </FlexItem>
           <FlexItem align={{ default: 'alignRight' }}>
             <Flex gap={{ default: 'gapSm' }} alignItems={{ default: 'alignItemsCenter' }}>
