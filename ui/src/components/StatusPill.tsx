@@ -1,5 +1,11 @@
 import React from 'react';
-import './plugin-styles.css';
+import { Label } from '@patternfly/react-core';
+import {
+  CheckCircleIcon,
+  ExclamationCircleIcon,
+  InProgressIcon,
+  QuestionCircleIcon,
+} from '@patternfly/react-icons';
 
 export type MirrorStatus = 'Healthy' | 'Mirroring' | 'Failed' | 'Unknown';
 
@@ -16,29 +22,22 @@ export function computeStatus(
   return 'Unknown';
 }
 
+const STATUS_CONFIG: Record<MirrorStatus, { color: 'green' | 'blue' | 'red' | 'grey'; icon: React.ReactNode; label: string }> = {
+  Healthy:   { color: 'green', icon: <CheckCircleIcon />,      label: 'Ready'     },
+  Mirroring: { color: 'blue',  icon: <InProgressIcon />,       label: 'Mirroring' },
+  Failed:    { color: 'red',   icon: <ExclamationCircleIcon />, label: 'Degraded'  },
+  Unknown:   { color: 'grey',  icon: <QuestionCircleIcon />,   label: 'Unknown'   },
+};
+
 interface StatusPillProps {
   status: MirrorStatus;
 }
 
 export const StatusPill: React.FC<StatusPillProps> = ({ status }) => {
-  const cls = {
-    Healthy: 'mirror-status--healthy',
-    Mirroring: 'mirror-status--mirroring',
-    Failed: 'mirror-status--failed',
-    Unknown: 'mirror-status--unknown',
-  }[status];
-
-  const label = {
-    Healthy: 'Ready',
-    Mirroring: 'Mirroring',
-    Failed: 'Degraded',
-    Unknown: 'Unknown',
-  }[status];
-
+  const { color, icon, label } = STATUS_CONFIG[status];
   return (
-    <span className={`mirror-status ${cls}`}>
-      <span className="mirror-status-dot" />
+    <Label color={color} icon={icon} isCompact>
       {label}
-    </span>
+    </Label>
   );
 };

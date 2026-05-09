@@ -2,10 +2,15 @@ import React, { useEffect, useState } from 'react';
 import {
   Alert,
   Button,
+  Flex,
+  FlexItem,
+  Label,
   PageSection,
   SearchInput,
   Spinner,
-  Title,
+  Text,
+  TextContent,
+  TextVariants,
   Toolbar,
   ToolbarContent,
   ToolbarItem,
@@ -42,7 +47,6 @@ export const FailedImages: React.FC<FailedImagesProps> = ({ crossTarget }) => {
     setError(null);
     try {
       if (crossTarget || !name) {
-        // Fetch failures for all targets
         const targets = await listTargets();
         const results = await Promise.allSettled(
           targets.map((t) => getImageFailures(t.name).then((r) => ({ target: t.name, r }))),
@@ -101,26 +105,33 @@ export const FailedImages: React.FC<FailedImagesProps> = ({ crossTarget }) => {
   return (
     <PageSection>
       {!crossTarget && name && (
-        <div style={{ marginBottom: 8 }}>
-          <Link to={`/oc-mirror/targets/${name}`} style={{ fontSize: 13 }}>← Back to {name}</Link>
+        <div style={{ marginBottom: 'var(--pf-v6-global--spacer--sm)' }}>
+          <Link to={`/oc-mirror/targets/${name}`}>← Back to {name}</Link>
         </div>
       )}
 
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-        <div>
-          <Title headingLevel="h1">
-            {crossTarget ? 'Failed Images' : `Image Failures — ${name}`}
-          </Title>
-          <p style={{ margin: '4px 0 0', color: 'var(--pf-v6-global--Color--200)' }}>
-            Images that exhausted all retries. Fix the upstream error or spec, then trigger a re-poll.
-          </p>
-        </div>
-        <Button variant="secondary" onClick={load} isDisabled={loading}>
-          Retry all
-        </Button>
-      </div>
+      <Flex
+        alignItems={{ default: 'alignItemsFlexStart' }}
+        style={{ marginBottom: 'var(--pf-v6-global--spacer--md)' }}
+      >
+        <FlexItem grow={{ default: 'grow' }}>
+          <TextContent>
+            <Text component={TextVariants.h1}>
+              {crossTarget ? 'Failed Images' : `Image Failures — ${name}`}
+            </Text>
+            <Text component={TextVariants.p}>
+              Images that exhausted all retries. Fix the upstream error or spec, then trigger a re-poll.
+            </Text>
+          </TextContent>
+        </FlexItem>
+        <FlexItem>
+          <Button variant="secondary" onClick={load} isDisabled={loading}>
+            Refresh
+          </Button>
+        </FlexItem>
+      </Flex>
 
-      <Toolbar style={{ marginBottom: 0, paddingLeft: 0 }}>
+      <Toolbar>
         <ToolbarContent>
           <ToolbarItem>
             <SearchInput
@@ -130,26 +141,28 @@ export const FailedImages: React.FC<FailedImagesProps> = ({ crossTarget }) => {
               onClear={() => setSearch('')}
             />
           </ToolbarItem>
-          <ToolbarItem align={{ default: 'alignEnd' }}>
-            <span style={{ fontSize: 13, color: 'var(--pf-v6-global--Color--200)' }}>
-              {filtered.length} items
+          <ToolbarItem align={{ default: 'alignEnd' }} variant="pagination">
+            <Flex gap={{ default: 'gapSm' }} alignItems={{ default: 'alignItemsCenter' }}>
+              <FlexItem>
+                <span className="mirror-toolbar-count">{filtered.length} items</span>
+              </FlexItem>
               {permanentCount > 0 && (
-                <span style={{ marginLeft: 8, color: 'var(--pf-v6-global--danger-color--100)' }}>
-                  {permanentCount} failed
-                </span>
+                <FlexItem>
+                  <Label isCompact color="red">{permanentCount} failed</Label>
+                </FlexItem>
               )}
               {pendingCount > 0 && (
-                <span style={{ marginLeft: 8, color: 'var(--pf-v6-global--warning-color--100)' }}>
-                  {pendingCount} pending
-                </span>
+                <FlexItem>
+                  <Label isCompact color="orange">{pendingCount} pending</Label>
+                </FlexItem>
               )}
-            </span>
+            </Flex>
           </ToolbarItem>
         </ToolbarContent>
       </Toolbar>
 
       {filtered.length === 0 ? (
-        <div style={{ padding: '48px 0', textAlign: 'center', color: 'var(--pf-v6-global--Color--200)' }}>
+        <div className="mirror-empty-center">
           {rows.length === 0 ? 'No failed or pending images.' : 'No items match the filter.'}
         </div>
       ) : (
@@ -167,31 +180,31 @@ export const FailedImages: React.FC<FailedImagesProps> = ({ crossTarget }) => {
           <Tbody>
             {filtered.map((f, i) => (
               <Tr key={i}>
-                <Td>
-                  <StatusBadge permanent={f.isPermanent} />
+                <Td dataLabel="Status">
+                  <Label isCompact color={f.isPermanent ? 'red' : 'orange'}>
+                    {f.isPermanent ? 'Failed' : 'Pending'}
+                  </Label>
                 </Td>
-                <Td>
+                <Td dataLabel="Source image">
                   <code className="mirror-mono" style={{ fontSize: 11, wordBreak: 'break-all' }}>
                     {f.destination}
                   </code>
-                  <div style={{ fontSize: 11, color: 'var(--pf-v6-global--Color--200)', marginTop: 2 }}>
-                    from {f.source}
-                  </div>
+                  <div className="mirror-sub-text">from {f.source}</div>
                 </Td>
-                <Td>
-                  <span className="mirror-tag">{f.imageSet}</span>
+                <Td dataLabel="ImageSet">
+                  <Label isCompact color="grey">{f.imageSet}</Label>
                 </Td>
                 {crossTarget && (
-                  <Td>
+                  <Td dataLabel="Target">
                     {f.targetName ? (
                       <Link to={`/oc-mirror/targets/${f.targetName}`}>{f.targetName}</Link>
                     ) : '—'}
                   </Td>
                 )}
-                <Td style={{ maxWidth: 360, wordBreak: 'break-word', fontSize: '0.875rem', color: 'var(--pf-v6-global--danger-color--100)' }}>
+                <Td dataLabel="Error" className="mirror-error-cell">
                   {f.lastError || '—'}
                 </Td>
-                <Td style={{ fontVariantNumeric: 'tabular-nums' }}>{f.retryCount ?? 0}</Td>
+                <Td dataLabel="Retries" className="mirror-toolbar-count">{f.retryCount ?? 0}</Td>
               </Tr>
             ))}
           </Tbody>
@@ -200,18 +213,3 @@ export const FailedImages: React.FC<FailedImagesProps> = ({ crossTarget }) => {
     </PageSection>
   );
 };
-
-const StatusBadge: React.FC<{ permanent: boolean }> = ({ permanent }) => (
-  <span style={{
-    display: 'inline-block',
-    padding: '1px 8px',
-    borderRadius: 12,
-    fontSize: 12,
-    fontWeight: 600,
-    background: permanent ? 'var(--pf-v6-global--danger-color--100)' : 'var(--pf-v6-global--warning-color--100)',
-    color: '#fff',
-    whiteSpace: 'nowrap',
-  }}>
-    {permanent ? 'Failed' : 'Pending'}
-  </span>
-);

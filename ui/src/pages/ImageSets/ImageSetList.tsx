@@ -5,10 +5,17 @@ import {
   EmptyState,
   EmptyStateBody,
   EmptyStateVariant,
+  Flex,
+  FlexItem,
+  FormSelect,
+  FormSelectOption,
+  Label,
   PageSection,
   SearchInput,
   Spinner,
-  Title,
+  Text,
+  TextContent,
+  TextVariants,
   Toolbar,
   ToolbarContent,
   ToolbarItem,
@@ -86,17 +93,21 @@ export const ImageSetList: React.FC = () => {
 
   return (
     <PageSection>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-        <div>
-          <Title headingLevel="h1">ImageSets</Title>
-          <p style={{ margin: '4px 0 0', color: 'var(--pf-v6-global--Color--200)' }}>
-            An ImageSet declares a slice of releases, operator catalogs, and additional images to mirror.
-          </p>
-        </div>
-        <Button variant="secondary" onClick={load} isDisabled={loading}>Refresh</Button>
-      </div>
+      <Flex alignItems={{ default: 'alignItemsFlexStart' }} style={{ marginBottom: 'var(--pf-v6-global--spacer--md)' }}>
+        <FlexItem grow={{ default: 'grow' }}>
+          <TextContent>
+            <Text component={TextVariants.h1}>ImageSets</Text>
+            <Text component={TextVariants.p}>
+              An ImageSet declares a slice of releases, operator catalogs, and additional images to mirror.
+            </Text>
+          </TextContent>
+        </FlexItem>
+        <FlexItem>
+          <Button variant="secondary" onClick={load} isDisabled={loading}>Refresh</Button>
+        </FlexItem>
+      </Flex>
 
-      <Toolbar style={{ marginBottom: 0, paddingLeft: 0 }}>
+      <Toolbar>
         <ToolbarContent>
           <ToolbarItem>
             <SearchInput
@@ -107,28 +118,20 @@ export const ImageSetList: React.FC = () => {
             />
           </ToolbarItem>
           <ToolbarItem>
-            <select
+            <FormSelect
               value={filterTarget}
-              onChange={(e) => setFilterTarget(e.target.value)}
-              style={{
-                padding: '6px 10px',
-                border: '1px solid var(--pf-v6-global--BorderColor--100)',
-                borderRadius: 3,
-                background: 'var(--pf-v6-global--BackgroundColor--100)',
-                color: 'inherit',
-                font: 'inherit',
-                fontSize: 14,
-                minWidth: 220,
-              }}
+              onChange={(_e, v) => setFilterTarget(v)}
+              aria-label="Filter by MirrorTarget"
+              style={{ minWidth: 220 }}
             >
-              <option value="All">All targets</option>
+              <FormSelectOption value="All" label="All targets" />
               {targets.map((t) => (
-                <option key={t.name} value={t.name}>{t.name}</option>
+                <FormSelectOption key={t.name} value={t.name} label={t.name} />
               ))}
-            </select>
+            </FormSelect>
           </ToolbarItem>
-          <ToolbarItem align={{ default: 'alignEnd' }}>
-            <span style={{ fontSize: 13, color: 'var(--pf-v6-global--Color--200)' }}>
+          <ToolbarItem align={{ default: 'alignEnd' }} variant="pagination">
+            <span className="mirror-toolbar-count">
               {filtered.length} of {rows.length}
             </span>
           </ToolbarItem>
@@ -137,7 +140,11 @@ export const ImageSetList: React.FC = () => {
 
       {filtered.length === 0 ? (
         <EmptyState variant={EmptyStateVariant.lg}>
-          <Title headingLevel="h2">{rows.length === 0 ? 'No ImageSets found' : 'No results match filter'}</Title>
+          <TextContent>
+            <Text component={TextVariants.h2}>
+              {rows.length === 0 ? 'No ImageSets found' : 'No results match filter'}
+            </Text>
+          </TextContent>
           <EmptyStateBody>
             {rows.length === 0
               ? 'Create an ImageSet and assign it to a MirrorTarget to start mirroring.'
@@ -151,10 +158,7 @@ export const ImageSetList: React.FC = () => {
               <Th>Name</Th>
               <Th>MirrorTarget</Th>
               <Th>Status</Th>
-              <Th style={{ minWidth: 200 }}>Progress</Th>
-              <Th>Total</Th>
-              <Th>Mirrored</Th>
-              <Th>Failed</Th>
+              <Th style={{ minWidth: 220 }}>Progress</Th>
               <Th>Resources</Th>
             </Tr>
           </Thead>
@@ -163,30 +167,23 @@ export const ImageSetList: React.FC = () => {
               const status = computeStatus(is.total, is.mirrored, is.pending, is.failed);
               return (
                 <Tr key={`${is.targetName}/${is.name}`}>
-                  <Td>
-                    <Link to={`/oc-mirror/targets/${is.targetName}/imagesets/${is.name}`} style={{ fontWeight: 500 }}>
+                  <Td dataLabel="Name">
+                    <Link to={`/oc-mirror/targets/${is.targetName}/imagesets/${is.name}`} className="mirror-link-strong">
                       {is.name}
                     </Link>
                   </Td>
-                  <Td>
+                  <Td dataLabel="MirrorTarget">
                     <Link to={`/oc-mirror/targets/${is.targetName}`}>
-                      <span className="mirror-tag">{is.targetName}</span>
+                      <Label isCompact color="grey">{is.targetName}</Label>
                     </Link>
                   </Td>
-                  <Td>
+                  <Td dataLabel="Status">
                     <StatusPill status={status} />
                   </Td>
-                  <Td>
+                  <Td dataLabel="Progress">
                     <ProgressBar total={is.total} mirrored={is.mirrored} pending={is.pending} failed={is.failed} />
                   </Td>
-                  <Td style={{ fontVariantNumeric: 'tabular-nums' }}>{is.total.toLocaleString()}</Td>
-                  <Td style={{ fontVariantNumeric: 'tabular-nums', color: 'var(--pf-v6-global--success-color--100)' }}>
-                    {is.mirrored.toLocaleString()}
-                  </Td>
-                  <Td style={{ fontVariantNumeric: 'tabular-nums', color: is.failed > 0 ? 'var(--pf-v6-global--danger-color--100)' : undefined }}>
-                    {is.failed.toLocaleString()}
-                  </Td>
-                  <Td style={{ fontVariantNumeric: 'tabular-nums', color: 'var(--pf-v6-global--Color--200)' }}>
+                  <Td dataLabel="Resources" className="mirror-toolbar-count">
                     {is.resources.length}
                   </Td>
                 </Tr>

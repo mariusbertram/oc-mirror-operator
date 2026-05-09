@@ -1,17 +1,32 @@
 import React, { useEffect, useState } from 'react';
 import {
   Alert,
-  Badge,
+  Breadcrumb,
+  BreadcrumbItem,
   Button,
   Card,
   CardBody,
   CardTitle,
+  DescriptionList,
+  DescriptionListDescription,
+  DescriptionListGroup,
+  DescriptionListTerm,
+  Flex,
+  FlexItem,
+  Label,
+  Modal,
+  ModalBody,
+  ModalFooter,
+  ModalHeader,
+  ModalVariant,
   PageSection,
   Spinner,
   Tab,
   Tabs,
   TabTitleText,
-  Title,
+  Text,
+  TextContent,
+  TextVariants,
 } from '@patternfly/react-core';
 import { Table, Thead, Tr, Th, Tbody, Td } from '@patternfly/react-table';
 import { useParams } from 'react-router';
@@ -32,6 +47,7 @@ export const MirrorTargetDetail: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<string | number>('overview');
+  const [deleteCandidate, setDeleteCandidate] = useState<{ ns: string; name: string } | null>(null);
 
   const load = () => {
     if (!name) return;
@@ -56,10 +72,11 @@ export const MirrorTargetDetail: React.FC = () => {
     }
   };
 
-  const handleDelete = async (namespace: string, isName: string) => {
-    if (!window.confirm(`Delete ImageSet ${isName}?`)) return;
+  const confirmDelete = async () => {
+    if (!deleteCandidate) return;
     try {
-      await deleteImageSet(namespace, isName);
+      await deleteImageSet(deleteCandidate.ns, deleteCandidate.name);
+      setDeleteCandidate(null);
       load();
     } catch (e) {
       alert(`Failed: ${(e as Error).message}`);
@@ -84,23 +101,32 @@ export const MirrorTargetDetail: React.FC = () => {
 
   return (
     <>
-      <PageSection style={{ paddingBottom: 0, borderBottom: '1px solid var(--pf-v6-global--BorderColor--100)' }}>
-        <div style={{ marginBottom: 6 }}>
-          <Link to="/oc-mirror/targets" style={{ fontSize: 13 }}>← MirrorTargets</Link>
-          {' / '}
-          <code style={{ fontSize: 13 }}>{name}</code>
-        </div>
-        <div className="mirror-row" style={{ marginBottom: 8 }}>
-          <Title headingLevel="h1">{target.name}</Title>
-          <code className="mirror-mono" style={{ marginLeft: 8, color: 'var(--pf-v6-global--Color--200)' }}>
-            {target.registry}
-          </code>
-          <div className="mirror-spacer" />
-          <StatusPill status={overallStatus} />
-          <Button variant="secondary" size="sm" onClick={load} isDisabled={loading} style={{ marginLeft: 8 }}>
-            Refresh
-          </Button>
-        </div>
+      <PageSection>
+        <Breadcrumb style={{ marginBottom: 'var(--pf-v6-global--spacer--md)' }}>
+          <BreadcrumbItem><Link to="/oc-mirror/targets">MirrorTargets</Link></BreadcrumbItem>
+          <BreadcrumbItem isActive>{name}</BreadcrumbItem>
+        </Breadcrumb>
+
+        <Flex alignItems={{ default: 'alignItemsCenter' }} style={{ rowGap: 'var(--pf-v6-global--spacer--sm)' }}>
+          <FlexItem>
+            <TextContent>
+              <Text component={TextVariants.h1}>{target.name}</Text>
+            </TextContent>
+          </FlexItem>
+          <FlexItem>
+            <code className="mirror-mono mirror-registry-label">{target.registry}</code>
+          </FlexItem>
+          <FlexItem align={{ default: 'alignRight' }}>
+            <Flex gap={{ default: 'gapSm' }} alignItems={{ default: 'alignItemsCenter' }}>
+              <FlexItem><StatusPill status={overallStatus} /></FlexItem>
+              <FlexItem>
+                <Button variant="secondary" size="sm" onClick={load} isDisabled={loading}>
+                  Refresh
+                </Button>
+              </FlexItem>
+            </Flex>
+          </FlexItem>
+        </Flex>
       </PageSection>
 
       <PageSection padding={{ default: 'noPadding' }}>
@@ -125,7 +151,7 @@ export const MirrorTargetDetail: React.FC = () => {
           <ImageSetsTab
             target={target}
             onRecollect={handleRecollect}
-            onDelete={handleDelete}
+            onDelete={(ns, n) => setDeleteCandidate({ ns, name: n })}
           />
         )}
         {activeTab === 'resources' && (
@@ -138,12 +164,40 @@ export const MirrorTargetDetail: React.FC = () => {
           <ConditionsTab target={target} />
         )}
       </PageSection>
+
+      <Modal
+        variant={ModalVariant.small}
+        isOpen={deleteCandidate !== null}
+        onClose={() => setDeleteCandidate(null)}
+        aria-label="Delete ImageSet"
+      >
+        <ModalHeader title="Delete ImageSet?" titleIconVariant="warning" />
+        <ModalBody>
+          <p>
+            Are you sure you want to delete <strong>{deleteCandidate?.name}</strong>?
+            This will remove the ImageSet and all associated mirroring state.
+          </p>
+        </ModalBody>
+        <ModalFooter>
+          <Button variant="danger" onClick={confirmDelete}>Delete</Button>
+          <Button variant="link" onClick={() => setDeleteCandidate(null)}>Cancel</Button>
+        </ModalFooter>
+      </Modal>
     </>
   );
 };
 
+const StatBox: React.FC<{ label: string; value: number; color?: string }> = ({ label, value, color }) => (
+  <div>
+    <div className="mirror-stat-label">{label}</div>
+    <div className="mirror-stat-value" style={color ? { color } : undefined}>
+      {value.toLocaleString()}
+    </div>
+  </div>
+);
+
 const OverviewTab: React.FC<{ target: TargetDetail }> = ({ target }) => (
-  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+  <div className="mirror-overview-grid">
     <Card>
       <CardTitle>Mirror progress</CardTitle>
       <CardBody>
@@ -153,54 +207,66 @@ const OverviewTab: React.FC<{ target: TargetDetail }> = ({ target }) => (
           pending={target.pendingImages}
           failed={target.failedImages}
         />
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginTop: 16 }}>
-          <StatBox label="Total" value={target.totalImages} />
+        <div className="mirror-stat-grid">
+          <StatBox label="Total"    value={target.totalImages} />
           <StatBox label="Mirrored" value={target.mirroredImages} color="var(--pf-v6-global--success-color--100)" />
-          <StatBox label="Pending" value={target.pendingImages} color="var(--pf-v6-global--warning-color--100)" />
-          <StatBox label="Failed" value={target.failedImages} color="var(--pf-v6-global--danger-color--100)" />
+          <StatBox label="Pending"  value={target.pendingImages}  color="var(--pf-v6-global--warning-color--100)" />
+          <StatBox label="Failed"   value={target.failedImages}   color="var(--pf-v6-global--danger-color--100)"  />
         </div>
       </CardBody>
     </Card>
+
     <Card>
       <CardTitle>Configuration</CardTitle>
       <CardBody>
-        <dl className="mirror-kv">
-          <dt>Namespace</dt><dd>{target.namespace}</dd>
-          <dt>Registry</dt><dd><code className="mirror-mono">{target.registry}</code></dd>
-          <dt>ImageSets</dt><dd>{target.imageSets.length} configured</dd>
-        </dl>
+        <DescriptionList isCompact>
+          <DescriptionListGroup>
+            <DescriptionListTerm>Namespace</DescriptionListTerm>
+            <DescriptionListDescription>{target.namespace}</DescriptionListDescription>
+          </DescriptionListGroup>
+          <DescriptionListGroup>
+            <DescriptionListTerm>Registry</DescriptionListTerm>
+            <DescriptionListDescription>
+              <code className="mirror-mono">{target.registry}</code>
+            </DescriptionListDescription>
+          </DescriptionListGroup>
+          <DescriptionListGroup>
+            <DescriptionListTerm>ImageSets</DescriptionListTerm>
+            <DescriptionListDescription>{target.imageSets.length} configured</DescriptionListDescription>
+          </DescriptionListGroup>
+        </DescriptionList>
       </CardBody>
     </Card>
+
     {target.resources.length > 0 && (
-      <Card style={{ gridColumn: '1 / 3' }}>
+      <Card className="mirror-overview-full">
         <CardTitle>Resource API</CardTitle>
         <CardBody>
-          {target.resources.slice(0, 3).map((r) => (
-            <div key={r.url} style={{ marginBottom: 4 }}>
-              <a href={getApiUrl(r.url)} target="_blank" rel="noreferrer">{r.name}</a>
-              {' '}
-              <span className="mirror-tag">{r.type}</span>
-            </div>
-          ))}
+          <DescriptionList isCompact>
+            {target.resources.slice(0, 3).map((r) => (
+              <DescriptionListGroup key={r.url}>
+                <DescriptionListTerm>
+                  <a href={getApiUrl(r.url)} target="_blank" rel="noreferrer">{r.name}</a>
+                </DescriptionListTerm>
+                <DescriptionListDescription>
+                  <Label isCompact color="grey">{r.type}</Label>
+                </DescriptionListDescription>
+              </DescriptionListGroup>
+            ))}
+          </DescriptionList>
           {target.resources.length > 3 && (
-            <Link to="#" onClick={() => {}} style={{ fontSize: 13 }}>
+            <Button
+              variant="link"
+              isInline
+              onClick={() => {}}
+              style={{ marginTop: 'var(--pf-v6-global--spacer--sm)', padding: 0 }}
+            >
               +{target.resources.length - 3} more — see Resources tab
-            </Link>
+            </Button>
           )}
         </CardBody>
       </Card>
     )}
-  </div>
-);
-
-const StatBox: React.FC<{ label: string; value: number; color?: string }> = ({ label, value, color }) => (
-  <div>
-    <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--pf-v6-global--Color--200)', fontWeight: 600 }}>
-      {label}
-    </div>
-    <div style={{ fontFamily: 'var(--pf-v6-global--FontFamily--heading--sans-serif)', fontSize: 26, fontWeight: 600, fontVariantNumeric: 'tabular-nums', color: color || 'inherit', letterSpacing: '-0.01em' }}>
-      {value.toLocaleString()}
-    </div>
   </div>
 );
 
@@ -213,17 +279,14 @@ const ImageSetsTab: React.FC<{
     <CardTitle>ImageSets ({target.imageSets.length})</CardTitle>
     <CardBody style={{ padding: 0 }}>
       {target.imageSets.length === 0 ? (
-        <div style={{ padding: 24, color: 'var(--pf-v6-global--Color--200)' }}>No ImageSets configured.</div>
+        <div className="mirror-empty-body">No ImageSets configured.</div>
       ) : (
         <Table aria-label="ImageSets" variant="compact">
           <Thead>
             <Tr>
               <Th>Name</Th>
               <Th>Status</Th>
-              <Th style={{ minWidth: 200 }}>Progress</Th>
-              <Th>Total</Th>
-              <Th>Mirrored</Th>
-              <Th>Failed</Th>
+              <Th style={{ minWidth: 220 }}>Progress</Th>
               <Th>Actions</Th>
             </Tr>
           </Thead>
@@ -232,43 +295,43 @@ const ImageSetsTab: React.FC<{
               const status = computeStatus(is.total, is.mirrored, is.pending, is.failed);
               return (
                 <Tr key={is.name}>
-                  <Td>
-                    <Link to={`/oc-mirror/targets/${target.name}/imagesets/${is.name}`} style={{ fontWeight: 500 }}>
+                  <Td dataLabel="Name">
+                    <Link to={`/oc-mirror/targets/${target.name}/imagesets/${is.name}`} className="mirror-link-strong">
                       {is.name}
                     </Link>
                   </Td>
-                  <Td><StatusPill status={status} /></Td>
-                  <Td>
+                  <Td dataLabel="Status">
+                    <StatusPill status={status} />
+                  </Td>
+                  <Td dataLabel="Progress">
                     <ProgressBar total={is.total} mirrored={is.mirrored} pending={is.pending} failed={is.failed} />
                   </Td>
-                  <Td style={{ fontVariantNumeric: 'tabular-nums' }}>{is.total.toLocaleString()}</Td>
-                  <Td style={{ fontVariantNumeric: 'tabular-nums' }}>{is.mirrored.toLocaleString()}</Td>
-                  <Td style={{ fontVariantNumeric: 'tabular-nums', color: is.failed > 0 ? 'var(--pf-v6-global--danger-color--100)' : undefined }}>
-                    {is.failed.toLocaleString()}
-                  </Td>
-                  <Td>
-                    <div className="mirror-row" style={{ gap: 6 }}>
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        onClick={() => onRecollect(target.namespace, is.name)}
-                      >
-                        Recollect
-                      </Button>
+                  <Td dataLabel="Actions">
+                    <Flex gap={{ default: 'gapSm' }} flexWrap={{ default: 'nowrap' }}>
+                      <FlexItem>
+                        <Button variant="secondary" size="sm" onClick={() => onRecollect(target.namespace, is.name)}>
+                          Recollect
+                        </Button>
+                      </FlexItem>
                       {target.catalogs.length > 0 && (
-                        <Link to={`/oc-mirror/targets/${target.name}/namespaces/${target.namespace}/imagesets/${is.name}/catalogs/${target.catalogs[0]?.slug}`}>
-                          <Button variant="link" size="sm" style={{ paddingLeft: 0 }}>Browse catalog</Button>
-                        </Link>
+                        <FlexItem>
+                          <Link to={`/oc-mirror/targets/${target.name}/namespaces/${target.namespace}/imagesets/${is.name}/catalogs/${target.catalogs[0]?.slug}`}>
+                            <Button variant="link" size="sm" isInline>Browse catalog</Button>
+                          </Link>
+                        </FlexItem>
                       )}
-                      <Button
-                        variant="plain"
-                        size="sm"
-                        style={{ color: 'var(--pf-v6-global--danger-color--100)' }}
-                        onClick={() => onDelete(target.namespace, is.name)}
-                      >
-                        Delete
-                      </Button>
-                    </div>
+                      <FlexItem>
+                        <Button
+                          variant="link"
+                          size="sm"
+                          isDanger
+                          isInline
+                          onClick={() => onDelete(target.namespace, is.name)}
+                        >
+                          Delete
+                        </Button>
+                      </FlexItem>
+                    </Flex>
                   </Td>
                 </Tr>
               );
@@ -292,7 +355,7 @@ const ResourcesTab: React.FC<{ target: TargetDetail }> = ({ target }) => {
 
   if (allResources.length === 0) {
     return (
-      <div style={{ color: 'var(--pf-v6-global--Color--200)', padding: 16 }}>
+      <div className="mirror-empty-body">
         No resources available yet. Resources are exposed once an ImageSet reaches Ready.
       </div>
     );
@@ -309,12 +372,12 @@ const ResourcesTab: React.FC<{ target: TargetDetail }> = ({ target }) => {
           <Tbody>
             {allResources.map((r) => (
               <Tr key={`${r.imageSet}-${r.url}`}>
-                <Td>
-                  {r.imageSet && <span className="mirror-tag" style={{ marginRight: 6 }}>{r.imageSet}</span>}
+                <Td dataLabel="Resource">
+                  {r.imageSet && <Label isCompact color="grey" style={{ marginRight: 6 }}>{r.imageSet}</Label>}
                   {r.name}
                 </Td>
-                <Td><span className="mirror-tag">{r.type}</span></Td>
-                <Td>
+                <Td dataLabel="Type"><Label isCompact color="grey">{r.type}</Label></Td>
+                <Td dataLabel="URL">
                   <a href={getApiUrl(r.url)} target="_blank" rel="noreferrer">
                     <code className="mirror-mono">{r.url}</code>
                   </a>
@@ -330,11 +393,7 @@ const ResourcesTab: React.FC<{ target: TargetDetail }> = ({ target }) => {
 
 const CatalogsTab: React.FC<{ target: TargetDetail }> = ({ target }) => {
   if (target.catalogs.length === 0) {
-    return (
-      <div style={{ color: 'var(--pf-v6-global--Color--200)', padding: 16 }}>
-        No catalogs tracked by this MirrorTarget.
-      </div>
-    );
+    return <div className="mirror-empty-body">No catalogs tracked by this MirrorTarget.</div>;
   }
 
   return (
@@ -348,13 +407,13 @@ const CatalogsTab: React.FC<{ target: TargetDetail }> = ({ target }) => {
           <Tbody>
             {target.catalogs.map((c) => (
               <Tr key={c.slug}>
-                <Td><strong>{c.slug}</strong></Td>
-                <Td><code className="mirror-mono">{c.source}</code></Td>
-                <Td><code className="mirror-mono">{c.targetImage}</code></Td>
-                <Td>
+                <Td dataLabel="Slug"><strong>{c.slug}</strong></Td>
+                <Td dataLabel="Source"><code className="mirror-mono">{c.source}</code></Td>
+                <Td dataLabel="Target image"><code className="mirror-mono">{c.targetImage}</code></Td>
+                <Td dataLabel="Browse">
                   {target.imageSets.length > 0 && (
                     <Link to={`/oc-mirror/targets/${target.name}/namespaces/${target.namespace}/imagesets/${target.imageSets[0]?.name}/catalogs/${c.slug}`}>
-                      <Button variant="link" size="sm" style={{ paddingLeft: 0 }}>Browse packages</Button>
+                      <Button variant="link" size="sm" isInline>Browse packages</Button>
                     </Link>
                   )}
                 </Td>
@@ -369,7 +428,7 @@ const CatalogsTab: React.FC<{ target: TargetDetail }> = ({ target }) => {
 
 const ConditionsTab: React.FC<{ target: TargetDetail }> = ({ target }) => {
   if (target.conditions.length === 0) {
-    return <div style={{ color: 'var(--pf-v6-global--Color--200)', padding: 16 }}>No conditions reported.</div>;
+    return <div className="mirror-empty-body">No conditions reported.</div>;
   }
 
   return (
@@ -383,19 +442,17 @@ const ConditionsTab: React.FC<{ target: TargetDetail }> = ({ target }) => {
           <Tbody>
             {target.conditions.map((c) => (
               <Tr key={c.type}>
-                <Td><strong>{c.type}</strong></Td>
-                <Td>
-                  <Badge style={{
-                    backgroundColor: c.status === 'True'
-                      ? 'var(--pf-v6-global--success-color--100)'
-                      : 'var(--pf-v6-global--danger-color--100)',
-                    color: '#fff',
-                  }}>
+                <Td dataLabel="Type"><strong>{c.type}</strong></Td>
+                <Td dataLabel="Status">
+                  <Label
+                    isCompact
+                    color={c.status === 'True' ? 'green' : 'red'}
+                  >
                     {c.status}
-                  </Badge>
+                  </Label>
                 </Td>
-                <Td><code className="mirror-mono">{c.reason}</code></Td>
-                <Td>{c.message}</Td>
+                <Td dataLabel="Reason"><code className="mirror-mono">{c.reason}</code></Td>
+                <Td dataLabel="Message">{c.message}</Td>
               </Tr>
             ))}
           </Tbody>
