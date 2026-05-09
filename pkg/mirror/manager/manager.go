@@ -360,13 +360,18 @@ func (m *MirrorManager) handleStatusUpdate(w http.ResponseWriter, r *http.Reques
 
 	fmt.Printf("Received status update from %s for %s\n", req.PodName, req.Destination)
 
+	imageset := ""
+	if entry := m.imageState[req.Destination]; entry != nil && len(entry.Refs) > 0 {
+		imageset = entry.Refs[0].ImageSet
+	}
+
 	if req.Error != "" {
 		m.setImageStateLocked(req.Destination, stateFailed, req.Error)
-		ocmetrics.ManagerImagesFailedTotal.WithLabelValues(m.TargetName, "").Inc()
+		ocmetrics.ManagerImagesFailedTotal.WithLabelValues(m.TargetName, imageset).Inc()
 	} else {
 		m.mirrored[req.Destination] = true
 		m.setImageStateLocked(req.Destination, stateMirrored, "")
-		ocmetrics.ManagerImagesMirroredTotal.WithLabelValues(m.TargetName, "").Inc()
+		ocmetrics.ManagerImagesMirroredTotal.WithLabelValues(m.TargetName, imageset).Inc()
 	}
 
 	// Remove from in-progress tracking. The pod itself is cleaned up by
@@ -768,6 +773,7 @@ func (m *MirrorManager) setImageStateLocked(dest, st, lastError string) {
 	m.stateDirty = true
 	if st == stateFailed {
 		entry.RetryCount++
+		ocmetrics.ManagerWorkerRetriesTotal.WithLabelValues(m.TargetName).Inc()
 		if entry.RetryCount >= 10 && !entry.PermanentlyFailed {
 			entry.PermanentlyFailed = true
 		}

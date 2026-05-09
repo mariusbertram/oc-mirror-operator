@@ -271,7 +271,7 @@ func (r *MonitoringReconciler) ensurePrometheusRule(ctx context.Context) error {
 					},
 					map[string]interface{}{
 						"alert": "OCMirrorNoProgress",
-						"expr":  "oc_mirror_mirrortarget_images_pending > 0 and rate(oc_mirror_manager_images_mirrored_total[30m]) == 0",
+						"expr":  "oc_mirror_mirrortarget_images_pending > 0 and on(target) rate(oc_mirror_manager_images_mirrored_total[30m]) == 0",
 						"for":   "30m",
 						"labels": map[string]interface{}{
 							"severity": "warning",

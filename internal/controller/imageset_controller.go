@@ -110,6 +110,14 @@ func (r *ImageSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (r
 	// The controller leaves these fields alone.
 	_ = pollExpired // currently used only by reconcileCatalogBuildJobs
 
+	// Expose the last successful poll time as a Prometheus gauge so dashboards
+	// and alerts can detect stale ImageSets without querying the API server.
+	if is.Status.LastSuccessfulPollTime != nil {
+		ocmetrics.ImageSetLastPollSeconds.WithLabelValues(is.Namespace, is.Name).Set(
+			float64(is.Status.LastSuccessfulPollTime.Unix()),
+		)
+	}
+
 	if pollingEnabled {
 		return ctrl.Result{RequeueAfter: pollInterval}, nil
 	}
