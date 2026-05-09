@@ -29,11 +29,10 @@ BUNDLE_METADATA_OPTS ?= $(BUNDLE_CHANNELS) $(BUNDLE_DEFAULT_CHANNEL)
 #
 # For example, running 'make bundle-build bundle-push catalog-build catalog-push' will build and push both
 # mirror.openshift.io/oc-mirror-bundle:$VERSION and mirror.openshift.io/oc-mirror-catalog:$VERSION.
-#IMAGE_TAG_BASE ?= ghcr.io/mariusbertram/oc-mirror-operator
-IMAGE_TAG_BASE ?= quay.lab.brtrm.dev/marius
+IMAGE_TAG_BASE ?= ghcr.io/mariusbertram/oc-mirror-operator
 # BUNDLE_IMG defines the image:tag used for the bundle.
 # You can use it as an arg. (E.g make bundle-build BUNDLE_IMG=<some-registry>/<project-name-bundle>:<tag>)
-BUNDLE_IMG ?= $(IMAGE_TAG_BASE)/oc-mirror-operator-bundle:v$(VERSION)
+BUNDLE_IMG ?= $(IMAGE_TAG_BASE)-bundle:v$(VERSION)
 
 # BUNDLE_GEN_FLAGS are the flags passed to the operator-sdk generate bundle command
 BUNDLE_GEN_FLAGS ?= -q --overwrite --version $(VERSION) $(BUNDLE_METADATA_OPTS)
@@ -49,12 +48,14 @@ endif
 # Set the Operator SDK version to use. By default, what is installed on the system is used.
 # This is useful for CI or a project to utilize a specific version of the operator-sdk toolkit.
 OPERATOR_SDK_VERSION ?= v1.42.2
-# Image URLs to use for building/pushing image targets
-IMG ?= quay.lab.brtrm.dev/marius/oc-mirror-operator:latest
-IMG_CONTROLLER ?= quay.lab.brtrm.dev/marius/oc-mirror-operator-controller:latest
-IMG_MANAGER ?= quay.lab.brtrm.dev/marius/oc-mirror-operator-manager:latest
-IMG_WORKER ?= quay.lab.brtrm.dev/marius/oc-mirror-operator-worker:latest
-IMG_PLUGIN ?= quay.lab.brtrm.dev/marius/oc-mirror-operator-plugin:latest
+# Image URLs to use for building/pushing image targets.
+# Derived from IMAGE_TAG_BASE and VERSION so that 'VERSION=x.y.z make bundle'
+# resolves the correct images on ghcr.io without extra overrides.
+IMG ?= $(IMAGE_TAG_BASE):v$(VERSION)
+IMG_CONTROLLER ?= $(IMAGE_TAG_BASE)-controller:v$(VERSION)
+IMG_MANAGER ?= $(IMAGE_TAG_BASE)-manager:v$(VERSION)
+IMG_WORKER ?= $(IMAGE_TAG_BASE)-worker:v$(VERSION)
+IMG_PLUGIN ?= $(IMAGE_TAG_BASE)-plugin:v$(VERSION)
 
 # Test/OLM deployment variables
 OPERATOR_NAMESPACE ?= oc-mirror-operator
@@ -566,7 +567,7 @@ endif
 BUNDLE_IMGS ?= $(BUNDLE_IMG)
 
 # The image tag given to the resulting catalog image (e.g. make catalog-build CATALOG_IMG=example.com/operator-catalog:v0.2.0).
-CATALOG_IMG ?= $(IMAGE_TAG_BASE)/oc-mirror-operator-catalog:v$(VERSION)
+CATALOG_IMG ?= $(IMAGE_TAG_BASE)-catalog:v$(VERSION)
 
 # Set CATALOG_BASE_IMG to an existing catalog image tag to add $BUNDLE_IMGS to that image.
 ifneq ($(origin CATALOG_BASE_IMG), undefined)

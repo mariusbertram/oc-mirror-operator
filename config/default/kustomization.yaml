@@ -94,16 +94,16 @@ replacements:
 # Image overrides for container references
 images:
 - name: controller
-  newName: quay.lab.brtrm.dev/marius/oc-mirror-operator-controller
+  newName: ghcr.io/mariusbertram/oc-mirror-operator-controller
   newTag: latest
 - name: manager
-  newName: quay.lab.brtrm.dev/marius/oc-mirror-operator-manager
+  newName: ghcr.io/mariusbertram/oc-mirror-operator-manager
   newTag: latest
 - name: worker
-  newName: quay.lab.brtrm.dev/marius/oc-mirror-operator-worker
+  newName: ghcr.io/mariusbertram/oc-mirror-operator-worker
   newTag: latest
 - name: plugin
-  newName: quay.lab.brtrm.dev/marius/oc-mirror-operator-plugin
+  newName: ghcr.io/mariusbertram/oc-mirror-operator-plugin
   newTag: latest
 
 # Uncomment the patches line if you enable Metrics and CertManager
