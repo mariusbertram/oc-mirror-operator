@@ -266,8 +266,8 @@ oc delete deployment oc-mirror-plugin -n oc-mirror-operator
 
 **Manager / Worker** (MirrorTarget controller):
 ```bash
-# Annotate the MirrorTarget to force a full reconcile
-oc annotate mirrortarget <name> \
+# Annotate the ImageSet to force a full recollection
+oc annotate imageset <name> \
   -n <namespace> \
   mirror.openshift.io/recollect=true \
   --overwrite
@@ -283,6 +283,14 @@ oc patch subscription oc-mirror \
   --type merge \
   -p '{"spec": {"config": {"env": []}}}'
 ```
+
+---
+
+## 7. Troubleshooting
+
+- **Image Pull Issues**: Ensure all 3 modular images are accessible from the cluster.
+- **RBAC Errors**: Check controller logs if it fails to create Manager deployments.
+- **Resource API 404s**: Ensure the `MirrorTarget` has `expose` configured correctly.
 
 ---
 
@@ -471,11 +479,3 @@ binary.  Build it from source (Go 1.21+) and then:
 This starts the full Console UI at **http://localhost:9000** with the plugin loaded from
 your local Go backend.  Run `make build-ui` and restart the Go binary whenever you
 change the UI.
-
----
-
-## 7. Troubleshooting
-
-- **Image Pull Issues**: Ensure all 3 modular images are accessible from the cluster.
-- **RBAC Errors**: Check controller logs if it fails to create Manager deployments.
-- **Resource API 404s**: Ensure the `MirrorTarget` has `expose` configured correctly.

@@ -126,7 +126,7 @@ Pod-specific orchestration for a single MirrorTarget:
 - Status API for worker callbacks
 - Idempotent resource creation (Deployments, ConfigMaps, etc.)
 
-**Usage**: **Internal only** — instantiated by `cmd/main.go manager` subcommand
+**Usage**: **Internal only** — instantiated by `cmd/manager/main.go`
 **Scope**: Single MirrorTarget coordination
 
 ### `catalog/builder.JobBuilder` (491 LOC)
@@ -150,7 +150,7 @@ Parallel goroutine pool for mirroring tasks:
 - Task distribution across worker goroutines
 - Error collection and retry handling
 
-**Usage**: **Internal only** — instantiated by `cmd/worker` subcommand
+**Usage**: **Internal only** — instantiated by `cmd/worker/main.go`
 **Scope**: Single worker pod's image mirroring
 
 ---

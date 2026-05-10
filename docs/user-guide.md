@@ -913,8 +913,8 @@ kubectl get mirrortarget quay-mirror -n mein-mirror -o json | jq '.status'
     {
       "type": "Ready",
       "status": "True",
-      "reason": "Reconciled",
-      "message": "MirrorTarget reconciled successfully",
+      "reason": "DeploymentReady",
+      "message": "Manager deployment is active",
       "lastTransitionTime": "2026-04-22T20:00:00Z"
     }
   ],
@@ -965,9 +965,10 @@ kubectl get imageset operators-4-14 -n mein-mirror -o json | jq '.status'
 |---------------|--------|--------|---------|
 | `Ready` | `True` | `Collected` | All images resolved, mirroring is running or complete |
 | `Ready` | `False` | `Empty` | No images resolved yet (initial startup) |
-| `CatalogReady` | `True` | `CatalogBuilt` | Filtered operator catalog successfully built and pushed |
+| `CatalogReady` | `True` | `CatalogBuildSucceeded` | Filtered operator catalog successfully built and pushed |
 | `CatalogReady` | `False` | `WaitingForOperatorMirror` | Waiting for operator mirroring to complete |
-| `CatalogReady` | `False` | `NoCatalogConfigured` | No operator catalog configured in the spec |
+| `CatalogReady` | `False` | `CatalogBuildRunning` | Catalog build Job is currently running |
+| `CatalogReady` | `False` | `CatalogBuildFailed` | Catalog build Job failed |
 
 ### 8.3 Failed Images
 

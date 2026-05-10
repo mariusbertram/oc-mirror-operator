@@ -37,7 +37,6 @@ kubectl get mirrortargets -n <namespace>
 | Annotation | Value | Description |
 |---|---|---|
 | `mirror.openshift.io/cleanup-policy` | `Delete` | Delete images from the target registry when an ImageSet is removed from `spec.imageSets`. |
-| `mirror.openshift.io/recollect` | `"true"` (any value) | Force re-resolution of all upstream content on the next reconcile. One-shot: removed by the manager after recollection completes. |
 
 ---
 
@@ -145,7 +144,7 @@ Applies to both `spec.manager` and `spec.worker`.
 
 | Field | Type | Description |
 |---|---|---|
-| `conditions` | `[]metav1.Condition` | Standard Kubernetes conditions. See [Conditions](#conditions). |
+| `conditions` | `[]metav1.Condition` | Standard Kubernetes conditions. See [MirrorTarget Conditions](#conditions). |
 | `totalImages` | `int` | Cumulative image count across all ImageSets. |
 | `mirroredImages` | `int` | Cumulative successfully mirrored count. |
 | `pendingImages` | `int` | Cumulative pending/in-progress count. |
@@ -169,13 +168,12 @@ Applies to both `spec.manager` and `spec.worker`.
 
 | Type | Status | Reason | Description |
 |---|---|---|---|
-| `Ready` | `True` | `AllImagesMirrored` | All images are mirrored. |
-| `Ready` | `False` | `MirroringInProgress` | Mirroring is in progress. |
-| `Ready` | `False` | `ImagesFailed` | One or more images permanently failed. |
-| `Ready` | `False` | `ManagerNotReady` | Manager pod is not yet running. |
-| `CatalogReady` | `True` | `CatalogBuilt` | Filtered catalog image built successfully. |
-| `CatalogReady` | `False` | `CatalogBuildInProgress` | Catalog build Job is running. |
-| `CatalogReady` | `False` | `CatalogBuildFailed` | Catalog build Job failed. |
+| `Ready` | `True` | `DeploymentReady` | Manager deployment is active. |
+| `Ready` | `False` | `ReconcileError` | A reconcile error occurred (e.g. RBAC, Deployment, or status sync failure). |
+| `Ready` | `False` | `ExposureError` | Route or Ingress creation failed. |
+| `Cleanup` | `True` | `CleanupComplete` | No pending cleanups; all orphaned images have been removed. |
+| `Cleanup` | `False` | `CleanupInProgress` | Cleanup jobs are still running. |
+| `Cleanup` | `False` | `CleanupError` | One or more cleanup jobs failed. |
 
 ---
 
@@ -271,11 +269,19 @@ kubectl get imagesets -n <namespace>
 
 ---
 
+### Annotations
+
+| Annotation | Value | Description |
+|---|---|---|
+| `mirror.openshift.io/recollect` | `"true"` (any value) | Force re-resolution of all upstream content on the next reconcile. One-shot: removed by the manager after recollection completes. |
+
+---
+
 ### Status
 
 | Field | Type | Description |
 |---|---|---|
-| `conditions` | `[]metav1.Condition` | Standard conditions (see above). |
+| `conditions` | `[]metav1.Condition` | Standard conditions. See [ImageSet Conditions](#conditions-1). |
 | `totalImages` | `int` | Total image count for this ImageSet. |
 | `mirroredImages` | `int` | Successfully mirrored. |
 | `pendingImages` | `int` | Pending or in-progress. |
@@ -292,6 +298,17 @@ kubectl get imagesets -n <namespace>
 | `destination` | Target registry reference. |
 | `error` | Last error message. |
 | `origin` | Human-readable description of the spec entry that produced this image. |
+
+#### Conditions
+
+| Type | Status | Reason | Description |
+|---|---|---|---|
+| `Ready` | `True` | `Collected` | Images have been collected and are ready to mirror. |
+| `Ready` | `False` | `Empty` | No images collected yet. |
+| `CatalogReady` | `True` | `CatalogBuildSucceeded` | All catalog build jobs completed successfully. |
+| `CatalogReady` | `False` | `CatalogBuildFailed` | One or more catalog build jobs failed. |
+| `CatalogReady` | `False` | `CatalogBuildRunning` | Catalog build jobs are still running. |
+| `CatalogReady` | `False` | `WaitingForOperatorMirror` | Waiting for operator images to finish mirroring before building the filtered catalog. |
 
 ---
 
