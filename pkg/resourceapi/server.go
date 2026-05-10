@@ -80,7 +80,7 @@ const channelCacheTTL = time.Hour
 // API and the ConfigMap override are unavailable (e.g. air-gapped clusters).
 var defaultOCPChannels = func() []ocpChannelEntry {
 	types := []string{"stable", "fast", "eus", "candidate"}
-	versions := []string{"4.14", "4.15", "4.16", "4.17", "4.18", "4.19"}
+	versions := []string{"4.14", "4.15", "4.16", "4.17", "4.18", "4.19", "4.20", "4.21"}
 	entries := make([]ocpChannelEntry, 0, len(versions)*len(types))
 	for _, ver := range versions {
 		minor, _ := strconv.Atoi(strings.Split(ver, ".")[1])
