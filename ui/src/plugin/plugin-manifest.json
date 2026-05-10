@@ -9,6 +9,7 @@
     "FailedImagesPage": "./plugin/pages/FailedImagesPage",
     "FailedImagesAllPage": "./plugin/pages/FailedImagesAllPage",
     "CatalogBrowserPage": "./plugin/pages/CatalogBrowserPage",
+    "ReleaseBrowserPage": "./plugin/pages/ReleaseBrowserPage",
     "ImageSetListPage": "./plugin/pages/ImageSetListPage",
     "ImageSetDetailPage": "./plugin/pages/ImageSetDetailPage"
   },
