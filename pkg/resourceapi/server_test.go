@@ -19,6 +19,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
@@ -527,4 +528,389 @@ var _ = Describe("ResourceAPI Server", func() {
 			Expect(found2.Namespace).To(Equal("namespace-b"))
 		})
 	})
+
+	// ─── serveConfigMapResource missing key ────────────────────────────────────
+
+	Describe("serveConfigMapResource missing key", func() {
+		It("returns 404 when ConfigMap exists but key is absent", func() {
+			// CM exists but does NOT have "itms.yaml" key
+			scheme := runtime.NewScheme()
+			_ = corev1.AddToScheme(scheme)
+			_ = mirrorv1alpha1.AddToScheme(scheme)
+
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: "nokey-mt", Namespace: ns},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com"},
+			}
+			cm := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "oc-mirror-nokey-mt-resources",
+					Namespace: ns,
+				},
+				Data: map[string]string{
+					"idms.yaml": "kind: ImageDigestMirrorSet",
+					// "itms.yaml" intentionally absent
+				},
+			}
+
+			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(mt, cm).Build()
+			s := resourceapi.NewServer(c, ns)
+			r := mux.NewRouter()
+			s.RegisterAPIRoutes(r)
+
+			req := httptest.NewRequest("GET", "/api/v1/targets/nokey-mt/imagesets/any/itms.yaml", nil)
+			rr := httptest.NewRecorder()
+			r.ServeHTTP(rr, req)
+
+			Expect(rr.Code).To(Equal(http.StatusNotFound))
+		})
+	})
+
+	// ─── handleTargetDetail with no resources CM ────────────────────────────────
+
+	Describe("handleTargetDetail without resources ConfigMap", func() {
+		It("returns 200 with empty resources when the resources ConfigMap does not exist", func() {
+			scheme := runtime.NewScheme()
+			_ = corev1.AddToScheme(scheme)
+			_ = mirrorv1alpha1.AddToScheme(scheme)
+
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: "bare-mt", Namespace: ns},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com"},
+			}
+
+			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(mt).Build()
+			s := resourceapi.NewServer(c, ns)
+			r := mux.NewRouter()
+			s.RegisterAPIRoutes(r)
+
+			req := httptest.NewRequest("GET", "/api/v1/targets/bare-mt", nil)
+			rr := httptest.NewRecorder()
+			r.ServeHTTP(rr, req)
+
+			Expect(rr.Code).To(Equal(http.StatusOK))
+			var detail resourceapi.TargetDetail
+			Expect(json.Unmarshal(rr.Body.Bytes(), &detail)).To(Succeed())
+			Expect(detail.Resources).To(BeEmpty())
+		})
+	})
+
+	// ─── clientForRequest with token header ────────────────────────────────────
+
+	Describe("clientForRequest with auth headers", func() {
+		It("does not panic when Authorization header is present", func() {
+			// When a Bearer token is sent, clientForRequest tries to create a
+			// token-scoped client. In a unit-test context (no real cluster) the
+			// client may or may not work, but the handler must not panic.
+			req := httptest.NewRequest("GET", fmt.Sprintf("/api/v1/targets/%s", mtName), nil)
+			req.Header.Set("Authorization", "Bearer some-dummy-token")
+			rr := httptest.NewRecorder()
+			Expect(func() { router.ServeHTTP(rr, req) }).NotTo(Panic())
+			Expect(rr.Code).To(BeNumerically(">=", 200))
+		})
+
+		It("does not panic when X-Forwarded-Access-Token header is present", func() {
+			req := httptest.NewRequest("GET", fmt.Sprintf("/api/v1/targets/%s", mtName), nil)
+			req.Header.Set("X-Forwarded-Access-Token", "forwarded-token-value")
+			rr := httptest.NewRecorder()
+			Expect(func() { router.ServeHTTP(rr, req) }).NotTo(Panic())
+			Expect(rr.Code).To(BeNumerically(">=", 200))
+		})
+	})
+
+	// ─── resolveNamespace (cluster-wide mode) ──────────────────────────────────
+
+	Describe("resolveNamespace via cluster-wide server", func() {
+		It("looks up MirrorTarget namespace in cluster-wide mode", func() {
+			scheme := runtime.NewScheme()
+			_ = corev1.AddToScheme(scheme)
+			_ = mirrorv1alpha1.AddToScheme(scheme)
+
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: "cw-mt", Namespace: "cw-ns"},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com/mirror"},
+			}
+			resourcesCM := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "oc-mirror-cw-mt-resources",
+					Namespace: "cw-ns",
+				},
+				Data: map[string]string{"idms.yaml": "kind: ImageDigestMirrorSet"},
+			}
+
+			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(mt, resourcesCM).Build()
+			s := resourceapi.NewServerClusterWide(c)
+			r := mux.NewRouter()
+			s.RegisterAPIRoutes(r)
+
+			req := httptest.NewRequest("GET", "/api/v1/targets/cw-mt/imagesets/any/idms.yaml", nil)
+			rr := httptest.NewRecorder()
+			r.ServeHTTP(rr, req)
+
+			Expect(rr.Code).To(Equal(http.StatusOK))
+		})
+
+		It("returns 404 when MirrorTarget is not found in cluster-wide mode", func() {
+			scheme := runtime.NewScheme()
+			_ = corev1.AddToScheme(scheme)
+			_ = mirrorv1alpha1.AddToScheme(scheme)
+
+			c := fake.NewClientBuilder().WithScheme(scheme).Build()
+			s := resourceapi.NewServerClusterWide(c)
+			r := mux.NewRouter()
+			s.RegisterAPIRoutes(r)
+
+			req := httptest.NewRequest("GET", "/api/v1/targets/nonexistent/imagesets/any/idms.yaml", nil)
+			rr := httptest.NewRecorder()
+			r.ServeHTTP(rr, req)
+
+			Expect(rr.Code).To(Equal(http.StatusNotFound))
+		})
+	})
+
+	// ─── Upstream Catalog Packages ─────────────────────────────────────────────
+
+	Describe("handleUpstreamCatalogPackages", func() {
+		It("serves upstream packages from ConfigMap", func() {
+			scheme := runtime.NewScheme()
+			_ = corev1.AddToScheme(scheme)
+			_ = mirrorv1alpha1.AddToScheme(scheme)
+
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: mtName, Namespace: ns},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "registry.example.com/mirror"},
+			}
+			upstreamCM := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      fmt.Sprintf("oc-mirror-%s-my-slug-upstream-packages", mtName),
+					Namespace: ns,
+				},
+				Data: map[string]string{
+					"packages.json": `{"catalog":"upstream-catalog","packages":[]}`,
+				},
+			}
+
+			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(mt, upstreamCM).Build()
+			s := resourceapi.NewServer(c, ns)
+			r := mux.NewRouter()
+			s.RegisterAPIRoutes(r)
+
+			req := httptest.NewRequest("GET", fmt.Sprintf("/api/v1/targets/%s/catalogs/my-slug/upstream-packages.json", mtName), nil)
+			rr := httptest.NewRecorder()
+			r.ServeHTTP(rr, req)
+
+			Expect(rr.Code).To(Equal(http.StatusOK))
+			Expect(rr.Body.String()).To(ContainSubstring("upstream-catalog"))
+		})
+
+		It("returns 404 when upstream packages ConfigMap does not exist", func() {
+			req := httptest.NewRequest("GET", fmt.Sprintf("/api/v1/targets/%s/catalogs/nonexistent-slug/upstream-packages.json", mtName), nil)
+			rr := httptest.NewRecorder()
+			router.ServeHTTP(rr, req)
+			Expect(rr.Code).To(Equal(http.StatusNotFound))
+		})
+	})
+
+	// ─── Edit handlers ─────────────────────────────────────────────────────────
+
+	Describe("handleGetPackageConstraints", func() {
+		It("returns package constraints for an existing catalog slug", func() {
+			scheme := runtime.NewScheme()
+			_ = corev1.AddToScheme(scheme)
+			_ = mirrorv1alpha1.AddToScheme(scheme)
+
+			is := &mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "my-is", Namespace: ns},
+				Spec: mirrorv1alpha1.ImageSetSpec{
+					Mirror: mirrorv1alpha1.Mirror{
+						Operators: []mirrorv1alpha1.Operator{
+							{
+								// CatalogSlug("registry.redhat.io/redhat/redhat-operator-index:v4.12") == "redhat-operator-index"
+								Catalog: "registry.redhat.io/redhat/redhat-operator-index:v4.12",
+								IncludeConfig: mirrorv1alpha1.IncludeConfig{
+									Packages: []mirrorv1alpha1.IncludePackage{
+										{Name: "openshift-pipelines-operator-rh", IncludeBundle: mirrorv1alpha1.IncludeBundle{MinVersion: "1.0.0"}},
+									},
+								},
+							},
+						},
+					},
+				},
+			}
+
+			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(is).Build()
+			s := resourceapi.NewServer(c, ns)
+			r := mux.NewRouter()
+			s.RegisterAPIRoutes(r)
+
+			url := fmt.Sprintf("/api/v1/imagesets/%s/my-is/catalogs/redhat-operator-index/packages", ns)
+			req := httptest.NewRequest("GET", url, nil)
+			rr := httptest.NewRecorder()
+			r.ServeHTTP(rr, req)
+
+			Expect(rr.Code).To(Equal(http.StatusOK))
+			Expect(rr.Body.String()).To(ContainSubstring("openshift-pipelines-operator-rh"))
+		})
+
+		It("returns empty array when catalog slug matches no operator", func() {
+			scheme := runtime.NewScheme()
+			_ = corev1.AddToScheme(scheme)
+			_ = mirrorv1alpha1.AddToScheme(scheme)
+
+			is := &mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "my-is2", Namespace: ns},
+			}
+
+			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(is).Build()
+			s := resourceapi.NewServer(c, ns)
+			r := mux.NewRouter()
+			s.RegisterAPIRoutes(r)
+
+			url := fmt.Sprintf("/api/v1/imagesets/%s/my-is2/catalogs/no-match/packages", ns)
+			req := httptest.NewRequest("GET", url, nil)
+			rr := httptest.NewRecorder()
+			r.ServeHTTP(rr, req)
+
+			Expect(rr.Code).To(Equal(http.StatusOK))
+			Expect(rr.Body.String()).To(ContainSubstring("[]"))
+		})
+
+		It("returns 404 for a non-existent ImageSet", func() {
+			url := fmt.Sprintf("/api/v1/imagesets/%s/nonexistent/catalogs/any-slug/packages", ns)
+			req := httptest.NewRequest("GET", url, nil)
+			rr := httptest.NewRecorder()
+			router.ServeHTTP(rr, req)
+			Expect(rr.Code).To(Equal(http.StatusNotFound))
+		})
+	})
+
+	Describe("handlePatchCatalogPackages", func() {
+		var patchRouter http.Handler
+
+		BeforeEach(func() {
+			sc := runtime.NewScheme()
+			_ = corev1.AddToScheme(sc)
+			_ = mirrorv1alpha1.AddToScheme(sc)
+			is := &mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "patch-is", Namespace: ns},
+				Spec: mirrorv1alpha1.ImageSetSpec{
+					Mirror: mirrorv1alpha1.Mirror{
+						Operators: []mirrorv1alpha1.Operator{
+							// CatalogSlug == "redhat-operator-index"
+							{Catalog: "registry.redhat.io/redhat/redhat-operator-index:v4.12"},
+						},
+					},
+				},
+			}
+			c := fake.NewClientBuilder().WithScheme(sc).WithObjects(is).Build()
+			s := resourceapi.NewServer(c, ns)
+			r := mux.NewRouter()
+			s.RegisterAPIRoutes(r)
+			patchRouter = r
+		})
+
+		It("updates package filter with include list format", func() {
+			body := `{"include":["pkg-a","pkg-b"],"exclude":[]}`
+			url := fmt.Sprintf("/api/v1/imagesets/%s/patch-is/catalogs/redhat-operator-index/packages", ns)
+			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(body))
+			rr := httptest.NewRecorder()
+			patchRouter.ServeHTTP(rr, req)
+			Expect(rr.Code).To(Equal(http.StatusNoContent))
+		})
+
+		It("updates package filter with extended packages format", func() {
+			body := `{"packages":[{"name":"my-pkg","minVersion":"1.0.0","channels":[{"name":"stable","minVersion":"1.0.0"}]}],"exclude":[]}`
+			url := fmt.Sprintf("/api/v1/imagesets/%s/patch-is/catalogs/redhat-operator-index/packages", ns)
+			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(body))
+			rr := httptest.NewRecorder()
+			patchRouter.ServeHTTP(rr, req)
+			Expect(rr.Code).To(Equal(http.StatusNoContent))
+		})
+
+		It("returns 400 for invalid JSON body", func() {
+			url := fmt.Sprintf("/api/v1/imagesets/%s/patch-is/catalogs/redhat-operator-index/packages", ns)
+			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString("{invalid json"))
+			rr := httptest.NewRecorder()
+			patchRouter.ServeHTTP(rr, req)
+			Expect(rr.Code).To(Equal(http.StatusBadRequest))
+		})
+
+		It("returns 404 for a non-existent ImageSet", func() {
+			url := fmt.Sprintf("/api/v1/imagesets/%s/ghost-is/catalogs/any/packages", ns)
+			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(`{"exclude":[]}`))
+			rr := httptest.NewRecorder()
+			router.ServeHTTP(rr, req)
+			Expect(rr.Code).To(Equal(http.StatusNotFound))
+		})
+
+		It("returns 404 when catalog slug not found in existing ImageSet", func() {
+			url := fmt.Sprintf("/api/v1/imagesets/%s/patch-is/catalogs/wrong-slug/packages", ns)
+			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(`{"exclude":[]}`))
+			rr := httptest.NewRecorder()
+			patchRouter.ServeHTTP(rr, req)
+			Expect(rr.Code).To(Equal(http.StatusNotFound))
+		})
+	})
+
+	Describe("write handlers (recollect and delete)", func() {
+		var (
+			withIsRouter http.Handler
+			emptyRouter  http.Handler
+		)
+
+		BeforeEach(func() {
+			withIsRouter = buildServerRouter(ns,
+				&mirrorv1alpha1.ImageSet{ObjectMeta: metav1.ObjectMeta{Name: "my-is", Namespace: ns}},
+			)
+			emptyRouter = buildServerRouter(ns)
+		})
+
+		Context("handleTriggerRecollect", func() {
+			It("sets the recollect annotation on an existing ImageSet", func() {
+				url := fmt.Sprintf("/api/v1/imagesets/%s/my-is/recollect", ns)
+				req := httptest.NewRequest("PATCH", url, nil)
+				rr := httptest.NewRecorder()
+				withIsRouter.ServeHTTP(rr, req)
+				Expect(rr.Code).To(Equal(http.StatusNoContent))
+			})
+
+			It("returns 404 for a non-existent ImageSet", func() {
+				url := fmt.Sprintf("/api/v1/imagesets/%s/ghost-is/recollect", ns)
+				req := httptest.NewRequest("PATCH", url, nil)
+				rr := httptest.NewRecorder()
+				emptyRouter.ServeHTTP(rr, req)
+				Expect(rr.Code).To(Equal(http.StatusNotFound))
+			})
+		})
+
+		Context("handleDeleteImageSet", func() {
+			It("deletes an existing ImageSet", func() {
+				url := fmt.Sprintf("/api/v1/imagesets/%s/my-is", ns)
+				req := httptest.NewRequest("DELETE", url, nil)
+				rr := httptest.NewRecorder()
+				withIsRouter.ServeHTTP(rr, req)
+				Expect(rr.Code).To(Equal(http.StatusNoContent))
+			})
+
+			It("returns 404 when ImageSet does not exist", func() {
+				url := fmt.Sprintf("/api/v1/imagesets/%s/nonexistent", ns)
+				req := httptest.NewRequest("DELETE", url, nil)
+				rr := httptest.NewRecorder()
+				emptyRouter.ServeHTTP(rr, req)
+				Expect(rr.Code).To(Equal(http.StatusNotFound))
+			})
+		})
+	})
 })
+
+// buildServerRouter builds a mux.Router backed by a fake client containing the given objects.
+func buildServerRouter(namespace string, objs ...client.Object) http.Handler {
+	sc := runtime.NewScheme()
+	_ = corev1.AddToScheme(sc)
+	_ = mirrorv1alpha1.AddToScheme(sc)
+	c := fake.NewClientBuilder().WithScheme(sc).WithObjects(objs...).Build()
+	s := resourceapi.NewServer(c, namespace)
+	r := mux.NewRouter()
+	s.RegisterAPIRoutes(r)
+	return r
+}

@@ -11,13 +11,16 @@ import (
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/imagestate"
+	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/resources"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/operator-framework/operator-registry/alpha/declcfg"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	k8sfake "k8s.io/client-go/kubernetes/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
@@ -2235,6 +2238,138 @@ var _ = Describe("Manager Coverage", func() {
 			err := m.ensureWorkerTokenSecret(context.TODO(), mt)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(m.workerToken).NotTo(BeEmpty())
+		})
+	})
+
+	// ─── extractDigest ───────────────────────────────────────────────
+
+	Context("extractDigest", func() {
+		It("extracts sha256 digest from a digest-based image ref", func() {
+			ref := "registry.example.com/repo@sha256:abc123def456"
+			Expect(extractDigest(ref)).To(Equal("sha256:abc123def456"))
+		})
+
+		It("extracts sha256 digest when tag is also present", func() {
+			ref := "registry.example.com/repo:v4.12@sha256:deadbeef0000"
+			Expect(extractDigest(ref)).To(Equal("sha256:deadbeef0000"))
+		})
+
+		It("returns empty string when no digest present", func() {
+			ref := "registry.example.com/repo:latest"
+			Expect(extractDigest(ref)).To(BeEmpty())
+		})
+
+		It("returns empty string for empty input", func() {
+			Expect(extractDigest("")).To(BeEmpty())
+		})
+	})
+
+	// ─── signatureConfigMapName ──────────────────────────────────────
+
+	Context("signatureConfigMapName", func() {
+		It("returns target name suffixed with -signatures", func() {
+			Expect(m.signatureConfigMapName()).To(Equal("test-signatures"))
+		})
+	})
+
+	// ─── writeCatalogPackagesCM ──────────────────────────────────────
+
+	Context("writeCatalogPackagesCM", func() {
+		var (
+			info resources.CatalogInfo
+			cfg  *declcfg.DeclarativeConfig
+		)
+
+		BeforeEach(func() {
+			info = resources.CatalogInfo{
+				SourceCatalog: "registry.example.com/catalog:v4.12",
+				TargetImage:   "mirror.example.com/catalog:v4.12",
+				DisplayName:   "Test Catalog",
+			}
+			cfg = &declcfg.DeclarativeConfig{}
+		})
+
+		It("creates a filtered packages ConfigMap when isUpstream=false", func() {
+			Expect(m.writeCatalogPackagesCM(context.TODO(), "test-slug", info, cfg, false)).To(Succeed())
+
+			cm := &corev1.ConfigMap{}
+			Expect(m.Client.Get(context.TODO(), client.ObjectKey{
+				Name:      "oc-mirror-test-test-slug-packages",
+				Namespace: "default",
+			}, cm)).To(Succeed())
+			Expect(cm.Data).To(HaveKey("packages.json"))
+			Expect(cm.Labels).To(HaveKeyWithValue("oc-mirror.openshift.io/catalog-packages", "test-slug"))
+		})
+
+		It("creates an upstream packages ConfigMap when isUpstream=true", func() {
+			Expect(m.writeCatalogPackagesCM(context.TODO(), "test-slug", info, cfg, true)).To(Succeed())
+
+			cm := &corev1.ConfigMap{}
+			Expect(m.Client.Get(context.TODO(), client.ObjectKey{
+				Name:      "oc-mirror-test-test-slug-upstream-packages",
+				Namespace: "default",
+			}, cm)).To(Succeed())
+			Expect(cm.Data).To(HaveKey("packages.json"))
+			Expect(cm.Labels).To(HaveKeyWithValue("oc-mirror.openshift.io/catalog-upstream-packages", "test-slug"))
+		})
+
+		It("updates an existing ConfigMap on repeated calls", func() {
+			Expect(m.writeCatalogPackagesCM(context.TODO(), "upd-slug", info, cfg, false)).To(Succeed())
+			// Second call must update, not fail with AlreadyExists.
+			Expect(m.writeCatalogPackagesCM(context.TODO(), "upd-slug", info, cfg, false)).To(Succeed())
+		})
+
+		It("sets the mirrortarget label on the ConfigMap", func() {
+			Expect(m.writeCatalogPackagesCM(context.TODO(), "lbl-slug", info, cfg, false)).To(Succeed())
+
+			cm := &corev1.ConfigMap{}
+			Expect(m.Client.Get(context.TODO(), client.ObjectKey{
+				Name:      "oc-mirror-test-lbl-slug-packages",
+				Namespace: "default",
+			}, cm)).To(Succeed())
+			Expect(cm.Labels).To(HaveKeyWithValue("oc-mirror.openshift.io/mirrortarget", "test"))
+		})
+	})
+
+	// ─── saveCatalogPackages ─────────────────────────────────────────
+
+	Context("saveCatalogPackages", func() {
+		It("creates both filtered and upstream ConfigMaps", func() {
+			info := resources.CatalogInfo{
+				SourceCatalog: "registry.example.com/catalog:v4.12",
+				TargetImage:   "mirror.example.com/catalog:v4.12",
+			}
+			cfg := &declcfg.DeclarativeConfig{}
+			Expect(m.saveCatalogPackages(context.TODO(), "save-slug", info, cfg, cfg)).To(Succeed())
+
+			cm := &corev1.ConfigMap{}
+			Expect(m.Client.Get(context.TODO(), client.ObjectKey{
+				Name:      "oc-mirror-test-save-slug-packages",
+				Namespace: "default",
+			}, cm)).To(Succeed())
+
+			upstreamCM := &corev1.ConfigMap{}
+			Expect(m.Client.Get(context.TODO(), client.ObjectKey{
+				Name:      "oc-mirror-test-save-slug-upstream-packages",
+				Namespace: "default",
+			}, upstreamCM)).To(Succeed())
+		})
+	})
+
+	// ─── ensureUpstreamCatalogPackages ──────────────────────────────────
+
+	Context("ensureUpstreamCatalogPackages", func() {
+		It("returns nil without calling the resolver when upstream CM already exists", func() {
+			existing := &corev1.ConfigMap{}
+			existing.Name = "oc-mirror-test-preexist-slug-upstream-packages"
+			existing.Namespace = "default"
+			existing.Data = map[string]string{"packages.json": `{"catalog":"","targetImage":"","packages":[]}`}
+			Expect(m.Client.Create(context.TODO(), existing)).To(Succeed())
+
+			info := resources.CatalogInfo{SourceCatalog: "registry.example.com/catalog:v4.12"}
+			// resolver is nil — if LoadFBC were called it would panic.
+			err := m.ensureUpstreamCatalogPackages(context.TODO(), nil, "preexist-slug", info)
+			Expect(err).NotTo(HaveOccurred())
 		})
 	})
 })
