@@ -112,6 +112,11 @@ export const ImageSetDetail: React.FC = () => {
             <Flex gap={{ default: 'gapSm' }} alignItems={{ default: 'alignItemsCenter' }}>
               <FlexItem><StatusPill status={status} /></FlexItem>
               <FlexItem>
+                <Link to={`/oc-mirror/targets/${targetName}/namespaces/${target.namespace}/imagesets/${imageSetName}/releases`}>
+                  <Button variant="secondary" size="sm">Browse releases</Button>
+                </Link>
+              </FlexItem>
+              <FlexItem>
                 <Button
                   variant="secondary"
                   size="sm"
