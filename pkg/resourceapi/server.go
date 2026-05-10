@@ -11,6 +11,7 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -41,7 +42,61 @@ type Server struct {
 	scheme       *runtime.Scheme
 	baseCfg      *clientgorest.Config
 	tokenClients sync.Map // sha256(token) -> *tokenClientEntry, TTL 5 min
+	channelCache channelCacheState
 }
+
+// channelCacheState holds the in-memory cache for the OCP channel list.
+type channelCacheState struct {
+	mu        sync.Mutex
+	entries   []ocpChannelEntry
+	fetchedAt time.Time
+}
+
+// ocpChannelEntry describes a single OCP/OKD release channel returned by the
+// /api/v1/releases/channels endpoint.
+type ocpChannelEntry struct {
+	Name    string `json:"name"`    // e.g. "stable-4.18"
+	Type    string `json:"type"`    // "ocp" or "okd"
+	Version string `json:"version"` // e.g. "4.18"
+}
+
+// githubContentEntry is a single item from the GitHub Contents API response.
+type githubContentEntry struct {
+	Name string `json:"name"`
+	Type string `json:"type"` // "file" or "dir"
+}
+
+const platformTypeOKD = "okd"
+
+// openshift/cincinnati-graph-data channels directory.
+// See: https://github.com/openshift/cincinnati-graph-data/tree/master/channels
+const githubGraphDataChannelsURL = "https://api.github.com/repos/openshift/cincinnati-graph-data/contents/channels"
+
+// channelCacheTTL controls how long the OCP channel list is cached before
+// re-fetching from the upstream source.
+const channelCacheTTL = time.Hour
+
+// defaultOCPChannels is the built-in fallback list used when both the GitHub
+// API and the ConfigMap override are unavailable (e.g. air-gapped clusters).
+var defaultOCPChannels = func() []ocpChannelEntry {
+	types := []string{"stable", "fast", "eus", "candidate"}
+	versions := []string{"4.14", "4.15", "4.16", "4.17", "4.18", "4.19"}
+	entries := make([]ocpChannelEntry, 0, len(versions)*len(types))
+	for _, ver := range versions {
+		minor, _ := strconv.Atoi(strings.Split(ver, ".")[1])
+		for _, t := range types {
+			if t == "eus" && minor%2 != 0 {
+				continue
+			}
+			entries = append(entries, ocpChannelEntry{
+				Name:    t + "-" + ver,
+				Type:    "ocp",
+				Version: ver,
+			})
+		}
+	}
+	return entries
+}()
 
 func NewServer(c client.Client, namespace string) *Server {
 	cfg, _ := config.GetConfig()
@@ -173,13 +228,14 @@ type TargetDetail struct {
 
 // ImageSetSummaryJSON is the per-ImageSet status info returned in JSON.
 type ImageSetSummaryJSON struct {
-	Name      string         `json:"name"`
-	Found     bool           `json:"found"`
-	Total     int            `json:"total"`
-	Mirrored  int            `json:"mirrored"`
-	Pending   int            `json:"pending"`
-	Failed    int            `json:"failed"`
-	Resources []ResourceLink `json:"resources"`
+	Name        string         `json:"name"`
+	Found       bool           `json:"found"`
+	Total       int            `json:"total"`
+	Mirrored    int            `json:"mirrored"`
+	Pending     int            `json:"pending"`
+	Failed      int            `json:"failed"`
+	Resources   []ResourceLink `json:"resources"`
+	HasPlatform bool           `json:"hasPlatform"`
 }
 
 // ResourceLink describes a downloadable resource.
@@ -222,6 +278,9 @@ func (s *Server) RegisterAPIRoutes(r *mux.Router) {
 	api.HandleFunc("/imagesets/{namespace}/{name}/catalogs/{slug}/packages", s.handleGetPackageConstraints).Methods("GET")
 	api.HandleFunc("/imagesets/{namespace}/{name}/catalogs/{slug}/packages", s.handlePatchCatalogPackages).Methods("PATCH")
 	api.HandleFunc("/imagesets/{namespace}/{name}/recollect", s.handleTriggerRecollect).Methods("PATCH")
+	api.HandleFunc("/releases/channels", s.handleGetOCPChannels).Methods("GET")
+	api.HandleFunc("/imagesets/{namespace}/{name}/releases", s.handleGetReleases).Methods("GET")
+	api.HandleFunc("/imagesets/{namespace}/{name}/releases", s.handlePatchReleases).Methods("PATCH")
 	api.HandleFunc("/imagesets/{namespace}/{name}", s.handleDeleteImageSet).Methods("DELETE")
 
 	// Catalog browsing endpoints
@@ -401,16 +460,25 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	hasPlatformMap := make(map[string]bool, len(mt.Spec.ImageSets))
+	for _, isName := range mt.Spec.ImageSets {
+		var imgSet mirrorv1alpha1.ImageSet
+		if err := c.Get(r.Context(), client.ObjectKey{Namespace: mt.Namespace, Name: isName}, &imgSet); err == nil {
+			hasPlatformMap[isName] = len(imgSet.Spec.Mirror.Platform.Channels) > 0
+		}
+	}
+
 	imageSets := make([]ImageSetSummaryJSON, 0, len(mt.Status.ImageSetStatuses))
 	for _, iss := range mt.Status.ImageSetStatuses {
 		imageSets = append(imageSets, ImageSetSummaryJSON{
-			Name:      iss.Name,
-			Found:     iss.Found,
-			Total:     iss.Total,
-			Mirrored:  iss.Mirrored,
-			Pending:   iss.Pending,
-			Failed:    iss.Failed,
-			Resources: []ResourceLink{}, // ImageSet specific resources are currently managed at the target level
+			Name:        iss.Name,
+			Found:       iss.Found,
+			Total:       iss.Total,
+			Mirrored:    iss.Mirrored,
+			Pending:     iss.Pending,
+			Failed:      iss.Failed,
+			Resources:   []ResourceLink{}, // ImageSet specific resources are currently managed at the target level
+			HasPlatform: hasPlatformMap[iss.Name],
 		})
 	}
 
@@ -726,6 +794,21 @@ type packagePatchBody struct {
 	Exclude []string `json:"exclude"`
 }
 
+type releaseChannelConstraint struct {
+	Name         string `json:"name"`
+	Type         string `json:"type,omitempty"`
+	MinVersion   string `json:"minVersion,omitempty"`
+	MaxVersion   string `json:"maxVersion,omitempty"`
+	ShortestPath bool   `json:"shortestPath,omitempty"`
+	Full         bool   `json:"full,omitempty"`
+}
+
+type releaseSpec struct {
+	Graph         bool                       `json:"graph"`
+	Architectures []string                   `json:"architectures,omitempty"`
+	Channels      []releaseChannelConstraint `json:"channels"`
+}
+
 // handlePatchCatalogPackages updates the package filter for an operator catalog
 // in the named ImageSet. The calling user's RBAC rights are enforced via the
 // token-scoped client (see clientForRequest).
@@ -918,4 +1001,271 @@ func (s *Server) handleDeleteImageSet(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleGetReleases returns the current platform/release configuration from the ImageSet spec.
+func (s *Server) handleGetReleases(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	namespace, name := vars["namespace"], vars["name"]
+
+	c := s.clientForRequest(r)
+	is := &mirrorv1alpha1.ImageSet{}
+	if err := c.Get(r.Context(), client.ObjectKey{Namespace: namespace, Name: name}, is); err != nil {
+		if apierrors.IsNotFound(err) {
+			http.Error(w, "ImageSet not found", http.StatusNotFound)
+		} else {
+			http.Error(w, fmt.Sprintf("get ImageSet: %v", err), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	p := is.Spec.Mirror.Platform
+	resp := releaseSpec{
+		Graph:         p.Graph,
+		Architectures: p.Architectures,
+		Channels:      []releaseChannelConstraint{},
+	}
+	for _, ch := range p.Channels {
+		resp.Channels = append(resp.Channels, releaseChannelConstraint{
+			Name:         ch.Name,
+			Type:         string(ch.Type),
+			MinVersion:   ch.MinVersion,
+			MaxVersion:   ch.MaxVersion,
+			ShortestPath: ch.ShortestPath,
+			Full:         ch.Full,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// handlePatchReleases updates the platform/release configuration in the ImageSet spec.
+func (s *Server) handlePatchReleases(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	namespace, name := vars["namespace"], vars["name"]
+
+	defer func() { _ = r.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		http.Error(w, "failed to read body", http.StatusBadRequest)
+		return
+	}
+	var patch releaseSpec
+	if err := json.Unmarshal(body, &patch); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+
+	c := s.clientForRequest(r)
+	is := &mirrorv1alpha1.ImageSet{}
+	if err := c.Get(r.Context(), client.ObjectKey{Namespace: namespace, Name: name}, is); err != nil {
+		if apierrors.IsNotFound(err) {
+			http.Error(w, "ImageSet not found", http.StatusNotFound)
+		} else {
+			http.Error(w, fmt.Sprintf("get ImageSet: %v", err), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	is.Spec.Mirror.Platform.Graph = patch.Graph
+	if patch.Architectures != nil {
+		is.Spec.Mirror.Platform.Architectures = patch.Architectures
+	}
+
+	channels := make([]mirrorv1alpha1.ReleaseChannel, 0, len(patch.Channels))
+	for _, ch := range patch.Channels {
+		pt := mirrorv1alpha1.PlatformType(ch.Type)
+		if pt == "" {
+			pt = mirrorv1alpha1.TypeOCP
+		}
+		channels = append(channels, mirrorv1alpha1.ReleaseChannel{
+			Name:         ch.Name,
+			Type:         pt,
+			MinVersion:   ch.MinVersion,
+			MaxVersion:   ch.MaxVersion,
+			ShortestPath: ch.ShortestPath,
+			Full:         ch.Full,
+		})
+	}
+	is.Spec.Mirror.Platform.Channels = channels
+
+	if err := c.Update(r.Context(), is); err != nil {
+		if apierrors.IsForbidden(err) {
+			http.Error(w, "forbidden: insufficient permissions", http.StatusForbidden)
+		} else {
+			http.Error(w, fmt.Sprintf("update ImageSet: %v", err), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// getOCPChannels returns the list of available OCP release channels. Sources
+// are tried in order:
+//  1. In-memory cache (TTL: 1 hour)
+//  2. GitHub openshift/cincinnati-graph-data repository (live, requires internet)
+//  3. ConfigMap "oc-mirror-ocp-versions" in the operator namespace (air-gap override)
+//  4. Built-in hardcoded defaults (4.14–4.19, stable/fast/eus/candidate)
+func (s *Server) getOCPChannels(ctx context.Context) []ocpChannelEntry {
+	s.channelCache.mu.Lock()
+	defer s.channelCache.mu.Unlock()
+
+	if s.channelCache.entries != nil && time.Since(s.channelCache.fetchedAt) < channelCacheTTL {
+		return s.channelCache.entries
+	}
+
+	if entries, err := s.fetchChannelsFromGitHub(ctx); err == nil {
+		s.channelCache.entries = entries
+		s.channelCache.fetchedAt = time.Now()
+		return entries
+	}
+
+	if entries, err := s.fetchChannelsFromConfigMap(ctx); err == nil {
+		s.channelCache.entries = entries
+		s.channelCache.fetchedAt = time.Now()
+		return entries
+	}
+
+	return defaultOCPChannels
+}
+
+// fetchChannelsFromGitHub queries the GitHub Contents API for the
+// openshift/cincinnati-graph-data channels directory and parses channel names
+// from YAML filenames (e.g. "stable-4.18.yaml" → name="stable-4.18", version="4.18").
+func (s *Server) fetchChannelsFromGitHub(ctx context.Context) ([]ocpChannelEntry, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, githubGraphDataChannelsURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+	req.Header.Set("User-Agent", "oc-mirror-operator/resourceapi")
+
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("github API request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("github API returned %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, err
+	}
+
+	var contents []githubContentEntry
+	if err := json.Unmarshal(body, &contents); err != nil {
+		return nil, err
+	}
+
+	entries := make([]ocpChannelEntry, 0, len(contents))
+	for _, f := range contents {
+		if f.Type != "file" || !strings.HasSuffix(f.Name, ".yaml") {
+			continue
+		}
+		// Channel files follow the pattern "<type>-<major>.<minor>.yaml"
+		// e.g. "stable-4.18.yaml", "eus-4.16.yaml", "okd-4.14.yaml"
+		baseName := strings.TrimSuffix(f.Name, ".yaml")
+		lastDash := strings.LastIndex(baseName, "-")
+		if lastDash < 0 {
+			continue
+		}
+		chType := baseName[:lastDash]
+		ver := baseName[lastDash+1:]
+		if !strings.Contains(ver, ".") {
+			continue
+		}
+		platformType := "ocp"
+		if chType == platformTypeOKD {
+			platformType = platformTypeOKD
+		}
+		entries = append(entries, ocpChannelEntry{
+			Name:    baseName,
+			Type:    platformType,
+			Version: ver,
+		})
+	}
+
+	if len(entries) == 0 {
+		return nil, fmt.Errorf("no channel entries parsed from GitHub response")
+	}
+	return entries, nil
+}
+
+// fetchChannelsFromConfigMap reads the optional "oc-mirror-ocp-versions"
+// ConfigMap from the operator namespace. Expected structure:
+//
+//	data:
+//	  versions: "4.16,4.17,4.18,4.19"          # comma-separated OCP minor versions
+//	  channelTypes: "stable,fast,eus,candidate"  # defaults to all four types
+//
+// This ConfigMap acts as an air-gap override: when the operator cannot reach
+// api.github.com, administrators configure the allowed version range manually.
+func (s *Server) fetchChannelsFromConfigMap(ctx context.Context) ([]ocpChannelEntry, error) {
+	if s.namespace == "" {
+		return nil, fmt.Errorf("no namespace configured for ConfigMap lookup")
+	}
+
+	cm := &corev1.ConfigMap{}
+	if err := s.client.Get(ctx, client.ObjectKey{
+		Namespace: s.namespace,
+		Name:      "oc-mirror-ocp-versions",
+	}, cm); err != nil {
+		return nil, err
+	}
+
+	versionsStr := strings.TrimSpace(cm.Data["versions"])
+	if versionsStr == "" {
+		return nil, fmt.Errorf("ConfigMap oc-mirror-ocp-versions has no 'versions' key")
+	}
+	channelTypesStr := strings.TrimSpace(cm.Data["channelTypes"])
+	if channelTypesStr == "" {
+		channelTypesStr = "stable,fast,eus,candidate"
+	}
+
+	var entries []ocpChannelEntry
+	for _, ver := range strings.Split(versionsStr, ",") {
+		ver = strings.TrimSpace(ver)
+		if ver == "" || !strings.Contains(ver, ".") {
+			continue
+		}
+		minor, _ := strconv.Atoi(strings.Split(ver, ".")[1])
+		for _, t := range strings.Split(channelTypesStr, ",") {
+			t = strings.TrimSpace(t)
+			if t == "" {
+				continue
+			}
+			if t == "eus" && minor%2 != 0 {
+				continue
+			}
+			platformType := "ocp"
+			if t == platformTypeOKD {
+				platformType = platformTypeOKD
+			}
+			entries = append(entries, ocpChannelEntry{
+				Name:    t + "-" + ver,
+				Type:    platformType,
+				Version: ver,
+			})
+		}
+	}
+
+	if len(entries) == 0 {
+		return nil, fmt.Errorf("no channel entries derived from ConfigMap")
+	}
+	return entries, nil
+}
+
+// handleGetOCPChannels returns the list of available OCP release channels for
+// the release browser UI. Results are fetched from the openshift/cincinnati-graph-data
+// GitHub repository (cached 1h), with a ConfigMap override for air-gapped clusters
+// and a built-in fallback list as last resort.
+func (s *Server) handleGetOCPChannels(w http.ResponseWriter, r *http.Request) {
+	entries := s.getOCPChannels(r.Context())
+	writeJSON(w, entries)
 }

@@ -29,6 +29,7 @@ export interface ImageSetSummary {
   pending: number;
   failed: number;
   resources: ResourceLink[];
+  hasPlatform?: boolean;
 }
 
 export interface CatalogSummary {
@@ -95,4 +96,27 @@ export interface CatalogPackagesResponse {
   catalog: string;
   targetImage: string;
   packages: CatalogPackage[];
+}
+
+export interface ReleaseChannel {
+  name: string;
+  type?: string; // 'ocp' | 'okd'
+  minVersion?: string;
+  maxVersion?: string;
+  shortestPath?: boolean;
+  full?: boolean;
+}
+
+export interface ReleaseSpec {
+  graph?: boolean;
+  architectures?: string[];
+  channels?: ReleaseChannel[];
+}
+
+/** A single OCP/OKD release channel returned by GET /api/v1/releases/channels.
+ *  Sourced from openshift/cincinnati-graph-data, with ConfigMap and built-in fallbacks. */
+export interface OcpChannelEntry {
+  name: string;    // e.g. "stable-4.18"
+  type: string;    // "ocp" | "okd"
+  version: string; // e.g. "4.18"
 }
