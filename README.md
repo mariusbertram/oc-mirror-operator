@@ -114,7 +114,7 @@ The oc-mirror operator now uses a **modular 3-component architecture** for impro
 │  │  ImageSet CR     │◄──────────│                              │    │
 │  │  MirrorTarget CR │           │   Controller (1 Deployment)  │    │
 │  └──────────────────┘  reconcile│   cmd/controller/main.go     │    │
-│                         ───────►│   internal/controller/        │    │
+│                         ───────►│   internal/controller/       │    │
 │                                 └──┬──────────────┬────────┬───┘    │
 │                                    │ creates      │ creates│creates │
 │                                    │ Manager Pod  │ Job    │Deploy  │
@@ -133,15 +133,15 @@ The oc-mirror operator now uses a **modular 3-component architecture** for impro
 │          │ • Worker Cleanup       │ │ • Delete │ │               │  │
 │          └──────┬─────────────────┘ └──────────┘ └───────┬───────┘  │
 │                 │creates Pods (ephemeral)                │          │
-│                 │ POST /status           ┌─────────────┴───────┐   │
-│          ┌──────▼───────┐                │ Route/Ingress/Svc   │   │
-│          │ Worker Pod 1 │                │ → Manager :8080     │   │
-│          │ Worker Pod 2 │                │ → Resource API      │   │
-│          │ Worker Pod N │                │    :8081            │   │
-│          │cmd/worker/   │                │ /api/v1/targets/... │   │
-│          │main.go       │                │ /ui/ (Dashboard)    │   │
-│          └──────┬───────┘                └─────────────────────┘   │
-│                 │ regclient + buffer                               │
+│                 │ POST /status             ┌─────────────┴───────┐  │
+│          ┌──────▼───────┐                  │ Route/Ingress/Svc   │  │
+│          │ Worker Pod 1 │                  │ → Manager :8080     │  │
+│          │ Worker Pod 2 │                  │ → Resource API      │  │
+│          │ Worker Pod N │                  │    :8081            │  │
+│          │cmd/worker/   │                  │ /api/v1/targets/... │  │
+│          │main.go       │                  │ /ui/ (Dashboard)    │  │
+│          └──────┬───────┘                  └─────────────────────┘  │
+│                 │ regclient + buffer                                │
 │                 ▼                                                   │
 │          ┌──────────────────────────────┐                           │
 │          │   Target Registry            │                           │
