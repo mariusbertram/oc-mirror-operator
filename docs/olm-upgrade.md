@@ -187,10 +187,6 @@ were mirrored.
       previousVersions: 3    # head + 3 previous versions per channel
   ```
 
-**TLS fallback:** `insecure: true` now tries plain HTTP first, falling back to
-HTTPS without certificate verification (changed from HTTPS-first in v0.0.11).
-No configuration change needed.
-
 ### v0.0.6 — Per-MirrorTarget RBAC names
 
 **Breaking change**: The operator now creates RBAC resources with per-MirrorTarget

@@ -195,12 +195,14 @@ End-to-end tests require a KinD cluster with the operator deployed.
 # 1. Create a KinD cluster with a local registry
 ./hack/kind-with-registry.sh
 
-# 2. Build and load the operator image into the cluster
-make docker-build IMG=example.com/oc-mirror:v0.0.1
-kind load docker-image example.com/oc-mirror:v0.0.1
+# 2. Build and load all three images into the cluster
+make docker-build-all IMAGE_TAG_BASE=localhost:5001/oc-mirror-operator VERSION=dev
+kind load docker-image localhost:5001/oc-mirror-operator-controller:dev
+kind load docker-image localhost:5001/oc-mirror-operator-manager:dev
+kind load docker-image localhost:5001/oc-mirror-operator-worker:dev
 
-# 3. Deploy the operator via kustomize
-kubectl apply -k config/default
+# 3. Deploy the operator
+make deploy IMG=localhost:5001/oc-mirror-operator-controller:dev
 
 # 4. Run the e2e suite
 make test-e2e
@@ -210,7 +212,7 @@ make test-e2e
 
 | Variable | Default | Description |
 |---|---|---|
-| `IMG` | `example.com/oc-mirror:v0.0.1` | Operator image used in the Deployment. |
+| `IMG` | `$(IMAGE_TAG_BASE)-controller:v$(VERSION)` | Controller image used in the Deployment (modular architecture — refers to the controller component only). |
 | `KIND_PROVIDER` | `kind` | Container runtime for KinD (`docker` or `podman`). |
 | `TEST_CATALOG_IMAGE` | see e2e code | Upstream catalog image used in catalog tests. |
 
