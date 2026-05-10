@@ -25,6 +25,7 @@ import (
 
 // OcpUpdateURL is the Cincinnati API endpoint for OpenShift release graphs.
 // It is a variable (not a constant) so that tests can override it with httptest servers.
+// Network requirement: outbound HTTPS to api.openshift.com:443 (Manager pod).
 var OcpUpdateURL = "https://api.openshift.com/api/upgrades_info/v1/graph"
 
 type Graph struct {

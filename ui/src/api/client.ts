@@ -1,7 +1,9 @@
 import type {
   CatalogPackagesResponse,
   ImageFailuresResponse,
+  OcpChannelEntry,
   PackageConstraint,
+  ReleaseSpec,
   TargetDetail,
   TargetSummary,
 } from './types';
@@ -147,3 +149,14 @@ export async function fetchRawText(path: string): Promise<string> {
   if (!resp.ok) throw new Error(`${resp.status} ${resp.statusText}`);
   return resp.text();
 }
+
+export const getReleases = (namespace: string, imageSetName: string) =>
+  get<ReleaseSpec>(`/api/v1/imagesets/${namespace}/${imageSetName}/releases`);
+
+export const patchReleases = (namespace: string, imageSetName: string, body: ReleaseSpec) =>
+  patch<void>(`/api/v1/imagesets/${namespace}/${imageSetName}/releases`, body);
+
+/** Fetch the list of available OCP/OKD release channels.
+ *  The backend queries openshift/cincinnati-graph-data (cached 1h),
+ *  falls back to the oc-mirror-ocp-versions ConfigMap, then hardcoded defaults. */
+export const getOcpChannels = () => get<OcpChannelEntry[]>('/api/v1/releases/channels');
