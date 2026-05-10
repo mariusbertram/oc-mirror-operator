@@ -255,6 +255,34 @@ build-ui: ## Build the React Console Plugin assets.
 	npm --prefix ui ci --ignore-scripts
 	npm --prefix ui run build:plugin
 
+DEV_CERT_DIR ?= dev-certs
+
+.PHONY: dev-certs
+dev-certs: ## Generate a self-signed TLS cert for the local plugin dev server (skips if already present).
+	@if [ -f $(DEV_CERT_DIR)/tls.crt ]; then \
+	  echo "dev-certs already present ($(DEV_CERT_DIR)/tls.crt) — skipping."; \
+	else \
+	  mkdir -p $(DEV_CERT_DIR); \
+	  openssl req -x509 -newkey rsa:2048 \
+	    -days 365 -nodes \
+	    -keyout $(DEV_CERT_DIR)/tls.key \
+	    -out    $(DEV_CERT_DIR)/tls.crt \
+	    -subj   '/CN=localhost' \
+	    -addext 'subjectAltName=IP:127.0.0.1,DNS:localhost' 2>/dev/null; \
+	  echo "Generated $(DEV_CERT_DIR)/tls.crt"; \
+	fi
+
+.PHONY: run-plugin-mock
+run-plugin-mock: ## Start the Console Plugin UI with mock data — no cluster or backend needed.
+	MOCK=true npm --prefix ui run dev
+
+.PHONY: run-plugin
+run-plugin: dev-certs ## Run the Console Plugin backend locally (port 9443). Run 'npm --prefix ui run dev' in a second terminal.
+	POD_NAMESPACE=$(OPERATOR_NAMESPACE) go run ./cmd/dashboard \
+	  --bind-address :9443 \
+	  --cert-file $(DEV_CERT_DIR)/tls.crt \
+	  --key-file  $(DEV_CERT_DIR)/tls.key
+
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
 	go run ./cmd/main.go

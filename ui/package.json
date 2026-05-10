@@ -6,6 +6,7 @@
     "build:plugin": "webpack --config webpack.plugin.js --mode production",
     "build": "npm run build:plugin",
     "start:plugin": "webpack serve --config webpack.plugin.js --mode development",
+    "dev": "webpack serve --config webpack.dev.js",
     "lint": "eslint src --ext .ts,.tsx",
     "test": "jest"
   },

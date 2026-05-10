@@ -286,6 +286,194 @@ oc patch subscription oc-mirror \
 
 ---
 
+## 8. Local Console Plugin Development
+
+This section describes how to develop and test the Console Plugin UI without deploying
+a full OpenShift Console. The setup uses a standalone React dev harness that talks
+directly to a locally running copy of the Go plugin backend.
+
+### Architecture
+
+```
+Browser
+  └─► http://localhost:9002          webpack dev server (React SPA, hot reload)
+        └─► /api/v1/* proxy ──────►  https://localhost:9443   Go plugin binary
+                                          └─► kubeconfig ────► cluster API
+```
+
+The webpack dev server proxies every `/api/` request to the Go binary, which uses your
+local `~/.kube/config` (or `KUBECONFIG`) to reach the cluster.  No OpenShift Console,
+no `consoleFetch`, no ConsolePlugin SDK required.
+
+---
+
+### 8.1 Prerequisites
+
+- **Node 20** and **npm** (check with `node -v`)
+- A cluster with the operator installed and a valid kubeconfig (`oc whoami` or
+  `kubectl cluster-info` should succeed)
+- **openssl** for generating the dev TLS certificate (pre-installed on macOS/Linux)
+
+---
+
+### 8.2 Install frontend dependencies
+
+```bash
+npm --prefix ui install
+```
+
+---
+
+### 8.3 Generate a local TLS certificate
+
+The Go plugin binary requires HTTPS.  Run the Makefile target once — it is a no-op if
+the certificate already exists:
+
+```bash
+make dev-certs
+```
+
+This creates `dev-certs/tls.{crt,key}` (already in `.gitignore`) using an RSA-2048 cert
+valid for `localhost` / `127.0.0.1`.  You can override the directory with
+`DEV_CERT_DIR=/path/to/certs make dev-certs`.
+
+---
+
+### 8.4 Run the Go plugin backend
+
+Open a **first terminal** and start the plugin API server.  It reads your kubeconfig
+and serves the resource API over HTTPS on port 9443:
+
+```bash
+make run-plugin
+```
+
+This is equivalent to:
+```bash
+POD_NAMESPACE=oc-mirror-operator \
+  go run ./cmd/dashboard \
+  --bind-address :9443 \
+  --cert-file dev-certs/tls.crt \
+  --key-file  dev-certs/tls.key
+```
+
+Override the namespace with `OPERATOR_NAMESPACE=my-ns make run-plugin`.
+
+> **Note**: The binary default bind address is `:9001`.  `run-plugin` uses `:9443`
+> explicitly to avoid a port conflict with the webpack dev server.
+
+Verify the backend is up:
+
+```bash
+curl -sk https://localhost:9443/api/v1/targets \
+  -H "Authorization: Bearer $(oc whoami -t)"
+```
+
+---
+
+### 8.5 Start the dev harness with mock data (no cluster needed)
+
+If you don't have a cluster available — or just want to iterate on the UI quickly —
+start the dev server with built-in mock data:
+
+```bash
+make run-plugin-mock
+# or: MOCK=true npm --prefix ui run dev
+```
+
+Open **http://localhost:9002**.  All API endpoints are handled by an in-process mock
+that returns realistic static data.  No Go backend, no kubeconfig, no `make dev-certs`
+required.
+
+Mock data includes two targets (`production`, `staging`), image failures, catalog
+packages, and raw YAML resources.  To adjust the data, edit
+`ui/src/dev/mocks.js` — the dev server reloads automatically.
+
+Write (`PATCH`, `DELETE`) endpoints respond with `204 No Content` so interactive
+features (recollect trigger, catalog package editing) are clickable without errors.
+
+---
+
+### 8.6 Start the dev harness against a real backend
+
+Open a **second terminal** and start the webpack dev server:
+
+```bash
+npm --prefix ui run dev
+```
+
+The dev server:
+- Serves the React SPA at **http://localhost:9002**
+- Proxies `/api/` requests to `https://localhost:9443` (the Go backend from §8.4)
+- Enables hot-module replacement — UI changes appear without a full page reload
+- Rewrites all routes to `index.html` so React Router navigation works
+
+Open **http://localhost:9002** in your browser.
+
+> If the Go backend is at a different address, override it:
+> ```bash
+> API_URL=https://my-host:9443 npm --prefix ui run dev
+> ```
+
+---
+
+### 8.7 Development cycle
+
+| Change | Action needed |
+|--------|--------------|
+| TypeScript / React (`.tsx`, `.ts`) | Webpack hot-reloads automatically |
+| CSS (`.css`) | Webpack hot-reloads automatically |
+| Go backend (`pkg/resourceapi/`, `cmd/dashboard/`) | Restart `go run ./cmd/dashboard …` |
+| API types (`api/v1alpha1/`) | `make generate manifests`, then restart Go binary |
+
+---
+
+### 8.8 Direct API testing (no browser)
+
+If you only need to test backend changes, you can skip the webpack dev server entirely
+and call the API directly:
+
+```bash
+TOKEN=$(oc whoami -t)
+
+# List MirrorTargets
+curl -sk https://localhost:9443/api/v1/targets \
+  -H "Authorization: Bearer $TOKEN"
+
+# Target detail
+curl -sk https://localhost:9443/api/v1/targets/<name> \
+  -H "Authorization: Bearer $TOKEN"
+
+# Image failures
+curl -sk "https://localhost:9443/api/v1/targets/<name>/image-failures" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### 8.9 Testing inside a real OpenShift Console (optional)
+
+For full end-to-end fidelity (navigation shell, Console SSO, RBAC), you can load the
+plugin into a running OpenShift Console using the [console bridge](https://github.com/openshift/console)
+binary.  Build it from source (Go 1.21+) and then:
+
+```bash
+./bin/bridge \
+  --listen=http://localhost:9000 \
+  --base-address=http://localhost:9000/ \
+  --k8s-auth=bearer-token \
+  --k8s-mode=off-cluster \
+  --k8s-mode-off-cluster-endpoint=$(oc whoami --show-server) \
+  --k8s-mode-off-cluster-token=$(oc whoami -t) \
+  --plugin=oc-mirror-operator=https://localhost:9443
+```
+
+This starts the full Console UI at **http://localhost:9000** with the plugin loaded from
+your local Go backend.  Run `make build-ui` and restart the Go binary whenever you
+change the UI.
+
+---
+
 ## 7. Troubleshooting
 
 - **Image Pull Issues**: Ensure all 3 modular images are accessible from the cluster.

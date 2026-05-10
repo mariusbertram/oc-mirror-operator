@@ -44,3 +44,6 @@ ui/node_modules/
 ui/dist/
 ui/.eslintcache
 ui/*.tsbuildinfo
+
+# Local TLS certificates for plugin dev server
+dev-certs/
