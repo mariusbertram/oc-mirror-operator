@@ -535,6 +535,8 @@ func BuildCatalogPackagesResponse(cat CatalogInfo, cfg *declcfg.DeclarativeConfi
 }
 
 // bundleVersion extracts the version from a bundle's olm.package property.
+// Falls back to parsing the conventional ".v<version>" suffix from the bundle
+// name when the property is absent, as some FBC catalogs omit olm.package.
 func bundleVersion(b declcfg.Bundle) string {
 	for _, prop := range b.Properties {
 		if prop.Type != "olm.package" {
@@ -545,6 +547,13 @@ func bundleVersion(b declcfg.Bundle) string {
 		}
 		if json.Unmarshal(prop.Value, &v) == nil && v.Version != "" {
 			return v.Version
+		}
+	}
+	// Fallback: extract version from name suffix using the ".v<semver>" convention.
+	if idx := strings.LastIndex(b.Name, ".v"); idx >= 0 {
+		candidate := b.Name[idx+2:]
+		if len(candidate) > 0 && candidate[0] >= '0' && candidate[0] <= '9' {
+			return candidate
 		}
 	}
 	return ""
