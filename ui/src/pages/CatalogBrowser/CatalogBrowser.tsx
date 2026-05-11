@@ -401,14 +401,13 @@ export const CatalogBrowser: React.FC = () => {
                       </Button>
                     </div>
                     {expanded && p.channels.map((c) => {
-                      // Prefer the pre-sorted full version list from the backend; fall back to
-                      // extracting versions from the (heads-only) entries array.
-                      const uniqueVersions = c.versions && c.versions.length > 0
-                        ? c.versions
-                        : sortVersions([...new Set(c.entries.map((e) => e.version).filter(Boolean))]);
-                      const displayVersions = uniqueVersions.length > 5
-                        ? `${uniqueVersions.slice(0, 5).join(', ')} +${uniqueVersions.length - 5} more`
-                        : uniqueVersions.join(', ') || `${c.entries.length} entries`;
+                      const uniqueVersions = c.versions && c.versions.length > 0 ? c.versions : [];
+                      const versionsAvailable = uniqueVersions.length > 0;
+                      const displayVersions = !versionsAvailable
+                        ? `${c.entries.length} bundle(s) — versions unavailable`
+                        : uniqueVersions.length > 5
+                          ? `${uniqueVersions.slice(0, 5).join(', ')} +${uniqueVersions.length - 5} more`
+                          : uniqueVersions.join(', ');
                       const chAdded = isChannelAdded(p.name, c.name);
                       return (
                         <div key={c.name} className="mirror-dual-channel">
@@ -552,9 +551,8 @@ export const CatalogBrowser: React.FC = () => {
                       </button>
                     </div>
                     {expanded && getImportedChannels(p).map((c) => {
-                      const uniqueVersions = c.versions && c.versions.length > 0
-                        ? c.versions
-                        : sortVersions([...new Set(c.entries.map((e) => e.version).filter(Boolean))]);
+                      const uniqueVersions = c.versions && c.versions.length > 0 ? c.versions : [];
+                      const versionsAvailable = uniqueVersions.length > 0;
                       const constraint = versionMap[p.name]?.[c.name] || { minVersion: '', maxVersion: '' };
                       return (
                         <div key={c.name} className="mirror-dual-channel" style={{ gridTemplateColumns: '20px 1fr auto' }}>
@@ -562,7 +560,7 @@ export const CatalogBrowser: React.FC = () => {
                           <div>
                             <div style={{ fontWeight: 500 }}>{c.name}</div>
                             <div style={{ color: 'var(--pf-v6-global--Color--200)', fontSize: 10 }}>
-                              {uniqueVersions.length} versions
+                              {versionsAvailable ? `${uniqueVersions.length} versions` : 'versions unavailable'}
                             </div>
                           </div>
                           <div
@@ -575,8 +573,9 @@ export const CatalogBrowser: React.FC = () => {
                               onChange={(e) => setVersionConstraint(p.name, c.name, 'minVersion', e.target.value)}
                               style={versionSelectStyle}
                               title="Minimum version (inclusive)"
+                              disabled={!versionsAvailable}
                             >
-                              <option value="">any</option>
+                              <option value="">{versionsAvailable ? 'any' : '—'}</option>
                               {uniqueVersions.map((v) => <option key={v} value={v}>{v}</option>)}
                             </select>
                             <label style={{ fontSize: 10, color: 'var(--pf-v6-global--Color--200)', whiteSpace: 'nowrap' }}>Max</label>
@@ -585,8 +584,9 @@ export const CatalogBrowser: React.FC = () => {
                               onChange={(e) => setVersionConstraint(p.name, c.name, 'maxVersion', e.target.value)}
                               style={versionSelectStyle}
                               title="Maximum version (inclusive)"
+                              disabled={!versionsAvailable}
                             >
-                              <option value="">any</option>
+                              <option value="">{versionsAvailable ? 'any' : '—'}</option>
                               {uniqueVersions.map((v) => <option key={v} value={v}>{v}</option>)}
                             </select>
                             <button
