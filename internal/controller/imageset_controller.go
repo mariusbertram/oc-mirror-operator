@@ -246,9 +246,25 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs( //nolint:gocyclo
 	}
 	// Force catalog rebuild when poll interval expired — upstream catalog images
 	// (e.g. redhat-operator-index:v4.21) may have been updated in-place.
+	// Only trigger when no job is already active; otherwise every reconcile
+	// while LastSuccessfulPollTime is stale would kill and recreate a running job.
 	if pollExpired && !catalogNeedsRebuild {
-		l.Info("Poll interval expired, forcing catalog rebuild")
-		catalogNeedsRebuild = true
+		allJobsIdle := true
+		for _, op := range operators {
+			if op.Catalog == "" {
+				continue
+			}
+			jobName := builder.JobName(is.Name, op.Catalog)
+			phase, _ := builder.GetBuildJobStatus(ctx, r.Client, jobName, is.Namespace)
+			if phase == builder.JobPhasePending || phase == builder.JobPhaseRunning {
+				allJobsIdle = false
+				break
+			}
+		}
+		if allJobsIdle {
+			l.Info("Poll interval expired, forcing catalog rebuild")
+			catalogNeedsRebuild = true
+		}
 	}
 
 	// Persist the new build signature IMMEDIATELY so that concurrent/subsequent

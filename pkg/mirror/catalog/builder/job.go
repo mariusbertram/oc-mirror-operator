@@ -171,10 +171,12 @@ func GetBuildJobStatus(ctx context.Context, c client.Client, name, namespace str
 	switch {
 	case job.Status.Succeeded > 0:
 		return JobPhaseSucceeded, nil
+	case job.Status.Active > 0:
+		// A job with active pods is still running, even when Failed > 0
+		// (BackoffLimit retries increment Failed while a new pod is active).
+		return JobPhaseRunning, nil
 	case job.Status.Failed > 0:
 		return JobPhaseFailed, nil
-	case job.Status.Active > 0:
-		return JobPhaseRunning, nil
 	default:
 		return JobPhasePending, nil
 	}
