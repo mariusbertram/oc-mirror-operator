@@ -60,11 +60,15 @@ export const MirrorTargetDetail: React.FC = () => {
       .finally(() => setLoading(false));
   };
 
+  // Poll more frequently while images are still being mirrored (pending > 0)
+  // so completed workers are visible quickly; slow down when the target is idle.
+  const pollInterval = target && target.pendingImages > 0 ? 5_000 : 30_000;
+
   useEffect(() => {
     load();
-    const interval = setInterval(load, 30_000);
+    const interval = setInterval(load, pollInterval);
     return () => clearInterval(interval);
-  }, [name]);
+  }, [name, pollInterval]);
 
   const handleRecollect = async (namespace: string, isName: string) => {
     try {
