@@ -97,9 +97,13 @@ function normalizeTargetDetail(t: TargetDetail): TargetDetail {
     imageSets: (t.imageSets ?? []).map((is) => ({
       ...is,
       resources: is.resources ?? [],
+      catalogs: is.catalogs ?? [],
     })),
     resources: t.resources ?? [],
-    catalogs: t.catalogs ?? [],
+    catalogs: (t.catalogs ?? []).map((c) => ({
+      ...c,
+      imageSets: c.imageSets ?? [],
+    })),
   };
 }
 

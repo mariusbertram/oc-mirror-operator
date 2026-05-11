@@ -29,6 +29,7 @@ export interface ImageSetSummary {
   pending: number;
   failed: number;
   resources: ResourceLink[];
+  catalogs: string[];
 }
 
 export interface CatalogSummary {
@@ -37,6 +38,7 @@ export interface CatalogSummary {
   targetImage: string;
   filteredPackagesUrl: string;
   upstreamPackagesUrl: string;
+  imageSets: string[];
 }
 
 export interface TargetDetail extends TargetSummary {

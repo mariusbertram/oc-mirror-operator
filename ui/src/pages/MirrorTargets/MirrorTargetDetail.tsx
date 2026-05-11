@@ -296,9 +296,9 @@ const ImageSetsTab: React.FC<{
                           Recollect
                         </Button>
                       </FlexItem>
-                      {target.catalogs.length > 0 && (
+                      {is.catalogs.length > 0 && (
                         <FlexItem>
-                          <Link to={`/oc-mirror/targets/${target.name}/namespaces/${target.namespace}/imagesets/${is.name}/catalogs/${target.catalogs[0]?.slug}`}>
+                          <Link to={`/oc-mirror/targets/${target.name}/namespaces/${target.namespace}/imagesets/${is.name}/catalogs/${is.catalogs[0]}`}>
                             <Button variant="link" size="sm" isInline>Browse catalog</Button>
                           </Link>
                         </FlexItem>
@@ -349,9 +349,11 @@ const CatalogsTab: React.FC<{ target: TargetDetail }> = ({ target }) => {
   return (
     <Flex direction={{ default: 'column' }} gap={{ default: 'gapMd' }}>
       {target.catalogs.map((c) => {
-        const imageset = target.imageSets[0];
-        const browseUrl = imageset
-          ? `/oc-mirror/targets/${target.name}/namespaces/${target.namespace}/imagesets/${imageset.name}/catalogs/${c.slug}`
+        // Prefer the first ImageSet that actually references this catalog;
+        // fall back to the first ImageSet in the target if the mapping is missing.
+        const ownerISName = c.imageSets.length > 0 ? c.imageSets[0] : target.imageSets[0]?.name;
+        const browseUrl = ownerISName
+          ? `/oc-mirror/targets/${target.name}/namespaces/${target.namespace}/imagesets/${ownerISName}/catalogs/${c.slug}`
           : null;
 
         const catalogResources = allResources.filter((r) =>

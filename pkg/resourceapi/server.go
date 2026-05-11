@@ -149,11 +149,12 @@ type ConditionSummary struct {
 
 // CatalogSummary describes a single operator catalog tracked by a MirrorTarget.
 type CatalogSummary struct {
-	Slug                string `json:"slug"`
-	Source              string `json:"source"`
-	TargetImage         string `json:"targetImage"`
-	FilteredPackagesURL string `json:"filteredPackagesUrl"`
-	UpstreamPackagesURL string `json:"upstreamPackagesUrl"`
+	Slug                string   `json:"slug"`
+	Source              string   `json:"source"`
+	TargetImage         string   `json:"targetImage"`
+	FilteredPackagesURL string   `json:"filteredPackagesUrl"`
+	UpstreamPackagesURL string   `json:"upstreamPackagesUrl"`
+	ImageSets           []string `json:"imageSets"`
 }
 
 // TargetDetail is the JSON response for a single target detail endpoint.
@@ -180,6 +181,7 @@ type ImageSetSummaryJSON struct {
 	Pending   int            `json:"pending"`
 	Failed    int            `json:"failed"`
 	Resources []ResourceLink `json:"resources"`
+	Catalogs  []string       `json:"catalogs"`
 }
 
 // ResourceLink describes a downloadable resource.
@@ -359,6 +361,23 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	// Build catalog ↔ ImageSet ownership maps by reading each ImageSet's spec.
+	// catalogToISes[slug] = list of ImageSet names that reference this catalog.
+	// iseToCatalogs[isName] = list of catalog slugs referenced by that ImageSet.
+	catalogToISes := make(map[string][]string)
+	iseToCatalogs := make(map[string][]string)
+	for _, isName := range mt.Spec.ImageSets {
+		var is mirrorv1alpha1.ImageSet
+		if err := c.Get(r.Context(), client.ObjectKey{Namespace: ns, Name: isName}, &is); err != nil {
+			continue
+		}
+		for _, op := range is.Spec.Mirror.Operators {
+			slug := mirrorresources.CatalogSlug(op.Catalog)
+			catalogToISes[slug] = append(catalogToISes[slug], isName)
+			iseToCatalogs[isName] = append(iseToCatalogs[isName], slug)
+		}
+	}
+
 	// Discover per-catalog ConfigMaps to build catalog summaries.
 	catalogCMs := &corev1.ConfigMapList{}
 	catalogs := make([]CatalogSummary, 0)
@@ -377,10 +396,15 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
 			}
 			seen[slug] = true
 			base := fmt.Sprintf("/api/v1/targets/%s/catalogs/%s", mtName, slug)
+			isesForSlug := catalogToISes[slug]
+			if isesForSlug == nil {
+				isesForSlug = []string{}
+			}
 			catalogs = append(catalogs, CatalogSummary{
 				Slug:                slug,
 				FilteredPackagesURL: base + "/packages.json",
 				UpstreamPackagesURL: base + "/upstream-packages.json",
+				ImageSets:           isesForSlug,
 			})
 			resources = append(resources, ResourceLink{
 				Name: fmt.Sprintf("Packages (%s)", slug),
@@ -403,6 +427,10 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
 
 	imageSets := make([]ImageSetSummaryJSON, 0, len(mt.Status.ImageSetStatuses))
 	for _, iss := range mt.Status.ImageSetStatuses {
+		cats := iseToCatalogs[iss.Name]
+		if cats == nil {
+			cats = []string{}
+		}
 		imageSets = append(imageSets, ImageSetSummaryJSON{
 			Name:      iss.Name,
 			Found:     iss.Found,
@@ -410,7 +438,8 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
 			Mirrored:  iss.Mirrored,
 			Pending:   iss.Pending,
 			Failed:    iss.Failed,
-			Resources: []ResourceLink{}, // ImageSet specific resources are currently managed at the target level
+			Resources: []ResourceLink{},
+			Catalogs:  cats,
 		})
 	}
 
