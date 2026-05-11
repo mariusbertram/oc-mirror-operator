@@ -1269,17 +1269,20 @@ func (r *MirrorTargetReconciler) mirrorTargetsForImageSet(ctx context.Context, o
 	return requests
 }
 
-// aggregateImageSetStatus walks spec.imageSets and sums the per-ImageSet
-// counters into MirrorTarget.Status. ImageSets that don't exist (yet) appear
-// with Found=false and contribute zero. The per-ImageSet breakdown is sorted
-// alphabetically for deterministic diffs.
+// aggregateImageSetStatus walks spec.imageSets and builds per-ImageSet summaries
+// for MirrorTarget.Status.ImageSetStatuses. The MirrorTarget-level totals
+// (TotalImages, MirroredImages, PendingImages, FailedImages) are derived from
+// the consolidated per-MirrorTarget imagestate ConfigMap so that destination
+// images shared across multiple ImageSets are counted only once.
+// Per-ImageSet summaries still reflect per-ImageSet counts for the breakdown view.
+// ImageSets that don't exist (yet) appear with Found=false.
+// The per-ImageSet breakdown is sorted alphabetically for deterministic diffs.
 func (r *MirrorTargetReconciler) aggregateImageSetStatus(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget) error {
 	names := make([]string, len(mt.Spec.ImageSets))
 	copy(names, mt.Spec.ImageSets)
 	sort.Strings(names)
 
 	summaries := make([]mirrorv1alpha1.ImageSetStatusSummary, 0, len(names))
-	var total, mirrored, pending, failed int
 
 	for _, name := range names {
 		var is mirrorv1alpha1.ImageSet
@@ -1302,13 +1305,33 @@ func (r *MirrorTargetReconciler) aggregateImageSetStatus(ctx context.Context, mt
 			Pending:  is.Status.PendingImages,
 			Failed:   is.Status.FailedImages,
 		})
-		total += is.Status.TotalImages
-		mirrored += is.Status.MirroredImages
-		pending += is.Status.PendingImages
-		failed += is.Status.FailedImages
 	}
 
 	mt.Status.ImageSetStatuses = summaries
+
+	// Derive MirrorTarget-level totals from the consolidated imagestate so that
+	// images shared across multiple ImageSets are counted only once.
+	state, err := imagestate.LoadForTarget(ctx, r.Client, mt.Namespace, mt.Name)
+	if err != nil {
+		// Non-fatal: fall back to summing per-ImageSet counters so status is
+		// never silently zeroed when the ConfigMap is temporarily unavailable.
+		var total, mirrored, pending, failed int
+		for i := range summaries {
+			if !summaries[i].Found {
+				continue
+			}
+			total += summaries[i].Total
+			mirrored += summaries[i].Mirrored
+			pending += summaries[i].Pending
+			failed += summaries[i].Failed
+		}
+		mt.Status.TotalImages = total
+		mt.Status.MirroredImages = mirrored
+		mt.Status.PendingImages = pending
+		mt.Status.FailedImages = failed
+		return nil
+	}
+	total, mirrored, pending, failed := imagestate.Counts(state)
 	mt.Status.TotalImages = total
 	mt.Status.MirroredImages = mirrored
 	mt.Status.PendingImages = pending
