@@ -76,6 +76,11 @@ type MirrorManager struct {
 
 	workerToken string
 
+	// urgentFlush is signalled (non-blocking) whenever a worker completion
+	// arrives so the reconcile loop runs immediately instead of waiting for
+	// the 30-second ticker.
+	urgentFlush chan struct{}
+
 	// State in memory — protected by mu
 	mu             sync.RWMutex
 	inProgress     map[string]string     // dest → podName
@@ -83,6 +88,7 @@ type MirrorManager struct {
 	imageState     imagestate.ImageState // consolidated per-MirrorTarget state
 	lastDriftCheck time.Time             // last time we verified all mirrored images
 	stateDirty     bool                  // true when imageState has unsaved changes
+	statusDirty    bool                  // true when ImageSet.status needs a Kubernetes write
 }
 
 func New(targetName, namespace string, scheme *runtime.Scheme) (*MirrorManager, error) {
@@ -127,6 +133,7 @@ func NewWithClients(c client.Client, cs kubernetes.Interface, targetName, namesp
 		mirrorClient:   mc,
 		authConfigPath: authConfigPath,
 		clientCache:    mirrorclient.NewClientCache(),
+		urgentFlush:    make(chan struct{}, 1),
 		// workerToken is populated lazily by ensureWorkerTokenSecret() in Run().
 		inProgress: make(map[string]string),
 		mirrored:   make(map[string]bool),
@@ -237,6 +244,18 @@ func (m *MirrorManager) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return nil
+		case <-m.urgentFlush:
+			// A worker completion arrived — flush state immediately without
+			// waiting for the full 30-second tick. Drain the ticker so the
+			// next tick resets from now rather than firing immediately after.
+			select {
+			case <-ticker.C:
+			default:
+			}
+			ticker.Reset(30 * time.Second)
+			if err := m.reconcile(ctx); err != nil {
+				fmt.Fprintf(os.Stderr, "Error reconciling: %v\n", err)
+			}
 		case <-ticker.C:
 			if err := m.reconcile(ctx); err != nil {
 				fmt.Fprintf(os.Stderr, "Error reconciling: %v\n", err)
@@ -378,6 +397,15 @@ func (m *MirrorManager) handleStatusUpdate(w http.ResponseWriter, r *http.Reques
 	// cleanupFinishedWorkers() once it reaches Succeeded/Failed, so that
 	// other batch items in the same pod can continue reporting.
 	delete(m.inProgress, req.Destination)
+	m.statusDirty = true
+
+	// Signal the reconcile loop to run immediately instead of waiting for
+	// the 30-second ticker. Non-blocking send: if a signal is already queued
+	// (channel capacity = 1) we skip — the pending reconcile will pick this up.
+	select {
+	case m.urgentFlush <- struct{}{}:
+	default:
+	}
 
 	w.WriteHeader(http.StatusOK)
 }
@@ -739,12 +767,17 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 	}
 
 	// Phase G: Update per-IS status from consolidated state (filtered view).
-	for _, is := range imageSets.Items {
-		if !containsString(mt.Spec.ImageSets, is.Name) {
-			continue
+	// Guarded by statusDirty so we skip the Kubernetes API write when nothing
+	// has changed since the last reconcile, reducing spurious conflict retries.
+	if m.statusDirty {
+		for _, is := range imageSets.Items {
+			if !containsString(mt.Spec.ImageSets, is.Name) {
+				continue
+			}
+			isView := filterByImageSet(m.imageState, is.Name)
+			m.updateImageSetStatusLocked(ctx, &is, isView, justResolvedISes[is.Name])
 		}
-		isView := filterByImageSet(m.imageState, is.Name)
-		m.updateImageSetStatusLocked(ctx, &is, isView, justResolvedISes[is.Name])
+		m.statusDirty = false
 	}
 
 	// Phase H: Generate and save global resources (IDMS, ITMS, CatalogSource) to ConfigMap.
@@ -771,6 +804,7 @@ func (m *MirrorManager) setImageStateLocked(dest, st, lastError string) {
 	entry.State = st
 	entry.LastError = lastError
 	m.stateDirty = true
+	m.statusDirty = true
 	if st == stateFailed {
 		entry.RetryCount++
 		ocmetrics.ManagerWorkerRetriesTotal.WithLabelValues(m.TargetName).Inc()
