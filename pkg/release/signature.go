@@ -13,6 +13,7 @@ import (
 
 // signatureBaseURL is the upstream source for OpenShift release GPG signatures.
 // It is a var (not const) so tests can replace it with a local httptest server.
+// Network requirement: outbound HTTPS to mirror.openshift.com:443 (Manager pod).
 var signatureBaseURL = "https://mirror.openshift.com/pub/openshift-v4/signatures/openshift/release"
 
 // SignatureClient downloads OpenShift release GPG signatures from the upstream

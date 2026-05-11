@@ -68,6 +68,14 @@ const extensions = [
     type: 'console.page/route',
     properties: {
       exact: true,
+      path: '/oc-mirror/targets/:targetName/namespaces/:namespace/imagesets/:imageSetName/releases',
+      component: { $codeRef: 'ReleaseBrowserPage' },
+    },
+  },
+  {
+    type: 'console.page/route',
+    properties: {
+      exact: true,
       path: '/oc-mirror/targets/:targetName/namespaces/:namespace/imagesets/:imageSetName/catalogs/:slug',
       component: { $codeRef: 'CatalogBrowserPage' },
     },

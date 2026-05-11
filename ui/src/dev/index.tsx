@@ -19,6 +19,7 @@ import { FailedImages } from '../pages/MirrorTargets/FailedImages';
 import { ImageSetList } from '../pages/ImageSets/ImageSetList';
 import { ImageSetDetail } from '../pages/ImageSets/ImageSetDetail';
 import { CatalogBrowser } from '../pages/CatalogBrowser/CatalogBrowser';
+import { ReleaseBrowser } from '../pages/ReleaseBrowser/ReleaseBrowser';
 
 // The default API client uses window.fetch with an empty base URL, so all /api/v1/...
 // requests go to the same origin — the webpack dev server proxies them to :9443.
@@ -58,6 +59,10 @@ function App() {
             <Route path="/" element={<Navigate to="/oc-mirror/targets" replace />} />
             <Route path="/oc-mirror/targets" element={<MirrorTargetList />} />
             <Route path="/oc-mirror/targets/:name/failures" element={<FailedImages />} />
+            <Route
+              path="/oc-mirror/targets/:targetName/namespaces/:namespace/imagesets/:imageSetName/releases"
+              element={<ReleaseBrowser />}
+            />
             <Route
               path="/oc-mirror/targets/:targetName/namespaces/:namespace/imagesets/:imageSetName/catalogs/:slug"
               element={<CatalogBrowser />}
