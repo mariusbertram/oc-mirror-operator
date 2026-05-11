@@ -10,7 +10,7 @@ import {
   ToolbarContent,
   ToolbarItem,
 } from '@patternfly/react-core';
-import { useNavigate, useParams } from 'react-router';
+import { useParams } from 'react-router';
 import { Link } from 'react-router-dom';
 import {
   getFilteredPackages,
@@ -51,7 +51,12 @@ const versionSelectStyle: React.CSSProperties = {
 export const CatalogBrowser: React.FC = () => {
   const params = useParams<CatalogBrowserParams>();
   let { targetName, slug, namespace, imageSetName } = params;
-  const navigate = useNavigate();
+  // useNavigate from react-router v6 is not available in the OpenShift Console (which bundles v5).
+  // Use the browser History API directly — react-router listens to popstate in both versions.
+  const navigateTo = (url: string) => {
+    window.history.pushState(null, '', url);
+    window.dispatchEvent(new PopStateEvent('popstate'));
+  };
 
   if (!targetName) {
     const m = window.location.pathname.match(
@@ -66,19 +71,28 @@ export const CatalogBrowser: React.FC = () => {
   }
 
   const [availableImageSets, setAvailableImageSets] = useState<string[]>([]);
+  const [availableCatalogs, setAvailableCatalogs] = useState<string[]>([]);
 
-  // Fetch the target detail once to discover which ImageSets reference this catalog.
+  // Fetch target detail once to populate catalog and ImageSet switchers.
   useEffect(() => {
     if (!targetName || !slug) return;
     getTarget(targetName)
       .then((t) => {
+        const isData = t.imageSets.find((is) => is.name === imageSetName);
+        if (isData && isData.catalogs.length > 1) {
+          setAvailableCatalogs(isData.catalogs);
+        } else {
+          setAvailableCatalogs([]);
+        }
         const catalog = t.catalogs.find((c) => c.slug === slug);
         if (catalog && catalog.imageSets.length > 1) {
           setAvailableImageSets(catalog.imageSets);
+        } else {
+          setAvailableImageSets([]);
         }
       })
-      .catch(() => {/* non-critical — switcher just won't show */});
-  }, [targetName, slug]);
+      .catch(() => {/* non-critical — switchers just won't show */});
+  }, [targetName, slug, imageSetName]);
 
   const [upstream, setUpstream] = useState<CatalogPackage[]>([]);
   const [imported, setImported] = useState<Set<string>>(new Set());
@@ -320,7 +334,7 @@ export const CatalogBrowser: React.FC = () => {
           </Link>
         </div>
         <div className="mirror-row" style={{ marginBottom: 8 }}>
-          <Title headingLevel="h1">Catalog browser — {slug}</Title>
+          <Title headingLevel="h1">{slug}</Title>
           <div className="mirror-spacer" />
           {dirty && (
             <Button
@@ -334,14 +348,34 @@ export const CatalogBrowser: React.FC = () => {
           )}
         </div>
         <p style={{ margin: '0 0 12px', color: 'var(--pf-v6-global--Color--200)', fontSize: 13 }}>
-          Import packages from <strong>{slug}</strong> into ImageSet{' '}
+          {availableCatalogs.length > 1 ? (
+            <>
+              Catalog{' '}
+              <select
+                value={slug}
+                onChange={(e) => navigateTo(`/oc-mirror/targets/${targetName}/namespaces/${namespace}/imagesets/${imageSetName}/catalogs/${e.target.value}`)}
+                style={{
+                  fontSize: 12,
+                  padding: '1px 4px',
+                  background: 'var(--pf-v6-global--BackgroundColor--100, transparent)',
+                  color: 'var(--pf-v6-global--Color--100, inherit)',
+                  border: '1px solid var(--pf-v6-global--BorderColor--100, #d2d2d2)',
+                  borderRadius: 2,
+                }}
+                aria-label="Switch catalog"
+              >
+                {availableCatalogs.map((s) => (
+                  <option key={s} value={s}>{s}</option>
+                ))}
+              </select>
+              {' · '}
+            </>
+          ) : null}
+          Package filter for ImageSet{' '}
           {availableImageSets.length > 1 ? (
             <select
               value={imageSetName}
-              onChange={(e) => {
-                const next = e.target.value;
-                navigate(`/oc-mirror/targets/${targetName}/namespaces/${namespace}/imagesets/${next}/catalogs/${slug}`);
-              }}
+              onChange={(e) => navigateTo(`/oc-mirror/targets/${targetName}/namespaces/${namespace}/imagesets/${e.target.value}/catalogs/${slug}`)}
               style={{
                 fontSize: 12,
                 padding: '1px 4px',
@@ -374,7 +408,7 @@ export const CatalogBrowser: React.FC = () => {
           {/* ── Upstream pane ── */}
           <div className="mirror-dual-pane">
             <div className="mirror-dual-pane__header">
-              <h3>Upstream catalog</h3>
+              <h3>Available packages</h3>
               <span style={{ fontSize: 12, color: 'var(--pf-v6-global--Color--200)' }}>
                 {visibleUpstream.length} packages
               </span>
@@ -528,9 +562,7 @@ export const CatalogBrowser: React.FC = () => {
           {/* ── Filtered / imported pane ── */}
           <div className="mirror-dual-pane">
             <div className="mirror-dual-pane__header">
-              <h3>
-                In ImageSet <code style={{ fontSize: 11, marginLeft: 4 }}>{imageSetName}</code>
-              </h3>
+              <h3>Selected packages</h3>
               <span style={{ fontSize: 12, color: 'var(--pf-v6-global--Color--200)' }}>
                 {importedPackages.length} packages
               </span>
@@ -538,7 +570,7 @@ export const CatalogBrowser: React.FC = () => {
             <div className="mirror-dual-pane__body">
               {importedPackages.length === 0 && (
                 <div style={{ padding: 32, textAlign: 'center', color: 'var(--pf-v6-global--Color--200)', fontSize: 13 }}>
-                  No packages imported yet. Select a package on the left and click Import.
+                  No packages selected yet. Choose packages on the left to include them in the mirror.
                 </div>
               )}
               {importedPackages.map((p) => {
