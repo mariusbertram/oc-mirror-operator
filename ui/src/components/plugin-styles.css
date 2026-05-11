@@ -39,6 +39,13 @@
   gap: 12px;
   align-items: start;
 }
+/* Two-pane variant without a middle action column (e.g. ReleaseBrowser). */
+.mirror-dual-simple {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  align-items: start;
+}
 .mirror-dual-pane {
   border: 1px solid var(--pf-v6-global--BorderColor--100, #d2d2d2);
   border-radius: 4px;

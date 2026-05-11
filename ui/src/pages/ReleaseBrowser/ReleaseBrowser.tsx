@@ -189,7 +189,7 @@ export const ReleaseBrowser: React.FC = () => {
       </PageSection>
 
       <PageSection>
-        <div className="mirror-dual">
+        <div className="mirror-dual-simple">
           {/* Left pane — Available OCP Channels */}
           <div className="mirror-dual-pane">
             <div className="mirror-dual-pane__header">
