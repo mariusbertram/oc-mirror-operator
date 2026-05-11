@@ -10,11 +10,12 @@ import {
   ToolbarContent,
   ToolbarItem,
 } from '@patternfly/react-core';
-import { useParams } from 'react-router';
+import { useNavigate, useParams } from 'react-router';
 import { Link } from 'react-router-dom';
 import {
   getFilteredPackages,
   getPackageConstraints,
+  getTarget,
   getUpstreamPackages,
   patchCatalogPackages,
 } from '../../api/client';
@@ -50,6 +51,7 @@ const versionSelectStyle: React.CSSProperties = {
 export const CatalogBrowser: React.FC = () => {
   const params = useParams<CatalogBrowserParams>();
   let { targetName, slug, namespace, imageSetName } = params;
+  const navigate = useNavigate();
 
   if (!targetName) {
     const m = window.location.pathname.match(
@@ -62,6 +64,21 @@ export const CatalogBrowser: React.FC = () => {
       slug = m[4];
     }
   }
+
+  const [availableImageSets, setAvailableImageSets] = useState<string[]>([]);
+
+  // Fetch the target detail once to discover which ImageSets reference this catalog.
+  useEffect(() => {
+    if (!targetName || !slug) return;
+    getTarget(targetName)
+      .then((t) => {
+        const catalog = t.catalogs.find((c) => c.slug === slug);
+        if (catalog && catalog.imageSets.length > 1) {
+          setAvailableImageSets(catalog.imageSets);
+        }
+      })
+      .catch(() => {/* non-critical — switcher just won't show */});
+  }, [targetName, slug]);
 
   const [upstream, setUpstream] = useState<CatalogPackage[]>([]);
   const [imported, setImported] = useState<Set<string>>(new Set());
@@ -318,7 +335,30 @@ export const CatalogBrowser: React.FC = () => {
         </div>
         <p style={{ margin: '0 0 12px', color: 'var(--pf-v6-global--Color--200)', fontSize: 13 }}>
           Import packages from <strong>{slug}</strong> into ImageSet{' '}
-          <span className="mirror-tag">{imageSetName}</span>
+          {availableImageSets.length > 1 ? (
+            <select
+              value={imageSetName}
+              onChange={(e) => {
+                const next = e.target.value;
+                navigate(`/oc-mirror/targets/${targetName}/namespaces/${namespace}/imagesets/${next}/catalogs/${slug}`);
+              }}
+              style={{
+                fontSize: 12,
+                padding: '1px 4px',
+                background: 'var(--pf-v6-global--BackgroundColor--100, transparent)',
+                color: 'var(--pf-v6-global--Color--100, inherit)',
+                border: '1px solid var(--pf-v6-global--BorderColor--100, #d2d2d2)',
+                borderRadius: 2,
+              }}
+              aria-label="Switch ImageSet"
+            >
+              {availableImageSets.map((is) => (
+                <option key={is} value={is}>{is}</option>
+              ))}
+            </select>
+          ) : (
+            <span className="mirror-tag">{imageSetName}</span>
+          )}
         </p>
       </PageSection>
 
