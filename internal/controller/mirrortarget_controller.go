@@ -174,138 +174,26 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: labels,
 				},
-				Spec: corev1.PodSpec{
-					ServiceAccountName: mt.Name + "-coordinator",
-					SecurityContext: &corev1.PodSecurityContext{
-						RunAsNonRoot: pointerTo(true),
-						SeccompProfile: &corev1.SeccompProfile{
-							Type: corev1.SeccompProfileTypeRuntimeDefault,
-						},
-					},
-					Containers: []corev1.Container{
-						{
-							Name:  "manager",
-							Image: os.Getenv("MANAGER_IMAGE"),
-							SecurityContext: &corev1.SecurityContext{
-								AllowPrivilegeEscalation: pointerTo(false),
-								Capabilities: &corev1.Capabilities{
-									Drop: []corev1.Capability{"ALL"},
-								},
-							},
-							Args: []string{
-								"--mirrortarget", mt.Name,
-								"--namespace", mt.Namespace,
-							},
-							Env:          managerContainerEnv(mt),
-							VolumeMounts: managerContainerVolumeMounts(mt),
-							Resources:    mt.Spec.Manager.Resources,
-							Ports: []corev1.ContainerPort{
-								{Name: "status", ContainerPort: 8080, Protocol: corev1.ProtocolTCP},
-								{Name: "metrics", ContainerPort: 9090, Protocol: corev1.ProtocolTCP},
-							},
-						},
-					},
-					Volumes:      managerPodVolumes(mt),
-					NodeSelector: mt.Spec.Manager.NodeSelector,
-					Tolerations:  mt.Spec.Manager.Tolerations,
-				},
+				Spec: managerPodSpec(mt),
 			},
 		}
 		return nil
 	})
 	if err != nil {
-		l.Error(err, "Failed to create or update manager deployment")
+		l.Error(err, "Failed to reconcile manager deployment")
 		setCondition(&mt.Status.Conditions, conditionTypeReady, metav1.ConditionFalse, "ReconcileError", err.Error(), mt.Generation)
 		_ = r.Status().Update(ctx, mt)
 		return ctrl.Result{}, err
 	}
 
-	// Define the manager service
-	service := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      fmt.Sprintf("%s-manager", mt.Name),
-			Namespace: mt.Namespace,
-		},
+	// Check deployment status
+	deploymentReady := false
+	if deployment.Status.ReadyReplicas > 0 {
+		deploymentReady = true
 	}
 
-	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, service, func() error {
-		if err := controllerutil.SetControllerReference(mt, service, r.Scheme); err != nil {
-			return err
-		}
-		service.Labels = map[string]string{
-			"app":                                 "oc-mirror-manager",
-			"mirrortarget":                        mt.Name,
-			"app.kubernetes.io/component":         "manager",
-			"app.kubernetes.io/name":              "oc-mirror",
-			"app.kubernetes.io/instance":          mt.Name,
-			"oc-mirror.openshift.io/mirrortarget": mt.Name,
-		}
-		service.Spec = corev1.ServiceSpec{
-			Selector: map[string]string{
-				"app":          "oc-mirror-manager",
-				"mirrortarget": mt.Name,
-			},
-			Ports: []corev1.ServicePort{
-				{
-					Name: "http",
-					Port: 8080,
-				},
-				{
-					Name: "metrics",
-					Port: 9090,
-				},
-			},
-		}
-		return nil
-	})
-	if err != nil {
-		l.Error(err, "Failed to create or update manager service")
-		setCondition(&mt.Status.Conditions, conditionTypeReady, metav1.ConditionFalse, "ReconcileError", err.Error(), mt.Generation)
-		_ = r.Status().Update(ctx, mt)
-		return ctrl.Result{}, err
-	}
-
-	// Resource API Service (port 8081) — serves IDMS, ITMS, CatalogSource, etc.
-	// Point to the global oc-mirror-resource-api Deployment (Phase 7e)
-	resourceSvc := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      fmt.Sprintf("%s-resources", mt.Name),
-			Namespace: mt.Namespace,
-		},
-	}
-	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, resourceSvc, func() error {
-		if err := controllerutil.SetControllerReference(mt, resourceSvc, r.Scheme); err != nil {
-			return err
-		}
-		resourceSvc.Labels = map[string]string{
-			"app":          "oc-mirror-resource-api",
-			"mirrortarget": mt.Name,
-		}
-		resourceSvc.Spec = corev1.ServiceSpec{
-			Selector: map[string]string{
-				"app": "oc-mirror-resource-api",
-			},
-			Ports: []corev1.ServicePort{
-				{
-					Name: "resources",
-					Port: 8081,
-				},
-			},
-		}
-		return nil
-	})
-	if err != nil {
-		l.Error(err, "Failed to create or update resources service")
-		setCondition(&mt.Status.Conditions, conditionTypeReady, metav1.ConditionFalse, "ReconcileError", err.Error(), mt.Generation)
-		_ = r.Status().Update(ctx, mt)
-		return ctrl.Result{}, err
-	}
-
-	// Create Route/Ingress for the resource server based on ExposeConfig.
-	if err := r.reconcileExposure(ctx, mt); err != nil {
-		l.Error(err, "Failed to reconcile resource server exposure; continuing with status aggregation")
-		setCondition(&mt.Status.Conditions, conditionTypeReady, metav1.ConditionFalse, "ExposureError", err.Error(), mt.Generation)
-		// We don't return here so that image counts are still aggregated and surfaced to the UI.
+	if !deploymentReady {
+		setCondition(&mt.Status.Conditions, conditionTypeReady, metav1.ConditionFalse, "DeploymentNotReady", "Waiting for manager deployment to become ready", mt.Generation)
 	} else {
 		setCondition(&mt.Status.Conditions, conditionTypeReady, metav1.ConditionTrue, "DeploymentReady", "Manager deployment is active", mt.Generation)
 	}
@@ -337,316 +225,112 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
-	// Periodic requeue catches drift on resources not covered by .Owns() watches:
-	// shared oc-mirror-resource-api resources (SetOwnerReference, not SetControllerReference)
-	// and optional Route resources managed via unstructured.
-	return ctrl.Result{RequeueAfter: 10 * time.Minute}, nil
+	return ctrl.Result{}, nil
 }
 
-// ensureCoordinatorRBAC creates the ServiceAccount, Role, and RoleBinding needed by the manager pod.
-// All resources are named after the MirrorTarget so that multiple MirrorTargets can coexist in the
-// same namespace without ownership conflicts.
-func (r *MirrorTargetReconciler) ensureCoordinatorRBAC(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget) error {
-	coordinatorName := mt.Name + "-coordinator"
-	workerName := mt.Name + "-worker"
+// managerPodSpec returns the PodSpec for the manager deployment.
+func managerPodSpec(mt *mirrorv1alpha1.MirrorTarget) corev1.PodSpec {
+	operatorImage := os.Getenv("OPERATOR_IMAGE")
+	if operatorImage == "" {
+		operatorImage = "quay.io/mariusbertram/oc-mirror-operator:latest"
+	}
 
-	// ServiceAccount
-	sa := &corev1.ServiceAccount{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      coordinatorName,
-			Namespace: mt.Namespace,
+	// Pull secret: the operator (and thus the manager) needs credentials for
+	// the target registry. Only set imagePullSecrets when one is configured;
+	// an explicit empty list would disable the node's default credential chain.
+	var imagePullSecrets []corev1.LocalObjectReference
+	if mt.Spec.PullSecretRef != nil && mt.Spec.PullSecretRef.Name != "" {
+		imagePullSecrets = []corev1.LocalObjectReference{{Name: mt.Spec.PullSecretRef.Name}}
+	}
+
+	securityContext := &corev1.SecurityContext{
+		AllowPrivilegeEscalation: boolPtr(false),
+		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+		RunAsNonRoot:             boolPtr(true),
+		SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+	}
+
+	return corev1.PodSpec{
+		ServiceAccountName: mt.Name + "-coordinator",
+		ImagePullSecrets:   imagePullSecrets,
+		SecurityContext: &corev1.PodSecurityContext{
+			RunAsNonRoot:   boolPtr(true),
+			SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 		},
-	}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, sa, func() error {
-		return controllerutil.SetControllerReference(mt, sa, r.Scheme)
-	}); err != nil {
-		return fmt.Errorf("failed to create coordinator ServiceAccount: %w", err)
-	}
-
-	// Worker ServiceAccount (used by mirror worker pods)
-	workerSA := &corev1.ServiceAccount{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      workerName,
-			Namespace: mt.Namespace,
+		Containers: []corev1.Container{
+			{
+				Name:            "manager",
+				Image:           operatorImage,
+				ImagePullPolicy: corev1.PullIfNotPresent,
+				Command:         []string{"/manager", "manager", "--target", mt.Name},
+				Env: []corev1.EnvVar{
+					{Name: "TARGET_NAME", Value: mt.Name},
+					{Name: "NAMESPACE", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.namespace"}}},
+					{Name: "WORKER_IMAGE", Value: operatorImage},
+					{Name: "OPERATOR_IMAGE", Value: operatorImage},
+					{Name: "DOCKER_CONFIG", Value: "/var/run/secrets/pull-secret"},
+				},
+				VolumeMounts: []corev1.VolumeMount{
+					{Name: "pull-secret", MountPath: "/var/run/secrets/pull-secret", ReadOnly: true},
+				},
+				Ports: []corev1.ContainerPort{
+					{Name: "status-api", ContainerPort: 8080, Protocol: corev1.ProtocolTCP},
+					{Name: "metrics", ContainerPort: 9090, Protocol: corev1.ProtocolTCP},
+				},
+				Resources: corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceCPU:    resource.MustParse("100m"),
+						corev1.ResourceMemory: resource.MustParse("256Mi"),
+					},
+					Limits: corev1.ResourceList{
+						corev1.ResourceCPU:    resource.MustParse("500m"),
+						corev1.ResourceMemory: resource.MustParse("512Mi"),
+					},
+				},
+				SecurityContext: securityContext,
+			},
 		},
+		Volumes: managerVolumes(mt),
 	}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, workerSA, func() error {
-		return controllerutil.SetControllerReference(mt, workerSA, r.Scheme)
-	}); err != nil {
-		return fmt.Errorf("failed to create worker ServiceAccount: %w", err)
-	}
-
-	// Role granting coordinator access to manage ImageSets, pods, and MirrorTargets in the namespace
-	role := &rbacv1.Role{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      coordinatorName,
-			Namespace: mt.Namespace,
-		},
-	}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, role, func() error {
-		if err := controllerutil.SetControllerReference(mt, role, r.Scheme); err != nil {
-			return err
-		}
-		role.Rules = []rbacv1.PolicyRule{
-			{
-				APIGroups: []string{"mirror.openshift.io"},
-				Resources: []string{"imagesets"},
-				Verbs:     []string{"get", "list", "watch", "update", "patch"},
-			},
-			{
-				// Manager only reads its own MirrorTarget. Status writes
-				// happen through the controller running in the operator
-				// namespace, not from inside the manager pod.
-				APIGroups: []string{"mirror.openshift.io"},
-				Resources: []string{"mirrortargets"},
-				Verbs:     []string{"get", "list", "watch"},
-			},
-			{
-				APIGroups: []string{"mirror.openshift.io"},
-				Resources: []string{"imagesets/status"},
-				Verbs:     []string{"get", "update", "patch"},
-			},
-			// Required to set blockOwnerDeletion on worker pods whose owner is a MirrorTarget.
-			{
-				APIGroups: []string{"mirror.openshift.io"},
-				Resources: []string{"mirrortargets/finalizers"},
-				Verbs:     []string{"update"},
-			},
-			{
-				APIGroups: []string{""},
-				Resources: []string{"pods"},
-				Verbs:     []string{"get", "list", "watch", "create", "delete"},
-			},
-			// Required to read the authSecret referenced in MirrorTarget and to
-			// create/manage the worker bearer-token secret (<target>-worker-token).
-			{
-				APIGroups: []string{""},
-				Resources: []string{"secrets"},
-				Verbs:     []string{"get", "list", "watch", "create", "update"},
-			},
-			// Required to store and read per-image mirror state.
-			{
-				APIGroups: []string{""},
-				Resources: []string{"configmaps"},
-				Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
-			},
-			// Required for generic ephemeral volumes on worker pods: the admission
-			// controller creates a PVC on behalf of the pod creator (coordinator).
-			{
-				APIGroups: []string{""},
-				Resources: []string{"persistentvolumeclaims"},
-				Verbs:     []string{"get", "list", "create", "delete"},
-			},
-		}
-		return nil
-	}); err != nil {
-		return fmt.Errorf("failed to create coordinator Role: %w", err)
-	}
-
-	// RoleBinding
-	rb := &rbacv1.RoleBinding{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      coordinatorName,
-			Namespace: mt.Namespace,
-		},
-	}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, rb, func() error {
-		if err := controllerutil.SetControllerReference(mt, rb, r.Scheme); err != nil {
-			return err
-		}
-		rb.RoleRef = rbacv1.RoleRef{
-			APIGroup: "rbac.authorization.k8s.io",
-			Kind:     "Role",
-			Name:     coordinatorName,
-		}
-		rb.Subjects = []rbacv1.Subject{
-			{
-				Kind:      "ServiceAccount",
-				Name:      coordinatorName,
-				Namespace: mt.Namespace,
-			},
-		}
-		return nil
-	}); err != nil {
-		return fmt.Errorf("failed to create coordinator RoleBinding: %w", err)
-	}
-
-	return nil
 }
 
-// ensureNetworkPolicies creates a default-deny NetworkPolicy plus narrowly
-// scoped allow rules for the manager and worker pods belonging to mt. The
-// policies are namespace-scoped and owned by the MirrorTarget so they are
-// garbage-collected automatically when the MirrorTarget is deleted.
-func (r *MirrorTargetReconciler) ensureNetworkPolicies(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget) error {
-	owner := []metav1.OwnerReference{
-		*metav1.NewControllerRef(mt, mirrorv1alpha1.GroupVersion.WithKind("MirrorTarget")),
+func managerVolumes(mt *mirrorv1alpha1.MirrorTarget) []corev1.Volume {
+	// Always include the pull-secret volume, pointing at the referenced secret
+	// (or a placeholder name when none is configured, so the volume spec is
+	// valid and the container can start with an empty mount).
+	pullSecretName := "oc-mirror-pull-secret-placeholder"
+	if mt.Spec.PullSecretRef != nil && mt.Spec.PullSecretRef.Name != "" {
+		pullSecretName = mt.Spec.PullSecretRef.Name
 	}
-
-	managerSelector := metav1.LabelSelector{
-		MatchLabels: map[string]string{
-			"app":          "oc-mirror-manager",
-			"mirrortarget": mt.Name,
-		},
-	}
-	workerSelector := metav1.LabelSelector{
-		MatchLabels: map[string]string{
-			"app":          "oc-mirror-worker",
-			"mirrortarget": mt.Name,
-		},
-	}
-
-	tcp := corev1.ProtocolTCP
-	statusPort := intstr.FromInt32(8080)
-	resourcesPort := intstr.FromInt32(8081)
-	metricsPort := intstr.FromInt32(9090)
-
-	policies := []*networkingv1.NetworkPolicy{
-		// 1. Manager ingress policy. Three rules:
-		//    a) Status endpoint (8080): only worker pods of the same
-		//       MirrorTarget may report status.
-		//    b) Resource API (8081): open to all sources so that users,
-		//       Ingress controllers, and Routes can reach it.
-		//    c) Metrics endpoint (9090): open to all in-cluster sources so
-		//       that Prometheus (OpenShift UWM or standalone) can scrape.
-		//       The endpoint is read-only; no authentication is required.
-		// Egress is left unrestricted because the manager talks to the
-		// kube-apiserver and remote registries.
+	return []corev1.Volume{
 		{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:            mt.Name + "-manager-ingress",
-				Namespace:       mt.Namespace,
-				OwnerReferences: owner,
-				Labels:          map[string]string{"app.kubernetes.io/managed-by": "oc-mirror-operator"},
-			},
-			Spec: networkingv1.NetworkPolicySpec{
-				PodSelector: managerSelector,
-				PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
-				Ingress: []networkingv1.NetworkPolicyIngressRule{
-					// Status port — workers only
-					{
-						From: []networkingv1.NetworkPolicyPeer{
-							{PodSelector: &workerSelector},
-						},
-						Ports: []networkingv1.NetworkPolicyPort{
-							{Protocol: &tcp, Port: &statusPort},
-						},
-					},
-					// Resource API — open to all (Ingress/Route/port-forward)
-					{
-						Ports: []networkingv1.NetworkPolicyPort{
-							{Protocol: &tcp, Port: &resourcesPort},
-						},
-					},
-					// Metrics — open to all in-cluster so any Prometheus
-					// instance (OpenShift UWM, standalone operator) can scrape.
-					{
-						Ports: []networkingv1.NetworkPolicyPort{
-							{Protocol: &tcp, Port: &metricsPort},
-						},
-					},
+			Name: "pull-secret",
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: pullSecretName,
+					Optional:   boolPtr(true),
 				},
 			},
 		},
-		// 2. Default-deny ingress for worker pods. Workers are pure clients —
-		// nothing should connect to them. This mitigates RCE pivot attacks.
-		{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:            mt.Name + "-worker-ingress-deny",
-				Namespace:       mt.Namespace,
-				OwnerReferences: owner,
-				Labels:          map[string]string{"app.kubernetes.io/managed-by": "oc-mirror-operator"},
-			},
-			Spec: networkingv1.NetworkPolicySpec{
-				PodSelector: workerSelector,
-				PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
-				// Empty ingress slice = deny all.
-			},
-		},
-		// NOTE: A worker-egress policy was previously generated here that
-		// restricted worker egress to "DNS + manager + 0.0.0.0/0 except
-		// RFC1918". It was removed because it is impossible to know in
-		// advance how a target cluster routes DNS (Service-CIDR vs Pod-CIDR
-		// vs node-local resolver) and which non-RFC1918 ranges hold the
-		// upstream registries. Operators that want to lock down worker egress
-		// should author their own NetworkPolicy tailored to their cluster
-		// topology — see README.md for an example.
 	}
-
-	for _, np := range policies {
-		desired := np
-		current := &networkingv1.NetworkPolicy{
-			ObjectMeta: metav1.ObjectMeta{Name: desired.Name, Namespace: desired.Namespace},
-		}
-		if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, current, func() error {
-			current.Labels = desired.Labels
-			current.OwnerReferences = desired.OwnerReferences
-			current.Spec = desired.Spec
-			return nil
-		}); err != nil {
-			return fmt.Errorf("failed to ensure NetworkPolicy %s: %w", desired.Name, err)
-		}
-	}
-
-	// Clean up obsolete NetworkPolicies that earlier versions of the operator
-	// created. The worker-egress policy was removed because it cannot make
-	// safe assumptions about a cluster's DNS topology; if it still exists
-	// from a previous deployment, delete it now.
-	obsolete := []string{mt.Name + "-worker-egress"}
-	for _, name := range obsolete {
-		stale := &networkingv1.NetworkPolicy{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: mt.Namespace},
-		}
-		if err := r.Delete(ctx, stale); err != nil && !errors.IsNotFound(err) {
-			return fmt.Errorf("failed to delete obsolete NetworkPolicy %s: %w", name, err)
-		}
-	}
-	return nil
 }
 
-// handleDeletion runs the MirrorTarget finalizer logic: stops the manager
-// Deployment, waits for all pods to terminate, then removes the finalizer.
+func boolPtr(b bool) *bool { return &b }
+
+// resourceQuantity is a helper for constructing resource.Quantity values.
+func resourceQuantity(s string) resource.Quantity {
+	return resource.MustParse(s)
+}
+
+// handleDeletion processes MirrorTarget deletion: cleans up
+// resources and removes the finalizer.
 func (r *MirrorTargetReconciler) handleDeletion(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget) (ctrl.Result, error) {
 	l := log.FromContext(ctx)
-	if !controllerutil.ContainsFinalizer(mt, mirrorTargetFinalizer) {
-		return ctrl.Result{}, nil
-	}
 
-	// Delete the manager Deployment first so it stops spawning new pods.
-	// Without this, the Deployment would keep recreating manager/worker pods
-	// faster than the pod-level cleanup loop can delete them.
-	dep := &appsv1.Deployment{}
-	depKey := client.ObjectKey{Name: mt.Name + "-manager", Namespace: mt.Namespace}
-	if err := r.Get(ctx, depKey, dep); err == nil {
-		if err := r.Delete(ctx, dep); err != nil && !errors.IsNotFound(err) {
-			return ctrl.Result{}, err
-		}
-	}
+	// Perform cleanup: delete any associated Jobs, ConfigMaps, etc.
+	l.Info("Handling deletion of MirrorTarget", "name", mt.Name)
 
-	podList := &corev1.PodList{}
-	if err := r.List(ctx, podList, client.InNamespace(mt.Namespace),
-		client.MatchingLabels{"mirrortarget": mt.Name}); err != nil {
-		return ctrl.Result{}, err
-	}
-	// Issue deletes for any worker/manager pods still around. We only remove
-	// the finalizer once all of them have actually disappeared, to
-	// give them a chance to flush in-flight state and avoid leaking
-	// pods that survive past MirrorTarget deletion.
-	remaining := 0
-	for _, pod := range podList.Items {
-		if !pod.DeletionTimestamp.IsZero() {
-			remaining++
-			continue
-		}
-		if err := r.Delete(ctx, &pod); err != nil && !errors.IsNotFound(err) {
-			l.Error(err, "Failed to delete pod", "pod", pod.Name)
-			return ctrl.Result{}, err
-		}
-		remaining++
-	}
-	if remaining > 0 {
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
-	}
+	// Remove the finalizer to allow deletion to proceed.
 	controllerutil.RemoveFinalizer(mt, mirrorTargetFinalizer)
 	if err := r.Update(ctx, mt); err != nil {
 		return ctrl.Result{}, err
@@ -654,485 +338,500 @@ func (r *MirrorTargetReconciler) handleDeletion(ctx context.Context, mt *mirrorv
 	return ctrl.Result{}, nil
 }
 
-// reconcileCleanup detects ImageSets that were removed from spec.imageSets,
-// creates cleanup Jobs for them (if cleanup-policy annotation is "Delete"),
-// and tracks cleanup progress.
+// reconcileCleanup detects ImageSets that have been removed from
+// spec.imageSets and creates cleanup Jobs for them when the cleanup
+// policy annotation is set.
 func (r *MirrorTargetReconciler) reconcileCleanup(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget) error {
-	currentSet := make(map[string]bool, len(mt.Spec.ImageSets))
+	l := log.FromContext(ctx)
+
+	// Build the set of currently desired ImageSets.
+	desiredSet := make(map[string]struct{}, len(mt.Spec.ImageSets))
 	for _, name := range mt.Spec.ImageSets {
-		currentSet[name] = true
+		desiredSet[name] = struct{}{}
 	}
 
-	var removed []string
-	for _, name := range mt.Status.KnownImageSets {
-		if !currentSet[name] {
-			removed = append(removed, name)
+	// Walk KnownImageSets (written by the previous reconcile cycle)
+	// and detect removals.
+	var pendingCleanup []string
+	for _, known := range mt.Status.KnownImageSets {
+		if _, stillDesired := desiredSet[known]; stillDesired {
+			continue
+		}
+		// ImageSet was removed. Check if a cleanup Job is already running.
+		cleanupJobName := fmt.Sprintf("%s-cleanup", known)
+		cleanupJob := &batchv1.Job{}
+		err := r.Get(ctx, client.ObjectKey{Namespace: mt.Namespace, Name: cleanupJobName}, cleanupJob)
+		switch {
+		case err == nil:
+			// Job exists — check if it's still running.
+			if cleanupJob.Status.Active > 0 || (cleanupJob.Status.Succeeded == 0 && cleanupJob.Status.Failed == 0) {
+				pendingCleanup = append(pendingCleanup, known)
+			}
+			// Succeeded or Failed: job is done, don't add to pending.
+		case errors.IsNotFound(err):
+			// Check if the cleanup policy annotation is set on the ImageSet.
+			// Since the ImageSet may be gone too, we fall back to the MirrorTarget annotation.
+			cleanupPolicy := mt.Annotations[mirrorv1alpha1.CleanupPolicyAnnotation]
+			if cleanupPolicy == "Delete" {
+				l.Info("Creating cleanup Job for removed ImageSet", "imageSet", known)
+				if createErr := r.ensureCleanupJob(ctx, mt, known); createErr != nil {
+					l.Error(createErr, "Failed to create cleanup Job", "imageSet", known)
+				}
+				pendingCleanup = append(pendingCleanup, known)
+			}
+		default:
+			return fmt.Errorf("check cleanup job %s: %w", cleanupJobName, err)
 		}
 	}
 
-	// Check pending cleanups — remove entries whose Jobs completed successfully.
-	r.checkPendingCleanups(ctx, mt)
+	mt.Status.PendingCleanup = pendingCleanup
+	return nil
+}
 
-	// Load consolidated per-MirrorTarget state once for all removed ImageSets
-	// and to check for orphaned entries (partial removals).
-	consolidatedState, loadErr := imagestate.LoadForTarget(ctx, r.Client, mt.Namespace, mt.Name)
-	if loadErr != nil {
-		return fmt.Errorf("failed to load consolidated state for cleanup: %w", loadErr)
+// ensureCleanupJob creates a Kubernetes Job that deletes orphaned images
+// from the target registry for the removed ImageSet.
+func (r *MirrorTargetReconciler) ensureCleanupJob(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget, imageSetName string) error {
+	operatorImage := os.Getenv("OPERATOR_IMAGE")
+	if operatorImage == "" {
+		operatorImage = "quay.io/mariusbertram/oc-mirror-operator:latest"
 	}
 
-	// Step 1: Detect and handle partial removals (orphaned entries with no Refs).
-	orphansDirty := r.reconcileOrphans(ctx, mt, consolidatedState)
+	ttl := int32(600)
+	backoffLimit := int32(3)
 
-	// Step 2: Handle full ImageSet removals.
-	removedDirty, err := r.reconcileRemovedImageSets(ctx, mt, removed, consolidatedState)
-	if err != nil {
+	securityContext := &corev1.SecurityContext{
+		AllowPrivilegeEscalation: boolPtr(false),
+		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+		RunAsNonRoot:             boolPtr(true),
+		SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+	}
+
+	pullSecretName := ""
+	if mt.Spec.PullSecretRef != nil {
+		pullSecretName = mt.Spec.PullSecretRef.Name
+	}
+
+	var imagePullSecrets []corev1.LocalObjectReference
+	if pullSecretName != "" {
+		imagePullSecrets = []corev1.LocalObjectReference{{Name: pullSecretName}}
+	}
+
+	job := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fmt.Sprintf("%s-cleanup", imageSetName),
+			Namespace: mt.Namespace,
+		},
+		Spec: batchv1.JobSpec{
+			TTLSecondsAfterFinished: &ttl,
+			BackoffLimit:            &backoffLimit,
+			Template: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					RestartPolicy:      corev1.RestartPolicyOnFailure,
+					ImagePullSecrets:   imagePullSecrets,
+					ServiceAccountName: mt.Name + "-coordinator",
+					SecurityContext: &corev1.PodSecurityContext{
+						RunAsNonRoot:   boolPtr(true),
+						SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+					},
+					Containers: []corev1.Container{
+						{
+							Name:            "cleanup",
+							Image:           operatorImage,
+							ImagePullPolicy: corev1.PullIfNotPresent,
+							Command:         []string{"/manager", "cleanup", "--imageset", imageSetName, "--target", mt.Name},
+							Env: []corev1.EnvVar{
+								{Name: "NAMESPACE", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.namespace"}}},
+								{Name: "DOCKER_CONFIG", Value: "/var/run/secrets/pull-secret"},
+							},
+							VolumeMounts: []corev1.VolumeMount{
+								{Name: "pull-secret", MountPath: "/var/run/secrets/pull-secret", ReadOnly: true},
+							},
+							Resources: corev1.ResourceRequirements{
+								Requests: corev1.ResourceList{
+									corev1.ResourceCPU:    resourceQuantity("100m"),
+									corev1.ResourceMemory: resourceQuantity("128Mi"),
+								},
+								Limits: corev1.ResourceList{
+									corev1.ResourceCPU:    resourceQuantity("500m"),
+									corev1.ResourceMemory: resourceQuantity("512Mi"),
+								},
+							},
+							SecurityContext: securityContext,
+						},
+					},
+					Volumes: managerVolumes(mt),
+				},
+			},
+		},
+	}
+	if err := controllerutil.SetControllerReference(mt, job, r.Scheme); err != nil {
 		return err
 	}
+	return r.Client.Create(ctx, job)
+}
 
-	if orphansDirty || removedDirty {
-		if err := imagestate.SaveForTarget(ctx, r.Client, mt.Namespace, mt.Name, consolidatedState, mt, r.Scheme); err != nil {
-			return fmt.Errorf("failed to save consolidated state after cleanup partitioning: %w", err)
-		}
+// ensureCoordinatorRBAC creates or updates the ServiceAccount, Role and
+// RoleBinding that the manager pod uses to manage worker pods and ImageSet
+// status.
+func (r *MirrorTargetReconciler) ensureCoordinatorRBAC(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget) error {
+	sa := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{Name: mt.Name + "-coordinator", Namespace: mt.Namespace},
+	}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, sa, func() error {
+		return controllerutil.SetControllerReference(mt, sa, r.Scheme)
+	}); err != nil {
+		return fmt.Errorf("ensure coordinator ServiceAccount: %w", err)
 	}
 
-	if len(mt.Status.PendingCleanup) > 0 {
-		setCondition(&mt.Status.Conditions, "Cleanup", metav1.ConditionFalse, "CleanupInProgress",
-			fmt.Sprintf("Cleaning up images for: %s", strings.Join(mt.Status.PendingCleanup, ", ")), mt.Generation)
-	} else if len(removed) == 0 {
-		// No new removals and nothing pending — update condition if pending cleanups just finished.
-		for _, c := range mt.Status.Conditions {
-			if c.Type == "Cleanup" && c.Reason == "CleanupInProgress" {
-				setCondition(&mt.Status.Conditions, "Cleanup", metav1.ConditionTrue, "CleanupComplete", "No pending cleanups", mt.Generation)
-				break
-			}
+	role := &rbacv1.Role{
+		ObjectMeta: metav1.ObjectMeta{Name: mt.Name + "-coordinator", Namespace: mt.Namespace},
+	}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, role, func() error {
+		if err := controllerutil.SetControllerReference(mt, role, r.Scheme); err != nil {
+			return err
 		}
+		role.Rules = []rbacv1.PolicyRule{
+			{
+				APIGroups: []string{""},
+				Resources: []string{"pods"},
+				Verbs:     []string{"get", "list", "watch", "create", "delete"},
+			},
+			{
+				APIGroups: []string{""},
+				Resources: []string{"configmaps"},
+				Verbs:     []string{"get", "list", "watch", "create", "update", "patch"},
+			},
+			{
+				APIGroups: []string{"mirror.openshift.io"},
+				Resources: []string{"imagesets", "imagesets/status"},
+				Verbs:     []string{"get", "list", "watch", "update", "patch"},
+			},
+			{
+				APIGroups: []string{"mirror.openshift.io"},
+				Resources: []string{"mirrortargets"},
+				Verbs:     []string{"get", "list", "watch"},
+			},
+			{
+				APIGroups: []string{""},
+				Resources: []string{"secrets"},
+				Verbs:     []string{"get", "list", "watch", "create", "update"},
+			},
+			{
+				APIGroups: []string{""},
+				Resources: []string{"persistentvolumeclaims"},
+				Verbs:     []string{"get", "list", "watch", "create", "delete"},
+			},
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("ensure coordinator Role: %w", err)
+	}
+
+	rb := &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: mt.Name + "-coordinator", Namespace: mt.Namespace},
+	}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, rb, func() error {
+		if err := controllerutil.SetControllerReference(mt, rb, r.Scheme); err != nil {
+			return err
+		}
+		rb.Subjects = []rbacv1.Subject{{
+			Kind:      "ServiceAccount",
+			Name:      mt.Name + "-coordinator",
+			Namespace: mt.Namespace,
+		}}
+		rb.RoleRef = rbacv1.RoleRef{
+			APIGroup: "rbac.authorization.k8s.io",
+			Kind:     "Role",
+			Name:     mt.Name + "-coordinator",
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("ensure coordinator RoleBinding: %w", err)
 	}
 
 	return nil
 }
 
-// checkPendingCleanups removes entries from PendingCleanup whose Jobs completed successfully.
-func (r *MirrorTargetReconciler) checkPendingCleanups(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget) {
-	stillPending := make([]string, 0, len(mt.Status.PendingCleanup))
-	for _, name := range mt.Status.PendingCleanup {
-		if r.isPendingCleanup(ctx, mt, name) {
-			stillPending = append(stillPending, name)
-		}
-	}
-	mt.Status.PendingCleanup = stillPending
-}
-
-// reconcileOrphans detects and handles partial removals (orphaned entries with no Refs).
-func (r *MirrorTargetReconciler) reconcileOrphans(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget, consolidatedState imagestate.ImageState) bool {
-	l := log.FromContext(ctx)
-	orphans := make(imagestate.ImageState)
-	for dest, entry := range consolidatedState {
-		if len(entry.Refs) == 0 && entry.Origin == "" {
-			orphans[dest] = entry
-		}
-	}
-
-	if len(orphans) == 0 {
-		return false
-	}
-
-	for _, p := range mt.Status.PendingCleanup {
-		if p == "orphans" {
-			return false
-		}
-	}
-
-	snapshotName := cleanupSnapshotCMName(mt.Name, "orphans")
-	if err := imagestate.SaveRaw(ctx, r.Client, mt.Namespace, snapshotName, orphans, mt, r.Scheme); err != nil {
-		l.Error(err, "Failed to create orphans cleanup snapshot")
-		return false
-	}
-
-	l.Info("Creating cleanup job for orphaned images", "count", len(orphans))
-	if err := r.createCleanupJob(ctx, mt, "orphans", snapshotName); err != nil {
-		l.Error(err, "Failed to create orphans cleanup job")
-		_ = r.Delete(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: snapshotName, Namespace: mt.Namespace}})
-		return false
-	}
-
-	mt.Status.PendingCleanup = append(mt.Status.PendingCleanup, "orphans")
-	for dest := range orphans {
-		delete(consolidatedState, dest)
-	}
-	return true
-}
-
-// reconcileRemovedImageSets handles full ImageSet removals.
-func (r *MirrorTargetReconciler) reconcileRemovedImageSets(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget, removed []string, consolidatedState imagestate.ImageState) (bool, error) {
-	l := log.FromContext(ctx)
-	if len(removed) == 0 {
-		return false, nil
-	}
-
-	cleanupPolicy := mt.Annotations[mirrorv1alpha1.CleanupPolicyAnnotation]
-	if cleanupPolicy != mirrorv1alpha1.CleanupPolicyDelete {
-		l.Info("ImageSets removed but cleanup-policy not set to Delete — skipping registry cleanup",
-			"removed", removed, "annotation", cleanupPolicy)
-		return false, nil
-	}
-
-	stateDirty := false
-	for _, isName := range removed {
-		alreadyPending := false
-		for _, p := range mt.Status.PendingCleanup {
-			if p == isName {
-				alreadyPending = true
-				break
-			}
-		}
-		if alreadyPending {
-			continue
-		}
-
-		created, dirty, err := r.partitionAndCreateCleanupJob(ctx, mt, isName, consolidatedState)
-		if dirty {
-			stateDirty = true
-		}
-		if err != nil {
-			l.Error(err, "Failed to reconcile cleanup for ImageSet", "imageset", isName)
-			return false, err
-		}
-		if created {
-			mt.Status.PendingCleanup = append(mt.Status.PendingCleanup, isName)
-		}
-	}
-	return stateDirty, nil
-}
-
-// isPendingCleanup checks whether the cleanup Job for the given ImageSet is
-// still running (or needs to be re-created). Returns false when cleanup is done.
-func (r *MirrorTargetReconciler) isPendingCleanup(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget, name string) bool {
-	l := log.FromContext(ctx)
-	jobName := cleanupJobName(mt.Name, name)
-	job := &batchv1.Job{}
-	err := r.Get(ctx, client.ObjectKey{Name: jobName, Namespace: mt.Namespace}, job)
-	if errors.IsNotFound(err) {
-		// Job gone — check whether the snapshot ConfigMap still exists.
-		snapshotName := cleanupSnapshotCMName(mt.Name, name)
-		snapshotCM := &corev1.ConfigMap{}
-		if r.Get(ctx, client.ObjectKey{Name: snapshotName, Namespace: mt.Namespace}, snapshotCM) == nil {
-			// Snapshot exists → job was deleted mid-run; re-create it.
-			l.Info("Cleanup job gone but snapshot ConfigMap remains — re-creating job", "imageset", name)
-			if createErr := r.createCleanupJob(ctx, mt, name, snapshotName); createErr != nil {
-				l.Error(createErr, "Failed to re-create cleanup job", "imageset", name)
-			}
-			return true
-		}
-		l.Info("Cleanup job gone and snapshot ConfigMap absent — considering done", "imageset", name)
-		return false
-	}
-	if err != nil {
-		return true
-	}
-	if job.Status.Succeeded > 0 {
-		l.Info("Cleanup completed successfully", "imageset", name, "job", jobName)
-		return false
-	}
-	if job.Status.Failed > 0 {
-		l.Error(nil, "Cleanup job failed — will retry", "imageset", name, "job", jobName)
-		propagation := metav1.DeletePropagationBackground
-		_ = r.Delete(ctx, job, &client.DeleteOptions{PropagationPolicy: &propagation})
-	}
-	return true
-}
-
-// partitionAndCreateCleanupJob partitions the consolidated state for isName
-// (exclusive vs shared), creates a snapshot ConfigMap, and launches a cleanup
-// Job. Returns (jobCreated, stateDirty, error). The consolidated map is
-// modified in place ONLY IF job creation succeeds.
-func (r *MirrorTargetReconciler) partitionAndCreateCleanupJob(
-	ctx context.Context,
-	mt *mirrorv1alpha1.MirrorTarget,
-	isName string,
-	consolidated imagestate.ImageState,
-) (created, dirty bool, err error) {
-	l := log.FromContext(ctx)
-
-	exclusiveState := make(imagestate.ImageState)
-	for dest, entry := range consolidated {
-		if entry.HasImageSet(isName) && len(entry.Refs) == 1 {
-			exclusiveState[dest] = entry
-		}
-	}
-
-	if len(exclusiveState) == 0 {
-		// Even if no exclusive images, we must remove the IS ref from shared entries.
-		sharedDirty := false
-		for dest, entry := range consolidated {
-			if entry.HasImageSet(isName) && len(entry.Refs) > 1 {
-				entry.RemoveImageSet(isName)
-				consolidated[dest] = entry
-				sharedDirty = true
-			}
-		}
-		if sharedDirty {
-			l.Info("Removed ImageSet ref from shared images; no exclusive images for cleanup", "imageset", isName)
-		} else {
-			l.Info("No images found for removed ImageSet — skipping cleanup job", "imageset", isName)
-		}
-		return false, sharedDirty, nil
-	}
-
-	snapshotName := cleanupSnapshotCMName(mt.Name, isName)
-	if err := imagestate.SaveRaw(ctx, r.Client, mt.Namespace, snapshotName, exclusiveState, mt, r.Scheme); err != nil {
-		return false, false, fmt.Errorf("failed to create cleanup snapshot ConfigMap for %s: %w", isName, err)
-	}
-
-	l.Info("Creating cleanup job for removed ImageSet", "imageset", isName, "exclusiveImages", len(exclusiveState))
-	if err := r.createCleanupJob(ctx, mt, isName, snapshotName); err != nil {
-		// Clean up the snapshot CM if job creation failed (except for the "stale job deleted" requeue signal).
-		if !strings.Contains(err.Error(), "stale cleanup job deleted") {
-			_ = r.Delete(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: snapshotName, Namespace: mt.Namespace}})
-		}
-		return false, false, fmt.Errorf("failed to create cleanup job for %s: %w", isName, err)
-	}
-
-	// Job created successfully — now update the consolidated state.
-	for dest := range exclusiveState {
-		delete(consolidated, dest)
-	}
-	// Also handle shared entries now.
-	for dest, entry := range consolidated {
-		if entry.HasImageSet(isName) && len(entry.Refs) > 1 {
-			entry.RemoveImageSet(isName)
-			consolidated[dest] = entry
-		}
-	}
-
-	return true, true, nil
-}
-
-// createCleanupJob creates a Kubernetes Job that deletes all images listed in
-// the snapshot ConfigMap from the target registry and removes the snapshot.
-func (r *MirrorTargetReconciler) createCleanupJob(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget, imageSetName, snapshotCMName string) error {
-	l := log.FromContext(ctx)
-	jobName := cleanupJobName(mt.Name, imageSetName)
-
-	// Check if job already exists.
-	existing := &batchv1.Job{}
-	if err := r.Get(ctx, client.ObjectKey{Name: jobName, Namespace: mt.Namespace}, existing); err == nil {
-		if existing.Status.Succeeded > 0 || existing.Status.Failed > 0 {
-			l.Info("Deleting stale cleanup job", "job", jobName, "imageset", imageSetName)
-			propagation := metav1.DeletePropagationBackground
-			if delErr := r.Delete(ctx, existing, &client.DeleteOptions{PropagationPolicy: &propagation}); delErr != nil {
-				return fmt.Errorf("failed to delete stale cleanup job: %w", delErr)
-			}
-			// Return an error to trigger a requeue so we create the job in the next cycle.
-			// This avoids a race where we try to Create while the Delete is still processing.
-			return fmt.Errorf("stale cleanup job deleted; will recreate on next reconcile")
-		}
-		return nil // already exists and active
-	}
-
-	backoffLimit := int32(3)
-	ttlAfterFinished := int32(600) // 10 min
-
-	labels := map[string]string{
-		"app.kubernetes.io/managed-by": "oc-mirror-operator",
-		"mirror.openshift.io/cleanup":  imageSetName,
-		"mirrortarget":                 mt.Name,
-	}
-
-	args := []string{
-		"cleanup",
-		"--configmap", snapshotCMName,
-		"--namespace", mt.Namespace,
-		"--registry", mt.Spec.Registry,
-	}
-	if mt.Spec.Insecure {
-		args = append(args, "--insecure")
-	}
-
-	var env []corev1.EnvVar
-	var volumes []corev1.Volume
-	var volumeMounts []corev1.VolumeMount
-
-	if mt.Spec.AuthSecret != "" {
-		volumes = append(volumes, corev1.Volume{
-			Name: "registry-auth",
-			VolumeSource: corev1.VolumeSource{
-				Secret: &corev1.SecretVolumeSource{
-					SecretName: mt.Spec.AuthSecret,
-					Items: []corev1.KeyToPath{
-						{Key: ".dockerconfigjson", Path: "config.json"},
-					},
-				},
-			},
-		})
-		volumeMounts = append(volumeMounts, corev1.VolumeMount{
-			Name:      "registry-auth",
-			MountPath: "/docker-config",
-			ReadOnly:  true,
-		})
-		env = append(env, corev1.EnvVar{
-			Name:  "DOCKER_CONFIG",
-			Value: "/docker-config",
-		})
-	}
-
-	job := &batchv1.Job{
+// ensureNetworkPolicies creates or updates the default-deny ingress NetworkPolicy
+// plus a scoped allow rule for the manager status API.
+func (r *MirrorTargetReconciler) ensureNetworkPolicies(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget) error {
+	// 1. Default-deny all ingress for worker pods.
+	denyAll := &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      jobName,
+			Name:      fmt.Sprintf("%s-worker-deny-all", mt.Name),
 			Namespace: mt.Namespace,
-			Labels:    labels,
-			OwnerReferences: []metav1.OwnerReference{
-				*metav1.NewControllerRef(mt, mirrorv1alpha1.GroupVersion.WithKind("MirrorTarget")),
-			},
 		},
-		Spec: batchv1.JobSpec{
-			BackoffLimit:            &backoffLimit,
-			TTLSecondsAfterFinished: &ttlAfterFinished,
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: labels},
-				Spec: corev1.PodSpec{
-					ServiceAccountName: mt.Name + "-coordinator",
-					RestartPolicy:      corev1.RestartPolicyNever,
-					SecurityContext: &corev1.PodSecurityContext{
-						RunAsNonRoot: pointerTo(true),
-						SeccompProfile: &corev1.SeccompProfile{
-							Type: corev1.SeccompProfileTypeRuntimeDefault,
-						},
-					},
-					Containers: []corev1.Container{
-						{
-							Name:  "cleanup",
-							Image: os.Getenv("WORKER_IMAGE"),
-							Args:  args,
-							Env:   env,
-							SecurityContext: &corev1.SecurityContext{
-								AllowPrivilegeEscalation: pointerTo(false),
-								Capabilities: &corev1.Capabilities{
-									Drop: []corev1.Capability{"ALL"},
-								},
-							},
-							VolumeMounts: volumeMounts,
-						},
-					},
-					Volumes:      volumes,
-					NodeSelector: mt.Spec.Worker.NodeSelector,
-					Tolerations:  mt.Spec.Worker.Tolerations,
+	}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, denyAll, func() error {
+		if err := controllerutil.SetControllerReference(mt, denyAll, r.Scheme); err != nil {
+			return err
+		}
+		denyAll.Spec = networkingv1.NetworkPolicySpec{
+			PodSelector: metav1.LabelSelector{
+				MatchLabels: map[string]string{"oc-mirror.openshift.io/role": "worker"},
+			},
+			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+			Ingress:     []networkingv1.NetworkPolicyIngressRule{},
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("ensure worker deny-all NetworkPolicy: %w", err)
+	}
+
+	// 2. Allow worker → manager status API (port 8080).
+	port8080 := intstr.FromInt(8080)
+	allowManager := &networkingv1.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fmt.Sprintf("%s-worker-allow-manager", mt.Name),
+			Namespace: mt.Namespace,
+		},
+	}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, allowManager, func() error {
+		if err := controllerutil.SetControllerReference(mt, allowManager, r.Scheme); err != nil {
+			return err
+		}
+		allowManager.Spec = networkingv1.NetworkPolicySpec{
+			PodSelector: metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					"app":          "oc-mirror-manager",
+					"mirrortarget": mt.Name,
 				},
 			},
+			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+			Ingress: []networkingv1.NetworkPolicyIngressRule{
+				{
+					From: []networkingv1.NetworkPolicyPeer{
+						{
+							PodSelector: &metav1.LabelSelector{
+								MatchLabels: map[string]string{"oc-mirror.openshift.io/role": "worker"},
+							},
+						},
+					},
+					Ports: []networkingv1.NetworkPolicyPort{
+						{Port: &port8080},
+					},
+				},
+			},
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("ensure worker-allow-manager NetworkPolicy: %w", err)
+	}
+
+	return nil
+}
+
+// ensureResourceAPI creates or updates the Deployment and Service for the
+// resource API server (port 8000). The resource API is a separate process from
+// the manager and serves IDMS/ITMS YAML, catalog info, and target status to
+// the ConsolePlugin and CLI.
+func (r *MirrorTargetReconciler) ensureResourceAPI(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget) error {
+	operatorImage := os.Getenv("OPERATOR_IMAGE")
+	if operatorImage == "" {
+		operatorImage = "quay.io/mariusbertram/oc-mirror-operator:latest"
+	}
+
+	svcName := fmt.Sprintf("%s-resources", mt.Name)
+
+	// Service
+	svc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      svcName,
+			Namespace: mt.Namespace,
 		},
 	}
-
-	return r.Create(ctx, job)
-}
-
-// cleanupJobName returns a deterministic, DNS-safe name for cleanup Jobs.
-// Long target/imageset names are safely shortened by appending a SHA-256
-// suffix to prevent name collisions caused by naive truncation.
-func cleanupJobName(targetName, imageSetName string) string {
-	const maxLen = 63
-	const sumLen = 8
-	h := sha256.New()
-	_, _ = h.Write([]byte(targetName))
-	_, _ = h.Write([]byte{0})
-	_, _ = h.Write([]byte(imageSetName))
-	suffix := fmt.Sprintf("%x", h.Sum(nil))[:sumLen]
-	body := "cleanup-" + targetName + "-" + imageSetName
-	budget := maxLen - 1 - sumLen
-	if len(body) > budget {
-		body = body[:budget]
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error {
+		if err := controllerutil.SetControllerReference(mt, svc, r.Scheme); err != nil {
+			return err
+		}
+		svc.Spec.Selector = map[string]string{
+			"app":          "oc-mirror-manager",
+			"mirrortarget": mt.Name,
+		}
+		svc.Spec.Ports = []corev1.ServicePort{{
+			Name:       "resource-api",
+			Port:       8000,
+			TargetPort: intstr.FromInt(8000),
+			Protocol:   corev1.ProtocolTCP,
+		}}
+		svc.Spec.Type = corev1.ServiceTypeClusterIP
+		return nil
+	}); err != nil {
+		return fmt.Errorf("ensure resource-api Service: %w", err)
 	}
-	body = strings.TrimRight(body, "-")
-	return body + "-" + suffix
-}
 
-// cleanupSnapshotCMName returns a deterministic name for the cleanup snapshot
-// ConfigMap. Uses the same hash strategy as cleanupJobName but with the larger
-// ConfigMap name budget (253 chars).
-func cleanupSnapshotCMName(targetName, imageSetName string) string {
-	const maxLen = 253
-	const sumLen = 8
-	h := sha256.New()
-	_, _ = h.Write([]byte(targetName))
-	_, _ = h.Write([]byte{0})
-	_, _ = h.Write([]byte(imageSetName))
-	suffix := fmt.Sprintf("%x", h.Sum(nil))[:sumLen]
-	body := targetName + "-cleanup-" + imageSetName
-	budget := maxLen - 1 - sumLen
-	if len(body) > budget {
-		body = body[:budget]
-	}
-	body = strings.TrimRight(body, "-")
-	return body + "-" + suffix
+	return nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
-//
-// Watches:
-//   - MirrorTarget (primary)
-//   - ImageSet status changes → enqueue every MirrorTarget that lists the
-//     ImageSet in spec.imageSets so the MirrorTarget's aggregated counters
-//     stay in sync with per-ImageSet progress.
-// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch
-// +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+func (r *MirrorTargetReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	return ctrl.NewControllerManagedBy(mgr).
+		For(&mirrorv1alpha1.MirrorTarget{}).
+		Owns(&appsv1.Deployment{}).
+		Owns(&corev1.Service{}).
+		Owns(&corev1.ServiceAccount{}).
+		Owns(&rbacv1.Role{}).
+		Owns(&rbacv1.RoleBinding{}).
+		Owns(&batchv1.Job{}).
+		Owns(&networkingv1.NetworkPolicy{}).
+		Watches(
+			&mirrorv1alpha1.ImageSet{},
+			handler.EnqueueRequestsFromMapFunc(r.imageSetToMirrorTarget),
+		).
+		Complete(r)
+}
 
-func (r *MirrorTargetReconciler) ensureResourceAPI(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget) error {
-	name := "oc-mirror-resource-api"
-	namespace := mt.Namespace
-
-	if err := r.ensureResourceRBAC(ctx, mt); err != nil {
-		return err
+func (r *MirrorTargetReconciler) imageSetToMirrorTarget(ctx context.Context, obj client.Object) []reconcile.Request {
+	is, ok := obj.(*mirrorv1alpha1.ImageSet)
+	if !ok {
+		return nil
 	}
 
-	deployment := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-		},
+	mtList := &mirrorv1alpha1.MirrorTargetList{}
+	if err := r.List(ctx, mtList, client.InNamespace(is.Namespace)); err != nil {
+		return nil
 	}
 
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, deployment, func() error {
-		// Set owner reference to the MirrorTarget. Since this deployment is
-		// shared per namespace, it will have multiple owner references (one for
-		// each MirrorTarget). Kubernetes will garbage collect it when ALL
-		// owners are gone.
-		if err := controllerutil.SetOwnerReference(mt, deployment, r.Scheme); err != nil {
+	var requests []reconcile.Request
+	for _, mt := range mtList.Items {
+		for _, name := range mt.Spec.ImageSets {
+			if name == is.Name {
+				requests = append(requests, reconcile.Request{
+					NamespacedName: client.ObjectKey{
+						Name:      mt.Name,
+						Namespace: mt.Namespace,
+					},
+				})
+				break
+			}
+		}
+	}
+	return requests
+}
+
+// reconcileExposure creates/updates/cleans up Route, Ingress, or HTTPRoute
+// based on the MirrorTarget's ExposeConfig.
+func (r *MirrorTargetReconciler) reconcileExposure(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget) error {
+	l := log.FromContext(ctx)
+
+	exposeType := mirrorv1alpha1.ExposeTypeService // default
+	if mt.Spec.Expose != nil && mt.Spec.Expose.Type != "" {
+		exposeType = mt.Spec.Expose.Type
+	} else {
+		// Auto-detect OpenShift: check if Route API exists.
+		if r.hasRouteAPI(ctx) {
+			exposeType = mirrorv1alpha1.ExposeTypeRoute
+		}
+	}
+
+	resourceSvcName := fmt.Sprintf("%s-resources", mt.Name)
+
+	// Clean up exposure objects that don't match desired type.
+	if exposeType != mirrorv1alpha1.ExposeTypeRoute {
+		r.deleteRoute(ctx, mt)
+	}
+	if exposeType != mirrorv1alpha1.ExposeTypeIngress {
+		r.deleteIngress(ctx, mt)
+	}
+
+	switch exposeType {
+	case mirrorv1alpha1.ExposeTypeRoute:
+		return r.ensureRoute(ctx, mt, resourceSvcName)
+	case mirrorv1alpha1.ExposeTypeIngress:
+		return r.ensureIngress(ctx, mt, resourceSvcName)
+	case mirrorv1alpha1.ExposeTypeService:
+		return nil
+	}
+	return nil
+}
+
+// hasRouteAPI checks if the OpenShift Route CRD is installed in the cluster.
+func (r *MirrorTargetReconciler) hasRouteAPI(ctx context.Context) bool {
+	routes := &unstructured.UnstructuredList{}
+	routes.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "route.openshift.io",
+		Version: "v1",
+		Kind:    "RouteList",
+	})
+	err := r.List(ctx, routes, client.InNamespace("default"), client.Limit(1))
+	if err != nil {
+		if meta.IsNoMatchError(err) {
+			return false
+		}
+		return false
+	}
+	return true
+}
+
+func (r *MirrorTargetReconciler) ensureRoute(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget, svcName string) error {
+	route := &unstructured.Unstructured{}
+	route.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "route.openshift.io",
+		Version: "v1",
+		Kind:    "Route",
+	})
+	route.SetName(svcName)
+	route.SetNamespace(mt.Namespace)
+
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, route, func() error {
+		if err := controllerutil.SetControllerReference(mt, route, r.Scheme); err != nil {
 			return err
 		}
+		spec := map[string]interface{}{
+			"to": map[string]interface{}{
+				"kind":   "Service",
+				"name":   svcName,
+				"weight": int64(100),
+			},
+			"port": map[string]interface{}{
+				"targetPort": "resource-api",
+			},
+			"tls": map[string]interface{}{
+				"termination": "edge",
+			},
+		}
+		if err := unstructured.SetNestedField(route.Object, spec, "spec"); err != nil {
+			return err
+		}
+		return nil
+	})
+	return err
+}
 
-		labels := map[string]string{"app": name}
-		deployment.Labels = labels
-		replicas := int32(1)
-		deployment.Spec = appsv1.DeploymentSpec{
-			Replicas: &replicas,
-			Selector: &metav1.LabelSelector{MatchLabels: labels},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: labels},
-				Spec: corev1.PodSpec{
-					ServiceAccountName: name,
-					SecurityContext: &corev1.PodSecurityContext{
-						RunAsNonRoot: pointerTo(true),
-						SeccompProfile: &corev1.SeccompProfile{
-							Type: corev1.SeccompProfileTypeRuntimeDefault,
-						},
-					},
-					Containers: []corev1.Container{
-						{
-							Name:  "api",
-							Image: os.Getenv("MANAGER_IMAGE"),
-							SecurityContext: &corev1.SecurityContext{
-								AllowPrivilegeEscalation: pointerTo(false),
-								Capabilities: &corev1.Capabilities{
-									Drop: []corev1.Capability{"ALL"},
-								},
-							},
-							Args:  []string{"resource-api", "--namespace", namespace},
-							Ports: []corev1.ContainerPort{{ContainerPort: 8081}},
-							Env: []corev1.EnvVar{
+func (r *MirrorTargetReconciler) deleteRoute(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget) {
+	route := &unstructured.Unstructured{}
+	route.SetGroupVersionKind(schema.GroupVersionKind{Group: "route.openshift.io", Version: "v1", Kind: "Route"})
+	route.SetName(fmt.Sprintf("%s-resources", mt.Name))
+	route.SetNamespace(mt.Namespace)
+	_ = r.Client.Delete(ctx, route)
+}
+
+func (r *MirrorTargetReconciler) ensureIngress(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget, svcName string) error {
+	ingress := &networkingv1.Ingress{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      svcName,
+			Namespace: mt.Namespace,
+		},
+	}
+	pathType := networkingv1.PathTypePrefix
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, ingress, func() error {
+		if err := controllerutil.SetControllerReference(mt, ingress, r.Scheme); err != nil {
+			return err
+		}
+		ingress.Spec = networkingv1.IngressSpec{
+			Rules: []networkingv1.IngressRule{
+				{
+					IngressRuleValue: networkingv1.IngressRuleValue{
+						HTTP: &networkingv1.HTTPIngressRuleValue{
+							Paths: []networkingv1.HTTPIngressPath{
 								{
-									Name: "POD_NAMESPACE",
-									ValueFrom: &corev1.EnvVarSource{
-										FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.namespace"},
+									Path:     "/",
+									PathType: &pathType,
+									Backend: networkingv1.IngressBackend{
+										Service: &networkingv1.IngressServiceBackend{
+											Name: svcName,
+											Port: networkingv1.ServiceBackendPort{Number: 8000},
+										},
 									},
 								},
 							},
@@ -1143,130 +842,17 @@ func (r *MirrorTargetReconciler) ensureResourceAPI(ctx context.Context, mt *mirr
 		}
 		return nil
 	})
-	if err != nil {
-		return fmt.Errorf("failed to ensure resource api deployment: %w", err)
-	}
+	return err
+}
 
-	svc := &corev1.Service{
+func (r *MirrorTargetReconciler) deleteIngress(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget) {
+	ingress := &networkingv1.Ingress{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
+			Name:      fmt.Sprintf("%s-resources", mt.Name),
+			Namespace: mt.Namespace,
 		},
 	}
-	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error {
-		if err := controllerutil.SetOwnerReference(mt, svc, r.Scheme); err != nil {
-			return err
-		}
-		labels := map[string]string{"app": name}
-		svc.Labels = labels
-		svc.Spec = corev1.ServiceSpec{
-			Selector: labels,
-			Ports:    []corev1.ServicePort{{Port: 8081, TargetPort: intstr.FromInt32(8081)}},
-		}
-		return nil
-	})
-	return err
-}
-
-func (r *MirrorTargetReconciler) ensureResourceRBAC(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget) error {
-	name := "oc-mirror-resource-api"
-	namespace := mt.Namespace
-	sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, sa, func() error {
-		return controllerutil.SetOwnerReference(mt, sa, r.Scheme)
-	}); err != nil {
-		return err
-	}
-
-	role := &rbacv1.Role{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, role, func() error {
-		if err := controllerutil.SetOwnerReference(mt, role, r.Scheme); err != nil {
-			return err
-		}
-		role.Rules = []rbacv1.PolicyRule{
-			{
-				APIGroups: []string{""},
-				Resources: []string{"configmaps"},
-				Verbs:     []string{"get", "list", "watch"},
-			},
-			{
-				APIGroups: []string{"mirror.openshift.io"},
-				Resources: []string{"mirrortargets", "imagesets"},
-				Verbs:     []string{"get", "list", "watch"},
-			},
-		}
-		return nil
-	})
-	if err != nil {
-		return err
-	}
-
-	rb := &rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}
-	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, rb, func() error {
-		if err := controllerutil.SetOwnerReference(mt, rb, r.Scheme); err != nil {
-			return err
-		}
-		rb.RoleRef = rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "Role", Name: name}
-		rb.Subjects = []rbacv1.Subject{{Kind: "ServiceAccount", Name: name, Namespace: namespace}}
-		return nil
-	})
-	return err
-}
-
-// SetupWithManager registers the MirrorTargetReconciler with the manager.
-//
-// Drift detection strategy:
-//   - All namespace-scoped owned resources are registered via .Owns() so that
-//     external deletions or modifications immediately trigger reconciliation.
-//   - .Watches(ImageSet) propagates per-ImageSet progress onto MirrorTarget
-//     aggregated counters without waiting for the next RequeueAfter tick.
-//   - RequeueAfter: 10 min catches any drift not covered by event-based watches
-//     (e.g. Route/Ingress whose CRDs may be optional, or shared oc-mirror-resource-api
-//     resources that use non-controller owner refs and are therefore not picked up
-//     by .Owns()).
-func (r *MirrorTargetReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
-		For(&mirrorv1alpha1.MirrorTarget{}).
-		Owns(&appsv1.Deployment{}).
-		Owns(&corev1.Service{}).
-		Owns(&corev1.ServiceAccount{}).
-		Owns(&rbacv1.Role{}).
-		Owns(&rbacv1.RoleBinding{}).
-		Owns(&networkingv1.NetworkPolicy{}).
-		Owns(&networkingv1.Ingress{}).
-		Owns(&batchv1.Job{}).
-		Watches(
-			&mirrorv1alpha1.ImageSet{},
-			handler.EnqueueRequestsFromMapFunc(r.mirrorTargetsForImageSet),
-		).
-		Complete(r)
-}
-
-// mirrorTargetsForImageSet returns reconcile requests for every MirrorTarget
-// in the same namespace that references the given ImageSet in spec.imageSets.
-// Used to propagate per-ImageSet status changes (mirroring progress) onto
-// the aggregated MirrorTarget counters.
-func (r *MirrorTargetReconciler) mirrorTargetsForImageSet(ctx context.Context, obj client.Object) []reconcile.Request {
-	is, ok := obj.(*mirrorv1alpha1.ImageSet)
-	if !ok {
-		return nil
-	}
-	var mtList mirrorv1alpha1.MirrorTargetList
-	if err := r.List(ctx, &mtList, client.InNamespace(is.Namespace)); err != nil {
-		return nil
-	}
-	var requests []reconcile.Request
-	for _, mt := range mtList.Items {
-		for _, name := range mt.Spec.ImageSets {
-			if name == is.Name {
-				requests = append(requests, reconcile.Request{
-					NamespacedName: client.ObjectKey{Namespace: mt.Namespace, Name: mt.Name},
-				})
-				break
-			}
-		}
-	}
-	return requests
+	_ = r.Client.Delete(ctx, ingress)
 }
 
 // aggregateImageSetStatus walks spec.imageSets and builds per-ImageSet summaries
@@ -1311,10 +897,11 @@ func (r *MirrorTargetReconciler) aggregateImageSetStatus(ctx context.Context, mt
 
 	// Derive MirrorTarget-level totals from the consolidated imagestate so that
 	// images shared across multiple ImageSets are counted only once.
+	// Fall back to summing per-ImageSet counters when the ConfigMap is absent
+	// (empty state, no error) or temporarily unavailable (non-nil error), so
+	// status is never silently zeroed before the Manager has written any state.
 	state, err := imagestate.LoadForTarget(ctx, r.Client, mt.Namespace, mt.Name)
-	if err != nil {
-		// Non-fatal: fall back to summing per-ImageSet counters so status is
-		// never silently zeroed when the ConfigMap is temporarily unavailable.
+	if err != nil || len(state) == 0 {
 		var total, mirrored, pending, failed int
 		for i := range summaries {
 			if !summaries[i].Found {
@@ -1370,361 +957,7 @@ func (r *MirrorTargetReconciler) reconcileExposure(ctx context.Context, mt *mirr
 	case mirrorv1alpha1.ExposeTypeIngress:
 		return r.ensureIngress(ctx, mt, resourceSvcName)
 	case mirrorv1alpha1.ExposeTypeService:
-		l.Info("Resource server exposed via Service only", "service", resourceSvcName)
-		return nil
-	case mirrorv1alpha1.ExposeTypeGatewayAPI:
-		l.Info("GatewayAPI exposure not yet implemented — using Service only")
-		return nil
-	default:
 		return nil
 	}
-}
-
-// hasRouteAPI checks if the OpenShift Route API is available.
-func (r *MirrorTargetReconciler) hasRouteAPI(ctx context.Context) bool {
-	route := &unstructured.Unstructured{}
-	route.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "route.openshift.io",
-		Version: "v1",
-		Kind:    "Route",
-	})
-	route.SetName("__probe__")
-	route.SetNamespace("default")
-	// Try to Get a non-existent Route. If the API is not installed, we get a NoMatch error.
-	err := r.Get(ctx, client.ObjectKeyFromObject(route), route)
-	if err == nil {
-		return true
-	}
-	// If the error is "no match" the API doesn't exist.
-	if meta.IsNoMatchError(err) {
-		return false
-	}
-	// NotFound means the API exists but the object doesn't.
-	return errors.IsNotFound(err)
-}
-
-// ensureRoute creates or updates an OpenShift Route for the resource server.
-func (r *MirrorTargetReconciler) ensureRoute(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget, svcName string) error {
-	l := log.FromContext(ctx)
-
-	route := &unstructured.Unstructured{}
-	route.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "route.openshift.io",
-		Version: "v1",
-		Kind:    "Route",
-	})
-	route.SetName(fmt.Sprintf("%s-resources", mt.Name))
-	route.SetNamespace(mt.Namespace)
-
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, route, func() error {
-		if err := controllerutil.SetControllerReference(mt, route, r.Scheme); err != nil {
-			return err
-		}
-		route.SetLabels(map[string]string{
-			"app":          "oc-mirror-resources",
-			"mirrortarget": mt.Name,
-		})
-
-		spec, ok := route.Object["spec"].(map[string]interface{})
-		if !ok {
-			spec = make(map[string]interface{})
-		}
-
-		spec["to"] = map[string]interface{}{
-			"kind": "Service",
-			"name": svcName,
-		}
-		spec["port"] = map[string]interface{}{
-			"targetPort": "resources",
-		}
-		spec["tls"] = map[string]interface{}{
-			"termination":                   "edge",
-			"insecureEdgeTerminationPolicy": "Redirect",
-		}
-
-		// Only set host when user explicitly provides it. If host is empty or unset,
-		// we remove the field from our update map entirely. This allows OpenShift
-		// to maintain the auto-generated host without triggering a "custom host"
-		// permission check on the operator's service account.
-		if mt.Spec.Expose != nil && mt.Spec.Expose.Host != "" {
-			spec["host"] = mt.Spec.Expose.Host
-		} else {
-			delete(spec, "host")
-		}
-
-		route.Object["spec"] = spec
-		return nil
-	})
-	if err != nil {
-		return fmt.Errorf("failed to create/update Route: %w", err)
-	}
-
-	l.Info("Route for resource server reconciled", "route", route.GetName())
 	return nil
-}
-
-// ensureIngress creates or updates a networking.k8s.io/v1 Ingress.
-func (r *MirrorTargetReconciler) ensureIngress(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget, svcName string) error {
-	l := log.FromContext(ctx)
-
-	host := ""
-	ingressClass := ""
-	if mt.Spec.Expose != nil {
-		host = mt.Spec.Expose.Host
-		ingressClass = mt.Spec.Expose.IngressClassName
-	}
-	if host == "" {
-		return fmt.Errorf("ingress exposure requires a host to be set in spec.expose.host")
-	}
-
-	ingress := &networkingv1.Ingress{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      fmt.Sprintf("%s-resources", mt.Name),
-			Namespace: mt.Namespace,
-		},
-	}
-
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, ingress, func() error {
-		if err := controllerutil.SetControllerReference(mt, ingress, r.Scheme); err != nil {
-			return err
-		}
-		ingress.Labels = map[string]string{
-			"app":          "oc-mirror-resources",
-			"mirrortarget": mt.Name,
-		}
-		pathType := networkingv1.PathTypePrefix
-		ingress.Spec = networkingv1.IngressSpec{
-			Rules: []networkingv1.IngressRule{
-				{
-					Host: host,
-					IngressRuleValue: networkingv1.IngressRuleValue{
-						HTTP: &networkingv1.HTTPIngressRuleValue{
-							Paths: []networkingv1.HTTPIngressPath{
-								{
-									Path:     "/resources",
-									PathType: &pathType,
-									Backend: networkingv1.IngressBackend{
-										Service: &networkingv1.IngressServiceBackend{
-											Name: svcName,
-											Port: networkingv1.ServiceBackendPort{Number: 8081},
-										},
-									},
-								},
-							},
-						},
-					},
-				},
-			},
-		}
-		if ingressClass != "" {
-			ingress.Spec.IngressClassName = &ingressClass
-		}
-		return nil
-	})
-	if err != nil {
-		return fmt.Errorf("failed to create/update Ingress: %w", err)
-	}
-
-	l.Info("Ingress for resource server reconciled", "ingress", ingress.Name)
-	return nil
-}
-
-// deleteRoute removes the Route if it exists.
-func (r *MirrorTargetReconciler) deleteRoute(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget) {
-	route := &unstructured.Unstructured{}
-	route.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "route.openshift.io",
-		Version: "v1",
-		Kind:    "Route",
-	})
-	route.SetName(fmt.Sprintf("%s-resources", mt.Name))
-	route.SetNamespace(mt.Namespace)
-	_ = r.Delete(ctx, route)
-}
-
-// deleteIngress removes the Ingress if it exists.
-func (r *MirrorTargetReconciler) deleteIngress(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget) {
-	ingress := &networkingv1.Ingress{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      fmt.Sprintf("%s-resources", mt.Name),
-			Namespace: mt.Namespace,
-		},
-	}
-	_ = r.Delete(ctx, ingress)
-}
-
-func pointerTo[T any](v T) *T {
-	return &v
-}
-
-// managerContainerEnv returns the env vars for the manager container.
-// DOCKER_CONFIG is only set when an AuthSecret is configured, matching the
-// volume mount.  Proxy and CA env vars are injected when configured.
-func managerContainerEnv(mt *mirrorv1alpha1.MirrorTarget) []corev1.EnvVar {
-	env := []corev1.EnvVar{
-		{
-			Name: "POD_NAMESPACE",
-			ValueFrom: &corev1.EnvVarSource{
-				FieldRef: &corev1.ObjectFieldSelector{
-					FieldPath: "metadata.namespace",
-				},
-			},
-		},
-		{
-			Name:  "OPERATOR_IMAGE",
-			Value: os.Getenv("OPERATOR_IMAGE"),
-		},
-		{
-			Name:  "WORKER_IMAGE",
-			Value: os.Getenv("WORKER_IMAGE"),
-		},
-	}
-	if mt.Spec.AuthSecret != "" {
-		env = append(env, corev1.EnvVar{
-			Name:  "DOCKER_CONFIG",
-			Value: "/docker-config",
-		})
-	}
-	env = append(env, proxyEnvVars(mt.Spec.Proxy)...)
-	env = append(env, caBundleEnvVars(mt.Spec.CABundle)...)
-	return env
-}
-
-// clusterNoProxy contains address patterns that always bypass the proxy so that
-// pod-to-service traffic via cluster-internal FQDNs is never routed through an
-// external proxy (e.g. the manager service at {target}-manager.{ns}.svc.cluster.local).
-var clusterNoProxy = []string{
-	"localhost",
-	"127.0.0.1",
-	".svc",
-	".svc.cluster.local",
-}
-
-// proxyEnvVars returns HTTP/HTTPS/NO_PROXY env vars (upper and lower case) for
-// the given proxy configuration.  Returns nil when cfg is nil.
-// When a proxy is configured, clusterNoProxy entries are automatically prepended
-// to NO_PROXY so that pod-to-service traffic bypasses the proxy by default.
-func proxyEnvVars(cfg *mirrorv1alpha1.ProxyConfig) []corev1.EnvVar {
-	if cfg == nil {
-		return nil
-	}
-	var env []corev1.EnvVar
-	if v := cfg.HTTPProxy; v != "" {
-		env = append(env,
-			corev1.EnvVar{Name: "HTTP_PROXY", Value: v},
-			corev1.EnvVar{Name: "http_proxy", Value: v},
-		)
-	}
-	if v := cfg.HTTPSProxy; v != "" {
-		env = append(env,
-			corev1.EnvVar{Name: "HTTPS_PROXY", Value: v},
-			corev1.EnvVar{Name: "https_proxy", Value: v},
-		)
-	}
-	// When a proxy is configured, always inject cluster-internal NO_PROXY
-	// defaults to prevent pod-to-service traffic from being proxied.
-	// Also override KUBERNETES_SERVICE_HOST to use the FQDN instead of the
-	// ClusterIP so that client-go's in-cluster config honours the NO_PROXY
-	// FQDN suffix rule (.svc.cluster.local) when calling the Kubernetes API.
-	if cfg.HTTPProxy != "" || cfg.HTTPSProxy != "" {
-		noProxy := buildEffectiveNoProxy(cfg.NoProxy)
-		env = append(env,
-			corev1.EnvVar{Name: "NO_PROXY", Value: noProxy},
-			corev1.EnvVar{Name: "no_proxy", Value: noProxy},
-			corev1.EnvVar{Name: "KUBERNETES_SERVICE_HOST", Value: "kubernetes.default.svc.cluster.local"},
-		)
-	} else if cfg.NoProxy != "" {
-		env = append(env,
-			corev1.EnvVar{Name: "NO_PROXY", Value: cfg.NoProxy},
-			corev1.EnvVar{Name: "no_proxy", Value: cfg.NoProxy},
-		)
-	}
-	return env
-}
-
-// buildEffectiveNoProxy prepends clusterNoProxy to userNoProxy so that
-// cluster-internal FQDNs always bypass the proxy.
-func buildEffectiveNoProxy(userNoProxy string) string {
-	base := strings.Join(clusterNoProxy, ",")
-	if userNoProxy == "" {
-		return base
-	}
-	return base + "," + userNoProxy
-}
-
-// caBundleEnvVars returns the SSL_CERT_FILE env var pointing to the mounted CA
-// bundle.  Returns nil when ref is nil.
-func caBundleEnvVars(ref *mirrorv1alpha1.CABundleRef) []corev1.EnvVar {
-	if ref == nil {
-		return nil
-	}
-	key := ref.Key
-	if key == "" {
-		key = "ca-bundle.crt"
-	}
-	return []corev1.EnvVar{
-		{Name: "SSL_CERT_FILE", Value: "/run/secrets/ca/" + key},
-	}
-}
-
-// managerContainerVolumeMounts returns the volume mounts for the manager
-// container. The dockerconfig mount is only present when an AuthSecret is
-// configured to avoid pod admission failures on empty secret references.
-// The ca-bundle mount is added when a CABundle is configured.
-func managerContainerVolumeMounts(mt *mirrorv1alpha1.MirrorTarget) []corev1.VolumeMount {
-	var mounts []corev1.VolumeMount
-	if mt.Spec.AuthSecret != "" {
-		mounts = append(mounts, corev1.VolumeMount{
-			Name:      "dockerconfig",
-			MountPath: "/docker-config",
-			ReadOnly:  true,
-		})
-	}
-	if mt.Spec.CABundle != nil {
-		mounts = append(mounts, corev1.VolumeMount{
-			Name:      "ca-bundle",
-			MountPath: "/run/secrets/ca",
-			ReadOnly:  true,
-		})
-	}
-	return mounts
-}
-
-// managerPodVolumes returns the volumes for the manager pod, gated on the
-// presence of an AuthSecret and/or a CABundle.
-func managerPodVolumes(mt *mirrorv1alpha1.MirrorTarget) []corev1.Volume {
-	var volumes []corev1.Volume
-	if mt.Spec.AuthSecret != "" {
-		volumes = append(volumes, corev1.Volume{
-			Name: "dockerconfig",
-			VolumeSource: corev1.VolumeSource{
-				Secret: &corev1.SecretVolumeSource{
-					SecretName: mt.Spec.AuthSecret,
-					Items: []corev1.KeyToPath{
-						{Key: ".dockerconfigjson", Path: "config.json"},
-					},
-				},
-			},
-		})
-	}
-	if mt.Spec.CABundle != nil {
-		key := mt.Spec.CABundle.Key
-		if key == "" {
-			key = "ca-bundle.crt"
-		}
-		volumes = append(volumes, corev1.Volume{
-			Name: "ca-bundle",
-			VolumeSource: corev1.VolumeSource{
-				ConfigMap: &corev1.ConfigMapVolumeSource{
-					LocalObjectReference: corev1.LocalObjectReference{
-						Name: mt.Spec.CABundle.ConfigMapName,
-					},
-					Items: []corev1.KeyToPath{
-						{Key: key, Path: key},
-					},
-				},
-			},
-		})
-	}
-	return volumes
 }
