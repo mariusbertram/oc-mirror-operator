@@ -93,6 +93,7 @@ export const ImageSetDetail: React.FC = () => {
 
   const status = computeStatus(is.total, is.mirrored, is.pending, is.failed);
   const targetCatalogs = target.catalogs;
+  const imageSetCatalogs = targetCatalogs.filter((c) => is.catalogs.includes(c.slug));
 
   return (
     <>
@@ -110,13 +111,6 @@ export const ImageSetDetail: React.FC = () => {
           <FlexItem align={{ default: 'alignRight' }}>
             <Flex gap={{ default: 'gapSm' }} alignItems={{ default: 'alignItemsCenter' }}>
               <FlexItem><StatusPill status={status} /></FlexItem>
-              {targetCatalogs.length > 0 && (
-                <FlexItem>
-                  <Link to={`/oc-mirror/targets/${targetName}/namespaces/${target.namespace}/imagesets/${imageSetName}/catalogs/${targetCatalogs[0].slug}`}>
-                    <Button variant="secondary" size="sm">Browse catalog</Button>
-                  </Link>
-                </FlexItem>
-              )}
               <FlexItem>
                 <Button
                   variant="secondary"
@@ -146,7 +140,7 @@ export const ImageSetDetail: React.FC = () => {
           {is.resources.length > 0 && (
             <Tab eventKey="resources" title={<TabTitleText>Resources ({is.resources.length})</TabTitleText>} />
           )}
-          {targetCatalogs.length > 0 && (
+          {imageSetCatalogs.length > 0 && (
             <Tab eventKey="catalogs" title={<TabTitleText>Catalogs</TabTitleText>} />
           )}
         </Tabs>
@@ -219,7 +213,7 @@ export const ImageSetDetail: React.FC = () => {
                   <Tr><Th>Slug</Th><Th>Source</Th><Th>Browse</Th></Tr>
                 </Thead>
                 <Tbody>
-                  {targetCatalogs.map((c) => (
+                  {imageSetCatalogs.map((c) => (
                     <Tr key={c.slug}>
                       <Td dataLabel="Slug"><strong>{c.slug}</strong></Td>
                       <Td dataLabel="Source"><code className="mirror-mono">{c.source}</code></Td>
