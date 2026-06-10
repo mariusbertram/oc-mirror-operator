@@ -285,14 +285,22 @@ type imageStream struct {
 	} `json:"spec"`
 }
 
+// ComponentImage is a single entry from the release payload's
+// release-manifests/image-references ImageStream: the component (tag) name and
+// the digest-pinned image reference it points to.
+type ComponentImage struct {
+	Name  string
+	Image string
+}
+
 // ExtractComponentImages pulls the release payload image, locates the
 // release-manifests/image-references layer, and returns all ~190 component
-// image references contained in it.
+// images contained in it, each with its component name.
 //
 // If the payload is a multi-arch manifest list, the platform-specific manifest
 // for the requested arch is resolved first. The caller must provide a non-nil
 // MirrorClient when constructing the ReleaseResolver via New().
-func (r *ReleaseResolver) ExtractComponentImages(ctx context.Context, payloadImage, arch string) ([]string, error) {
+func (r *ReleaseResolver) ExtractComponentImages(ctx context.Context, payloadImage, arch string) ([]ComponentImage, error) {
 	if r.client == nil {
 		return nil, fmt.Errorf("ExtractComponentImages requires a non-nil MirrorClient")
 	}
@@ -353,7 +361,7 @@ func (r *ReleaseResolver) ExtractComponentImages(ctx context.Context, payloadIma
 
 // scanLayerForImageReferences reads a gzipped tar layer and looks for
 // release-manifests/image-references. Returns (images, found, error).
-func scanLayerForImageReferences(rdr io.Reader) ([]string, bool, error) {
+func scanLayerForImageReferences(rdr io.Reader) ([]ComponentImage, bool, error) {
 	gz, err := gzip.NewReader(rdr)
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to create gzip reader: %w", err)
@@ -384,10 +392,10 @@ func scanLayerForImageReferences(rdr io.Reader) ([]string, bool, error) {
 			return nil, false, fmt.Errorf("failed to parse image-references: %w", jsonErr)
 		}
 
-		images := make([]string, 0, len(is.Spec.Tags))
+		images := make([]ComponentImage, 0, len(is.Spec.Tags))
 		for _, tag := range is.Spec.Tags {
 			if tag.From.Name != "" {
-				images = append(images, tag.From.Name)
+				images = append(images, ComponentImage{Name: tag.Name, Image: tag.From.Name})
 			}
 		}
 		return images, true, nil

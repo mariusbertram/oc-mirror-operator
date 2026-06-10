@@ -111,11 +111,12 @@ var _ = Describe("Collector", func() {
 				}
 			}
 
-			// Every resolved version must have its own distinct destination.
+			// Every resolved version must have its own distinct destination
+			// in the oc-mirror v2 release-images repository layout.
 			Expect(payloadDests).To(ConsistOf(
-				"internal.registry.io/openshift-release-dev/ocp-release:4.21.9",
-				"internal.registry.io/openshift-release-dev/ocp-release:4.21.10",
-				"internal.registry.io/openshift-release-dev/ocp-release:4.21.11",
+				"internal.registry.io/openshift/release-images:4.21.9-x86_64",
+				"internal.registry.io/openshift/release-images:4.21.10-x86_64",
+				"internal.registry.io/openshift/release-images:4.21.11-x86_64",
 			))
 		})
 
@@ -128,7 +129,7 @@ var _ = Describe("Collector", func() {
 			results, err := col.CollectReleasesForChannel(context.TODO(), spec, target, rel, payloadNodes)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(results).NotTo(BeEmpty())
-			Expect(results[0].Destination).To(Equal("internal.registry.io/openshift-release-dev/ocp-release:4.21.9"))
+			Expect(results[0].Destination).To(Equal("internal.registry.io/openshift/release-images:4.21.9-x86_64"))
 		})
 
 		It("should tag the latest payload with its actual version when no constraints are set", func() {
@@ -141,7 +142,7 @@ var _ = Describe("Collector", func() {
 			results, err := col.CollectReleasesForChannel(context.TODO(), spec, target, rel, payloadNodes)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(results).NotTo(BeEmpty())
-			Expect(results[0].Destination).To(Equal("internal.registry.io/openshift-release-dev/ocp-release:4.21.11"))
+			Expect(results[0].Destination).To(Equal("internal.registry.io/openshift/release-images:4.21.11-x86_64"))
 		})
 	})
 

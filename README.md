@@ -510,13 +510,13 @@ The operator maps source images to target paths as follows:
 
 | Type | Source | Target |
 |-----|--------|------|
-| **Release-Payload** | `quay.io/openshift-release-dev/ocp-release:4.21.9-x86_64` | `registry/openshift-release-dev/ocp-release:4.21.9` |
-| **Release-Component** | `quay.io/openshift-release-dev/ocp-v4.0-art-dev@sha256:abc123...` | `registry/openshift-release-dev/ocp-v4.0-art-dev:sha256-abc123...` |
-| **KubeVirt Disk** | `quay.io/openshift-release-dev/ocp-v4.0-art-dev@sha256:5ce03d...` | `registry/openshift-release-dev/ocp-v4.0-art-dev:sha256-5ce03d...` |
+| **Release-Payload** | `quay.io/openshift-release-dev/ocp-release@sha256:abc123...` (4.21.9) | `registry/openshift/release-images:4.21.9-x86_64` |
+| **Release-Component** | `quay.io/openshift-release-dev/ocp-v4.0-art-dev@sha256:abc123...` (etcd) | `registry/openshift/release:4.21.9-x86_64-etcd` |
+| **KubeVirt Disk** | `quay.io/openshift-release-dev/ocp-v4.0-art-dev@sha256:5ce03d...` | `registry/openshift/release:4.21.9-x86_64-kube-virt-container` |
 | **Operator-Bundle** | `registry.redhat.io/openshift-gitops-1/argocd-rhel8@sha256:def456...` | `registry/openshift-gitops-1/argocd-rhel8:sha256-def456...` |
 | **Additional Image** | `quay.io/prometheus/prometheus:v2.45.0` | `registry/prometheus/prometheus:v2.45.0` |
 
-Here `registry` is replaced by the value from `MirrorTarget.spec.registry`. The upstream repository path is preserved.
+Here `registry` is replaced by the value from `MirrorTarget.spec.registry`. Release content uses the same target layout as oc-mirror v2 (`openshift/release-images` for payloads, `openshift/release` for components, tagged `<version>-<arch>[-<component>]`); for operator bundles and additional images the upstream repository path is preserved.
 
 ---
 
