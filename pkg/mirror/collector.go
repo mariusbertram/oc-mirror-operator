@@ -128,7 +128,8 @@ func (c *Collector) CollectReleasesForChannel(
 	}
 
 	for _, node := range payloadNodes {
-		dest := releasePayloadDestination(target.Spec.Registry, node.Version, node.Image)
+		releaseTag := releaseTagFor(node.Version, arch[0])
+		dest := releasePayloadDestination(target.Spec.Registry, releaseTag)
 		results = append(results, c.toTargetImage(node.Image, dest, nil))
 
 		componentImages, extractErr := c.releaseResolver.ExtractComponentImages(ctx, node.Image, arch[0])
@@ -136,9 +137,9 @@ func (c *Collector) CollectReleasesForChannel(
 			fmt.Printf("Warning: failed to extract component images from %s: %v\n", node.Image, extractErr)
 			continue
 		}
-		for _, compImg := range componentImages {
-			compDest := ComponentDestination(target.Spec.Registry, compImg)
-			results = append(results, c.toTargetImage(compImg, compDest, nil))
+		for _, comp := range componentImages {
+			compDest := releaseComponentDestination(target.Spec.Registry, releaseTag, comp.Name, comp.Image)
+			results = append(results, c.toTargetImage(comp.Image, compDest, nil))
 		}
 
 		if spec.Mirror.Platform.KubeVirtContainer {
@@ -147,7 +148,7 @@ func (c *Collector) CollectReleasesForChannel(
 				fmt.Printf("Warning: failed to extract KubeVirt images from %s: %v\n", node.Image, kvErr)
 			} else {
 				for _, kvImg := range kvImages {
-					kvDest := ComponentDestination(target.Spec.Registry, kvImg)
+					kvDest := releaseComponentDestination(target.Spec.Registry, releaseTag, kubeVirtComponentName, kvImg)
 					results = append(results, c.toTargetImage(kvImg, kvDest, nil))
 				}
 			}
@@ -246,16 +247,61 @@ func imageNamePath(img string) string {
 	return img
 }
 
-// releasePayloadDestination builds the destination for a release payload image.
-// The release version is used as the tag so the image is addressable by version.
-//
-//	e.g. quay.io/openshift-release-dev/ocp-release@sha256:abc → registry/openshift-release-dev/ocp-release:4.21.9
-func releasePayloadDestination(registry, releaseVersion, img string) string {
-	tag := releaseVersion
-	if tag == "" {
-		tag = "latest"
+// Destination repository layout for release content, identical to oc-mirror v2
+// (internal/pkg/release/const.go): release payloads land in
+// openshift/release-images, extracted component images in openshift/release.
+const (
+	releaseImageRepo      = "openshift/release-images"
+	releaseComponentRepo  = "openshift/release"
+	kubeVirtComponentName = "kube-virt-container"
+)
+
+// releaseArchName converts a Cincinnati/GOARCH architecture name to the
+// naming used in OCP release tags (amd64 → x86_64, arm64 → aarch64).
+func releaseArchName(arch string) string {
+	switch arch {
+	case "amd64":
+		return "x86_64"
+	case "arm64":
+		return "aarch64"
+	default:
+		return arch
 	}
-	return fmt.Sprintf("%s/%s:%s", registry, imageNamePath(img), tag)
+}
+
+// releaseTagFor builds the oc-mirror v2 style release tag "<version>-<arch>"
+// (e.g. "4.21.9-x86_64") used for the payload and as the prefix for every
+// component tag. Falls back to "latest" when the version is unknown.
+func releaseTagFor(version, arch string) string {
+	if version == "" {
+		return "latest"
+	}
+	return version + "-" + releaseArchName(arch)
+}
+
+// releasePayloadDestination builds the destination for a release payload image,
+// matching oc-mirror v2:
+//
+//	quay.io/openshift-release-dev/ocp-release@sha256:abc →
+//	registry/openshift/release-images:4.21.9-x86_64
+func releasePayloadDestination(registry, releaseTag string) string {
+	return fmt.Sprintf("%s/%s:%s", registry, releaseImageRepo, releaseTag)
+}
+
+// releaseComponentDestination builds the destination for a release component
+// image, matching oc-mirror v2: all components share the openshift/release
+// repository and are tagged "<releaseTag>-<componentName>".
+//
+//	quay.io/openshift-release-dev/ocp-v4.0-art-dev@sha256:184844… (name "etcd") →
+//	registry/openshift/release:4.21.9-x86_64-etcd
+//
+// Components without a name (should not occur in well-formed image-references)
+// fall back to the digest-tagged source-path layout.
+func releaseComponentDestination(registry, releaseTag, name, img string) string {
+	if name == "" {
+		return ComponentDestination(registry, img)
+	}
+	return fmt.Sprintf("%s/%s:%s-%s", registry, releaseComponentRepo, releaseTag, name)
 }
 
 // ComponentDestination builds the destination for a component image (release or

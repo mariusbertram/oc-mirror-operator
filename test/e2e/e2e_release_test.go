@@ -170,20 +170,22 @@ var _ = Describe("Cincinnati Release Resolver", Label("release", "integration"),
 			Expect(len(components)).To(BeNumerically("<=", 250),
 				"unexpectedly many component images: %d", len(components))
 
-			By("verifying all component images are digest references in quay.io/openshift-release-dev")
-			for _, img := range components {
-				Expect(img).To(ContainSubstring("@sha256:"),
-					"component image must be a digest reference: %s", img)
-				Expect(img).To(ContainSubstring("quay.io/openshift-release-dev"),
-					"component image must be from quay.io/openshift-release-dev: %s", img)
+			By("verifying all component images are named digest references in quay.io/openshift-release-dev")
+			for _, comp := range components {
+				Expect(comp.Name).NotTo(BeEmpty(),
+					"component image must carry its image-references tag name: %s", comp.Image)
+				Expect(comp.Image).To(ContainSubstring("@sha256:"),
+					"component image must be a digest reference: %s", comp.Image)
+				Expect(comp.Image).To(ContainSubstring("quay.io/openshift-release-dev"),
+					"component image must be from quay.io/openshift-release-dev: %s", comp.Image)
 			}
 
-			By("verifying no duplicate image references")
+			By("verifying no duplicate component names")
 			seen := make(map[string]struct{}, len(components))
-			for _, img := range components {
-				_, dup := seen[img]
-				Expect(dup).To(BeFalse(), "duplicate component image: %s", img)
-				seen[img] = struct{}{}
+			for _, comp := range components {
+				_, dup := seen[comp.Name]
+				Expect(dup).To(BeFalse(), "duplicate component name: %s", comp.Name)
+				seen[comp.Name] = struct{}{}
 			}
 		})
 	})

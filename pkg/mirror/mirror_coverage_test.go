@@ -19,14 +19,40 @@ var _ = Describe("Coverage Tests", func() {
 
 	// ── releasePayloadDestination ─────────────────────────────────────
 	Describe("releasePayloadDestination", func() {
-		It("uses version as tag", func() {
-			dest := releasePayloadDestination("mirror.io", "4.15.3", "quay.io/openshift/ocp-release@sha256:abc")
-			Expect(dest).To(Equal("mirror.io/openshift/ocp-release:4.15.3"))
+		It("uses the oc-mirror v2 release-images repo with version-arch tag", func() {
+			dest := releasePayloadDestination("mirror.io", releaseTagFor("4.15.3", "amd64"))
+			Expect(dest).To(Equal("mirror.io/openshift/release-images:4.15.3-x86_64"))
 		})
 
 		It("falls back to latest when version is empty", func() {
-			dest := releasePayloadDestination("mirror.io", "", "quay.io/openshift/ocp-release@sha256:abc")
-			Expect(dest).To(Equal("mirror.io/openshift/ocp-release:latest"))
+			dest := releasePayloadDestination("mirror.io", releaseTagFor("", "amd64"))
+			Expect(dest).To(Equal("mirror.io/openshift/release-images:latest"))
+		})
+	})
+
+	// ── releaseComponentDestination ───────────────────────────────────
+	Describe("releaseComponentDestination", func() {
+		It("places named components in openshift/release with version-arch-name tag", func() {
+			dest := releaseComponentDestination("mirror.io", releaseTagFor("4.15.3", "amd64"), "etcd",
+				"quay.io/openshift-release-dev/ocp-v4.0-art-dev@sha256:abc")
+			Expect(dest).To(Equal("mirror.io/openshift/release:4.15.3-x86_64-etcd"))
+		})
+
+		It("falls back to the digest-tagged source path for unnamed components", func() {
+			dest := releaseComponentDestination("mirror.io", releaseTagFor("4.15.3", "amd64"), "",
+				"quay.io/openshift-release-dev/ocp-v4.0-art-dev@sha256:abc")
+			Expect(dest).To(Equal("mirror.io/openshift-release-dev/ocp-v4.0-art-dev:sha256-abc"))
+		})
+	})
+
+	// ── releaseArchName ───────────────────────────────────────────────
+	Describe("releaseArchName", func() {
+		It("maps GOARCH names to release tag arch names", func() {
+			Expect(releaseArchName("amd64")).To(Equal("x86_64"))
+			Expect(releaseArchName("arm64")).To(Equal("aarch64"))
+			Expect(releaseArchName("ppc64le")).To(Equal("ppc64le"))
+			Expect(releaseArchName("s390x")).To(Equal("s390x"))
+			Expect(releaseArchName("multi")).To(Equal("multi"))
 		})
 	})
 

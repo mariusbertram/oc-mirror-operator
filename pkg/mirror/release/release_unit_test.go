@@ -371,9 +371,9 @@ var _ = Describe("Unit", func() {
 			images, found, err := scanLayerForImageReferences(buf)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(found).To(BeTrue())
-			Expect(images).To(Equal([]string{
-				"quay.io/openshift-release-dev/ocp-v4.0-art-dev@sha256:aaa",
-				"quay.io/openshift-release-dev/ocp-v4.0-art-dev@sha256:bbb",
+			Expect(images).To(Equal([]ComponentImage{
+				{Name: "component-a", Image: "quay.io/openshift-release-dev/ocp-v4.0-art-dev@sha256:aaa"},
+				{Name: "component-b", Image: "quay.io/openshift-release-dev/ocp-v4.0-art-dev@sha256:bbb"},
 			}))
 		})
 
@@ -417,7 +417,7 @@ var _ = Describe("Unit", func() {
 			images, found, err := scanLayerForImageReferences(buf)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(found).To(BeTrue())
-			Expect(images).To(Equal([]string{"quay.io/x@sha256:aaa"}))
+			Expect(images).To(Equal([]ComponentImage{{Name: "a", Image: "quay.io/x@sha256:aaa"}}))
 		})
 	})
 
