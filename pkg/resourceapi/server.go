@@ -420,67 +420,55 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// Build catalog ↔ ImageSet ownership maps by reading each ImageSet's spec.
-	// catalogToISes[slug] = list of ImageSet names that reference this catalog.
-	// iseToCatalogs[isName] = list of catalog slugs referenced by that ImageSet.
-	catalogToISes := make(map[string][]string)
-	iseToCatalogs := make(map[string][]string)
-	for _, isName := range mt.Spec.ImageSets {
-		var is mirrorv1alpha1.ImageSet
-		if err := c.Get(r.Context(), client.ObjectKey{Namespace: ns, Name: isName}, &is); err != nil {
-			continue
-		}
-		for _, op := range is.Spec.Mirror.Operators {
-			slug := mirrorresources.CatalogSlug(op.Catalog)
-			catalogToISes[slug] = append(catalogToISes[slug], isName)
-			iseToCatalogs[isName] = append(iseToCatalogs[isName], slug)
-		}
-	}
-
-	// Discover per-catalog ConfigMaps to build catalog summaries.
-	catalogCMs := &corev1.ConfigMapList{}
-	catalogs := make([]CatalogSummary, 0)
-	if err := c.List(r.Context(), catalogCMs,
+	// Build catalog ↔ ImageSet ownership maps.
+	// We derive this from the actual packages ConfigMaps (which store the source
+	// catalog reference) so the slugs are always consistent with the stored CM labels,
+	// regardless of any CatalogSlug format changes between operator versions.
+	preCatalogCMs := &corev1.ConfigMapList{}
+	_ = c.List(r.Context(), preCatalogCMs,
 		client.InNamespace(ns),
 		client.MatchingLabels{"oc-mirror.openshift.io/mirrortarget": mtName},
-	); err == nil {
-		seen := make(map[string]bool)
-		for _, pcm := range catalogCMs.Items {
-			slug, ok := pcm.Labels["oc-mirror.openshift.io/catalog-packages"]
-			if !ok || slug == "" {
-				continue
-			}
-			if seen[slug] {
-				continue
-			}
-			seen[slug] = true
-			base := fmt.Sprintf("/api/v1/targets/%s/catalogs/%s", mtName, slug)
-			isesForSlug := catalogToISes[slug]
-			if isesForSlug == nil {
-				isesForSlug = []string{}
-			}
-			var source, targetImage string
-			if data, ok := pcm.Data["packages.json"]; ok {
-				var pkgResp mirrorresources.CatalogPackagesResponse
-				if err := json.Unmarshal([]byte(data), &pkgResp); err == nil {
-					source = pkgResp.Catalog
-					targetImage = pkgResp.TargetImage
-				}
-			}
-			catalogs = append(catalogs, CatalogSummary{
-				Slug:                slug,
-				Source:              source,
-				TargetImage:         targetImage,
-				FilteredPackagesURL: base + "/packages.json",
-				UpstreamPackagesURL: base + "/upstream-packages.json",
-				ImageSets:           isesForSlug,
-			})
-			resources = append(resources, ResourceLink{
-				Name: fmt.Sprintf("Packages (%s)", slug),
-				URL:  base + "/packages.json",
-				Type: "json",
-			})
+	)
+	catalogToISes, iseToCatalogs := buildCatalogOwnershipMaps(r.Context(), c, ns, mt, preCatalogCMs.Items)
+
+	// Discover per-catalog ConfigMaps to build catalog summaries (reuse the already-fetched list).
+	catalogs := make([]CatalogSummary, 0)
+	seen := make(map[string]bool)
+	for _, pcm := range preCatalogCMs.Items {
+		slug, ok := pcm.Labels["oc-mirror.openshift.io/catalog-packages"]
+		if !ok || slug == "" {
+			continue
 		}
+		if seen[slug] {
+			continue
+		}
+		seen[slug] = true
+		base := fmt.Sprintf("/api/v1/targets/%s/catalogs/%s", mtName, slug)
+		isesForSlug := catalogToISes[slug]
+		if isesForSlug == nil {
+			isesForSlug = []string{}
+		}
+		var source, targetImage string
+		if data, ok := pcm.Data["packages.json"]; ok {
+			var pkgResp mirrorresources.CatalogPackagesResponse
+			if err := json.Unmarshal([]byte(data), &pkgResp); err == nil {
+				source = pkgResp.Catalog
+				targetImage = pkgResp.TargetImage
+			}
+		}
+		catalogs = append(catalogs, CatalogSummary{
+			Slug:                slug,
+			Source:              source,
+			TargetImage:         targetImage,
+			FilteredPackagesURL: base + "/packages.json",
+			UpstreamPackagesURL: base + "/upstream-packages.json",
+			ImageSets:           isesForSlug,
+		})
+		resources = append(resources, ResourceLink{
+			Name: fmt.Sprintf("Packages (%s)", slug),
+			URL:  base + "/packages.json",
+			Type: "json",
+		})
 	}
 
 	// Map CRD conditions to summary structs.
@@ -502,11 +490,23 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Index which slugs have a backing packages ConfigMap so we can omit
+	// "pending" entries (operator configured but not yet mirrored).
+	slugsWithCM := make(map[string]bool, len(catalogs))
+	for _, c := range catalogs {
+		slugsWithCM[c.Slug] = true
+	}
+
 	imageSets := make([]ImageSetSummaryJSON, 0, len(mt.Status.ImageSetStatuses))
 	for _, iss := range mt.Status.ImageSetStatuses {
-		cats := iseToCatalogs[iss.Name]
-		if cats == nil {
-			cats = []string{}
+		// Only include catalog slugs that have a backing packages ConfigMap.
+		// Slugs without CMs mean mirroring hasn't completed for that version yet.
+		raw := iseToCatalogs[iss.Name]
+		cats := make([]string, 0, len(raw))
+		for _, s := range raw {
+			if slugsWithCM[s] {
+				cats = append(cats, s)
+			}
 		}
 		imageSets = append(imageSets, ImageSetSummaryJSON{
 			Name:        iss.Name,
@@ -536,6 +536,45 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, detail)
+}
+
+// buildCatalogOwnershipMaps derives the catalog↔ImageSet association from the
+// already-fetched packages ConfigMap list and the ImageSet operator specs.
+// It returns two maps: slug→[]imageSetName and imageSetName→[]slug.
+func buildCatalogOwnershipMaps(ctx context.Context, c client.Client, ns string, mt *mirrorv1alpha1.MirrorTarget, cms []corev1.ConfigMap) (map[string][]string, map[string][]string) {
+	catalogToISes := make(map[string][]string)
+	iseToCatalogs := make(map[string][]string)
+
+	sourceCatalogToSlug := make(map[string]string)
+	for _, pcm := range cms {
+		slug, ok := pcm.Labels["oc-mirror.openshift.io/catalog-packages"]
+		if !ok || slug == "" {
+			continue
+		}
+		if data, ok := pcm.Data["packages.json"]; ok {
+			var pkgResp mirrorresources.CatalogPackagesResponse
+			if jsonErr := json.Unmarshal([]byte(data), &pkgResp); jsonErr == nil && pkgResp.Catalog != "" {
+				sourceCatalogToSlug[pkgResp.Catalog] = slug
+			}
+		}
+	}
+
+	for _, isName := range mt.Spec.ImageSets {
+		var is mirrorv1alpha1.ImageSet
+		if err := c.Get(ctx, client.ObjectKey{Namespace: ns, Name: isName}, &is); err != nil {
+			continue
+		}
+		for _, op := range is.Spec.Mirror.Operators {
+			slug, ok := sourceCatalogToSlug[op.Catalog]
+			if !ok {
+				// Packages CM not yet written — fall back to current CatalogSlug.
+				slug = mirrorresources.CatalogSlug(op.Catalog)
+			}
+			catalogToISes[slug] = append(catalogToISes[slug], isName)
+			iseToCatalogs[isName] = append(iseToCatalogs[isName], slug)
+		}
+	}
+	return catalogToISes, iseToCatalogs
 }
 
 func (s *Server) handleImageFailures(w http.ResponseWriter, r *http.Request) {
@@ -878,10 +917,36 @@ func (s *Server) handlePatchCatalogPackages(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Resolve the source catalog ref from the packages CM so we can match
+	// operators even when the stored CM label uses an older slug format.
+	sourceCatalog := ""
+	{
+		cmList := &corev1.ConfigMapList{}
+		if err := c.List(r.Context(), cmList,
+			client.InNamespace(namespace),
+			client.MatchingLabels{"oc-mirror.openshift.io/catalog-packages": slug},
+		); err == nil {
+			for _, cm := range cmList.Items {
+				if data, ok := cm.Data["packages.json"]; ok {
+					var pkgResp mirrorresources.CatalogPackagesResponse
+					if jsonErr := json.Unmarshal([]byte(data), &pkgResp); jsonErr == nil && pkgResp.Catalog != "" {
+						sourceCatalog = pkgResp.Catalog
+						break
+					}
+				}
+			}
+		}
+	}
+
 	found := false
 	for i, op := range is.Spec.Mirror.Operators {
-		catalogSlug := mirrorresources.CatalogSlug(op.Catalog)
-		if catalogSlug != slug {
+		var match bool
+		if sourceCatalog != "" {
+			match = op.Catalog == sourceCatalog
+		} else {
+			match = mirrorresources.CatalogSlug(op.Catalog) == slug
+		}
+		if !match {
 			continue
 		}
 		found = true

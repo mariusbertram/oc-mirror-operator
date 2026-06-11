@@ -39,12 +39,6 @@ function sortVersions(versions: string[]): string[] {
 }
 
 const versionSelectStyle: React.CSSProperties = {
-  fontSize: 11,
-  padding: '1px 4px',
-  background: 'var(--pf-v6-global--BackgroundColor--100, transparent)',
-  color: 'var(--pf-v6-global--Color--100, inherit)',
-  border: '1px solid var(--pf-v6-global--BorderColor--100, #d2d2d2)',
-  borderRadius: 2,
   maxWidth: 90,
 };
 
@@ -57,6 +51,18 @@ function catalogDisplayLabel(slug: string, source?: string): string {
   // Show base name + tag in the familiar image:tag notation.
   const base = slug.endsWith('-' + tagMatch[1]) ? slug.slice(0, -(tagMatch[1].length + 1)) : slug;
   return `${base}:${tagMatch[1]}`;
+}
+
+/** Return the base catalog name (without any version-tag suffix) from a slug + source pair. */
+function catalogBaseName(slug: string, source?: string): string {
+  if (source) {
+    const tagMatch = source.match(/:([^:/]+)$/);
+    if (tagMatch) {
+      const suffix = '-' + tagMatch[1];
+      if (slug.endsWith(suffix)) return slug.slice(0, -suffix.length);
+    }
+  }
+  return slug;
 }
 
 export const CatalogBrowser: React.FC = () => {
@@ -83,12 +89,29 @@ export const CatalogBrowser: React.FC = () => {
 
   const [availableImageSets, setAvailableImageSets] = useState<string[]>([]);
   const [availableCatalogs, setAvailableCatalogs] = useState<CatalogSummary[]>([]);
+  // All versions of the same base catalog across all ImageSets (e.g., v4.20 and v4.21).
+  const [versionCatalogs, setVersionCatalogs] = useState<CatalogSummary[]>([]);
 
-  // Fetch target detail once to populate catalog and ImageSet switchers.
+  // Fetch target detail once to populate catalog, version, and ImageSet switchers.
   useEffect(() => {
     if (!targetName || !slug) return;
     getTarget(targetName)
       .then((t) => {
+        const currentCat = t.catalogs.find((c) => c.slug === slug);
+
+        // Version switcher: all versions of the same base catalog across all ImageSets.
+        // Always populate so a version label is shown even for single-version catalogs.
+        if (currentCat) {
+          const base = catalogBaseName(currentCat.slug, currentCat.source);
+          const allVersions = t.catalogs.filter(
+            (c) => catalogBaseName(c.slug, c.source) === base,
+          );
+          setVersionCatalogs(allVersions);
+        } else {
+          setVersionCatalogs([]);
+        }
+
+        // Catalog switcher: other catalogs in the same ImageSet.
         const isData = t.imageSets.find((is) => is.name === imageSetName);
         if (isData && isData.catalogs.length > 1) {
           const summaries = isData.catalogs
@@ -98,9 +121,10 @@ export const CatalogBrowser: React.FC = () => {
         } else {
           setAvailableCatalogs([]);
         }
-        const catalog = t.catalogs.find((c) => c.slug === slug);
-        if (catalog && catalog.imageSets.length > 1) {
-          setAvailableImageSets(catalog.imageSets);
+
+        // ImageSet switcher: other ImageSets that reference this same catalog.
+        if (currentCat && currentCat.imageSets.length > 1) {
+          setAvailableImageSets(currentCat.imageSets);
         } else {
           setAvailableImageSets([]);
         }
@@ -362,20 +386,42 @@ export const CatalogBrowser: React.FC = () => {
           )}
         </div>
         <p style={{ margin: '0 0 12px', color: 'var(--pf-v6-global--Color--200)', fontSize: 13 }}>
+          {versionCatalogs.length > 1 ? (
+            <>
+              Version{' '}
+              <select
+                value={slug}
+                onChange={(e) => {
+                  const newSlug = e.target.value;
+                  const targetCat = versionCatalogs.find((c) => c.slug === newSlug);
+                  const targetIS = targetCat?.imageSets[0] || imageSetName || '';
+                  navigateTo(`/oc-mirror/targets/${targetName}/namespaces/${namespace}/imagesets/${targetIS}/catalogs/${newSlug}`);
+                }}
+                className="mirror-native-select"
+                aria-label="Switch version"
+              >
+                {versionCatalogs.map((c) => (
+                  <option key={c.slug} value={c.slug}>{catalogDisplayLabel(c.slug, c.source)}</option>
+                ))}
+              </select>
+              {' · '}
+            </>
+          ) : versionCatalogs.length === 1 ? (
+            <>
+              Version{' '}
+              <span className="mirror-tag">
+                {versionCatalogs[0].source?.match(/:([^:/]+)$/)?.[1] || versionCatalogs[0].slug}
+              </span>
+              {' · '}
+            </>
+          ) : null}
           {availableCatalogs.length > 1 ? (
             <>
               Catalog{' '}
               <select
                 value={slug}
                 onChange={(e) => navigateTo(`/oc-mirror/targets/${targetName}/namespaces/${namespace}/imagesets/${imageSetName}/catalogs/${e.target.value}`)}
-                style={{
-                  fontSize: 12,
-                  padding: '1px 4px',
-                  background: 'var(--pf-v6-global--BackgroundColor--100, transparent)',
-                  color: 'var(--pf-v6-global--Color--100, inherit)',
-                  border: '1px solid var(--pf-v6-global--BorderColor--100, #d2d2d2)',
-                  borderRadius: 2,
-                }}
+                className="mirror-native-select"
                 aria-label="Switch catalog"
               >
                 {availableCatalogs.map((c) => (
@@ -390,14 +436,7 @@ export const CatalogBrowser: React.FC = () => {
             <select
               value={imageSetName}
               onChange={(e) => navigateTo(`/oc-mirror/targets/${targetName}/namespaces/${namespace}/imagesets/${e.target.value}/catalogs/${slug}`)}
-              style={{
-                fontSize: 12,
-                padding: '1px 4px',
-                background: 'var(--pf-v6-global--BackgroundColor--100, transparent)',
-                color: 'var(--pf-v6-global--Color--100, inherit)',
-                border: '1px solid var(--pf-v6-global--BorderColor--100, #d2d2d2)',
-                borderRadius: 2,
-              }}
+              className="mirror-native-select"
               aria-label="Switch ImageSet"
             >
               {availableImageSets.map((is) => (
@@ -657,6 +696,7 @@ export const CatalogBrowser: React.FC = () => {
                             <select
                               value={constraint.minVersion}
                               onChange={(e) => setVersionConstraint(p.name, c.name, 'minVersion', e.target.value)}
+                              className="mirror-native-select"
                               style={versionSelectStyle}
                               title="Minimum version (inclusive)"
                               disabled={!versionsAvailable}
@@ -668,6 +708,7 @@ export const CatalogBrowser: React.FC = () => {
                             <select
                               value={constraint.maxVersion}
                               onChange={(e) => setVersionConstraint(p.name, c.name, 'maxVersion', e.target.value)}
+                              className="mirror-native-select"
                               style={versionSelectStyle}
                               title="Maximum version (inclusive)"
                               disabled={!versionsAvailable}
