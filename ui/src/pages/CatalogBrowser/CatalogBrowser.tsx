@@ -19,7 +19,7 @@ import {
   getUpstreamPackages,
   patchCatalogPackages,
 } from '../../api/client';
-import type { CatalogPackage } from '../../api/types';
+import type { CatalogPackage, CatalogSummary } from '../../api/types';
 import '../../components/plugin-styles.css';
 
 type CatalogBrowserParams = 'targetName' | 'slug' | 'namespace' | 'imageSetName';
@@ -48,6 +48,17 @@ const versionSelectStyle: React.CSSProperties = {
   maxWidth: 90,
 };
 
+/** Extract `:tag` from a catalog source image reference for display.
+ *  Falls back to the slug (which now includes the tag as `-tag`). */
+function catalogDisplayLabel(slug: string, source?: string): string {
+  if (!source) return slug;
+  const tagMatch = source.match(/:([^:/]+)$/);
+  if (!tagMatch) return slug;
+  // Show base name + tag in the familiar image:tag notation.
+  const base = slug.endsWith('-' + tagMatch[1]) ? slug.slice(0, -(tagMatch[1].length + 1)) : slug;
+  return `${base}:${tagMatch[1]}`;
+}
+
 export const CatalogBrowser: React.FC = () => {
   const params = useParams<CatalogBrowserParams>();
   let { targetName, slug, namespace, imageSetName } = params;
@@ -71,7 +82,7 @@ export const CatalogBrowser: React.FC = () => {
   }
 
   const [availableImageSets, setAvailableImageSets] = useState<string[]>([]);
-  const [availableCatalogs, setAvailableCatalogs] = useState<string[]>([]);
+  const [availableCatalogs, setAvailableCatalogs] = useState<CatalogSummary[]>([]);
 
   // Fetch target detail once to populate catalog and ImageSet switchers.
   useEffect(() => {
@@ -80,7 +91,10 @@ export const CatalogBrowser: React.FC = () => {
       .then((t) => {
         const isData = t.imageSets.find((is) => is.name === imageSetName);
         if (isData && isData.catalogs.length > 1) {
-          setAvailableCatalogs(isData.catalogs);
+          const summaries = isData.catalogs
+            .map((s) => t.catalogs.find((c) => c.slug === s))
+            .filter((c): c is CatalogSummary => c !== undefined);
+          setAvailableCatalogs(summaries);
         } else {
           setAvailableCatalogs([]);
         }
@@ -364,8 +378,8 @@ export const CatalogBrowser: React.FC = () => {
                 }}
                 aria-label="Switch catalog"
               >
-                {availableCatalogs.map((s) => (
-                  <option key={s} value={s}>{s}</option>
+                {availableCatalogs.map((c) => (
+                  <option key={c.slug} value={c.slug}>{catalogDisplayLabel(c.slug, c.source)}</option>
                 ))}
               </select>
               {' · '}

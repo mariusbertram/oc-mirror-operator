@@ -725,7 +725,7 @@ var _ = Describe("ResourceAPI Server", func() {
 					Mirror: mirrorv1alpha1.Mirror{
 						Operators: []mirrorv1alpha1.Operator{
 							{
-								// CatalogSlug("registry.redhat.io/redhat/redhat-operator-index:v4.12") == "redhat-operator-index"
+								// CatalogSlug("registry.redhat.io/redhat/redhat-operator-index:v4.12") == "redhat-operator-index-v4.12"
 								Catalog: "registry.redhat.io/redhat/redhat-operator-index:v4.12",
 								IncludeConfig: mirrorv1alpha1.IncludeConfig{
 									Packages: []mirrorv1alpha1.IncludePackage{
@@ -743,7 +743,7 @@ var _ = Describe("ResourceAPI Server", func() {
 			r := mux.NewRouter()
 			s.RegisterAPIRoutes(r)
 
-			url := fmt.Sprintf("/api/v1/imagesets/%s/my-is/catalogs/redhat-operator-index/packages", ns)
+			url := fmt.Sprintf("/api/v1/imagesets/%s/my-is/catalogs/redhat-operator-index-v4.12/packages", ns)
 			req := httptest.NewRequest("GET", url, nil)
 			rr := httptest.NewRecorder()
 			r.ServeHTTP(rr, req)
@@ -796,7 +796,7 @@ var _ = Describe("ResourceAPI Server", func() {
 				Spec: mirrorv1alpha1.ImageSetSpec{
 					Mirror: mirrorv1alpha1.Mirror{
 						Operators: []mirrorv1alpha1.Operator{
-							// CatalogSlug == "redhat-operator-index"
+							// CatalogSlug == "redhat-operator-index-v4.12"
 							{Catalog: "registry.redhat.io/redhat/redhat-operator-index:v4.12"},
 						},
 					},
@@ -811,7 +811,7 @@ var _ = Describe("ResourceAPI Server", func() {
 
 		It("updates package filter with include list format", func() {
 			body := `{"include":["pkg-a","pkg-b"],"exclude":[]}`
-			url := fmt.Sprintf("/api/v1/imagesets/%s/patch-is/catalogs/redhat-operator-index/packages", ns)
+			url := fmt.Sprintf("/api/v1/imagesets/%s/patch-is/catalogs/redhat-operator-index-v4.12/packages", ns)
 			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(body))
 			rr := httptest.NewRecorder()
 			patchRouter.ServeHTTP(rr, req)
@@ -820,7 +820,7 @@ var _ = Describe("ResourceAPI Server", func() {
 
 		It("updates package filter with extended packages format", func() {
 			body := `{"packages":[{"name":"my-pkg","minVersion":"1.0.0","channels":[{"name":"stable","minVersion":"1.0.0"}]}],"exclude":[]}`
-			url := fmt.Sprintf("/api/v1/imagesets/%s/patch-is/catalogs/redhat-operator-index/packages", ns)
+			url := fmt.Sprintf("/api/v1/imagesets/%s/patch-is/catalogs/redhat-operator-index-v4.12/packages", ns)
 			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(body))
 			rr := httptest.NewRecorder()
 			patchRouter.ServeHTTP(rr, req)
@@ -828,7 +828,7 @@ var _ = Describe("ResourceAPI Server", func() {
 		})
 
 		It("returns 400 for invalid JSON body", func() {
-			url := fmt.Sprintf("/api/v1/imagesets/%s/patch-is/catalogs/redhat-operator-index/packages", ns)
+			url := fmt.Sprintf("/api/v1/imagesets/%s/patch-is/catalogs/redhat-operator-index-v4.12/packages", ns)
 			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString("{invalid json"))
 			rr := httptest.NewRecorder()
 			patchRouter.ServeHTTP(rr, req)

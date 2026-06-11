@@ -459,8 +459,18 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
 			if isesForSlug == nil {
 				isesForSlug = []string{}
 			}
+			var source, targetImage string
+			if data, ok := pcm.Data["packages.json"]; ok {
+				var pkgResp mirrorresources.CatalogPackagesResponse
+				if err := json.Unmarshal([]byte(data), &pkgResp); err == nil {
+					source = pkgResp.Catalog
+					targetImage = pkgResp.TargetImage
+				}
+			}
 			catalogs = append(catalogs, CatalogSummary{
 				Slug:                slug,
+				Source:              source,
+				TargetImage:         targetImage,
 				FilteredPackagesURL: base + "/packages.json",
 				UpstreamPackagesURL: base + "/upstream-packages.json",
 				ImageSets:           isesForSlug,
