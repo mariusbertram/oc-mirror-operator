@@ -199,7 +199,7 @@ spec:
 
 		It("should persist catalog resources in the Resource ConfigMap", func() {
 			cmName := fmt.Sprintf("oc-mirror-%s-resources", targetName)
-			slug := "catalog" // derived from ghcr.io/mariusbertram/brtrm-dev-catalog/catalog:latest
+			slug := "catalog-latest" // derived from ghcr.io/mariusbertram/brtrm-dev-catalog/catalog:latest
 
 			By("verifying the Resource ConfigMap contains CatalogSource entries")
 			Eventually(func(g Gomega) {
@@ -208,8 +208,8 @@ spec:
 					"-o", "jsonpath={.data}")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(ContainSubstring("catalogsource-catalog.yaml"),
-					"ConfigMap missing catalogsource-catalog.yaml key")
+				g.Expect(output).To(ContainSubstring("catalogsource-catalog-latest.yaml"),
+					"ConfigMap missing catalogsource-catalog-latest.yaml key")
 			}, 3*time.Minute, 10*time.Second).Should(Succeed())
 
 			By("verifying packages.json contains the filtered package")
