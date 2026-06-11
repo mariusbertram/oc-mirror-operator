@@ -340,13 +340,23 @@ func GenerateSignatureConfigMapsBase64(signatures map[string]string) ([]byte, er
 // --- Catalog helpers ---
 
 // CatalogSlug creates a URL-safe short name from a catalog reference.
+// For tag-based refs the tag is appended with a dash (e.g. "redhat-operator-index-v4.21").
+// For digest-based refs only the repository base name is used.
 func CatalogSlug(source string) string {
-	repo := repoOnly(source)
+	repo, tagOrDigest := splitImageRef(source)
 	parts := strings.Split(repo, "/")
+	base := "unknown"
 	if len(parts) > 0 {
-		return parts[len(parts)-1]
+		base = parts[len(parts)-1]
 	}
-	return "unknown"
+	// Append the tag (not digest) to distinguish e.g. :v4.20 from :v4.21.
+	if tagOrDigest != "" && !strings.HasPrefix(tagOrDigest, "@") {
+		tag := strings.TrimPrefix(tagOrDigest, ":")
+		// Replace any characters that are not URL/label-safe.
+		tag = strings.NewReplacer(":", "-", "/", "-", " ", "-").Replace(tag)
+		return base + "-" + tag
+	}
+	return base
 }
 
 // --- Catalog packages response types ---

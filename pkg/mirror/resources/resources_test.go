@@ -578,13 +578,18 @@ func trimSpaceAndNewlines(s string) string {
 }
 
 var _ = Describe("CatalogSlug", func() {
-	It("extracts last path segment as slug", func() {
+	It("includes tag in slug for tag-based refs", func() {
 		Expect(CatalogSlug("registry.redhat.io/redhat/redhat-operator-index:v4.21")).
-			To(Equal("redhat-operator-index"))
+			To(Equal("redhat-operator-index-v4.21"))
 	})
 
-	It("handles single-segment path", func() {
-		Expect(CatalogSlug("my-catalog:v1.0")).To(Equal("my-catalog"))
+	It("includes tag in slug for single-segment path", func() {
+		Expect(CatalogSlug("my-catalog:v1.0")).To(Equal("my-catalog-v1.0"))
+	})
+
+	It("omits digest suffix from slug", func() {
+		Expect(CatalogSlug("registry.redhat.io/redhat/redhat-operator-index@sha256:abc123")).
+			To(Equal("redhat-operator-index"))
 	})
 })
 

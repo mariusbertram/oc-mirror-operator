@@ -1,6 +1,19 @@
 /* oc-mirror Console Plugin — supplementary styles.
    PatternFly base.css covers layout primitives; these fill the gaps. */
 
+/* ── Native <select> dark-mode fix ───────────────────────────── */
+/* PatternFly applies dark theme via a class on <html>; native form controls
+   only use the dark popup if color-scheme: dark is explicitly set. */
+.pf-v6-theme-dark select,
+html[class*="pf-v6-theme-dark"] select {
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: dark) {
+  select {
+    color-scheme: dark;
+  }
+}
+
 /* ── Progress bar meta row ───────────────────────────────────── */
 .mirror-progress-meta {
   display: flex;
