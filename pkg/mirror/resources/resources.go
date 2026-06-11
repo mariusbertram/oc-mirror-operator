@@ -261,8 +261,14 @@ func GenerateClusterCatalog(name string, catalog CatalogInfo) ([]byte, error) {
 // --- Release Signature ConfigMaps ---
 
 // CatalogTargetImage builds the destination for a catalog image.
+// The tag from the source ref is preserved so ClusterCatalog/CatalogSource
+// point to a tag-addressable image. Digest refs are not forwarded as tags.
 func CatalogTargetImage(registry, source string) string {
-	return fmt.Sprintf("%s/%s", registry, repoOnly(source))
+	repo, tagOrDigest := splitImageRef(source)
+	if tagOrDigest != "" && !strings.HasPrefix(tagOrDigest, "@") {
+		return fmt.Sprintf("%s/%s%s", registry, repo, tagOrDigest)
+	}
+	return fmt.Sprintf("%s/%s", registry, repo)
 }
 
 // --- Signature data type ---

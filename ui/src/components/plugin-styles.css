@@ -1,9 +1,28 @@
 /* oc-mirror Console Plugin — supplementary styles.
    PatternFly base.css covers layout primitives; these fill the gaps. */
 
-/* ── Native <select> dark-mode fix ───────────────────────────── */
-/* PatternFly applies dark theme via a class on <html>; native form controls
-   only use the dark popup if color-scheme: dark is explicitly set. */
+/* ── Compact inline selects (version / catalog / imageset switchers) ── */
+/* Chrome renders the native popup with a white background regardless of
+   color-scheme; option text must be explicitly dark to stay readable.
+   The closed select box follows the page theme (light or dark). */
+.mirror-native-select {
+  font-size: 12px;
+  padding: 1px 4px;
+  border-radius: 2px;
+  border: 1px solid #d2d2d2;
+}
+.mirror-native-select option {
+  background: #ffffff;
+  color: #151515;
+}
+.pf-v6-theme-dark .mirror-native-select,
+html[class*="pf-v6-theme-dark"] .mirror-native-select {
+  background: #1b1d21;
+  color: #e0e0e0;
+  border-color: #4a4e54;
+}
+
+/* ── Native <select> dark-mode fix (all other selects) ───────── */
 .pf-v6-theme-dark select,
 html[class*="pf-v6-theme-dark"] select {
   color-scheme: dark;
