@@ -44,7 +44,7 @@ Unlike the static `oc-mirror` CLI tool, this operator works cloud-natively and d
 | **Blob Replication Planning** | ✗ | ✅ | Greedy set cover algorithm optimizes mirror order for maximum blob reuse |
 | **Automatic Catalog Rebuild** | ✗ | ✅ | Build signature detects changes to packages/catalogs and triggers automatic rebuild |
 | **Resource API + Web UI** | ✗ | ✅ | IDMS, ITMS, CatalogSource, ClusterCatalog and signature ConfigMaps retrievable via REST API + Web Dashboard — with OpenShift Route, Ingress or Service |
-| **OpenShift Console Plugin** | ✗ | ✅ | Integrated plugin tab in the OCP web console — MirrorTarget overview, ImageSet detail, CatalogBrowser (per-channel import, version constraints), Failed Images. Auto-deployed on OpenShift; no config required |
+| **OpenShift Console Plugin** | ✗ | ✅ | Integrated plugin tab in the OCP web console — MirrorTarget overview, ImageSet detail, CatalogBrowser (per-channel import, version constraints, catalog-version switcher), Failed Images. Auto-deployed on OpenShift; no config required |
 | **Worker Pod Lifecycle** | ✗ | ✅ | Automatic cleanup of completed/failed worker and orphan pods |
 | **KubeVirt Container Disk** | ✅ | ✅ | `platform.kubeVirtContainer: true` extracts KubeVirt disk images from the release payload (RHCOS per architecture) |
 
@@ -83,7 +83,7 @@ Unlike the static `oc-mirror` CLI tool, this operator works cloud-natively and d
 | **Blob Replication Planning** | Greedy set cover optimizes mirror order: shared layers are pushed first → subsequent images use blob mount (zero-copy) |
 | **Catalog Build Signature** | SHA256 hash over operator image + catalog + package list automatically detects when a rebuild is needed |
 | **Resource API + Web UI** | Provides IDMS/ITMS, CatalogSource, ClusterCatalog and signature ConfigMaps via REST API + Web Dashboard — Route (OpenShift), Ingress or Service |
-| **OpenShift Console Plugin** | Integrated plugin tab in the OCP web console: MirrorTarget overview, ImageSet detail with image status, CatalogBrowser (per-channel import, min/max version constraints), Failed Images list. Built with PatternFly v6 + React 18. Auto-deployed on OpenShift clusters via `ConsolePlugin` controller |
+| **OpenShift Console Plugin** | Integrated plugin tab in the OCP web console: MirrorTarget overview, ImageSet detail with image status, CatalogBrowser (per-channel import, min/max version constraints, switcher between mirrored catalog versions), Failed Images list. Built with PatternFly v6 + React 18. Auto-deployed on OpenShift clusters via `ConsolePlugin` controller |
 | **HTTP Proxy Support** | Configurable `spec.proxy` injects HTTP/HTTPS/NO_PROXY into all pods for corporate proxy environments |
 | **Custom CA Bundle** | `spec.caBundle` mounts a ConfigMap-based CA into all pods and sets `SSL_CERT_FILE` — supports private registries with custom CAs |
 | **Ephemeral PVC for Large Images** | `spec.workerStorage` replaces the default emptyDir with a dynamically-provisioned PVC (generic ephemeral volume) for LLMs and other oversized images |
@@ -231,6 +231,20 @@ Catalog builds are managed via a **build signature** (SHA256 hash):
 - Stored as annotation: `mirror.openshift.io/catalog-build-sig`
 - On signature change (new package, changed catalog): old job is deleted, new build started
 
+### Catalog Naming (Slugs)
+
+Every source catalog gets a URL-safe **slug** used in Resource-API URLs and ConfigMap names (`oc-mirror-<target>-<slug>-packages`):
+
+| Catalog reference | Slug |
+|---|---|
+| `registry.redhat.io/redhat/redhat-operator-index:v4.21` | `redhat-operator-index-v4.21` |
+| `registry.redhat.io/redhat/redhat-operator-index:v4.20` | `redhat-operator-index-v4.20` |
+| `quay.io/org/catalog@sha256:abc...` | `catalog` |
+
+For tag-based references the tag is appended to the repository base name, so multiple versions of the same catalog (e.g. `v4.20` and `v4.21`) are kept apart as separate catalogs with their own CatalogSource/ClusterCatalog resources. Digest-based references use only the base name.
+
+The filtered catalog image is pushed to the target registry under the full source path **including its tag** (e.g. `registry/registry.redhat.io/redhat/redhat-operator-index:v4.21`), so generated CatalogSource/ClusterCatalog resources reference a tag-addressable image.
+
 ### Catalog-Builder Job
 
 One Kubernetes Job is created per source catalog:
@@ -305,9 +319,11 @@ Manager Pod                          Resource API Pod
 | `GET /api/v1/targets/{mt}` | JSON | Detail view of a MirrorTarget with ImageSet status and resource links |
 | `GET /api/v1/targets/{mt}/imagesets/{is}/idms.yaml` | `ImageDigestMirrorSet` | Digest-based mirror rules for all mirrored images |
 | `GET /api/v1/targets/{mt}/imagesets/{is}/itms.yaml` | `ImageTagMirrorSet` | Tag-based mirror rules (if tag-based images are present) |
-| `GET /api/v1/targets/{mt}/imagesets/{is}/catalogs/{name}/catalogsource.yaml` | `CatalogSource` | OLM v0-compatible CatalogSource (gRPC) for the filtered catalog |
-| `GET /api/v1/targets/{mt}/imagesets/{is}/catalogs/{name}/clustercatalog.yaml` | `ClusterCatalog` | OLM v1-compatible ClusterCatalog resource |
-| `GET /api/v1/targets/{mt}/imagesets/{is}/catalogs/{name}/packages.json` | JSON | All packages, channels, and versions from the filtered catalog |
+| `GET /api/v1/targets/{mt}/imagesets/{is}/catalogs/{slug}/catalogsource.yaml` | `CatalogSource` | OLM v0-compatible CatalogSource (gRPC) for the filtered catalog |
+| `GET /api/v1/targets/{mt}/imagesets/{is}/catalogs/{slug}/clustercatalog.yaml` | `ClusterCatalog` | OLM v1-compatible ClusterCatalog resource |
+| `GET /api/v1/targets/{mt}/imagesets/{is}/catalogs/{slug}/packages.json` | JSON | All packages, channels, and versions from the filtered catalog |
+
+`{slug}` is the catalog slug (repository base name plus tag for tag-based refs, e.g. `redhat-operator-index-v4.21` — see [Catalog Naming](#catalog-naming-slugs)). The target detail endpoint (`/api/v1/targets/{mt}`) lists each catalog with its slug, source reference, and target image.
 | `GET /api/v1/targets/{mt}/imagesets/{is}/signature-configmaps.yaml` | ConfigMaps | Release signature ConfigMaps in OpenShift verification format |
 | `GET /ui/` | HTML | Web UI Dashboard with mirroring progress and resource download links |
 
@@ -352,8 +368,8 @@ curl -sk https://<route-host>/api/v1/targets/internal-registry | jq .
 # Apply IDMS directly
 curl -sk https://<route-host>/api/v1/targets/internal-registry/imagesets/ocp-release-4-21/idms.yaml | kubectl apply -f -
 
-# CatalogSource for filtered operator catalog
-curl -sk https://<route-host>/api/v1/targets/internal-registry/imagesets/ocp-release-4-21/catalogs/redhat-operator-index/catalogsource.yaml | kubectl apply -f -
+# CatalogSource for filtered operator catalog (slug = base name + tag)
+curl -sk https://<route-host>/api/v1/targets/internal-registry/imagesets/ocp-release-4-21/catalogs/redhat-operator-index-v4.21/catalogsource.yaml | kubectl apply -f -
 
 # Open Web UI Dashboard
 open https://<route-host>/ui/
@@ -514,9 +530,10 @@ The operator maps source images to target paths as follows:
 | **Release-Component** | `quay.io/openshift-release-dev/ocp-v4.0-art-dev@sha256:abc123...` (etcd) | `registry/openshift/release:4.21.9-x86_64-etcd` |
 | **KubeVirt Disk** | `quay.io/openshift-release-dev/ocp-v4.0-art-dev@sha256:5ce03d...` | `registry/openshift/release:4.21.9-x86_64-kube-virt-container` |
 | **Operator-Bundle** | `registry.redhat.io/openshift-gitops-1/argocd-rhel8@sha256:def456...` | `registry/openshift-gitops-1/argocd-rhel8:sha256-def456...` |
-| **Additional Image** | `quay.io/prometheus/prometheus:v2.45.0` | `registry/prometheus/prometheus:v2.45.0` |
+| **Filtered Catalog** | `registry.redhat.io/redhat/redhat-operator-index:v4.21` | `registry/registry.redhat.io/redhat/redhat-operator-index:v4.21` |
+| **Additional Image** | `quay.io/prometheus/prometheus:v2.45.0` | `registry/quay.io/prometheus/prometheus:v2.45.0` |
 
-Here `registry` is replaced by the value from `MirrorTarget.spec.registry`. Release content uses the same target layout as oc-mirror v2 (`openshift/release-images` for payloads, `openshift/release` for components, tagged `<version>-<arch>[-<component>]`); for operator bundles and additional images the upstream repository path is preserved.
+Here `registry` is replaced by the value from `MirrorTarget.spec.registry`. Release content uses the same target layout as oc-mirror v2 (`openshift/release-images` for payloads, `openshift/release` for components, tagged `<version>-<arch>[-<component>]`). For operator bundles the upstream repository path is preserved (registry host stripped); filtered catalogs and additional images keep the full source reference including the registry host, and catalog images retain the source tag so they stay tag-addressable.
 
 ---
 
