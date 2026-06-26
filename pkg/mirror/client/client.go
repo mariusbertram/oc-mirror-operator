@@ -4,10 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/mariusbertram/oc-mirror-operator/pkg/oclog"
 	"io"
 	"os"
 	"strings"
+
+	"github.com/mariusbertram/oc-mirror-operator/pkg/oclog"
 
 	"github.com/regclient/regclient"
 	"github.com/regclient/regclient/config"
