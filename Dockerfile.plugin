@@ -8,6 +8,7 @@
 #   make docker-build-plugin IMG_PLUGIN=<registry>/<image>:<tag>
 
 FROM --platform=$BUILDPLATFORM registry.access.redhat.com/hi/nodejs:26-builder AS ui-build
+USER root
 WORKDIR /app
 COPY ui/package.json ui/package-lock.json* ./ui/
 RUN npm --prefix ui ci --ignore-scripts
