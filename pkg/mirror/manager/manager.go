@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mariusbertram/oc-mirror-operator/pkg/oclog"
 	"net/http"
 	"os"
 	"sort"
@@ -199,7 +200,7 @@ func (m *MirrorManager) ensureWorkerTokenSecret(ctx context.Context, mt *mirrorv
 }
 
 func (m *MirrorManager) Run(ctx context.Context) error {
-	fmt.Printf("Starting Mirror Manager for %s in namespace %s\n", m.TargetName, m.Namespace)
+	oclog.Printf("Starting Mirror Manager for %s in namespace %s\n", m.TargetName, m.Namespace)
 
 	// Load (or create) the worker bearer token from its Secret. We need the
 	// MirrorTarget object as the OwnerReference so the Secret is GC'd when the
@@ -214,7 +215,7 @@ func (m *MirrorManager) Run(ctx context.Context) error {
 
 	// Rebuild in-progress state from any worker pods that survived a manager restart.
 	if err := m.syncInProgressFromPods(ctx); err != nil {
-		fmt.Printf("Warning: could not sync in-progress state from pods: %v\n", err)
+		oclog.Printf("Warning: could not sync in-progress state from pods: %v\n", err)
 	}
 
 	// Start Status API Server (internal, port 8080)
@@ -228,7 +229,7 @@ func (m *MirrorManager) Run(ctx context.Context) error {
 	// UI/CLI queries target status, catalogs, resources (IDMS/ITMS)
 	go func() {
 		srv := resourceapi.NewServer(m.Client, m.Namespace)
-		fmt.Println("Starting Resource API Server on :8000")
+		oclog.Println("Starting Resource API Server on :8000")
 		srv.Run(ctx)
 	}()
 
@@ -278,7 +279,7 @@ func (m *MirrorManager) syncInProgressFromPods(ctx context.Context) error {
 	defer m.mu.Unlock()
 	for _, pod := range pods.Items {
 		if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
-			fmt.Printf("Cleaning up finished worker pod %s (%s)\n", pod.Name, pod.Status.Phase)
+			oclog.Printf("Cleaning up finished worker pod %s (%s)\n", pod.Name, pod.Status.Phase)
 			_ = m.Clientset.CoreV1().Pods(m.Namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{})
 			continue
 		}
@@ -288,7 +289,7 @@ func (m *MirrorManager) syncInProgressFromPods(ctx context.Context) error {
 			if json.Unmarshal([]byte(destsJSON), &dests) == nil {
 				for _, dest := range dests {
 					m.inProgress[dest] = pod.Name
-					fmt.Printf("Recovered in-progress worker %s for %s\n", pod.Name, dest)
+					oclog.Printf("Recovered in-progress worker %s for %s\n", pod.Name, dest)
 				}
 				continue
 			}
@@ -296,7 +297,7 @@ func (m *MirrorManager) syncInProgressFromPods(ctx context.Context) error {
 		// Backward compat: legacy single-dest annotation
 		if dest, ok := pod.Annotations["mirror.openshift.io/destination"]; ok && dest != "" {
 			m.inProgress[dest] = pod.Name
-			fmt.Printf("Recovered in-progress worker %s for %s\n", pod.Name, dest)
+			oclog.Printf("Recovered in-progress worker %s for %s\n", pod.Name, dest)
 		}
 	}
 	return nil
@@ -313,9 +314,9 @@ func (m *MirrorManager) runMetricsServer(ctx context.Context) {
 	}
 
 	go func() {
-		fmt.Println("Manager metrics server started on :9090")
+		oclog.Println("Manager metrics server started on :9090")
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			fmt.Printf("Metrics server failed: %v\n", err)
+			oclog.Printf("Metrics server failed: %v\n", err)
 		}
 	}()
 
@@ -341,7 +342,7 @@ func (m *MirrorManager) runStatusAPI(ctx context.Context) {
 
 	go func() {
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			fmt.Printf("Status API server failed: %v\n", err)
+			oclog.Printf("Status API server failed: %v\n", err)
 		}
 	}()
 
@@ -377,7 +378,7 @@ func (m *MirrorManager) handleStatusUpdate(w http.ResponseWriter, r *http.Reques
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	fmt.Printf("Received status update from %s for %s\n", req.PodName, req.Destination)
+	oclog.Printf("Received status update from %s for %s\n", req.PodName, req.Destination)
 
 	imageset := ""
 	if entry := m.imageState[req.Destination]; entry != nil && len(entry.Refs) > 0 {
@@ -507,7 +508,7 @@ func (m *MirrorManager) cleanupFinishedWorkers(ctx context.Context) {
 			if cur, ok := m.inProgress[f.dest]; ok && cur == f.podName {
 				delete(m.inProgress, f.dest)
 				if f.phase == corev1.PodFailed {
-					fmt.Printf("Worker pod %s for %s failed without reporting; resetting to Pending\n", f.podName, f.dest)
+					oclog.Printf("Worker pod %s for %s failed without reporting; resetting to Pending\n", f.podName, f.dest)
 					m.setImageStateLocked(f.dest, statePending, "")
 				}
 			}
@@ -542,7 +543,7 @@ func (m *MirrorManager) cleanupFinishedWorkers(ctx context.Context) {
 		if _, already := deletedPods[pod.Name]; already {
 			continue
 		}
-		fmt.Printf("Cleaning up orphaned worker pod %s (%s)\n", pod.Name, pod.Status.Phase)
+		oclog.Printf("Cleaning up orphaned worker pod %s (%s)\n", pod.Name, pod.Status.Phase)
 		_ = m.Clientset.CoreV1().Pods(m.Namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{})
 	}
 }
@@ -584,7 +585,7 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 	// PermanentlyFailed changes before they are flushed).
 	if len(m.imageState) == 0 {
 		if err := m.loadConsolidatedState(ctx, mt, imageSets); err != nil {
-			fmt.Printf("Warning: failed to load consolidated state: %v\n", err)
+			oclog.Printf("Warning: failed to load consolidated state: %v\n", err)
 		}
 	}
 
@@ -605,7 +606,7 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 			newPerISState, resolved, resolveErr := m.resolveImageSet(ctx, isCopy, mt, isViewSnap)
 			m.mu.Lock()
 			if resolveErr != nil {
-				fmt.Printf("Warning: failed to resolve ImageSet %s: %v\n", is.Name, resolveErr)
+				oclog.Printf("Warning: failed to resolve ImageSet %s: %v\n", is.Name, resolveErr)
 			} else {
 				// Merge any worker callbacks that fired during the unlock window.
 				newPerISState = mergeWorkerUpdates(newPerISState, m.imageState)
@@ -630,7 +631,7 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 		// Refresh the cached client to avoid auth token scope accumulation.
 		// Quay's nginx proxy returns 400 when the Bearer token exceeds ~8 KB.
 		_, _ = m.clientCache.RefreshClient(nil, m.authConfigPath)
-		fmt.Println("CheckExist: verifying images in target registry")
+		oclog.Println("CheckExist: verifying images in target registry")
 	}
 
 	// Phase D: Process all consolidated entries — drift check + collect pending.
@@ -656,7 +657,7 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 			exists, checkErr := checkClient.CheckExist(ctx, dest)
 			m.mu.Lock()
 			if checkErr != nil {
-				fmt.Printf("CheckExist error for %s: %v – assuming present\n", dest, checkErr)
+				oclog.Printf("CheckExist error for %s: %v – assuming present\n", dest, checkErr)
 				m.mirrored[dest] = true
 				continue
 			}
@@ -664,7 +665,7 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 				m.mirrored[dest] = true
 				continue
 			}
-			fmt.Printf("Image %s marked Mirrored but not found in registry; resetting to Pending\n", dest)
+			oclog.Printf("Image %s marked Mirrored but not found in registry; resetting to Pending\n", dest)
 			entry.State = statePending
 			entry.LastError = ""
 			entry.RetryCount = 0
@@ -703,15 +704,15 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 					exists, checkErr := checkClient.CheckExist(ctx, dest)
 					m.mu.Lock()
 					if checkErr != nil {
-						fmt.Printf("CheckExist error for permanently-failed image %s: %v – keeping Failed\n", dest, checkErr)
+						oclog.Printf("CheckExist error for permanently-failed image %s: %v – keeping Failed\n", dest, checkErr)
 					} else if exists {
-						fmt.Printf("Permanently-failed image %s found in target; marking Mirrored\n", dest)
+						oclog.Printf("Permanently-failed image %s found in target; marking Mirrored\n", dest)
 						m.mirrored[dest] = true
 						entry.State = stateMirrored
 						entry.LastError = ""
 						m.stateDirty = true
 					} else {
-						fmt.Printf("Permanently-failed image %s not in target; resetting for retry\n", dest)
+						oclog.Printf("Permanently-failed image %s not in target; resetting for retry\n", dest)
 						entry.State = statePending
 						entry.RetryCount = 0 // fresh 10-attempt window; PermanentlyFailed stays true
 						m.stateDirty = true
@@ -743,7 +744,7 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 		batch := pendingImages[i:end]
 		podName, startErr := m.startWorkerBatch(ctx, mt, batch)
 		if startErr != nil {
-			fmt.Printf("Failed to start worker batch: %v\n", startErr)
+			oclog.Printf("Failed to start worker batch: %v\n", startErr)
 			ocmetrics.ManagerBatchesTotal.WithLabelValues(m.TargetName, "failed").Inc()
 			continue
 		}
@@ -753,13 +754,13 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 		}
 		activePods[podName] = struct{}{}
 		ocmetrics.ManagerActiveWorkers.WithLabelValues(m.TargetName).Set(float64(len(activePods)))
-		fmt.Printf("Started worker pod %s for batch of %d images\n", podName, len(batch))
+		oclog.Printf("Started worker pod %s for batch of %d images\n", podName, len(batch))
 	}
 
 	// Phase F: Flush consolidated state to ConfigMap.
 	if m.stateDirty {
 		if err := imagestate.SaveForTarget(ctx, m.Client, m.Namespace, m.TargetName, m.imageState, mt, m.Scheme); err != nil {
-			fmt.Printf("Warning: failed to save consolidated state: %v\n", err)
+			oclog.Printf("Warning: failed to save consolidated state: %v\n", err)
 			// stateDirty remains true; save will be retried on next tick.
 		} else {
 			m.stateDirty = false
@@ -782,7 +783,7 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 
 	// Phase H: Generate and save global resources (IDMS, ITMS, CatalogSource) to ConfigMap.
 	if err := m.saveGlobalResources(ctx, mt); err != nil {
-		fmt.Printf("Warning: failed to save global resources: %v\n", err)
+		oclog.Printf("Warning: failed to save global resources: %v\n", err)
 	}
 
 	return nil
@@ -870,14 +871,14 @@ func (m *MirrorManager) saveGlobalResources(ctx context.Context, mt *mirrorv1alp
 	for slug, cat := range catalogs {
 		cs, err := resources.GenerateCatalogSource(m.TargetName+"-"+slug, m.Namespace, cat, mt.Spec.AuthSecret)
 		if err != nil {
-			fmt.Printf("Warning: failed to generate CatalogSource for %s: %v\n", slug, err)
+			oclog.Printf("Warning: failed to generate CatalogSource for %s: %v\n", slug, err)
 			continue
 		}
 		data[fmt.Sprintf("catalogsource-%s.yaml", slug)] = string(cs)
 
 		cc, err := resources.GenerateClusterCatalog(m.TargetName+"-"+slug, cat)
 		if err != nil {
-			fmt.Printf("Warning: failed to generate ClusterCatalog for %s: %v\n", slug, err)
+			oclog.Printf("Warning: failed to generate ClusterCatalog for %s: %v\n", slug, err)
 			continue
 		}
 		data[fmt.Sprintf("clustercatalog-%s.yaml", slug)] = string(cc)
@@ -910,7 +911,7 @@ func (m *MirrorManager) saveGlobalResources(ctx context.Context, mt *mirrorv1alp
 	}
 
 	if err := controllerutil.SetControllerReference(mt, cm, m.Scheme); err != nil {
-		fmt.Printf("Warning: failed to set owner on resources ConfigMap: %v\n", err)
+		oclog.Printf("Warning: failed to set owner on resources ConfigMap: %v\n", err)
 	}
 
 	existing := &corev1.ConfigMap{}
@@ -992,7 +993,7 @@ func (m *MirrorManager) updateImageSetStatusLocked(ctx context.Context, is *mirr
 		return m.Client.Status().Update(ctx, latestIS)
 	})
 	if err != nil {
-		fmt.Printf("Failed to update ImageSet %s status after retries: %v\n", is.Name, err)
+		oclog.Printf("Failed to update ImageSet %s status after retries: %v\n", is.Name, err)
 	}
 }
 

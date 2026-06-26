@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/mariusbertram/oc-mirror-operator/pkg/oclog"
 	"io"
 	"os"
 	"strings"
@@ -160,7 +161,7 @@ func (c *MirrorClient) DownloadToOCILayout(ctx context.Context, src string, ociD
 func (c *MirrorClient) CopyImage(ctx context.Context, src, dest string) (string, error) {
 	effectiveDest, err := c.copyImageWith(ctx, c.rc, src, dest)
 	if err != nil && c.rcFallback != nil {
-		fmt.Printf("HTTP failed for %s, falling back to HTTPS (skip-verify): %v\n", dest, err)
+		oclog.Printf("HTTP failed for %s, falling back to HTTPS (skip-verify): %v\n", dest, err)
 		return c.copyImageWith(ctx, c.rcFallback, src, dest)
 	}
 	return effectiveDest, err
@@ -210,7 +211,7 @@ func (c *MirrorClient) copyImageWith(ctx context.Context, rc *regclient.RegClien
 
 		// Best-effort: skip silently if the .sig tag does not exist at the source.
 		if err := rc.ImageCopy(ctx, srcSigRef, destSigRef); err == nil {
-			fmt.Printf("Copied cosign signature %s\n", sigTag)
+			oclog.Printf("Copied cosign signature %s\n", sigTag)
 		}
 	}
 
@@ -394,7 +395,7 @@ func bufferLargeBlobs(br *blob.BReader) (*blob.BReader, error) {
 		return br, nil
 	}
 
-	fmt.Printf("Buffering large blob (%d bytes) to disk before upload\n", d.Size)
+	oclog.Printf("Buffering large blob (%d bytes) to disk before upload\n", d.Size)
 
 	f, err := os.CreateTemp(blobBufferDir, "blob-*.tmp")
 	if err != nil {

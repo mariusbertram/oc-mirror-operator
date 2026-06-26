@@ -14,6 +14,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/mariusbertram/oc-mirror-operator/pkg/oclog"
 	"sort"
 	"strings"
 	"time"
@@ -240,7 +241,7 @@ func (m *MirrorManager) resolveImageSet(ctx context.Context, is *mirrorv1alpha1.
 
 	if annotationsChanged {
 		if err := m.patchImageSetAnnotations(ctx, is, newAnnotations); err != nil {
-			fmt.Printf("Warning: failed to patch annotations on ImageSet %s: %v\n", is.Name, err)
+			oclog.Printf("Warning: failed to patch annotations on ImageSet %s: %v\n", is.Name, err)
 		}
 	}
 
@@ -286,7 +287,7 @@ func (m *MirrorManager) resolveReleaseSection( //nolint:unparam
 
 		payloadNodes, resolveErr := collector.ResolveReleasePayloadNodes(ctx, ch, arch)
 		if resolveErr != nil {
-			fmt.Printf("Warning: probe release channel %s: %v\n", ch.Name, resolveErr)
+			oclog.Printf("Warning: probe release channel %s: %v\n", ch.Name, resolveErr)
 			carryOverByOriginAndSig(currentState, newState, imagestate.OriginRelease, sig, originRef)
 			continue
 		}
@@ -298,7 +299,7 @@ func (m *MirrorManager) resolveReleaseSection( //nolint:unparam
 
 		images, err := collector.CollectReleasesForChannel(ctx, &is.Spec, mt, ch, payloadNodes)
 		if err != nil {
-			fmt.Printf("Warning: collect release channel %s: %v\n", ch.Name, err)
+			oclog.Printf("Warning: collect release channel %s: %v\n", ch.Name, err)
 			carryOverByOriginAndSig(currentState, newState, imagestate.OriginRelease, sig, originRef)
 			continue
 		}
@@ -351,7 +352,7 @@ func (m *MirrorManager) downloadSignaturesForNodes(ctx context.Context, nodes []
 		}
 		data, err := sigClient.DownloadSignature(ctx, digest)
 		if err != nil {
-			fmt.Printf("Warning: download signature for %s: %v\n", digest, err)
+			oclog.Printf("Warning: download signature for %s: %v\n", digest, err)
 			continue
 		}
 		newSigs[key] = data
@@ -377,7 +378,7 @@ func (m *MirrorManager) downloadSignaturesForNodes(ctx context.Context, nodes []
 			_ = controllerutil.SetControllerReference(mt, existing, m.Scheme)
 		}
 		if err := m.Client.Create(ctx, existing); err != nil && !apierrors.IsAlreadyExists(err) {
-			fmt.Printf("Warning: create signatures ConfigMap: %v\n", err)
+			oclog.Printf("Warning: create signatures ConfigMap: %v\n", err)
 		}
 		return
 	}
@@ -385,7 +386,7 @@ func (m *MirrorManager) downloadSignaturesForNodes(ctx context.Context, nodes []
 		_ = controllerutil.SetControllerReference(mt, existing, m.Scheme)
 	}
 	if err := m.Client.Update(ctx, existing); err != nil {
-		fmt.Printf("Warning: update signatures ConfigMap: %v\n", err)
+		oclog.Printf("Warning: update signatures ConfigMap: %v\n", err)
 	}
 }
 
@@ -430,7 +431,7 @@ func (m *MirrorManager) resolveOperatorSection( //nolint:unparam
 
 		freshDigest, err := resolver.GetCatalogDigest(ctx, op.Catalog)
 		if err != nil {
-			fmt.Printf("Warning: probe catalog %s: %v\n", op.Catalog, err)
+			oclog.Printf("Warning: probe catalog %s: %v\n", op.Catalog, err)
 			carryOverByOriginAndSig(currentState, newState, imagestate.OriginOperator, sig, originRef)
 			continue
 		}
@@ -449,14 +450,14 @@ func (m *MirrorManager) resolveOperatorSection( //nolint:unparam
 			// Ensure upstream packages CM exists even on a cache hit. This handles
 			// the first run after the feature was added (existing clusters).
 			if err := m.ensureUpstreamCatalogPackages(ctx, resolver, catSlug, catInfo); err != nil {
-				fmt.Printf("Warning: failed to ensure upstream catalog packages for %s: %v\n", catSlug, err)
+				oclog.Printf("Warning: failed to ensure upstream catalog packages for %s: %v\n", catSlug, err)
 			}
 			continue
 		}
 
 		images, filtered, upstream, err := resolver.ResolveCatalogFull(ctx, op.Catalog, op.Packages)
 		if err != nil {
-			fmt.Printf("Warning: collect catalog %s: %v\n", op.Catalog, err)
+			oclog.Printf("Warning: collect catalog %s: %v\n", op.Catalog, err)
 			carryOverByOriginAndSig(currentState, newState, imagestate.OriginOperator, sig, originRef)
 			continue
 		}
@@ -472,7 +473,7 @@ func (m *MirrorManager) resolveOperatorSection( //nolint:unparam
 		mergeIntoStateWithSig(newState, targetImages, imagestate.OriginOperator, sig, originRef, currentState)
 
 		if err := m.saveCatalogPackages(ctx, catSlug, catInfo, filtered, upstream); err != nil {
-			fmt.Printf("Warning: failed to save catalog packages for %s: %v\n", catSlug, err)
+			oclog.Printf("Warning: failed to save catalog packages for %s: %v\n", catSlug, err)
 		}
 
 		if annotations[annoKey] != cacheToken {
@@ -877,7 +878,7 @@ func (m *MirrorManager) loadConsolidatedState(ctx context.Context, mt *mirrorv1a
 	}
 	if len(state) > 0 {
 		m.imageState = state
-		fmt.Printf("Loaded %d entries from consolidated state ConfigMap\n", len(state))
+		oclog.Printf("Loaded %d entries from consolidated state ConfigMap\n", len(state))
 		return nil
 	}
 
@@ -889,7 +890,7 @@ func (m *MirrorManager) loadConsolidatedState(ctx context.Context, mt *mirrorv1a
 		}
 		isState, loadErr := imagestate.Load(ctx, m.Client, m.Namespace, is.Name) //nolint:staticcheck // migration pending
 		if loadErr != nil {
-			fmt.Printf("Warning: migration: failed to load state for %s: %v\n", is.Name, loadErr)
+			oclog.Printf("Warning: migration: failed to load state for %s: %v\n", is.Name, loadErr)
 			continue
 		}
 		for dest, entry := range isState {
@@ -916,7 +917,7 @@ func (m *MirrorManager) loadConsolidatedState(ctx context.Context, mt *mirrorv1a
 	}
 	m.imageState = migrated
 	if len(migrated) > 0 {
-		fmt.Printf("Migrated %d entries from per-IS ConfigMaps to consolidated state\n", len(migrated))
+		oclog.Printf("Migrated %d entries from per-IS ConfigMaps to consolidated state\n", len(migrated))
 		m.stateDirty = true
 	}
 	return nil

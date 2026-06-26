@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/mariusbertram/oc-mirror-operator/pkg/oclog"
 	"net/http"
 	"net/url"
 	"os"
@@ -113,7 +114,7 @@ func runWorkerBatch(insecure bool, batchJSON string) {
 		os.Exit(1)
 	}
 	if len(items) == 0 {
-		fmt.Println("Empty batch, nothing to do")
+		oclog.Println("Empty batch, nothing to do")
 		return
 	}
 
@@ -141,7 +142,7 @@ func runWorkerBatch(insecure bool, batchJSON string) {
 		// worker after a re-collection), skip it instead of wasting bandwidth
 		// and registry storage.
 		if !shouldMirror(dests[i]) {
-			fmt.Printf("Skipping %s: no longer required by any ImageSet\n", dests[i])
+			oclog.Printf("Skipping %s: no longer required by any ImageSet\n", dests[i])
 			continue
 		}
 		// Refresh the mirror client every 20 images to prevent auth token
@@ -156,7 +157,7 @@ func runWorkerBatch(insecure bool, batchJSON string) {
 	// Exit 0 even if some images failed; individual failures are reported via
 	// the status API so the manager can apply per-image retry logic.
 	if anyFailed {
-		fmt.Println("Batch completed with errors (see above)")
+		oclog.Println("Batch completed with errors (see above)")
 	}
 }
 
@@ -176,7 +177,7 @@ func buildMirrorClient(insecure bool, firstDest string) *mirrorclient.MirrorClie
 // reports the result to the manager via the status API. Returns true on success.
 // The manager handles higher-level retry orchestration (Failed→Pending requeue).
 func mirrorOneImage(c *mirrorclient.MirrorClient, src, dest string) bool {
-	fmt.Printf("Starting mirror: %s -> %s\n", src, dest)
+	oclog.Printf("Starting mirror: %s -> %s\n", src, dest)
 
 	// Per-image timeout prevents indefinite hangs on stalled blob uploads.
 	const imageTimeout = 20 * time.Minute
@@ -185,7 +186,7 @@ func mirrorOneImage(c *mirrorclient.MirrorClient, src, dest string) bool {
 	var lastErr error
 	for attempt := 1; attempt <= 2; attempt++ {
 		if attempt > 1 {
-			fmt.Printf("Retry attempt 2/2 after 15s...\n")
+			oclog.Printf("Retry attempt 2/2 after 15s...\n")
 			time.Sleep(15 * time.Second)
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), imageTimeout)
@@ -194,7 +195,7 @@ func mirrorOneImage(c *mirrorclient.MirrorClient, src, dest string) bool {
 		if lastErr == nil {
 			break
 		}
-		fmt.Printf("Attempt %d failed: %v\n", attempt, lastErr)
+		oclog.Printf("Attempt %d failed: %v\n", attempt, lastErr)
 	}
 	if lastErr != nil {
 		fmt.Fprintf(os.Stderr, "ERROR: failed to mirror %s: %v\n", src, lastErr)
@@ -203,7 +204,7 @@ func mirrorOneImage(c *mirrorclient.MirrorClient, src, dest string) bool {
 		return false
 	}
 
-	fmt.Printf("Copy complete, verifying digest at %s\n", effectiveDest)
+	oclog.Printf("Copy complete, verifying digest at %s\n", effectiveDest)
 	verifyCtx, verifyCancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	digest, err := c.GetDigest(verifyCtx, effectiveDest)
 	verifyCancel()
@@ -214,7 +215,7 @@ func mirrorOneImage(c *mirrorclient.MirrorClient, src, dest string) bool {
 		return false
 	}
 
-	fmt.Printf("Successfully mirrored %s -> %s (digest: %s)\n", src, dest, digest)
+	oclog.Printf("Successfully mirrored %s -> %s (digest: %s)\n", src, dest, digest)
 	setupLog.Info("successfully mirrored image", "src", src, "dest", dest, "digest", digest)
 	reportStatus(dest, digest, "")
 	return true
@@ -243,7 +244,7 @@ func reportStatus(dest, digest, errMsg string) {
 
 	body, err := json.Marshal(req)
 	if err != nil {
-		fmt.Printf("Failed to marshal status request: %v\n", err)
+		oclog.Printf("Failed to marshal status request: %v\n", err)
 		return
 	}
 
@@ -256,7 +257,7 @@ func reportStatus(dest, digest, errMsg string) {
 		}
 		httpReq, reqErr := http.NewRequestWithContext(context.Background(), "POST", managerURL+"/status", bytes.NewBuffer(body))
 		if reqErr != nil {
-			fmt.Printf("Failed to build status request: %v\n", reqErr)
+			oclog.Printf("Failed to build status request: %v\n", reqErr)
 			return
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
@@ -264,16 +265,16 @@ func reportStatus(dest, digest, errMsg string) {
 		httpClient := &http.Client{Timeout: 10 * time.Second}
 		resp, doErr := httpClient.Do(httpReq)
 		if doErr != nil {
-			fmt.Printf("Status callback attempt %d/%d failed: %v\n", attempt, 3, doErr)
+			oclog.Printf("Status callback attempt %d/%d failed: %v\n", attempt, 3, doErr)
 			continue
 		}
 		_ = resp.Body.Close()
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			return
 		}
-		fmt.Printf("Status callback attempt %d/%d: HTTP %d\n", attempt, 3, resp.StatusCode)
+		oclog.Printf("Status callback attempt %d/%d: HTTP %d\n", attempt, 3, resp.StatusCode)
 	}
-	fmt.Printf("Failed to report status to manager after 3 attempts for %s\n", dest)
+	oclog.Printf("Failed to report status to manager after 3 attempts for %s\n", dest)
 }
 
 // shouldMirror queries the manager whether `dest` is still required.
@@ -296,7 +297,7 @@ func shouldMirror(dest string) bool {
 	httpClient := &http.Client{Timeout: 5 * time.Second}
 	resp, err := httpClient.Do(httpReq)
 	if err != nil {
-		fmt.Printf("Failed to query /should-mirror for %s: %v (proceeding)\n", dest, err)
+		oclog.Printf("Failed to query /should-mirror for %s: %v (proceeding)\n", dest, err)
 		return true
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -349,12 +350,12 @@ func runCleanup() {
 	}
 
 	if len(state) == 0 {
-		fmt.Printf("No images found in %s — nothing to clean up\n", configMapName)
+		oclog.Printf("No images found in %s — nothing to clean up\n", configMapName)
 		deleteConfigMapByName(ctx, c, namespace, configMapName)
 		os.Exit(0)
 	}
 
-	fmt.Printf("Cleaning up %d images from %s (registry: %s)\n", len(state), configMapName, registry)
+	oclog.Printf("Cleaning up %d images from %s (registry: %s)\n", len(state), configMapName, registry)
 
 	// Build a registry client for deletion.
 	mc := buildMirrorClient(insecure, registry)
@@ -382,13 +383,13 @@ func runCleanup() {
 				fmt.Fprintf(os.Stderr, "WARN: failed to delete %s: %v\n", dest, err)
 				failed++
 			} else {
-				fmt.Printf("Deleted: %s\n", dest)
+				oclog.Printf("Deleted: %s\n", dest)
 				deleted++
 			}
 		}()
 	}
 
-	fmt.Printf("Cleanup complete: %d deleted, %d skipped (not mirrored), %d failed\n", deleted, skipped, failed)
+	oclog.Printf("Cleanup complete: %d deleted, %d skipped (not mirrored), %d failed\n", deleted, skipped, failed)
 
 	if failed > 0 {
 		fmt.Fprintf(os.Stderr, "ERROR: %d images could not be deleted\n", failed)
@@ -408,6 +409,6 @@ func deleteConfigMapByName(ctx context.Context, c client.Client, namespace, cmNa
 			fmt.Fprintf(os.Stderr, "WARN: failed to delete ConfigMap %s: %v\n", cmName, err)
 		}
 	} else {
-		fmt.Printf("Deleted ConfigMap %s\n", cmName)
+		oclog.Printf("Deleted ConfigMap %s\n", cmName)
 	}
 }

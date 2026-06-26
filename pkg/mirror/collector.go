@@ -3,6 +3,7 @@ package mirror
 import (
 	"context"
 	"fmt"
+	"github.com/mariusbertram/oc-mirror-operator/pkg/oclog"
 	"strings"
 
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
@@ -81,7 +82,7 @@ func (c *Collector) CollectReleases(ctx context.Context, spec *mirrorv1alpha1.Im
 	for _, rel := range spec.Mirror.Platform.Channels {
 		images, err := c.CollectReleasesForChannel(ctx, spec, target, rel, nil)
 		if err != nil {
-			fmt.Printf("Warning: collect channel %s: %v\n", rel.Name, err)
+			oclog.Printf("Warning: collect channel %s: %v\n", rel.Name, err)
 			continue
 		}
 		results = append(results, images...)
@@ -134,7 +135,7 @@ func (c *Collector) CollectReleasesForChannel(
 
 		componentImages, extractErr := c.releaseResolver.ExtractComponentImages(ctx, node.Image, arch[0])
 		if extractErr != nil {
-			fmt.Printf("Warning: failed to extract component images from %s: %v\n", node.Image, extractErr)
+			oclog.Printf("Warning: failed to extract component images from %s: %v\n", node.Image, extractErr)
 			continue
 		}
 		for _, comp := range componentImages {
@@ -145,7 +146,7 @@ func (c *Collector) CollectReleasesForChannel(
 		if spec.Mirror.Platform.KubeVirtContainer {
 			kvImages, kvErr := c.releaseResolver.ExtractKubeVirtImages(ctx, node.Image, arch)
 			if kvErr != nil {
-				fmt.Printf("Warning: failed to extract KubeVirt images from %s: %v\n", node.Image, kvErr)
+				oclog.Printf("Warning: failed to extract KubeVirt images from %s: %v\n", node.Image, kvErr)
 			} else {
 				for _, kvImg := range kvImages {
 					kvDest := releaseComponentDestination(target.Spec.Registry, releaseTag, kubeVirtComponentName, kvImg)
@@ -170,7 +171,7 @@ func (c *Collector) CollectOperators(ctx context.Context, spec *mirrorv1alpha1.I
 	for _, op := range spec.Mirror.Operators {
 		images, err := c.CollectOperatorEntry(ctx, op, target)
 		if err != nil {
-			fmt.Printf("Warning: failed to resolve catalog %s: %v\n", op.Catalog, err)
+			oclog.Printf("Warning: failed to resolve catalog %s: %v\n", op.Catalog, err)
 			continue
 		}
 		results = append(results, images...)

@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"github.com/mariusbertram/oc-mirror-operator/pkg/oclog"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -311,7 +312,7 @@ func (r *CatalogResolver) ResolveCatalog(ctx context.Context, catalogImage strin
 		return nil, fmt.Errorf("failed to filter FBC: %w", err)
 	}
 
-	fmt.Printf("Catalog %s: filtered to %d packages, %d channels, %d bundles\n",
+	oclog.Printf("Catalog %s: filtered to %d packages, %d channels, %d bundles\n",
 		catalogImage, len(filtered.Packages), len(filtered.Channels), len(filtered.Bundles))
 
 	// Always include the catalog index image itself so it gets mirrored.
@@ -703,7 +704,7 @@ func (r *CatalogResolver) FilterFBC(_ context.Context, cfg *declcfg.DeclarativeC
 			if catalogPkgs[c] && !pkgSet[c] {
 				pkgSet[c] = true
 				allIncludes = append(allIncludes, mirrorv1alpha1.IncludePackage{Name: c})
-				fmt.Printf("Including companion dependency package: %s (for %s)\n", c, inc.Name)
+				oclog.Printf("Including companion dependency package: %s (for %s)\n", c, inc.Name)
 				break
 			}
 		}
@@ -797,7 +798,7 @@ func (r *CatalogResolver) FilterFBC(_ context.Context, cfg *declcfg.DeclarativeC
 			for _, s := range selected {
 				explicitHeadBundles[s] = true
 			}
-			fmt.Printf("Package %s channel %s: head+%d → %v\n", pkgName, ch.Name, prev, selected)
+			oclog.Printf("Package %s channel %s: head+%d → %v\n", pkgName, ch.Name, prev, selected)
 		}
 	}
 
@@ -917,7 +918,7 @@ func (r *CatalogResolver) FilterFBC(_ context.Context, cfg *declcfg.DeclarativeC
 					if !pkgSet[req.PackageName] && catalogPkgs[req.PackageName] {
 						pkgSet[req.PackageName] = true
 						queue = append(queue, req.PackageName)
-						fmt.Printf("Including dependency package: %s (required by %s via olm.package.required)\n", req.PackageName, current)
+						oclog.Printf("Including dependency package: %s (required by %s via olm.package.required)\n", req.PackageName, current)
 					}
 				case olmGVKRequired:
 					var g gvkValue
@@ -928,7 +929,7 @@ func (r *CatalogResolver) FilterFBC(_ context.Context, cfg *declcfg.DeclarativeC
 						if !pkgSet[provider] && catalogPkgs[provider] {
 							pkgSet[provider] = true
 							queue = append(queue, provider)
-							fmt.Printf("Including dependency package: %s (provides %s/%s required by %s)\n", provider, g.Group, g.Kind, current)
+							oclog.Printf("Including dependency package: %s (provides %s/%s required by %s)\n", provider, g.Group, g.Kind, current)
 						}
 					}
 				}
