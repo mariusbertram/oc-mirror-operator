@@ -8,13 +8,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/mariusbertram/oc-mirror-operator/pkg/oclog"
 	"net/http"
 	"os"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/mariusbertram/oc-mirror-operator/pkg/oclog"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"

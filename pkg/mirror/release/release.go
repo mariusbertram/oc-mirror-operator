@@ -8,13 +8,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"github.com/mariusbertram/oc-mirror-operator/pkg/oclog"
 	"io"
 	"net/http"
 	"net/url"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/mariusbertram/oc-mirror-operator/pkg/oclog"
 
 	"github.com/blang/semver/v4"
 	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"

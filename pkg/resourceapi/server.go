@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"github.com/mariusbertram/oc-mirror-operator/pkg/oclog"
 	"io"
 	"io/fs"
 	"net/http"
@@ -16,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/mariusbertram/oc-mirror-operator/pkg/oclog"
 
 	"github.com/gorilla/mux"
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"

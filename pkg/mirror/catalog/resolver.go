@@ -8,7 +8,6 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"github.com/mariusbertram/oc-mirror-operator/pkg/oclog"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -17,6 +16,8 @@ import (
 	"strings"
 	"testing/fstest"
 	"time"
+
+	"github.com/mariusbertram/oc-mirror-operator/pkg/oclog"
 
 	"github.com/blang/semver/v4"
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"

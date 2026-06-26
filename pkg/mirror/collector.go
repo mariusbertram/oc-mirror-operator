@@ -3,8 +3,9 @@ package mirror
 import (
 	"context"
 	"fmt"
-	"github.com/mariusbertram/oc-mirror-operator/pkg/oclog"
 	"strings"
+
+	"github.com/mariusbertram/oc-mirror-operator/pkg/oclog"
 
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/catalog"
