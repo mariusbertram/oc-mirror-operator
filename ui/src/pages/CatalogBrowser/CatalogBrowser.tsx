@@ -545,15 +545,32 @@ export const CatalogBrowser: React.FC = () => {
                               {displayVersions}
                             </div>
                           </div>
-                          <Button
-                            variant="link"
-                            size="sm"
-                            isDisabled={chAdded}
-                            style={{ paddingLeft: 0 }}
-                            onClick={() => importChannel(p.name, c.name)}
-                          >
-                            {chAdded ? 'added' : '+ add'}
-                          </Button>
+                          {chAdded ? (
+                            <button
+                              style={{
+                                background: 'none',
+                                border: 'none',
+                                cursor: 'pointer',
+                                padding: '0 2px',
+                                fontSize: 14,
+                                color: 'var(--pf-v6-global--danger-color--100)',
+                                lineHeight: 1,
+                              }}
+                              onClick={() => removeChannel(p.name, c.name)}
+                              title="Remove channel"
+                            >
+                              ×
+                            </button>
+                          ) : (
+                            <Button
+                              variant="link"
+                              size="sm"
+                              style={{ paddingLeft: 0 }}
+                              onClick={() => importChannel(p.name, c.name)}
+                            >
+                              + add
+                            </Button>
+                          )}
                         </div>
                       );
                     })}
