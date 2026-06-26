@@ -2,6 +2,7 @@ package mirror
 
 import (
 	"context"
+
 	"github.com/mariusbertram/oc-mirror-operator/pkg/oclog"
 
 	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
