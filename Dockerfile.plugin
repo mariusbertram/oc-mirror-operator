@@ -7,7 +7,7 @@
 # To rebuild after UI changes:
 #   make docker-build-plugin IMG_PLUGIN=<registry>/<image>:<tag>
 
-FROM --platform=$BUILDPLATFORM docker.io/library/node:22-alpine AS ui-build
+FROM --platform=$BUILDPLATFORM registry.access.redhat.com/hi/nodejs:26-builder AS ui-build
 WORKDIR /build
 COPY ui/package.json ui/package-lock.json* ./ui/
 RUN npm --prefix ui ci --ignore-scripts
