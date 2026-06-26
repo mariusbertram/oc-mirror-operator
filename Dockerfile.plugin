@@ -8,7 +8,7 @@
 #   make docker-build-plugin IMG_PLUGIN=<registry>/<image>:<tag>
 
 FROM --platform=$BUILDPLATFORM registry.access.redhat.com/hi/nodejs:26-builder AS ui-build
-WORKDIR /build
+WORKDIR /app
 COPY ui/package.json ui/package-lock.json* ./ui/
 RUN npm --prefix ui ci --ignore-scripts
 
@@ -33,7 +33,7 @@ COPY pkg/ pkg/
 COPY internal/ internal/
 
 # Replace the placeholder embedded UI with the React build output.
-COPY --from=ui-build /build/ui/dist/plugin/ pkg/resourceapi/plugin/
+COPY --from=ui-build /app/ui/dist/plugin/ pkg/resourceapi/plugin/
 
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
     go build -a -o plugin ./cmd/dashboard/
