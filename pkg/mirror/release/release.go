@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/mariusbertram/oc-mirror-operator/pkg/oclog"
 	"io"
 	"net/http"
 	"net/url"
@@ -217,7 +218,7 @@ func (r *ReleaseResolver) ResolveReleaseNodes(ctx context.Context, channel, minV
 	if latest == nil {
 		return nil, fmt.Errorf("no nodes found in channel %s", channel)
 	}
-	fmt.Printf("No version constraint specified for channel %s, defaulting to latest: %s\n", channel, latest.Version)
+	oclog.Printf("No version constraint specified for channel %s, defaulting to latest: %s\n", channel, latest.Version)
 	return []Node{*latest}, nil
 }
 

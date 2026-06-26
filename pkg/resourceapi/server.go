@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/mariusbertram/oc-mirror-operator/pkg/oclog"
 	"io"
 	"io/fs"
 	"net/http"
@@ -169,13 +170,13 @@ func (s *Server) clientForRequest(r *http.Request) client.Client {
 		s.tokenClients.Delete(key)
 	}
 
-	fmt.Printf("clientForRequest: creating new client for token (%d bytes)\n", len(token))
+	oclog.Printf("clientForRequest: creating new client for token (%d bytes)\n", len(token))
 	cfg := clientgorest.CopyConfig(s.baseCfg)
 	cfg.BearerToken = token
 	cfg.BearerTokenFile = ""
 	c, err := client.New(cfg, client.Options{Scheme: s.scheme})
 	if err != nil {
-		fmt.Printf("clientForRequest: failed to create client from token: %v\n", err)
+		oclog.Printf("clientForRequest: failed to create client from token: %v\n", err)
 		return s.client
 	}
 
@@ -311,7 +312,7 @@ func (s *Server) RegisterRoutes(r *mux.Router) {
 func RegisterPluginStaticRoutes(r *mux.Router) {
 	pluginSub, err := fs.Sub(pluginFS, "plugin")
 	if err != nil {
-		fmt.Printf("RegisterPluginStaticRoutes: failed to sub pluginFS: %v\n", err)
+		oclog.Printf("RegisterPluginStaticRoutes: failed to sub pluginFS: %v\n", err)
 		return
 	}
 	r.PathPrefix("/").Handler(http.FileServer(http.FS(pluginSub)))
@@ -337,11 +338,11 @@ func (s *Server) RunOn(ctx context.Context, addr string) {
 
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			fmt.Printf("Resource API listen error: %v\n", err)
+			oclog.Printf("Resource API listen error: %v\n", err)
 		}
 	}()
 
-	fmt.Printf("Resource API started on %s\n", addr)
+	oclog.Printf("Resource API started on %s\n", addr)
 	<-ctx.Done()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -358,7 +359,7 @@ func (s *Server) handleTargetsList(w http.ResponseWriter, r *http.Request) {
 		listOpts = append(listOpts, client.InNamespace(s.namespace))
 	}
 	if err := c.List(r.Context(), list, listOpts...); err != nil {
-		fmt.Printf("handleTargetsList: client.List failed: %v\n", err)
+		oclog.Printf("handleTargetsList: client.List failed: %v\n", err)
 		if apierrors.IsForbidden(err) {
 			http.Error(w, "forbidden: insufficient permissions", http.StatusForbidden)
 		} else {
@@ -366,7 +367,7 @@ func (s *Server) handleTargetsList(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	fmt.Printf("handleTargetsList: found %d targets\n", len(list.Items))
+	oclog.Printf("handleTargetsList: found %d targets\n", len(list.Items))
 
 	targets := make([]TargetSummary, 0, len(list.Items))
 	for _, mt := range list.Items {

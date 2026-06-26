@@ -2,7 +2,7 @@ package mirror
 
 import (
 	"context"
-	"fmt"
+	"github.com/mariusbertram/oc-mirror-operator/pkg/oclog"
 
 	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
 	"github.com/regclient/regclient/types/manifest"
@@ -36,7 +36,7 @@ func PlanMirrorOrder(ctx context.Context, client *mirrorclient.MirrorClient, sou
 	for i := 0; i < n; i++ {
 		blobs, err := extractBlobDigests(ctx, client, sources[i])
 		if err != nil {
-			fmt.Printf("Planner: could not inspect %s: %v\n", sources[i], err)
+			oclog.Printf("Planner: could not inspect %s: %v\n", sources[i], err)
 			blobs = map[string]struct{}{}
 		}
 		infos[i] = imageBlobInfo{index: i, blobs: blobs}
@@ -96,7 +96,7 @@ func PlanMirrorOrder(ctx context.Context, client *mirrorclient.MirrorClient, sou
 		delete(remaining, bestIdx)
 	}
 
-	fmt.Printf("Planner: ordered %d images, %d unique blobs across batch\n", n, len(uploaded))
+	oclog.Printf("Planner: ordered %d images, %d unique blobs across batch\n", n, len(uploaded))
 	return orderedSrc, orderedDst
 }
 
