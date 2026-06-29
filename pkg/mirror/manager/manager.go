@@ -35,6 +35,7 @@ import (
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/imagestate"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/resources"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/resourceapi"
+	"github.com/regclient/regclient/types/errs"
 )
 
 // Image entry state constants used throughout the manager.
@@ -658,6 +659,11 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 			exists, checkErr := checkClient.CheckExist(ctx, dest)
 			m.mu.Lock()
 			if checkErr != nil {
+				if errors.Is(checkErr, errs.ErrHTTPStatus) && strings.Contains(checkErr.Error(), "400") {
+					// Bearer token scope too large for HAProxy/nginx (> ~8 KB); refresh
+					// client so subsequent checks start with a clean token cache.
+					_, _ = m.clientCache.RefreshClient(nil, m.authConfigPath)
+				}
 				oclog.Printf("CheckExist error for %s: %v – assuming present\n", dest, checkErr)
 				m.mirrored[dest] = true
 				continue
@@ -705,6 +711,9 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 					exists, checkErr := checkClient.CheckExist(ctx, dest)
 					m.mu.Lock()
 					if checkErr != nil {
+						if errors.Is(checkErr, errs.ErrHTTPStatus) && strings.Contains(checkErr.Error(), "400") {
+							_, _ = m.clientCache.RefreshClient(nil, m.authConfigPath)
+						}
 						oclog.Printf("CheckExist error for permanently-failed image %s: %v – keeping Failed\n", dest, checkErr)
 					} else if exists {
 						oclog.Printf("Permanently-failed image %s found in target; marking Mirrored\n", dest)
