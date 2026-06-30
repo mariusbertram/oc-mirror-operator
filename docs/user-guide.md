@@ -716,6 +716,15 @@ spec:
 - **Mirrored images:** If an image has been deleted from the target registry, it will be automatically re-mirrored (drift detection)
 - **Permanently failed images** (`permanentlyFailed=true`): If the image is not yet in the target registry, a new mirroring attempt is started (handles transient upstream failures)
 
+> **Note — OpenShift Route / HAProxy:** When the target registry is exposed via an
+> OpenShift Route (HAProxy), the Bearer token in the `Authorization` header can grow
+> beyond HAProxy's default request-size limit (~8 KB) after the manager authenticates
+> to many repositories in a single CheckExist window. HAProxy rejects such requests
+> with HTTP 400. The manager detects this and automatically refreshes the client to
+> obtain a fresh, narrow-scope token for the remaining checks. You may see log lines
+> like `CheckExist error … unexpected http status code: Bad Request [http 400] –
+> assuming present` before the refresh — these are transient and self-healing.
+
 ### 7.4 Expose (Resource API)
 
 The Resource API provides IDMS, ITMS, CatalogSource, Web UI Dashboard, and other resources via HTTP. It runs as a standalone Deployment (`oc-mirror-resource-api`, one per namespace).
@@ -1605,8 +1614,15 @@ kubectl logs job/<catalog-builder-job-name> -n <namespace>
 ```
 
 If `CatalogReady=False` with reason `WaitingForOperatorMirror`:
-- There are still pending or failed operator images
+- There are still pending or failed operator images. This is expected behaviour —
+  the controller deliberately defers the catalog build (and any catalog rebuild
+  triggered by an upstream digest change or poll expiry) until all operator bundle
+  images are either `Mirrored` or `PermanentlyFailed`. This prevents clusters from
+  seeing new operator versions in the catalog before the bundle images are available
+  in the target registry.
 - Check and resolve failed images in `failedImageDetails`
+- Once all images reach a terminal state the catalog build starts automatically; no
+  manual intervention is needed
 
 ### Quay-Specific Issues
 

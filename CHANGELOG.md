@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **CheckExist HTTP 400 on HAProxy/nginx routes**: When the manager pod performs
+  drift-check verification against a target registry exposed via an OpenShift Route
+  (HAProxy) or Quay's nginx proxy, the `Authorization` Bearer token scope can grow
+  beyond the proxy's header-size limit (~8 KB) after authenticating to many
+  repositories in a single CheckExist cycle. HAProxy responds with `<BADREQ>` /
+  HTTP 400, which previously caused all subsequent checks in the same window to be
+  silently skipped. The manager now detects HTTP 400 responses and immediately
+  force-refreshes the client cache so subsequent checks use a fresh, narrow-scope
+  Bearer token.
+- **Catalog rebuild triggered before bundle images are present**: After a catalog's
+  upstream digest changed (new operator version), the controller triggered a catalog
+  rebuild immediately via `alreadyBuilt=true` shortcut — even though the new bundle
+  images were still in `Pending` state. Clusters that consumed the rebuilt catalog
+  saw new operator versions available for install while the required images had not
+  yet been mirrored to the target registry. The controller now re-gates the rebuild
+  on `operatorMirroringComplete` (all operator images `Mirrored` or
+  `PermanentlyFailed`) whenever a rebuild is triggered by a signature change or poll
+  expiry.
+
 ### Added
 - **OpenShift Console Plugin**: A new `ConsolePlugin` controller deploys a dedicated plugin pod (`oc-mirror-plugin`) into the operator namespace and registers it with the OpenShift Console. The plugin provides an integrated multi-page UI directly in the OCP web console — no external URL needed.
   - Pages: MirrorTarget overview, ImageSet detail (with image status), CatalogBrowser, Failed Images
