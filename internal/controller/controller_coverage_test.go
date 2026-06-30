@@ -777,6 +777,96 @@ var _ = Describe("Coverage tests", func() {
 		})
 	})
 
+		It("defers rebuild when sig changed but operator images still pending (alreadyBuilt bypass bug)", func() {
+			localCtx := context.Background()
+			isName := "is-rebuild-gate"
+			mtName := "mt-rebuild-gate"
+
+			Expect(os.Setenv("OPERATOR_IMAGE", "test-operator:latest")).To(Succeed())
+			Expect(os.Setenv("MANAGER_IMAGE", "test-manager:latest")).To(Succeed())
+			Expect(os.Setenv("WORKER_IMAGE", "test-worker:latest")).To(Succeed())
+			bm, bmErr := builder.New()
+			Expect(bmErr).NotTo(HaveOccurred())
+
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: mtName, Namespace: ns},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com", ImageSets: []string{isName}},
+			}
+			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, mt) })
+
+			// Catalog was previously built successfully (CatalogReady=True) with
+			// the old sig "old-sig". The upstream catalog digest changed, so the
+			// manager produced new bundle images in Pending state and the
+			// annotation now has the stale sig. A rebuild would be triggered by
+			// the sig mismatch — but the new images are not yet mirrored.
+			is := &mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      isName,
+					Namespace: ns,
+					Annotations: map[string]string{
+						"mirror.openshift.io/catalog-build-sig": "old-sig",
+					},
+				},
+				Spec: mirrorv1alpha1.ImageSetSpec{
+					Mirror: mirrorv1alpha1.Mirror{
+						Operators: []mirrorv1alpha1.Operator{
+							{Catalog: "quay.io/test/rebuildgate:v1"},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(localCtx, is)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, is) })
+
+			// Set CatalogReady=True (simulates catalog was built in a prior reconcile).
+			is.Status.Conditions = []metav1.Condition{
+				{Type: conditionCatalogReady, Status: metav1.ConditionTrue, Reason: "CatalogBuildSucceeded",
+					Message: "ok", LastTransitionTime: metav1.Now()},
+			}
+			Expect(k8sClient.Status().Update(localCtx, is)).To(Succeed())
+
+			// Write imagestate with one operator image still Pending — mirroring incomplete.
+			pendingState := imagestate.ImageState{
+				"reg.example.com/bundle:latest": {
+					Source: "quay.io/bundle:latest",
+					State:  "Pending",
+					Refs:   []imagestate.ImageRef{{ImageSet: isName, Origin: imagestate.OriginOperator}},
+				},
+			}
+			cm := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: mtName + "-images", Namespace: ns},
+				BinaryData: map[string][]byte{"images.json.gz": mustGzipJSON(pendingState)},
+			}
+			Expect(k8sClient.Create(localCtx, cm)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, cm) })
+
+			r := &ImageSetReconciler{
+				Client:          k8sClient,
+				Scheme:          k8sClient.Scheme(),
+				CatalogBuildMgr: bm,
+			}
+			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: isName, Namespace: ns}, is)).To(Succeed())
+			Expect(r.reconcileCatalogBuildJobs(localCtx, is, mt, false)).To(Succeed())
+
+			// No build job must have been created — rebuild is gated on images being mirrored.
+			jobName := builder.JobName(isName, "quay.io/test/rebuildgate:v1")
+			j := &batchv1.Job{}
+			err := k8sClient.Get(localCtx, types.NamespacedName{Name: jobName, Namespace: ns}, j)
+			Expect(err).To(HaveOccurred(), "rebuild job must not be created while images are still pending")
+
+			// The condition must reflect the deferred state, not CatalogReady=True.
+			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: isName, Namespace: ns}, is)).To(Succeed())
+			var foundDeferred bool
+			for _, c := range is.Status.Conditions {
+				if c.Type == conditionCatalogReady && c.Reason == "WaitingForOperatorMirror" {
+					foundDeferred = true
+				}
+			}
+			Expect(foundDeferred).To(BeTrue(), "expected CatalogReady=WaitingForOperatorMirror while rebuild gated")
+		})
+	})
+
 	// ───────────────────── reconcileCleanup ─────────────────────
 
 	Describe("reconcileCleanup", func() {
