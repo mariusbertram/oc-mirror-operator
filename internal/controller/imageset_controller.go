@@ -267,6 +267,23 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs( //nolint:gocyclo
 		}
 	}
 
+	// Rebuild gate: when the catalog signature changed or poll expired, images
+	// that were added/changed since the last build are still in Pending/Failed
+	// state. Do not launch the rebuild until they are all Mirrored or
+	// PermanentlyFailed — otherwise clusters see new operator versions in the
+	// catalog but the bundle images are not yet in the registry.
+	if catalogNeedsRebuild && !operatorMirroringComplete && !recollectRequested {
+		if knowState {
+			l.Info("Catalog rebuild deferred: operator images still mirroring after signature change",
+				"imageSet", is.Name)
+		}
+		setCondition(&is.Status.Conditions, conditionCatalogReady, metav1.ConditionFalse,
+			"WaitingForOperatorMirror",
+			"waiting for operator bundle images to be mirrored before rebuilding filtered catalog",
+			is.Generation)
+		return r.Status().Update(ctx, is)
+	}
+
 	// Persist the new build signature IMMEDIATELY so that concurrent/subsequent
 	// reconcile loops do not keep seeing a mismatch and endlessly delete+recreate jobs.
 	if catalogNeedsRebuild {
