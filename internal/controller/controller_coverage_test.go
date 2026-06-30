@@ -775,7 +775,6 @@ var _ = Describe("Coverage tests", func() {
 			err := k8sClient.Get(localCtx, types.NamespacedName{Name: jobName, Namespace: ns}, j)
 			Expect(err).To(HaveOccurred(), "job should not exist when catalog is already ready")
 		})
-	})
 
 		It("defers rebuild when sig changed but operator images still pending (alreadyBuilt bypass bug)", func() {
 			localCtx := context.Background()
