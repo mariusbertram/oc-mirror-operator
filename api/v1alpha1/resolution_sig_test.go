@@ -121,31 +121,36 @@ func TestOperatorEntrySignature(t *testing.T) {
 func TestCatalogDigestAnnotationKey(t *testing.T) {
 	tests := []struct {
 		name     string
-		input    string
+		sig      string
 		expected string
 	}{
 		{
-			name:     "short string",
-			input:    "12345",
-			expected: CatalogDigestAnnotationPrefix + "12345",
+			name:     "empty signature",
+			sig:      "",
+			expected: CatalogDigestAnnotationPrefix,
 		},
 		{
-			name:     "exact 48 chars",
-			input:    strings.Repeat("a", 48),
+			name:     "short signature",
+			sig:      "short",
+			expected: CatalogDigestAnnotationPrefix + "short",
+		},
+		{
+			name:     "exactly 48 chars signature",
+			sig:      strings.Repeat("a", 48),
 			expected: CatalogDigestAnnotationPrefix + strings.Repeat("a", 48),
 		},
 		{
-			name:     "long string (> 48 chars)",
-			input:    strings.Repeat("b", 50),
-			expected: CatalogDigestAnnotationPrefix + strings.Repeat("b", 48),
+			name:     "longer than 48 chars signature",
+			sig:      strings.Repeat("a", 48) + "extra",
+			expected: CatalogDigestAnnotationPrefix + strings.Repeat("a", 48),
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := CatalogDigestAnnotationKey(tt.input)
+			result := CatalogDigestAnnotationKey(tt.sig)
 			if result != tt.expected {
-				t.Errorf("CatalogDigestAnnotationKey(%q) = %q, want %q", tt.input, result, tt.expected)
+				t.Errorf("CatalogDigestAnnotationKey(%q) = %q, expected %q", tt.sig, result, tt.expected)
 			}
 		})
 	}
@@ -154,31 +159,36 @@ func TestCatalogDigestAnnotationKey(t *testing.T) {
 func TestReleaseDigestAnnotationKey(t *testing.T) {
 	tests := []struct {
 		name     string
-		input    string
+		sig      string
 		expected string
 	}{
 		{
-			name:     "short string",
-			input:    "abcde",
-			expected: ReleaseDigestAnnotationPrefix + "abcde",
+			name:     "empty signature",
+			sig:      "",
+			expected: ReleaseDigestAnnotationPrefix,
 		},
 		{
-			name:     "exact 48 chars",
-			input:    strings.Repeat("x", 48),
-			expected: ReleaseDigestAnnotationPrefix + strings.Repeat("x", 48),
+			name:     "short signature",
+			sig:      "short",
+			expected: ReleaseDigestAnnotationPrefix + "short",
 		},
 		{
-			name:     "long string (> 48 chars)",
-			input:    strings.Repeat("y", 60),
-			expected: ReleaseDigestAnnotationPrefix + strings.Repeat("y", 48),
+			name:     "exactly 48 chars signature",
+			sig:      strings.Repeat("a", 48),
+			expected: ReleaseDigestAnnotationPrefix + strings.Repeat("a", 48),
+		},
+		{
+			name:     "longer than 48 chars signature",
+			sig:      strings.Repeat("a", 48) + "extra",
+			expected: ReleaseDigestAnnotationPrefix + strings.Repeat("a", 48),
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := ReleaseDigestAnnotationKey(tt.input)
+			result := ReleaseDigestAnnotationKey(tt.sig)
 			if result != tt.expected {
-				t.Errorf("ReleaseDigestAnnotationKey(%q) = %q, want %q", tt.input, result, tt.expected)
+				t.Errorf("ReleaseDigestAnnotationKey(%q) = %q, expected %q", tt.sig, result, tt.expected)
 			}
 		})
 	}
