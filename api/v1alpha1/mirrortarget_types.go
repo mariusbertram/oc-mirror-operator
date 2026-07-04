@@ -247,6 +247,12 @@ const (
 	// annotation key that stores the last resolved channel-head digest.
 	// Each spec.mirror.platform.channels[] entry gets its own annotation.
 	ReleaseDigestAnnotationPrefix = "mirror.openshift.io/release-digest-"
+
+	// GraphImageBuiltAnnotation stores the RFC3339 timestamp of the last
+	// successful Cincinnati graph-data image build (spec.mirror.platform.graph).
+	// Rebuilds are throttled to the MirrorTarget's pollInterval, the same
+	// cadence used for release/operator upstream polling.
+	GraphImageBuiltAnnotation = "mirror.openshift.io/graph-image-built-at"
 )
 
 // MirrorTargetStatus defines the observed state of MirrorTarget

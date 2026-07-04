@@ -48,6 +48,7 @@ Unlike the static `oc-mirror` CLI tool, this operator works cloud-natively and d
 | **Worker Pod Lifecycle** | ✗ | ✅ | Automatic cleanup of completed/failed worker and orphan pods |
 | **KubeVirt Container Disk** | ✅ | ✅ | `platform.kubeVirtContainer: true` extracts KubeVirt disk images from the release payload (RHCOS per architecture) |
 | **GatewayAPI Exposure** | ✗ | ✅ | `spec.expose.type: GatewayAPI` creates a `gateway.networking.k8s.io/v1` HTTPRoute attached to the Gateway referenced by `spec.expose.gatewayRef`; requires the Gateway API CRDs to be installed |
+| **Cincinnati Graph Data** | ✅ | ✅ | `platform.graph: true` builds and pushes a UBI9-based `openshift/graph-image:latest` OSUS graph-data image, matching oc-mirror v2's format; rebuilt on the same `pollInterval` cadence as release/operator polling |
 
 ### ❌ Not Implemented Features
 
@@ -59,7 +60,6 @@ Unlike the static `oc-mirror` CLI tool, this operator works cloud-natively and d
 | **Disk-to-Mirror** | ✅ | ❌ | `oc-mirror` can mirror from a local archive to a registry — `platform.release` field exists but is not used |
 | **Enclave Support** | ✅ | ❌ | No concept for air-gap transfer via media — the operator requires network access to both source and target registry |
 | **UpdateService CR** | ✅ | ❌ | `oc-mirror` generates an UpdateService CR for OSUS — not implemented |
-| **Cincinnati Graph Data** | ✅ | ❌ | `platform.graph: true` field exists, but graph data is not pushed to the target registry |
 | **Samples** | ✅ | ❌ | API field exists, explicitly marked as "not implemented" |
 
 ### Operator-Specific Features (no equivalent in oc-mirror CLI)

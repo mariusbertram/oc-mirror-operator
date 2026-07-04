@@ -39,6 +39,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the existing Route and Ingress exposure types. Requires the Gateway API CRDs
   to be installed and `gatewayRef.name` to be set; the controller reports a
   clear error condition when either is missing.
+- **Cincinnati Graph Data (OSUS)**: `spec.mirror.platform.graph: true` now
+  actually builds and pushes a graph-data image — previously the field was
+  UI-editable but had no backend effect. The manager downloads the current
+  graph-data archive from `api.openshift.com`, builds a
+  `registry.access.redhat.com/ubi9/ubi`-based OCI image with the data
+  embedded (matching oc-mirror v2's format exactly), and pushes it to
+  `<registry>/openshift/graph-image:latest` for consumption by the OpenShift
+  Update Service (OSUS) in disconnected clusters. Rebuilds are throttled to
+  the MirrorTarget's `pollInterval`, the same cadence as release/operator
+  polling.
 - **OpenShift Console Plugin**: A new `ConsolePlugin` controller deploys a dedicated plugin pod (`oc-mirror-plugin`) into the operator namespace and registers it with the OpenShift Console. The plugin provides an integrated multi-page UI directly in the OCP web console — no external URL needed.
   - Pages: MirrorTarget overview, ImageSet detail (with image status), CatalogBrowser, Failed Images
   - Auto-deployed on OpenShift clusters; gracefully skipped on non-OCP Kubernetes

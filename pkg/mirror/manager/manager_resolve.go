@@ -32,6 +32,7 @@ import (
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/catalog"
 	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
+	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/graph"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/imagestate"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/release"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/resources"
@@ -229,6 +230,10 @@ func (m *MirrorManager) resolveImageSet(ctx context.Context, is *mirrorv1alpha1.
 	}
 	mergeIntoStateWithSig(newState, additional, imagestate.OriginAdditional, "", "additional", currentState)
 
+	if m.resolveGraphImage(ctx, is, mt, newAnnotations, recollect) {
+		annotationsChanged = true
+	}
+
 	// Drop any annotation whose sig is no longer in spec.
 	if pruneObsoleteCacheAnnotations(newAnnotations, is) {
 		annotationsChanged = true
@@ -253,15 +258,59 @@ func (m *MirrorManager) resolveImageSet(ctx context.Context, is *mirrorv1alpha1.
 // buildCollector returns a Collector + CatalogResolver pair using
 // MirrorTarget-aware client (insecure-host config when set).
 func (m *MirrorManager) buildCollector(mt *mirrorv1alpha1.MirrorTarget) (*mirror.Collector, *catalog.CatalogResolver) {
-	mc := m.mirrorClient
-	if mt.Spec.Insecure {
-		host := mt.Spec.Registry
-		if i := strings.Index(host, "/"); i >= 0 {
-			host = host[:i]
-		}
-		mc = mirrorclient.NewMirrorClient([]string{host}, m.authConfigPath)
-	}
+	mc := m.registryClientFor(mt)
 	return mirror.NewCollector(mc), catalog.New(mc)
+}
+
+// registryClientFor returns a MirrorClient configured for mt's target
+// registry, using the insecure-host override when set.
+func (m *MirrorManager) registryClientFor(mt *mirrorv1alpha1.MirrorTarget) *mirrorclient.MirrorClient {
+	if !mt.Spec.Insecure {
+		return m.mirrorClient
+	}
+	host := mt.Spec.Registry
+	if i := strings.Index(host, "/"); i >= 0 {
+		host = host[:i]
+	}
+	return mirrorclient.NewMirrorClient([]string{host}, m.authConfigPath)
+}
+
+// resolveGraphImage builds and pushes the Cincinnati graph-data image (see
+// pkg/mirror/graph) when spec.mirror.platform.graph is set, throttled to the
+// MirrorTarget's pollInterval so it isn't rebuilt on every unrelated spec
+// change. Returns true if newAnnotations was modified (the caller is
+// responsible for persisting it, same as the release/operator sections).
+//
+// Unlike releases and operators, the graph image isn't tracked as a
+// TargetImage/imagestate entry — it's a single side-effect build, not part of
+// the per-image Pending/Mirrored/Failed lifecycle, so a timestamp annotation
+// is sufficient to track "last built".
+func (m *MirrorManager) resolveGraphImage(ctx context.Context, is *mirrorv1alpha1.ImageSet, mt *mirrorv1alpha1.MirrorTarget, newAnnotations map[string]string, recollect bool) bool {
+	if !is.Spec.Mirror.Platform.Graph {
+		return false
+	}
+
+	if !recollect {
+		if builtAtStr := newAnnotations[mirrorv1alpha1.GraphImageBuiltAnnotation]; builtAtStr != "" {
+			if builtAt, err := time.Parse(time.RFC3339, builtAtStr); err == nil {
+				interval, pollingEnabled := effectivePollInterval(mt)
+				if !pollingEnabled || time.Since(builtAt) < interval {
+					return false
+				}
+			}
+		}
+	}
+
+	builder := graph.New(m.registryClientFor(mt))
+	digest, err := builder.BuildAndPush(ctx, mt.Spec.Registry)
+	if err != nil {
+		oclog.Printf("Warning: build graph-data image for %s: %v\n", is.Name, err)
+		return false
+	}
+	oclog.Printf("Graph-data image pushed: %s (digest %s)\n", graph.TargetImage(mt.Spec.Registry), digest)
+
+	newAnnotations[mirrorv1alpha1.GraphImageBuiltAnnotation] = time.Now().UTC().Format(time.RFC3339)
+	return true
 }
 
 func (m *MirrorManager) resolveReleaseSection( //nolint:unparam
@@ -611,13 +660,15 @@ func (m *MirrorManager) patchImageSetAnnotations(ctx context.Context, is *mirror
 		for k := range fresh.Annotations {
 			if strings.HasPrefix(k, mirrorv1alpha1.CatalogDigestAnnotationPrefix) ||
 				strings.HasPrefix(k, mirrorv1alpha1.ReleaseDigestAnnotationPrefix) ||
+				k == mirrorv1alpha1.GraphImageBuiltAnnotation ||
 				k == mirrorv1alpha1.RecollectAnnotation {
 				delete(fresh.Annotations, k)
 			}
 		}
 		for k, v := range desired {
 			if strings.HasPrefix(k, mirrorv1alpha1.CatalogDigestAnnotationPrefix) ||
-				strings.HasPrefix(k, mirrorv1alpha1.ReleaseDigestAnnotationPrefix) {
+				strings.HasPrefix(k, mirrorv1alpha1.ReleaseDigestAnnotationPrefix) ||
+				k == mirrorv1alpha1.GraphImageBuiltAnnotation {
 				fresh.Annotations[k] = v
 			}
 		}
@@ -735,18 +786,7 @@ func shouldResolve(is *mirrorv1alpha1.ImageSet, mt *mirrorv1alpha1.MirrorTarget,
 	if hasStaleCacheAnnotations(is) {
 		return true
 	}
-	pollInterval := 24 * time.Hour
-	pollingEnabled := true
-	if mt.Spec.PollInterval != nil {
-		if mt.Spec.PollInterval.Duration <= 0 {
-			pollingEnabled = false
-		} else {
-			pollInterval = mt.Spec.PollInterval.Duration
-			if pollInterval < 1*time.Hour {
-				pollInterval = 1 * time.Hour
-			}
-		}
-	}
+	pollInterval, pollingEnabled := effectivePollInterval(mt)
 	if !pollingEnabled {
 		return false
 	}
@@ -754,6 +794,24 @@ func shouldResolve(is *mirrorv1alpha1.ImageSet, mt *mirrorv1alpha1.MirrorTarget,
 		return true
 	}
 	return time.Since(is.Status.LastSuccessfulPollTime.Time) >= pollInterval
+}
+
+// effectivePollInterval returns the effective upstream-polling interval for
+// mt (default 24h, floored to 1h when explicitly set) and whether polling is
+// enabled at all (mt.Spec.PollInterval == "0" disables it).
+func effectivePollInterval(mt *mirrorv1alpha1.MirrorTarget) (time.Duration, bool) {
+	pollInterval := 24 * time.Hour
+	if mt.Spec.PollInterval == nil {
+		return pollInterval, true
+	}
+	if mt.Spec.PollInterval.Duration <= 0 {
+		return 0, false
+	}
+	pollInterval = mt.Spec.PollInterval.Duration
+	if pollInterval < 1*time.Hour {
+		pollInterval = 1 * time.Hour
+	}
+	return pollInterval, true
 }
 
 // hasStaleCacheAnnotations returns true if any catalog-digest cache annotation
