@@ -50,6 +50,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the existing Route and Ingress exposure types. Requires the Gateway API CRDs
   to be installed and `gatewayRef.name` to be set; the controller reports a
   clear error condition when either is missing.
+- **Blocked Images**: `spec.mirror.blockedImages` is now evaluated. Images whose
+  registry-agnostic repository path matches a blocked name are removed from the
+  resolved image set, regardless of whether they originated from a release, an
+  operator catalog, or `additionalImages`. Already-mirrored images that become
+  blocked are cleaned up from the target registry the same way a removed/narrowed
+  ImageSet entry is, when `mirror.openshift.io/cleanup-policy=Delete` is set.
+  Editable via a new REST endpoint (`GET`/`PATCH .../blocked-images`) and a new
+  "Blocked Images" tab on the console plugin's ImageSet detail page.
 - **OpenShift Console Plugin**: A new `ConsolePlugin` controller deploys a dedicated plugin pod (`oc-mirror-plugin`) into the operator namespace and registers it with the OpenShift Console. The plugin provides an integrated multi-page UI directly in the OCP web console — no external URL needed.
   - Pages: MirrorTarget overview, ImageSet detail (with image status), CatalogBrowser, Failed Images
   - Auto-deployed on OpenShift clusters; gracefully skipped on non-OCP Kubernetes

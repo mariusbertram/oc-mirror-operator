@@ -25,6 +25,7 @@ This document describes the complete configuration and operation of the `oc-mirr
    - [OpenShift Releases](#61-openshift-releases)
    - [Operator Catalogs](#62-operator-catalogs)
    - [Additional Images](#63-additional-images)
+   - [Blocked Images](#64-blocked-images)
 7. [MirrorTarget Configuration](#7-mirrortarget-configuration)
    - [Basic Configuration](#71-basic-configuration)
    - [Performance Tuning](#72-performance-tuning)
@@ -626,7 +627,32 @@ spec:
         targetRepo: mein-mirror/nginx  # optional target path
 ```
 
-### 6.4 Splitting ImageSets (recommended)
+### 6.4 Blocked Images
+
+Exclude specific images from mirroring, regardless of which content type (release,
+operator catalog, or additional image) produced them. Matching is on the
+registry-agnostic repository path — the registry host and tag/digest are ignored, so
+a single entry blocks the image everywhere it would otherwise appear:
+
+```yaml
+spec:
+  mirror:
+    blockedImages:
+      - name: openshift4/ose-jenkins-operator-bundle
+      - name: redhat/postgresql-operator-bundle
+```
+
+Blocked images are removed from the ImageSet's resolved image set on the next
+reconcile. If an image was already mirrored before being blocked and
+`mirror.openshift.io/cleanup-policy=Delete` is set on the `MirrorTarget` (see
+[7.6 Image Cleanup on Removal](#76-image-cleanup-on-removal)), it is deleted from
+the target registry the same way an image from a removed/narrowed ImageSet would be.
+Without the cleanup policy, the image is simply no longer kept up to date.
+
+Blocked images can also be viewed and edited from the OpenShift Console Plugin, on
+the ImageSet detail page's "Blocked Images" tab.
+
+### 6.5 Splitting ImageSets (recommended)
 
 For large deployments, it is recommended to split releases and operator catalogs into separate `ImageSet` objects:
 

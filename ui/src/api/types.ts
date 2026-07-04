@@ -116,6 +116,10 @@ export interface ReleaseSpec {
   channels?: ReleaseChannel[];
 }
 
+export interface BlockedImagesSpec {
+  blockedImages: string[];
+}
+
 /** A single OCP/OKD release channel returned by GET /api/v1/releases/channels.
  *  Sourced from openshift/cincinnati-graph-data, with ConfigMap and built-in fallbacks. */
 export interface OcpChannelEntry {
