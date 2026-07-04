@@ -122,6 +122,45 @@ func TestGetCatalogDigest_NilClient(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// PinDigest
+// ---------------------------------------------------------------------------
+
+func TestPinDigest_ReplacesTagWithDigest(t *testing.T) {
+	r := &CatalogResolver{}
+	digest := "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	got, err := r.PinDigest("registry.example.com/redhat/redhat-operator-index:v4.21", digest)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := "registry.example.com/redhat/redhat-operator-index@" + digest
+	if got != want {
+		t.Errorf("expected %s, got %s", want, got)
+	}
+}
+
+func TestPinDigest_ReplacesExistingDigest(t *testing.T) {
+	r := &CatalogResolver{}
+	oldDigest := "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	newDigest := "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	got, err := r.PinDigest("registry.example.com/catalog@"+oldDigest, newDigest)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := "registry.example.com/catalog@" + newDigest
+	if got != want {
+		t.Errorf("expected %s, got %s", want, got)
+	}
+}
+
+func TestPinDigest_InvalidRef(t *testing.T) {
+	r := &CatalogResolver{}
+	_, err := r.PinDigest(":::invalid", "sha256:aaaa")
+	if err == nil {
+		t.Fatal("expected error for invalid image reference")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // ResolveCatalog
 // ---------------------------------------------------------------------------
 

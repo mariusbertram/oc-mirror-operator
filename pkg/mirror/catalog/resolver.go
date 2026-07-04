@@ -278,6 +278,23 @@ func (r *CatalogResolver) GetCatalogDigest(ctx context.Context, catalogImage str
 	return r.client.GetDigest(ctx, catalogImage)
 }
 
+// PinDigest returns catalogImage rewritten to reference digest explicitly
+// (any existing tag is dropped), e.g. "registry.io/ns/catalog:v4.21" +
+// "sha256:abc…" → "registry.io/ns/catalog@sha256:abc…".
+//
+// Callers should use this to pin the exact content probed by
+// GetCatalogDigest before passing the reference to a subsequent pull (e.g.
+// ResolveCatalogFull/LoadFBC), so a tag that moves between the two calls
+// cannot cause the FBC parse to see different content than what was cached
+// against.
+func (r *CatalogResolver) PinDigest(catalogImage, digest string) (string, error) {
+	parsed, err := ref.New(catalogImage)
+	if err != nil {
+		return "", fmt.Errorf("parse catalog image reference: %w", err)
+	}
+	return parsed.SetDigest(digest).CommonName(), nil
+}
+
 // ResolveCatalog pulls the catalog image, extracts the File-Based Catalog (FBC)
 // from the image layers, filters it to the requested packages (including
 // transitive dependencies), and returns all bundle + related images.

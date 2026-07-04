@@ -65,8 +65,11 @@ func (m *MirrorManager) saveCatalogPackages(ctx context.Context, slug string, in
 
 // ensureUpstreamCatalogPackages loads and saves the upstream catalog package CM
 // when a cache hit skips ResolveCatalogFull. Only pulls the catalog image if
-// the upstream CM does not yet exist.
-func (m *MirrorManager) ensureUpstreamCatalogPackages(ctx context.Context, resolver *catalog.CatalogResolver, slug string, info resources.CatalogInfo) error {
+// the upstream CM does not yet exist. pinnedCatalog is the digest-pinned
+// reference (see resolveOperatorSection) used for the actual pull; info
+// (and its human-readable info.SourceCatalog) is used only for display/CM
+// content.
+func (m *MirrorManager) ensureUpstreamCatalogPackages(ctx context.Context, resolver *catalog.CatalogResolver, slug string, info resources.CatalogInfo, pinnedCatalog string) error {
 	cmName := fmt.Sprintf("oc-mirror-%s-%s-upstream-packages", m.TargetName, slug)
 	existing := &corev1.ConfigMap{}
 	err := m.Client.Get(ctx, client.ObjectKey{Name: cmName, Namespace: m.Namespace}, existing)
@@ -76,7 +79,7 @@ func (m *MirrorManager) ensureUpstreamCatalogPackages(ctx context.Context, resol
 	if client.IgnoreNotFound(err) != nil {
 		return err
 	}
-	upstream, err := resolver.LoadFBC(ctx, info.SourceCatalog)
+	upstream, err := resolver.LoadFBC(ctx, pinnedCatalog)
 	if err != nil {
 		return fmt.Errorf("load upstream FBC: %w", err)
 	}
@@ -437,6 +440,18 @@ func (m *MirrorManager) resolveOperatorSection( //nolint:unparam
 			continue
 		}
 
+		// Pin the catalog reference to the digest just probed above, so a tag
+		// that moves between this point and the ResolveCatalogFull/LoadFBC pull
+		// below cannot cause the FBC parse to see different content than what
+		// freshDigest (and the resulting cache annotation) reflects. Falls back
+		// to the unpinned (tag) reference if the reference cannot be parsed —
+		// same behavior as before this pinning was added.
+		pinnedCatalog, pinErr := resolver.PinDigest(op.Catalog, freshDigest)
+		if pinErr != nil {
+			oclog.Printf("Warning: pin catalog digest for %s: %v\n", op.Catalog, pinErr)
+			pinnedCatalog = op.Catalog
+		}
+
 		catSlug := resources.CatalogSlug(op.Catalog)
 		targetImage := resources.CatalogTargetImage(mt.Spec.Registry, op.Catalog)
 		catInfo := resources.CatalogInfo{
@@ -450,13 +465,13 @@ func (m *MirrorManager) resolveOperatorSection( //nolint:unparam
 			carryOverByOriginAndSig(currentState, newState, imagestate.OriginOperator, sig, originRef)
 			// Ensure upstream packages CM exists even on a cache hit. This handles
 			// the first run after the feature was added (existing clusters).
-			if err := m.ensureUpstreamCatalogPackages(ctx, resolver, catSlug, catInfo); err != nil {
+			if err := m.ensureUpstreamCatalogPackages(ctx, resolver, catSlug, catInfo, pinnedCatalog); err != nil {
 				oclog.Printf("Warning: failed to ensure upstream catalog packages for %s: %v\n", catSlug, err)
 			}
 			continue
 		}
 
-		images, filtered, upstream, err := resolver.ResolveCatalogFull(ctx, op.Catalog, op.Packages)
+		images, filtered, upstream, err := resolver.ResolveCatalogFull(ctx, pinnedCatalog, op.Packages)
 		if err != nil {
 			oclog.Printf("Warning: collect catalog %s: %v\n", op.Catalog, err)
 			carryOverByOriginAndSig(currentState, newState, imagestate.OriginOperator, sig, originRef)

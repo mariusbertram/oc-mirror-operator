@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Operator catalog tag-to-digest drift**: `resolveOperatorSection` probed
+  the catalog's digest via `GetCatalogDigest` for caching purposes, then
+  separately re-pulled the catalog by its original tag reference in
+  `ResolveCatalogFull`/`LoadFBC` — if the upstream tag moved between the two
+  calls, the packages/images actually collected could silently correspond to
+  different catalog content than the digest recorded in the cache
+  annotation. `CatalogResolver.PinDigest` now rewrites the catalog reference
+  to the exact digest probed before every subsequent pull in the same
+  resolution pass, closing that window.
 - **CheckExist HTTP 400 on HAProxy/nginx routes**: When the manager pod performs
   drift-check verification against a target registry exposed via an OpenShift Route
   (HAProxy) or Quay's nginx proxy, the `Authorization` Bearer token scope can grow

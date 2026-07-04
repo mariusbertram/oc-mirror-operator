@@ -2368,7 +2368,7 @@ var _ = Describe("Manager Coverage", func() {
 
 			info := resources.CatalogInfo{SourceCatalog: "registry.example.com/catalog:v4.12"}
 			// resolver is nil — if LoadFBC were called it would panic.
-			err := m.ensureUpstreamCatalogPackages(context.TODO(), nil, "preexist-slug", info)
+			err := m.ensureUpstreamCatalogPackages(context.TODO(), nil, "preexist-slug", info, "registry.example.com/catalog@sha256:abc")
 			Expect(err).NotTo(HaveOccurred())
 		})
 	})
