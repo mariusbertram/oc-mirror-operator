@@ -63,6 +63,7 @@ type MirrorTargetReconciler struct {
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=route.openshift.io,resources=routes,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=route.openshift.io,resources=routes/custom-host,verbs=create;update;patch
+// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 // persistentvolumeclaims: the operator must hold PVC verbs itself so that it
@@ -1284,18 +1285,25 @@ func (r *MirrorTargetReconciler) aggregateImageSetStatus(ctx context.Context, mt
 
 	summaries := make([]mirrorv1alpha1.ImageSetStatusSummary, 0, len(names))
 
+	var isList mirrorv1alpha1.ImageSetList
+	if err := r.List(ctx, &isList, client.InNamespace(mt.Namespace)); err != nil {
+		return fmt.Errorf("list ImageSets: %w", err)
+	}
+
+	isMap := make(map[string]*mirrorv1alpha1.ImageSet, len(isList.Items))
+	for i := range isList.Items {
+		is := &isList.Items[i]
+		isMap[is.Name] = is
+	}
+
 	for _, name := range names {
-		var is mirrorv1alpha1.ImageSet
-		err := r.Get(ctx, client.ObjectKey{Namespace: mt.Namespace, Name: name}, &is)
-		if err != nil {
-			if errors.IsNotFound(err) {
-				summaries = append(summaries, mirrorv1alpha1.ImageSetStatusSummary{
-					Name:  name,
-					Found: false,
-				})
-				continue
-			}
-			return fmt.Errorf("get ImageSet %q: %w", name, err)
+		is, ok := isMap[name]
+		if !ok {
+			summaries = append(summaries, mirrorv1alpha1.ImageSetStatusSummary{
+				Name:  name,
+				Found: false,
+			})
+			continue
 		}
 		summaries = append(summaries, mirrorv1alpha1.ImageSetStatusSummary{
 			Name:     name,
@@ -1364,6 +1372,9 @@ func (r *MirrorTargetReconciler) reconcileExposure(ctx context.Context, mt *mirr
 	if exposeType != mirrorv1alpha1.ExposeTypeIngress {
 		r.deleteIngress(ctx, mt)
 	}
+	if exposeType != mirrorv1alpha1.ExposeTypeGatewayAPI {
+		r.deleteHTTPRoute(ctx, mt)
+	}
 
 	switch exposeType {
 	case mirrorv1alpha1.ExposeTypeRoute:
@@ -1374,8 +1385,7 @@ func (r *MirrorTargetReconciler) reconcileExposure(ctx context.Context, mt *mirr
 		l.Info("Resource server exposed via Service only", "service", resourceSvcName)
 		return nil
 	case mirrorv1alpha1.ExposeTypeGatewayAPI:
-		l.Info("GatewayAPI exposure not yet implemented — using Service only")
-		return nil
+		return r.ensureHTTPRoute(ctx, mt, resourceSvcName)
 	default:
 		return nil
 	}
@@ -1552,6 +1562,113 @@ func (r *MirrorTargetReconciler) deleteIngress(ctx context.Context, mt *mirrorv1
 		},
 	}
 	_ = r.Delete(ctx, ingress)
+}
+
+// hasGatewayAPI checks if the Gateway API (HTTPRoute) is available in the cluster.
+func (r *MirrorTargetReconciler) hasGatewayAPI(ctx context.Context) bool {
+	httpRoute := &unstructured.Unstructured{}
+	httpRoute.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "gateway.networking.k8s.io",
+		Version: "v1",
+		Kind:    "HTTPRoute",
+	})
+	httpRoute.SetName("__probe__")
+	httpRoute.SetNamespace("default")
+	// Try to Get a non-existent HTTPRoute. If the API is not installed, we get a NoMatch error.
+	err := r.Get(ctx, client.ObjectKeyFromObject(httpRoute), httpRoute)
+	if err == nil {
+		return true
+	}
+	// If the error is "no match" the API doesn't exist.
+	if meta.IsNoMatchError(err) {
+		return false
+	}
+	// NotFound means the API exists but the object doesn't.
+	return errors.IsNotFound(err)
+}
+
+// ensureHTTPRoute creates or updates a gateway.networking.k8s.io/v1 HTTPRoute
+// that attaches the resource server Service to the Gateway referenced by
+// spec.expose.gatewayRef.
+func (r *MirrorTargetReconciler) ensureHTTPRoute(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget, svcName string) error {
+	l := log.FromContext(ctx)
+
+	if mt.Spec.Expose == nil || mt.Spec.Expose.GatewayRef == nil || mt.Spec.Expose.GatewayRef.Name == "" {
+		return fmt.Errorf("gatewayAPI exposure requires spec.expose.gatewayRef.name to be set")
+	}
+	if !r.hasGatewayAPI(ctx) {
+		return fmt.Errorf("gatewayAPI exposure requested but the Gateway API (HTTPRoute CRD) is not installed in this cluster")
+	}
+
+	gwRef := mt.Spec.Expose.GatewayRef
+	gwNamespace := gwRef.Namespace
+	if gwNamespace == "" {
+		gwNamespace = mt.Namespace
+	}
+
+	httpRoute := &unstructured.Unstructured{}
+	httpRoute.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "gateway.networking.k8s.io",
+		Version: "v1",
+		Kind:    "HTTPRoute",
+	})
+	httpRoute.SetName(fmt.Sprintf("%s-resources", mt.Name))
+	httpRoute.SetNamespace(mt.Namespace)
+
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, httpRoute, func() error {
+		if err := controllerutil.SetControllerReference(mt, httpRoute, r.Scheme); err != nil {
+			return err
+		}
+		httpRoute.SetLabels(map[string]string{
+			"app":          "oc-mirror-resources",
+			"mirrortarget": mt.Name,
+		})
+
+		parentRef := map[string]interface{}{
+			"name": gwRef.Name,
+		}
+		if gwRef.Namespace != "" {
+			parentRef["namespace"] = gwNamespace
+		}
+
+		spec := map[string]interface{}{
+			"parentRefs": []interface{}{parentRef},
+			"rules": []interface{}{
+				map[string]interface{}{
+					"backendRefs": []interface{}{
+						map[string]interface{}{
+							"name": svcName,
+							"port": int64(8081),
+						},
+					},
+				},
+			},
+		}
+		if mt.Spec.Expose.Host != "" {
+			spec["hostnames"] = []interface{}{mt.Spec.Expose.Host}
+		}
+		httpRoute.Object["spec"] = spec
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create/update HTTPRoute: %w", err)
+	}
+
+	l.Info("HTTPRoute for resource server reconciled", "httproute", httpRoute.GetName())
+	return nil
+}
+
+// deleteHTTPRoute removes the HTTPRoute if it exists.
+func (r *MirrorTargetReconciler) deleteHTTPRoute(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget) {
+	httpRoute := &unstructured.Unstructured{}
+	httpRoute.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "gateway.networking.k8s.io",
+		Version: "v1",
+		Kind:    "HTTPRoute",
+	})
+	httpRoute.SetName(fmt.Sprintf("%s-resources", mt.Name))
+	httpRoute.SetNamespace(mt.Namespace)
+	_ = r.Delete(ctx, httpRoute)
 }
 
 func pointerTo[T any](v T) *T {
