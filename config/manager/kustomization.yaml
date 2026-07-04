@@ -10,13 +10,13 @@ configurations:
 images:
 - name: controller
   newName: ghcr.io/mariusbertram/oc-mirror-operator-controller
-  newTag: latest
+  newTag: v0.0.2
 - name: manager
   newName: ghcr.io/mariusbertram/oc-mirror-operator-manager
-  newTag: latest
+  newTag: v0.0.2
 - name: plugin
   newName: ghcr.io/mariusbertram/oc-mirror-operator-plugin
-  newTag: latest
+  newTag: v0.0.2
 - name: worker
   newName: ghcr.io/mariusbertram/oc-mirror-operator-worker
-  newTag: latest
+  newTag: v0.0.2

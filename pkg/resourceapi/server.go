@@ -1348,13 +1348,14 @@ func (s *Server) fetchChannelsFromConfigMap(ctx context.Context) ([]ocpChannelEn
 	}
 
 	var entries []ocpChannelEntry
+	channelTypes := strings.Split(channelTypesStr, ",")
 	for _, ver := range strings.Split(versionsStr, ",") {
 		ver = strings.TrimSpace(ver)
 		if ver == "" || !strings.Contains(ver, ".") {
 			continue
 		}
 		minor, _ := strconv.Atoi(strings.Split(ver, ".")[1])
-		for _, t := range strings.Split(channelTypesStr, ",") {
+		for _, t := range channelTypes {
 			t = strings.TrimSpace(t)
 			if t == "" {
 				continue
