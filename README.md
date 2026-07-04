@@ -29,7 +29,7 @@ Unlike the static `oc-mirror` CLI tool, this operator works cloud-natively and d
 | **Additional Images** | ✅ | ✅ | Individual images with optional `targetRepo` / `targetTag` |
 | **Cosign Signatures** | ✅ | ✅ | Tag-based `.sig` signatures are automatically copied along |
 | **OCI Referrers** | ✅ | ✅ | Attestations, SBOMs via `regclient.ImageWithReferrers()` |
-| **Release Signatures** | ✅ | ✅ | Download from mirror.openshift.com/pub/openshift-v4/signatures |
+| **Release Signatures** | ✅ | ✅ | Downloaded from mirror.openshift.com/pub/openshift-v4/signatures and cryptographically verified against the embedded Red Hat release signing keys before mirroring; unverifiable payloads are skipped (opt-out per channel via `skipSignatureVerification`) |
 | **IDMS/ITMS Generation** | ✅ | ✅ | ImageDigestMirrorSet and ImageTagMirrorSet — provided via Resource API |
 | **Incremental Mirroring** | ✅ | ✅ | Already mirrored images are skipped (consolidated per-MirrorTarget state) |
 | **Registry Drift Detection** | ✗ | ✅ | Manager verifies every 5 min whether mirrored images still exist in the registry; missing ones are automatically re-mirrored. Auth token refresh every 20 checks prevents Quay nginx 8KB header limit |

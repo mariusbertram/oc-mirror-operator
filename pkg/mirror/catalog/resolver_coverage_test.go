@@ -89,6 +89,13 @@ func TestNew_NilClient(t *testing.T) {
 // GetCatalogDigest
 // ---------------------------------------------------------------------------
 
+// testDigestA/testDigestB are shared placeholder digests used across the
+// GetCatalogDigest/PinDigest test cases below.
+const (
+	testDigestA = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	testDigestB = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+)
+
 func TestGetCatalogDigest_InvalidRef(t *testing.T) {
 	r := &CatalogResolver{}
 	_, err := r.GetCatalogDigest(context.Background(), ":::invalid")
@@ -99,14 +106,13 @@ func TestGetCatalogDigest_InvalidRef(t *testing.T) {
 
 func TestGetCatalogDigest_DigestAlreadyPresent(t *testing.T) {
 	r := &CatalogResolver{} // nil client — should not be reached
-	digest := "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	imgRef := "registry.example.com/catalog@" + digest
+	imgRef := "registry.example.com/catalog@" + testDigestA
 	got, err := r.GetCatalogDigest(context.Background(), imgRef)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got != digest {
-		t.Errorf("expected %s, got %s", digest, got)
+	if got != testDigestA {
+		t.Errorf("expected %s, got %s", testDigestA, got)
 	}
 }
 
@@ -118,6 +124,42 @@ func TestGetCatalogDigest_NilClient(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no client configured") {
 		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PinDigest
+// ---------------------------------------------------------------------------
+
+func TestPinDigest_ReplacesTagWithDigest(t *testing.T) {
+	r := &CatalogResolver{}
+	got, err := r.PinDigest("registry.example.com/redhat/redhat-operator-index:v4.21", testDigestA)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := "registry.example.com/redhat/redhat-operator-index@" + testDigestA
+	if got != want {
+		t.Errorf("expected %s, got %s", want, got)
+	}
+}
+
+func TestPinDigest_ReplacesExistingDigest(t *testing.T) {
+	r := &CatalogResolver{}
+	got, err := r.PinDigest("registry.example.com/catalog@"+testDigestA, testDigestB)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := "registry.example.com/catalog@" + testDigestB
+	if got != want {
+		t.Errorf("expected %s, got %s", want, got)
+	}
+}
+
+func TestPinDigest_InvalidRef(t *testing.T) {
+	r := &CatalogResolver{}
+	_, err := r.PinDigest(":::invalid", "sha256:aaaa")
+	if err == nil {
+		t.Fatal("expected error for invalid image reference")
 	}
 }
 
