@@ -165,6 +165,46 @@ entries:
 		})
 	})
 
+	Context("BlockImages", func() {
+		It("removes an additional image matching a blocked name", func() {
+			spec := &mirrorv1alpha1.ImageSetSpec{
+				Mirror: mirrorv1alpha1.Mirror{
+					AdditionalImages: []mirrorv1alpha1.AdditionalImage{
+						{Name: "quay.io/custom/img:v1"},
+						{Name: "quay.io/custom/other:v1"},
+					},
+					BlockedImages: []mirrorv1alpha1.BlockedImage{
+						{Name: "custom/img"},
+					},
+				},
+			}
+			target := &mirrorv1alpha1.MirrorTarget{
+				Spec: mirrorv1alpha1.MirrorTargetSpec{Registry: "internal.registry.io"},
+			}
+
+			results, err := col.CollectTargetImages(context.TODO(), spec, target, nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(1))
+			Expect(results[0].Source).To(Equal("quay.io/custom/other:v1"))
+		})
+
+		It("matches regardless of the blocked name's own registry/tag", func() {
+			images := []TargetImage{
+				{Source: "quay.io/foo/bar:v1", Destination: "mirror.io/foo/bar:v1"},
+				{Source: "quay.io/foo/baz:v1", Destination: "mirror.io/foo/baz:v1"},
+			}
+			blocked := []mirrorv1alpha1.BlockedImage{{Name: "otherregistry.io/foo/bar:latest"}}
+			filtered := BlockImages(images, blocked)
+			Expect(filtered).To(HaveLen(1))
+			Expect(filtered[0].Source).To(Equal("quay.io/foo/baz:v1"))
+		})
+
+		It("is a no-op when no images are blocked", func() {
+			images := []TargetImage{{Source: "quay.io/foo/bar:v1", Destination: "d"}}
+			Expect(BlockImages(images, nil)).To(Equal(images))
+		})
+	})
+
 	Context("Type conversion", func() {
 		It("should convert v1alpha1 to v2alpha1 correctly", func() {
 			spec := &mirrorv1alpha1.ImageSetSpec{
@@ -264,10 +304,10 @@ entries:
 		})
 	})
 
-	Describe("imageNamePath", func() {
+	Describe("ImageNamePath", func() {
 		DescribeTable("extracts the repository path",
 			func(input, expected string) {
-				Expect(imageNamePath(input)).To(Equal(expected))
+				Expect(ImageNamePath(input)).To(Equal(expected))
 			},
 			Entry("digest-only",
 				"quay.io/foo/bar@sha256:abc123",

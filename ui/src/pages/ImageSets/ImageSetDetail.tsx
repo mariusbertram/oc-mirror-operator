@@ -26,7 +26,14 @@ import {
 import { Table, Thead, Tr, Th, Tbody, Td } from '@patternfly/react-table';
 import { useParams } from 'react-router';
 import { Link } from 'react-router-dom';
-import { getHelmRepositories, getTarget, patchHelmRepositories, triggerRecollect } from '../../api/client';
+import {
+  getHelmRepositories,
+  getBlockedImages,
+  getTarget,
+  patchHelmRepositories,
+  patchBlockedImages,
+  triggerRecollect,
+} from '../../api/client';
 import type { HelmRepository, TargetDetail, ImageSetSummary } from '../../api/types';
 import { StatusPill, computeStatus } from '../../components/StatusPill';
 import { ProgressBar } from '../../components/ProgressBar';
@@ -63,6 +70,13 @@ export const ImageSetDetail: React.FC = () => {
   const [helmSaving, setHelmSaving] = useState(false);
   const [helmDirty, setHelmDirty] = useState(false);
   const [helmError, setHelmError] = useState<string | null>(null);
+
+  const [blockedImages, setBlockedImages] = useState<string[]>([]);
+  const [blockedLoading, setBlockedLoading] = useState(true);
+  const [blockedSaving, setBlockedSaving] = useState(false);
+  const [blockedDirty, setBlockedDirty] = useState(false);
+  const [blockedError, setBlockedError] = useState<string | null>(null);
+  const [newBlockedName, setNewBlockedName] = useState('');
 
   const load = () => {
     if (!targetName) return;
@@ -145,6 +159,45 @@ export const ImageSetDetail: React.FC = () => {
     }
   };
 
+  useEffect(() => {
+    if (!target?.namespace || !imageSetName) return;
+    setBlockedLoading(true);
+    getBlockedImages(target.namespace, imageSetName)
+      .then((spec) => {
+        setBlockedImages(spec.blockedImages ?? []);
+        setBlockedDirty(false);
+      })
+      .catch((e: Error) => setBlockedError(e.message))
+      .finally(() => setBlockedLoading(false));
+  }, [target?.namespace, imageSetName]);
+
+  const addBlockedImage = () => {
+    const name = newBlockedName.trim();
+    if (!name || blockedImages.includes(name)) return;
+    setBlockedImages((prev) => [...prev, name]);
+    setNewBlockedName('');
+    setBlockedDirty(true);
+  };
+
+  const removeBlockedImage = (name: string) => {
+    setBlockedImages((prev) => prev.filter((n) => n !== name));
+    setBlockedDirty(true);
+  };
+
+  const saveBlockedImages = async () => {
+    if (!target?.namespace || !imageSetName) return;
+    setBlockedSaving(true);
+    setBlockedError(null);
+    try {
+      await patchBlockedImages(target.namespace, imageSetName, blockedImages);
+      setBlockedDirty(false);
+    } catch (e: unknown) {
+      setBlockedError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBlockedSaving(false);
+    }
+  };
+
   if (loading && !target) return <PageSection><Spinner /></PageSection>;
   if (error) return (
     <PageSection>
@@ -222,6 +275,7 @@ export const ImageSetDetail: React.FC = () => {
             <Tab eventKey="catalogs" title={<TabTitleText>Catalogs</TabTitleText>} />
           )}
           <Tab eventKey="helm" title={<TabTitleText>Helm{helmRepos.length > 0 ? ` (${helmRepos.length})` : ''}</TabTitleText>} />
+          <Tab eventKey="blocked" title={<TabTitleText>Blocked Images{blockedImages.length > 0 ? ` (${blockedImages.length})` : ''}</TabTitleText>} />
         </Tabs>
       </PageSection>
 
@@ -417,6 +471,78 @@ export const ImageSetDetail: React.FC = () => {
                       </Button>
                     </FlexItem>
                   </Flex>
+                </>
+              )}
+            </CardBody>
+          </Card>
+        )}
+
+        {activeTab === 'blocked' && (
+          <Card>
+            <CardTitle>Blocked images</CardTitle>
+            <CardBody>
+              <Content component="p">
+                Images matching a blocked name are excluded from mirroring across all
+                content types (releases, operator catalogs, additional images).
+                Matching is done on the repository path, ignoring registry host and tag
+                (e.g. <code className="mirror-mono">redhat/postgresql-operator-bundle</code>).
+              </Content>
+              {blockedError && (
+                <Alert variant="danger" title="Failed to load or save blocked images" isInline style={{ marginBottom: 16 }}>
+                  {blockedError}
+                </Alert>
+              )}
+              {blockedLoading ? (
+                <Spinner size="md" />
+              ) : (
+                <>
+                  <Flex style={{ marginBottom: 16 }} alignItems={{ default: 'alignItemsFlexEnd' }}>
+                    <FlexItem grow={{ default: 'grow' }}>
+                      <TextInput
+                        aria-label="Image name to block"
+                        placeholder="e.g. quay.io/org/repo"
+                        value={newBlockedName}
+                        onChange={(_e, v) => setNewBlockedName(v)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') addBlockedImage(); }}
+                      />
+                    </FlexItem>
+                    <FlexItem>
+                      <Button variant="secondary" onClick={addBlockedImage} isDisabled={!newBlockedName.trim()}>
+                        Add
+                      </Button>
+                    </FlexItem>
+                  </Flex>
+
+                  <Table aria-label="Blocked images" variant="compact">
+                    <Thead>
+                      <Tr><Th>Name</Th><Th screenReaderText="Actions" /></Tr>
+                    </Thead>
+                    <Tbody>
+                      {blockedImages.map((name) => (
+                        <Tr key={name}>
+                          <Td dataLabel="Name"><code className="mirror-mono">{name}</code></Td>
+                          <Td dataLabel="Actions">
+                            <Button variant="plain" size="sm" onClick={() => removeBlockedImage(name)} aria-label={`Remove ${name}`}>
+                              ×
+                            </Button>
+                          </Td>
+                        </Tr>
+                      ))}
+                      {blockedImages.length === 0 && (
+                        <Tr><Td colSpan={2}>No blocked images configured.</Td></Tr>
+                      )}
+                    </Tbody>
+                  </Table>
+
+                  <Button
+                    variant="primary"
+                    style={{ marginTop: 16 }}
+                    onClick={saveBlockedImages}
+                    isDisabled={!blockedDirty || blockedSaving}
+                    isLoading={blockedSaving}
+                  >
+                    Save
+                  </Button>
                 </>
               )}
             </CardBody>

@@ -78,7 +78,30 @@ func (c *Collector) CollectTargetImages(ctx context.Context, spec *mirrorv1alpha
 	}
 	results = append(results, helmImages...)
 
-	return results, nil
+	return BlockImages(results, spec.Mirror.BlockedImages), nil
+}
+
+// BlockImages removes any entry whose Source matches a configured
+// spec.mirror.blockedImages name, regardless of which content type (release,
+// operator, additional image) produced it. Matching is on the
+// registry-agnostic repository path (see ImageNamePath), so a single blocked
+// name applies consistently across all origins.
+func BlockImages(images []TargetImage, blocked []mirrorv1alpha1.BlockedImage) []TargetImage {
+	if len(blocked) == 0 {
+		return images
+	}
+	blockedPaths := make(map[string]struct{}, len(blocked))
+	for _, b := range blocked {
+		blockedPaths[ImageNamePath(b.Name)] = struct{}{}
+	}
+	filtered := make([]TargetImage, 0, len(images))
+	for _, img := range images {
+		if _, ok := blockedPaths[ImageNamePath(img.Source)]; ok {
+			continue
+		}
+		filtered = append(filtered, img)
+	}
+	return filtered
 }
 
 // CollectReleases resolves all OCP/OKD release payloads referenced via
@@ -269,13 +292,13 @@ func (c *Collector) toTargetImage(src, dest string, meta *state.Metadata) Target
 	}
 }
 
-// imageNamePath strips the registry host, tag, and digest from an image
+// ImageNamePath strips the registry host, tag, and digest from an image
 // reference and returns only the repository path.
 //
 //	quay.io/foo/bar@sha256:…              → "foo/bar"
 //	quay.io/foo/bar:v1.2@sha256:…        → "foo/bar"
 //	localhost:5001/org/bundle:v1.2@sha256 → "org/bundle"
-func imageNamePath(img string) string {
+func ImageNamePath(img string) string {
 	img = stripTagOrDigest(img)
 	// Strip registry host (first path segment containing "." or ":").
 	parts := strings.SplitN(img, "/", 2)
@@ -365,7 +388,7 @@ func releaseComponentDestination(registry, releaseTag, name, img string) string 
 //	e.g. quay.io/openshift-release-dev/ocp-v4.0-art-dev@sha256:184844… →
 //	     registry/openshift-release-dev/ocp-v4.0-art-dev:sha256-184844…
 func ComponentDestination(registry, img string) string {
-	namePath := imageNamePath(img)
+	namePath := ImageNamePath(img)
 	// Derive a stable tag from the digest so each component gets a unique destination.
 	if idx := strings.Index(img, "@sha256:"); idx >= 0 {
 		tag := "sha256-" + img[idx+8:] // "sha256-{hex}"
