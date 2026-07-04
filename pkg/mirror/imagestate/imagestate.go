@@ -38,6 +38,9 @@ const (
 	// OriginAdditional marks images explicitly enumerated via
 	// mirror.additionalImages.
 	OriginAdditional ImageOrigin = "additional"
+	// OriginHelm marks images extracted from rendered Helm charts
+	// (mirror.helm.repositories[].charts[]).
+	OriginHelm ImageOrigin = "helm"
 )
 
 // ImageRef holds per-ImageSet metadata for an entry in the consolidated state.

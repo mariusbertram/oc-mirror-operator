@@ -10,6 +10,7 @@ import (
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/catalog"
 	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
+	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/helm"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/release"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/state"
 )
@@ -30,6 +31,7 @@ type Collector struct {
 	client          *mirrorclient.MirrorClient
 	releaseResolver *release.ReleaseResolver
 	catalogResolver *catalog.CatalogResolver
+	helmResolver    *helm.Resolver
 }
 
 func NewCollector(client *mirrorclient.MirrorClient) *Collector {
@@ -37,6 +39,7 @@ func NewCollector(client *mirrorclient.MirrorClient) *Collector {
 		client:          client,
 		releaseResolver: release.New(client),
 		catalogResolver: catalog.New(client),
+		helmResolver:    helm.New(),
 	}
 }
 
@@ -68,6 +71,12 @@ func (c *Collector) CollectTargetImages(ctx context.Context, spec *mirrorv1alpha
 		return nil, err
 	}
 	results = append(results, add...)
+
+	helmImages, err := c.CollectHelm(ctx, spec, target, meta)
+	if err != nil {
+		return nil, err
+	}
+	results = append(results, helmImages...)
 
 	return BlockImages(results, spec.Mirror.BlockedImages), nil
 }
@@ -235,6 +244,38 @@ func (c *Collector) CollectAdditional(_ context.Context, spec *mirrorv1alpha1.Im
 		}
 		dest := fmt.Sprintf("%s/%s", target.Spec.Registry, ref)
 		results = append(results, c.toTargetImage(img.Name, dest, meta))
+	}
+	return results, nil
+}
+
+// CollectHelm resolves every chart listed in spec.Mirror.Helm.Repositories
+// (downloading it from its repository, rendering its templates, and scanning
+// the rendered manifests for image references — see pkg/mirror/helm) and
+// returns their component images.
+//
+// spec.Mirror.Helm.Local (charts already present on disk) is intentionally
+// not resolved here: the manager pod has no general host filesystem access,
+// so a Local chart's Path is only meaningful if mounted into the pod via a
+// ConfigMap/Secret/PVC, which this operator does not currently support.
+//
+// Destinations preserve the full image reference as their path suffix
+// (including tag/digest), matching CollectAdditional's convention, since
+// Helm-templated image references are typically tag-based rather than
+// pre-resolved to a digest.
+func (c *Collector) CollectHelm(ctx context.Context, spec *mirrorv1alpha1.ImageSetSpec, target *mirrorv1alpha1.MirrorTarget, meta *state.Metadata) ([]TargetImage, error) {
+	var results []TargetImage
+	for _, repo := range spec.Mirror.Helm.Repositories {
+		for _, chart := range repo.Charts {
+			images, err := c.helmResolver.ResolveChart(ctx, repo.URL, chart)
+			if err != nil {
+				oclog.Printf("Warning: failed to resolve helm chart %s/%s: %v\n", repo.Name, chart.Name, err)
+				continue
+			}
+			for _, img := range images {
+				dest := fmt.Sprintf("%s/%s", target.Spec.Registry, img)
+				results = append(results, c.toTargetImage(img, dest, meta))
+			}
+		}
 	}
 	return results, nil
 }

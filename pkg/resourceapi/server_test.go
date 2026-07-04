@@ -852,6 +852,89 @@ var _ = Describe("ResourceAPI Server", func() {
 		})
 	})
 
+	Describe("handleGetHelm / handlePatchHelm", func() {
+		var helmRouter http.Handler
+
+		BeforeEach(func() {
+			sc := runtime.NewScheme()
+			_ = corev1.AddToScheme(sc)
+			_ = mirrorv1alpha1.AddToScheme(sc)
+			is := &mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "helm-is", Namespace: ns},
+				Spec: mirrorv1alpha1.ImageSetSpec{
+					Mirror: mirrorv1alpha1.Mirror{
+						Helm: mirrorv1alpha1.Helm{
+							Repositories: []mirrorv1alpha1.Repository{
+								{
+									Name: "bitnami",
+									URL:  "https://charts.bitnami.com/bitnami",
+									Charts: []mirrorv1alpha1.Chart{
+										{Name: "nginx", Version: "1.2.3"},
+									},
+								},
+							},
+						},
+					},
+				},
+			}
+			c := fake.NewClientBuilder().WithScheme(sc).WithObjects(is).Build()
+			s := resourceapi.NewServer(c, ns)
+			r := mux.NewRouter()
+			s.RegisterAPIRoutes(r)
+			helmRouter = r
+		})
+
+		It("returns the current helm repositories", func() {
+			url := fmt.Sprintf("/api/v1/imagesets/%s/helm-is/helm", ns)
+			req := httptest.NewRequest("GET", url, nil)
+			rr := httptest.NewRecorder()
+			helmRouter.ServeHTTP(rr, req)
+			Expect(rr.Code).To(Equal(http.StatusOK))
+			Expect(rr.Body.String()).To(ContainSubstring("bitnami"))
+			Expect(rr.Body.String()).To(ContainSubstring("nginx"))
+		})
+
+		It("returns 404 for a non-existent ImageSet on GET", func() {
+			url := fmt.Sprintf("/api/v1/imagesets/%s/ghost-is/helm", ns)
+			req := httptest.NewRequest("GET", url, nil)
+			rr := httptest.NewRecorder()
+			helmRouter.ServeHTTP(rr, req)
+			Expect(rr.Code).To(Equal(http.StatusNotFound))
+		})
+
+		It("replaces the helm repositories", func() {
+			url := fmt.Sprintf("/api/v1/imagesets/%s/helm-is/helm", ns)
+			body := `{"repositories":[{"name":"newrepo","url":"https://example.com/charts","charts":[{"name":"mychart","version":"2.0.0"}]}]}`
+			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(body))
+			rr := httptest.NewRecorder()
+			helmRouter.ServeHTTP(rr, req)
+			Expect(rr.Code).To(Equal(http.StatusNoContent))
+
+			getReq := httptest.NewRequest("GET", url, nil)
+			getRR := httptest.NewRecorder()
+			helmRouter.ServeHTTP(getRR, getReq)
+			Expect(getRR.Body.String()).To(ContainSubstring("newrepo"))
+			Expect(getRR.Body.String()).To(ContainSubstring("mychart"))
+			Expect(getRR.Body.String()).NotTo(ContainSubstring("bitnami"))
+		})
+
+		It("returns 400 for invalid JSON body on PATCH", func() {
+			url := fmt.Sprintf("/api/v1/imagesets/%s/helm-is/helm", ns)
+			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString("{invalid json"))
+			rr := httptest.NewRecorder()
+			helmRouter.ServeHTTP(rr, req)
+			Expect(rr.Code).To(Equal(http.StatusBadRequest))
+		})
+
+		It("returns 404 for a non-existent ImageSet on PATCH", func() {
+			url := fmt.Sprintf("/api/v1/imagesets/%s/ghost-is/helm", ns)
+			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(`{"repositories":[]}`))
+			rr := httptest.NewRecorder()
+			helmRouter.ServeHTTP(rr, req)
+			Expect(rr.Code).To(Equal(http.StatusNotFound))
+		})
+	})
+
 	Describe("handleGetBlockedImages / handlePatchBlockedImages", func() {
 		var blockedRouter http.Handler
 

@@ -26,8 +26,15 @@ import {
 import { Table, Thead, Tr, Th, Tbody, Td } from '@patternfly/react-table';
 import { useParams } from 'react-router';
 import { Link } from 'react-router-dom';
-import { getBlockedImages, getTarget, patchBlockedImages, triggerRecollect } from '../../api/client';
-import type { TargetDetail, ImageSetSummary } from '../../api/types';
+import {
+  getHelmRepositories,
+  getBlockedImages,
+  getTarget,
+  patchHelmRepositories,
+  patchBlockedImages,
+  triggerRecollect,
+} from '../../api/client';
+import type { HelmRepository, TargetDetail, ImageSetSummary } from '../../api/types';
 import { StatusPill, computeStatus } from '../../components/StatusPill';
 import { ProgressBar } from '../../components/ProgressBar';
 import { ResourcesView } from '../../components/ResourcesView';
@@ -58,6 +65,12 @@ export const ImageSetDetail: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<string | number>('overview');
 
+  const [helmRepos, setHelmRepos] = useState<HelmRepository[]>([]);
+  const [helmLoading, setHelmLoading] = useState(true);
+  const [helmSaving, setHelmSaving] = useState(false);
+  const [helmDirty, setHelmDirty] = useState(false);
+  const [helmError, setHelmError] = useState<string | null>(null);
+
   const [blockedImages, setBlockedImages] = useState<string[]>([]);
   const [blockedLoading, setBlockedLoading] = useState(true);
   const [blockedSaving, setBlockedSaving] = useState(false);
@@ -79,6 +92,72 @@ export const ImageSetDetail: React.FC = () => {
     const interval = setInterval(load, 30_000);
     return () => clearInterval(interval);
   }, [targetName]);
+
+  useEffect(() => {
+    if (!target?.namespace || !imageSetName) return;
+    setHelmLoading(true);
+    getHelmRepositories(target.namespace, imageSetName)
+      .then((spec) => {
+        setHelmRepos(spec.repositories ?? []);
+        setHelmDirty(false);
+      })
+      .catch((e: Error) => setHelmError(e.message))
+      .finally(() => setHelmLoading(false));
+  }, [target?.namespace, imageSetName]);
+
+  const addHelmRepo = () => {
+    setHelmRepos((prev) => [...prev, { name: '', url: '', charts: [] }]);
+    setHelmDirty(true);
+  };
+
+  const removeHelmRepo = (idx: number) => {
+    setHelmRepos((prev) => prev.filter((_, i) => i !== idx));
+    setHelmDirty(true);
+  };
+
+  const updateHelmRepo = (idx: number, field: 'name' | 'url', value: string) => {
+    setHelmRepos((prev) => prev.map((r, i) => (i === idx ? { ...r, [field]: value } : r)));
+    setHelmDirty(true);
+  };
+
+  const addHelmChart = (repoIdx: number) => {
+    setHelmRepos((prev) =>
+      prev.map((r, i) => (i === repoIdx ? { ...r, charts: [...r.charts, { name: '', version: '' }] } : r)),
+    );
+    setHelmDirty(true);
+  };
+
+  const removeHelmChart = (repoIdx: number, chartIdx: number) => {
+    setHelmRepos((prev) =>
+      prev.map((r, i) => (i === repoIdx ? { ...r, charts: r.charts.filter((_, ci) => ci !== chartIdx) } : r)),
+    );
+    setHelmDirty(true);
+  };
+
+  const updateHelmChart = (repoIdx: number, chartIdx: number, field: 'name' | 'version', value: string) => {
+    setHelmRepos((prev) =>
+      prev.map((r, i) =>
+        i === repoIdx
+          ? { ...r, charts: r.charts.map((c, ci) => (ci === chartIdx ? { ...c, [field]: value } : c)) }
+          : r,
+      ),
+    );
+    setHelmDirty(true);
+  };
+
+  const saveHelmRepos = async () => {
+    if (!target?.namespace || !imageSetName) return;
+    setHelmSaving(true);
+    setHelmError(null);
+    try {
+      await patchHelmRepositories(target.namespace, imageSetName, helmRepos);
+      setHelmDirty(false);
+    } catch (e: unknown) {
+      setHelmError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setHelmSaving(false);
+    }
+  };
 
   useEffect(() => {
     if (!target?.namespace || !imageSetName) return;
@@ -195,6 +274,7 @@ export const ImageSetDetail: React.FC = () => {
           {imageSetCatalogs.length > 0 && (
             <Tab eventKey="catalogs" title={<TabTitleText>Catalogs</TabTitleText>} />
           )}
+          <Tab eventKey="helm" title={<TabTitleText>Helm{helmRepos.length > 0 ? ` (${helmRepos.length})` : ''}</TabTitleText>} />
           <Tab eventKey="blocked" title={<TabTitleText>Blocked Images{blockedImages.length > 0 ? ` (${blockedImages.length})` : ''}</TabTitleText>} />
         </Tabs>
       </PageSection>
@@ -279,6 +359,120 @@ export const ImageSetDetail: React.FC = () => {
                   ))}
                 </Tbody>
               </Table>
+            </CardBody>
+          </Card>
+        )}
+
+        {activeTab === 'helm' && (
+          <Card>
+            <CardTitle>Helm chart repositories</CardTitle>
+            <CardBody>
+              <Content component="p">
+                Charts are downloaded, rendered, and scanned for container image
+                references (default paths plus any custom <code className="mirror-mono">imagePaths</code>).
+                Leave chart version empty to resolve the latest.
+              </Content>
+              {helmError && (
+                <Alert variant="danger" title="Failed to load or save Helm repositories" isInline style={{ marginBottom: 16 }}>
+                  {helmError}
+                </Alert>
+              )}
+              {helmLoading ? (
+                <Spinner size="md" />
+              ) : (
+                <>
+                  {helmRepos.map((repo, repoIdx) => (
+                    <Card key={repoIdx} isCompact style={{ marginBottom: 16 }}>
+                      <CardBody>
+                        <Flex style={{ marginBottom: 8 }} alignItems={{ default: 'alignItemsFlexEnd' }}>
+                          <FlexItem>
+                            <TextInput
+                              aria-label="Repository name"
+                              placeholder="Repository name"
+                              value={repo.name}
+                              onChange={(_e, v) => updateHelmRepo(repoIdx, 'name', v)}
+                              style={{ width: 160 }}
+                            />
+                          </FlexItem>
+                          <FlexItem grow={{ default: 'grow' }}>
+                            <TextInput
+                              aria-label="Repository URL"
+                              placeholder="https://charts.example.com"
+                              value={repo.url}
+                              onChange={(_e, v) => updateHelmRepo(repoIdx, 'url', v)}
+                            />
+                          </FlexItem>
+                          <FlexItem>
+                            <Button variant="plain" onClick={() => removeHelmRepo(repoIdx)} aria-label={`Remove repository ${repo.name}`}>
+                              ×
+                            </Button>
+                          </FlexItem>
+                        </Flex>
+
+                        <Table aria-label={`Charts for ${repo.name}`} variant="compact">
+                          <Thead>
+                            <Tr><Th>Chart name</Th><Th>Version</Th><Th screenReaderText="Actions" /></Tr>
+                          </Thead>
+                          <Tbody>
+                            {repo.charts.map((chart, chartIdx) => (
+                              <Tr key={chartIdx}>
+                                <Td dataLabel="Chart name">
+                                  <TextInput
+                                    aria-label="Chart name"
+                                    value={chart.name}
+                                    onChange={(_e, v) => updateHelmChart(repoIdx, chartIdx, 'name', v)}
+                                  />
+                                </Td>
+                                <Td dataLabel="Version">
+                                  <TextInput
+                                    aria-label="Chart version"
+                                    placeholder="latest"
+                                    value={chart.version ?? ''}
+                                    onChange={(_e, v) => updateHelmChart(repoIdx, chartIdx, 'version', v)}
+                                  />
+                                </Td>
+                                <Td dataLabel="Actions">
+                                  <Button variant="plain" size="sm" onClick={() => removeHelmChart(repoIdx, chartIdx)} aria-label={`Remove chart ${chart.name}`}>
+                                    ×
+                                  </Button>
+                                </Td>
+                              </Tr>
+                            ))}
+                            {repo.charts.length === 0 && (
+                              <Tr><Td colSpan={3}>No charts added yet.</Td></Tr>
+                            )}
+                          </Tbody>
+                        </Table>
+                        <Button variant="link" size="sm" isInline onClick={() => addHelmChart(repoIdx)} style={{ marginTop: 8 }}>
+                          + Add chart
+                        </Button>
+                      </CardBody>
+                    </Card>
+                  ))}
+
+                  {helmRepos.length === 0 && (
+                    <Content component="p">No Helm repositories configured yet.</Content>
+                  )}
+
+                  <Flex style={{ marginTop: 8 }}>
+                    <FlexItem>
+                      <Button variant="secondary" onClick={addHelmRepo}>
+                        + Add repository
+                      </Button>
+                    </FlexItem>
+                    <FlexItem>
+                      <Button
+                        variant="primary"
+                        onClick={saveHelmRepos}
+                        isDisabled={!helmDirty || helmSaving}
+                        isLoading={helmSaving}
+                      >
+                        Save
+                      </Button>
+                    </FlexItem>
+                  </Flex>
+                </>
+              )}
             </CardBody>
           </Card>
         )}

@@ -202,7 +202,7 @@ kubectl get imagesets -n <namespace>
 | `platform` | `Platform` | OpenShift/OKD release channels. |
 | `operators` | `[]Operator` | OLM operator catalogs. |
 | `additionalImages` | `[]AdditionalImage` | Individual images by reference. |
-| `helm` | `Helm` | Helm chart images. |
+| `helm` | `Helm` | Helm chart images. See [Helm](#helm). |
 | `blockedImages` | `[]BlockedImage` | Images to exclude from all other entries. |
 
 #### Platform
@@ -267,6 +267,32 @@ kubectl get imagesets -n <namespace>
 | Field | Type | Description |
 |---|---|---|
 | `name` | `string` | Full image reference (e.g. `quay.io/cert-manager/cert-manager-controller:v1.14.0`). |
+
+---
+
+#### Helm
+
+| Field | Type | Description |
+|---|---|---|
+| `repositories` | `[]Repository` | Helm repositories to pull charts from. See [Repository](#repository). |
+| `local` | `[]Chart` | **Not implemented.** Charts already on disk — requires host filesystem access the manager pod does not have. |
+
+#### Repository
+
+| Field | Type | Description |
+|---|---|---|
+| `url` | `string` | Base URL of the Helm repository (its `index.yaml` is fetched from `<url>/index.yaml`). |
+| `name` | `string` | Repository name (used for display only). |
+| `charts` | `[]Chart` | Charts to pull from this repository. See [Chart](#chart). |
+
+#### Chart
+
+| Field | Type | Description |
+|---|---|---|
+| `name` | `string` | Chart name, as listed in the repository index. |
+| `version` | `string` | Chart version. Empty resolves to the latest non-prerelease version. |
+| `path` | `string` | Path on disk (only used by `helm.local`, not implemented). |
+| `imagePaths` | `[]string` | Additional JSONPath expressions (e.g. `{.spec.extraImage}`) scanned in every rendered manifest, on top of the built-in `containers[*].image` / `initContainers[*].image` paths. |
 
 ---
 

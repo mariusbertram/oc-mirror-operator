@@ -202,7 +202,7 @@ func (m *MirrorManager) resolveImageSet(ctx context.Context, is *mirrorv1alpha1.
 			continue
 		}
 		switch entry.Origin {
-		case imagestate.OriginRelease, imagestate.OriginOperator, imagestate.OriginAdditional:
+		case imagestate.OriginRelease, imagestate.OriginOperator, imagestate.OriginAdditional, imagestate.OriginHelm:
 			// owned — handled below
 		default:
 			cp := *entry
@@ -232,6 +232,16 @@ func (m *MirrorManager) resolveImageSet(ctx context.Context, is *mirrorv1alpha1.
 		return nil, false, fmt.Errorf("collect additional images: %w", err)
 	}
 	mergeIntoStateWithSig(newState, additional, imagestate.OriginAdditional, "", "additional", currentState)
+
+	// Helm charts are re-resolved on every call (no separate digest cache,
+	// unlike releases/operators) — chart downloads + template rendering are
+	// comparatively cheap and this whole method already only runs on the
+	// shouldResolve cadence (spec change or pollInterval), not every reconcile tick.
+	helmImages, err := collector.CollectHelm(ctx, &is.Spec, mt, nil)
+	if err != nil {
+		return nil, false, fmt.Errorf("collect helm images: %w", err)
+	}
+	mergeIntoStateWithSig(newState, helmImages, imagestate.OriginHelm, "", "helm", currentState)
 
 	if m.resolveGraphImage(ctx, is, mt, newAnnotations, recollect) {
 		annotationsChanged = true
