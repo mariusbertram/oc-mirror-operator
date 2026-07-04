@@ -1231,6 +1231,97 @@ var _ = Describe("Coverage tests", func() {
 		})
 	})
 
+	// ───────────────────── ensureHTTPRoute ─────────────────────
+
+	Describe("ensureHTTPRoute", func() {
+		It("returns error when gatewayRef is not set", func() {
+			localCtx := context.Background()
+			mtName := "mt-httproute-nogw"
+
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: mtName, Namespace: ns},
+				Spec: mirrorv1alpha1.MirrorTargetSpec{
+					Registry: "reg.example.com",
+					Expose:   &mirrorv1alpha1.ExposeConfig{Type: mirrorv1alpha1.ExposeTypeGatewayAPI},
+				},
+			}
+			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
+			DeferCleanup(func() { cleanupMT(localCtx, mtName) })
+
+			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			err := r.ensureHTTPRoute(localCtx, mt, mtName+"-resources")
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("gatewayRef"))
+		})
+
+		It("returns error when gatewayRef.name is empty", func() {
+			localCtx := context.Background()
+			mtName := "mt-httproute-emptygw"
+
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: mtName, Namespace: ns},
+				Spec: mirrorv1alpha1.MirrorTargetSpec{
+					Registry: "reg.example.com",
+					Expose: &mirrorv1alpha1.ExposeConfig{
+						Type:       mirrorv1alpha1.ExposeTypeGatewayAPI,
+						GatewayRef: &mirrorv1alpha1.GatewayReference{},
+					},
+				},
+			}
+			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
+			DeferCleanup(func() { cleanupMT(localCtx, mtName) })
+
+			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			err := r.ensureHTTPRoute(localCtx, mt, mtName+"-resources")
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("gatewayRef"))
+		})
+
+		It("returns error when the Gateway API CRD is not installed", func() {
+			localCtx := context.Background()
+			mtName := "mt-httproute-nocrd"
+
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: mtName, Namespace: ns},
+				Spec: mirrorv1alpha1.MirrorTargetSpec{
+					Registry: "reg.example.com",
+					Expose: &mirrorv1alpha1.ExposeConfig{
+						Type:       mirrorv1alpha1.ExposeTypeGatewayAPI,
+						GatewayRef: &mirrorv1alpha1.GatewayReference{Name: "my-gateway", Namespace: "other-ns"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
+			DeferCleanup(func() { cleanupMT(localCtx, mtName) })
+
+			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			err := r.ensureHTTPRoute(localCtx, mt, mtName+"-resources")
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("Gateway API"))
+		})
+	})
+
+	// ───────────────────── hasGatewayAPI ─────────────────────
+
+	Describe("hasGatewayAPI", func() {
+		It("returns false when the Gateway API CRD is not installed in the test cluster", func() {
+			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			Expect(r.hasGatewayAPI(context.Background())).To(BeFalse())
+		})
+	})
+
+	// ───────────────────── deleteHTTPRoute ─────────────────────
+
+	Describe("deleteHTTPRoute", func() {
+		It("is a no-op when no HTTPRoute exists", func() {
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: "mt-delete-httproute-noop", Namespace: ns},
+			}
+			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			Expect(func() { r.deleteHTTPRoute(context.Background(), mt) }).NotTo(Panic())
+		})
+	})
+
 	// ───────────────────── reconcileExposure ─────────────────────
 
 	Describe("reconcileExposure", func() {
@@ -1252,7 +1343,7 @@ var _ = Describe("Coverage tests", func() {
 			Expect(r.reconcileExposure(localCtx, mt)).To(Succeed())
 		})
 
-		It("returns nil for GatewayAPI type (not yet implemented)", func() {
+		It("returns an error for GatewayAPI type when the Gateway API CRD is not installed", func() {
 			localCtx := context.Background()
 			mtName := "mt-expose-gw"
 
@@ -1260,14 +1351,23 @@ var _ = Describe("Coverage tests", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: mtName, Namespace: ns},
 				Spec: mirrorv1alpha1.MirrorTargetSpec{
 					Registry: "reg.example.com",
-					Expose:   &mirrorv1alpha1.ExposeConfig{Type: mirrorv1alpha1.ExposeTypeGatewayAPI},
+					Expose: &mirrorv1alpha1.ExposeConfig{
+						Type:       mirrorv1alpha1.ExposeTypeGatewayAPI,
+						GatewayRef: &mirrorv1alpha1.GatewayReference{Name: "my-gateway"},
+					},
 				},
 			}
 			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
 			DeferCleanup(func() { cleanupMT(localCtx, mtName) })
 
 			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
-			Expect(r.reconcileExposure(localCtx, mt)).To(Succeed())
+			// The envtest API server does not have the Gateway API CRD installed,
+			// matching the OpenShift-Route behavior (also untestable against envtest
+			// without installing the foreign CRD) — this exercises the same
+			// CRD-discovery guard as hasRouteAPI.
+			err := r.reconcileExposure(localCtx, mt)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("Gateway API"))
 		})
 
 		It("creates Ingress when expose type is Ingress", func() {
