@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **`AdditionalImage.TargetTag` was silently ignored**: `spec.mirror.additionalImages[].targetTag`
+  was defined in the API and documented as working, but the collector never applied it —
+  the destination always kept the source image's own tag (or whatever tag was baked into
+  `targetRepo`). `TargetTag`, when set, now always overrides the destination tag,
+  regardless of whether `targetRepo` is also set.
 - **CheckExist HTTP 400 on HAProxy/nginx routes**: When the manager pod performs
   drift-check verification against a target registry exposed via an OpenShift Route
   (HAProxy) or Quay's nginx proxy, the `Authorization` Bearer token scope can grow
@@ -28,6 +33,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   expiry.
 
 ### Added
+- **GatewayAPI Exposure**: `spec.expose.type: GatewayAPI` now creates a
+  `gateway.networking.k8s.io/v1` HTTPRoute attached to the Gateway referenced by
+  `spec.expose.gatewayRef`, following the same create/update/cleanup pattern as
+  the existing Route and Ingress exposure types. Requires the Gateway API CRDs
+  to be installed and `gatewayRef.name` to be set; the controller reports a
+  clear error condition when either is missing.
 - **OpenShift Console Plugin**: A new `ConsolePlugin` controller deploys a dedicated plugin pod (`oc-mirror-plugin`) into the operator namespace and registers it with the OpenShift Console. The plugin provides an integrated multi-page UI directly in the OCP web console — no external URL needed.
   - Pages: MirrorTarget overview, ImageSet detail (with image status), CatalogBrowser, Failed Images
   - Auto-deployed on OpenShift clusters; gracefully skipped on non-OCP Kubernetes
