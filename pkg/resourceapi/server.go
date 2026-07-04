@@ -485,10 +485,16 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	hasPlatformMap := make(map[string]bool, len(mt.Spec.ImageSets))
-	for _, isName := range mt.Spec.ImageSets {
-		var imgSet mirrorv1alpha1.ImageSet
-		if err := c.Get(r.Context(), client.ObjectKey{Namespace: mt.Namespace, Name: isName}, &imgSet); err == nil {
-			hasPlatformMap[isName] = len(imgSet.Spec.Mirror.Platform.Channels) > 0
+	var isList mirrorv1alpha1.ImageSetList
+	if err := c.List(r.Context(), &isList, client.InNamespace(mt.Namespace)); err == nil {
+		isMap := make(map[string]*mirrorv1alpha1.ImageSet, len(isList.Items))
+		for i := range isList.Items {
+			isMap[isList.Items[i].Name] = &isList.Items[i]
+		}
+		for _, isName := range mt.Spec.ImageSets {
+			if imgSet, ok := isMap[isName]; ok {
+				hasPlatformMap[isName] = len(imgSet.Spec.Mirror.Platform.Channels) > 0
+			}
 		}
 	}
 
@@ -561,19 +567,26 @@ func buildCatalogOwnershipMaps(ctx context.Context, c client.Client, ns string, 
 		}
 	}
 
-	for _, isName := range mt.Spec.ImageSets {
-		var is mirrorv1alpha1.ImageSet
-		if err := c.Get(ctx, client.ObjectKey{Namespace: ns, Name: isName}, &is); err != nil {
-			continue
+	var isList mirrorv1alpha1.ImageSetList
+	if err := c.List(ctx, &isList, client.InNamespace(ns)); err == nil {
+		isMap := make(map[string]*mirrorv1alpha1.ImageSet, len(isList.Items))
+		for i := range isList.Items {
+			isMap[isList.Items[i].Name] = &isList.Items[i]
 		}
-		for _, op := range is.Spec.Mirror.Operators {
-			slug, ok := sourceCatalogToSlug[op.Catalog]
+		for _, isName := range mt.Spec.ImageSets {
+			is, ok := isMap[isName]
 			if !ok {
-				// Packages CM not yet written — fall back to current CatalogSlug.
-				slug = mirrorresources.CatalogSlug(op.Catalog)
+				continue
 			}
-			catalogToISes[slug] = append(catalogToISes[slug], isName)
-			iseToCatalogs[isName] = append(iseToCatalogs[isName], slug)
+			for _, op := range is.Spec.Mirror.Operators {
+				slug, ok := sourceCatalogToSlug[op.Catalog]
+				if !ok {
+					// Packages CM not yet written — fall back to current CatalogSlug.
+					slug = mirrorresources.CatalogSlug(op.Catalog)
+				}
+				catalogToISes[slug] = append(catalogToISes[slug], isName)
+				iseToCatalogs[isName] = append(iseToCatalogs[isName], slug)
+			}
 		}
 	}
 	return catalogToISes, iseToCatalogs
