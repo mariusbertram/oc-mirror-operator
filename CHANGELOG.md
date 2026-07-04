@@ -59,6 +59,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the existing Route and Ingress exposure types. Requires the Gateway API CRDs
   to be installed and `gatewayRef.name` to be set; the controller reports a
   clear error condition when either is missing.
+- **Cincinnati Graph Data (OSUS)**: `spec.mirror.platform.graph: true` now
+  actually builds and pushes a graph-data image — previously the field was
+  UI-editable but had no backend effect. The manager downloads the current
+  graph-data archive from `api.openshift.com`, builds a
+  `registry.access.redhat.com/ubi9/ubi`-based OCI image with the data
+  embedded (matching oc-mirror v2's format exactly), and pushes it to
+  `<registry>/openshift/graph-image:latest` for consumption by the OpenShift
+  Update Service (OSUS) in disconnected clusters. Rebuilds are throttled to
+  the MirrorTarget's `pollInterval`, the same cadence as release/operator
+  polling.
 - **Blocked Images**: `spec.mirror.blockedImages` is now evaluated. Images whose
   registry-agnostic repository path matches a blocked name are removed from the
   resolved image set, regardless of whether they originated from a release, an

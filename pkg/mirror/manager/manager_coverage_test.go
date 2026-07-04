@@ -511,6 +511,37 @@ var _ = Describe("Manager Coverage", func() {
 		})
 	})
 
+	// ─── resolveGraphImage ────────────────────────────────────────────
+
+	Context("resolveGraphImage", func() {
+		It("returns false and touches no annotation when platform.graph is false", func() {
+			is := &mirrorv1alpha1.ImageSet{
+				Spec: mirrorv1alpha1.ImageSetSpec{
+					Mirror: mirrorv1alpha1.Mirror{Platform: mirrorv1alpha1.Platform{Graph: false}},
+				},
+			}
+			mt := &mirrorv1alpha1.MirrorTarget{Spec: mirrorv1alpha1.MirrorTargetSpec{Registry: "mirror.io"}}
+			annotations := map[string]string{}
+			changed := m.resolveGraphImage(context.TODO(), is, mt, annotations, false)
+			Expect(changed).To(BeFalse())
+			Expect(annotations).NotTo(HaveKey(mirrorv1alpha1.GraphImageBuiltAnnotation))
+		})
+
+		It("skips rebuild when already built within the poll interval", func() {
+			is := &mirrorv1alpha1.ImageSet{
+				Spec: mirrorv1alpha1.ImageSetSpec{
+					Mirror: mirrorv1alpha1.Mirror{Platform: mirrorv1alpha1.Platform{Graph: true}},
+				},
+			}
+			mt := &mirrorv1alpha1.MirrorTarget{Spec: mirrorv1alpha1.MirrorTargetSpec{Registry: "mirror.io"}}
+			annotations := map[string]string{
+				mirrorv1alpha1.GraphImageBuiltAnnotation: time.Now().UTC().Format(time.RFC3339),
+			}
+			changed := m.resolveGraphImage(context.TODO(), is, mt, annotations, false)
+			Expect(changed).To(BeFalse())
+		})
+	})
+
 	// ─── verifyReleaseNodes ───────────────────────────────────────────
 
 	Context("verifyReleaseNodes", func() {

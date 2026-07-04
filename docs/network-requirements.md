@@ -7,10 +7,11 @@ All connections use port **443** (TLS).
 
 | Domain | Port | Component | Purpose | Required? |
 |---|---|---|---|---|
-| `api.openshift.com` | 443 | Manager pod | Cincinnati upgrade graph — resolves OCP release nodes and edges for the requested channel/version ranges | **Required** for OCP release mirroring |
+| `api.openshift.com` | 443 | Manager pod | Cincinnati upgrade graph — resolves OCP release nodes and edges for the requested channel/version ranges, and (via a separate endpoint) the graph-data archive when `platform.graph: true` | **Required** for OCP release mirroring; **required** for `platform.graph: true` |
 | `mirror.openshift.com` | 443 | Manager pod | GPG signatures for OpenShift release images | **Required** for OCP release signature verification — release payloads whose signature cannot be downloaded or fails verification are not mirrored (see below for the opt-out) |
 | `quay.io` | 443 | Worker pods | OCP release images (`quay.io/openshift-release-dev/ocp-release`) | **Required** for OCP release mirroring |
 | `registry.redhat.io` | 443 | Worker pods | Red Hat operator catalog images and operator bundle images | **Required** for operator mirroring |
+| `registry.access.redhat.com` | 443 | Manager pod | UBI9 base image for the Cincinnati graph-data image | **Required** for `platform.graph: true` |
 | `api.github.com` | 443 | Console Plugin backend (Dashboard pod) | Queries [`openshift/cincinnati-graph-data`](https://github.com/openshift/cincinnati-graph-data/tree/master/channels) for the current list of available OCP release channels | **Optional** — has ConfigMap and built-in fallbacks (see below) |
 | *(target registry)* | 443 / 5000 | Worker pods | User-defined target OCI registry that images are mirrored into | **Required** |
 

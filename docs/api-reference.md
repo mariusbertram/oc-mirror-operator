@@ -211,7 +211,7 @@ kubectl get imagesets -n <namespace>
 |---|---|---|
 | `channels` | `[]ReleaseChannel` | Release channels to mirror. |
 | `architectures` | `[]string` | Architectures to include (e.g. `amd64`, `arm64`). |
-| `graph` | `bool` | Whether to include Cincinnati graph data. |
+| `graph` | `bool` | Builds and pushes a `<registry>/openshift/graph-image:latest` OSUS graph-data image (rebuilt on the MirrorTarget's `pollInterval` cadence). |
 | `kubeVirtContainer` | `bool` | Extract the KubeVirt container from release payload. |
 
 #### ReleaseChannel

@@ -488,6 +488,37 @@ spec:
           minVersion: "4.14.30"
 ```
 
+#### Cincinnati Graph Data (OSUS)
+
+```yaml
+spec:
+  mirror:
+    platform:
+      graph: true
+      channels:
+        - name: stable-4.18
+```
+
+When `graph: true`, the manager downloads the current Cincinnati graph-data
+archive from `api.openshift.com`, builds a `registry.access.redhat.com/ubi9/ubi`-based
+OCI image with the data embedded, and pushes it to
+`<registry>/openshift/graph-image:latest` — the same format `oc-mirror` v2
+produces, consumable by the OpenShift Update Service (OSUS) in disconnected
+clusters. See [Configuring your update
+service](https://docs.openshift.com/container-platform/4.13/updating/updating-restricted-network-cluster/restricted-network-update-osus.html)
+for wiring the pushed image into an `UpdateService` resource on the target
+cluster.
+
+Rebuilds are throttled to the MirrorTarget's `pollInterval` (default 24h),
+the same cadence used for release/operator upstream polling — not on every
+reconcile. Trigger an immediate rebuild with the
+[recollect annotation](#91-recollect-force-re-sync).
+
+> **Note:** This requires outbound HTTPS access to `api.openshift.com` from
+> the manager pod, in addition to the Cincinnati graph API access already
+> required for release channel resolution (see
+> [Network Requirements](network-requirements.md)).
+
 ### 6.2 Operator Catalogs
 
 > **Heads-only default (oc-mirror v2 compatible):** When a package is listed
