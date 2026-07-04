@@ -229,6 +229,14 @@ func (m *MirrorManager) resolveImageSet(ctx context.Context, is *mirrorv1alpha1.
 	}
 	mergeIntoStateWithSig(newState, additional, imagestate.OriginAdditional, "", "additional", currentState)
 
+	// Remove any entry matching spec.mirror.blockedImages, regardless of which
+	// origin produced it (including entries carried over from a previous
+	// resolution or cache hit). Destinations dropped here lose their ImageSet
+	// ref during mergeResolvedIntoConsolidated and are picked up by the
+	// existing orphan-cleanup path the same way a removed/narrowed ImageSet
+	// entry would be.
+	filterBlockedImages(newState, is.Spec.Mirror.BlockedImages)
+
 	// Drop any annotation whose sig is no longer in spec.
 	if pruneObsoleteCacheAnnotations(newAnnotations, is) {
 		annotationsChanged = true
@@ -565,6 +573,27 @@ func carryOverByOriginAndSig(src, dst imagestate.ImageState, origin imagestate.I
 			cp.OriginRef = originRef
 		}
 		dst[dest] = &cp
+	}
+}
+
+// filterBlockedImages deletes any state entry whose Source matches a
+// configured spec.mirror.blockedImages name (registry-agnostic repository
+// path match, consistent with mirror.BlockImages).
+func filterBlockedImages(state imagestate.ImageState, blocked []mirrorv1alpha1.BlockedImage) {
+	if len(blocked) == 0 {
+		return
+	}
+	blockedPaths := make(map[string]struct{}, len(blocked))
+	for _, b := range blocked {
+		blockedPaths[mirror.ImageNamePath(b.Name)] = struct{}{}
+	}
+	for dest, entry := range state {
+		if entry == nil {
+			continue
+		}
+		if _, ok := blockedPaths[mirror.ImageNamePath(entry.Source)]; ok {
+			delete(state, dest)
+		}
 	}
 }
 

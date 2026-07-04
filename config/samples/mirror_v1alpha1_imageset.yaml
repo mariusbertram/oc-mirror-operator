@@ -6,4 +6,19 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: imageset-sample
 spec:
-  mirror: {}
+  mirror:
+    platform:
+      architectures:
+        - "amd64"
+      channels:
+        - name: stable-4.14
+          minVersion: "4.14.30"
+          maxVersion: "4.14.35"
+          shortestPath: true
+    operators:
+      - catalog: registry.redhat.io/redhat/redhat-operator-index:v4.14
+        packages:
+          - name: web-terminal
+          - name: cert-manager
+            channels:
+              - name: stable-v1
