@@ -115,4 +115,3 @@ Pending → Mirrored (success)
 These fields exist in `api/v1alpha1/` types but are **not wired up** — do not assume they work:
 - `blockedImages`, `helm` (Helm chart mirroring), `samples`
 - `platform.graph`, `platform.release` (disk-to-mirror)
-- `spec.expose.type: GatewayAPI` (HTTPRoute creation not implemented)

@@ -487,9 +487,25 @@ func (m *MirrorManager) cleanupFinishedWorkers(ctx context.Context) {
 	done := make([]finished, 0, len(snapshot))
 	deletedPods := map[string]struct{}{}
 
+	// Fetch all worker pods in one go
+	pods, err := m.Clientset.CoreV1().Pods(m.Namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("app=oc-mirror-worker,mirrortarget=%s", m.TargetName),
+	})
+	if err != nil {
+		// If List fails, we log and return, as we can't reliably update states or delete pods
+		oclog.Printf("Failed to list worker pods: %v\n", err)
+		return
+	}
+
+	podsByName := make(map[string]*corev1.Pod, len(pods.Items))
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		podsByName[pod.Name] = pod
+	}
+
 	for dest, podName := range snapshot {
-		pod, err := m.Clientset.CoreV1().Pods(m.Namespace).Get(ctx, podName, metav1.GetOptions{})
-		if err != nil {
+		pod, found := podsByName[podName]
+		if !found {
 			// Pod is gone (or unreachable) – drop from tracking.
 			done = append(done, finished{dest: dest, podName: podName, phase: corev1.PodFailed})
 			done[len(done)-1].phase = "" // signal "missing"
@@ -532,12 +548,6 @@ func (m *MirrorManager) cleanupFinishedWorkers(ctx context.Context) {
 	}
 
 	// 4. Sweep for any orphaned finished worker pods not in m.inProgress.
-	pods, err := m.Clientset.CoreV1().Pods(m.Namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: fmt.Sprintf("app=oc-mirror-worker,mirrortarget=%s", m.TargetName),
-	})
-	if err != nil {
-		return
-	}
 	for _, pod := range pods.Items {
 		if pod.Status.Phase != corev1.PodSucceeded && pod.Status.Phase != corev1.PodFailed {
 			continue
