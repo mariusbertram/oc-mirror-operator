@@ -766,10 +766,16 @@ spec:
     type: GatewayAPI
     gatewayRef:
       name: mein-gateway
-      namespace: gateway-namespace
+      namespace: gateway-namespace   # optional, defaults to the MirrorTarget's namespace
+    host: resources.example.com      # optional; becomes the HTTPRoute's hostnames entry
 ```
 
-> **Note:** GatewayAPI support is still under development.
+Creates a `gateway.networking.k8s.io/v1` HTTPRoute named `<mirrortarget>-resources`
+with a `parentRefs` entry pointing at `gatewayRef` and a single backend rule
+routing to the resource server Service. Requires the Gateway API CRDs
+(`gateway.networking.k8s.io`) to be installed in the cluster and
+`gatewayRef.name` to be set — the controller reports an error condition
+otherwise.
 
 ### 7.5 Pod Resources and Placement
 
