@@ -2,21 +2,20 @@ package oclog
 
 import (
 	"fmt"
-	"time"
+	"strings"
+
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-const tsFormat = "2006-01-02T15:04:05Z07:00"
+var log = logf.Log.WithName("oclog")
 
-func ts() string {
-	return time.Now().Format(tsFormat)
-}
-
-// Printf writes a timestamped log line to stdout.
+// Printf writes a log line using controller-runtime's structured logger.
 func Printf(format string, args ...any) {
-	fmt.Printf("["+ts()+"] "+format, args...)
+	msg := fmt.Sprintf(format, args...)
+	log.Info(strings.TrimSuffix(msg, "\n"))
 }
 
-// Println writes a timestamped log line to stdout.
+// Println writes a log line using controller-runtime's structured logger.
 func Println(msg string) {
-	fmt.Println("[" + ts() + "] " + msg)
+	log.Info(strings.TrimSuffix(msg, "\n"))
 }

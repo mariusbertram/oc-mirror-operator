@@ -121,6 +121,40 @@ var _ = Describe("Coverage Tests", func() {
 			Expect(results[0].Destination).To(Equal("mirror.io/custom/path:v1"))
 		})
 
+		It("applies TargetTag over the source tag when TargetRepo is unset", func() {
+			spec := &mirrorv1alpha1.ImageSetSpec{
+				Mirror: mirrorv1alpha1.Mirror{
+					AdditionalImages: []mirrorv1alpha1.AdditionalImage{
+						{Name: "quay.io/img:v1", TargetTag: "custom-tag"},
+					},
+				},
+			}
+			target := &mirrorv1alpha1.MirrorTarget{
+				Spec: mirrorv1alpha1.MirrorTargetSpec{Registry: "mirror.io"},
+			}
+			results, err := col.CollectAdditional(context.TODO(), spec, target, nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(1))
+			Expect(results[0].Destination).To(Equal("mirror.io/quay.io/img:custom-tag"))
+		})
+
+		It("applies TargetTag over an inline tag in TargetRepo", func() {
+			spec := &mirrorv1alpha1.ImageSetSpec{
+				Mirror: mirrorv1alpha1.Mirror{
+					AdditionalImages: []mirrorv1alpha1.AdditionalImage{
+						{Name: "quay.io/img:v1", TargetRepo: "custom/path:v1", TargetTag: "v2"},
+					},
+				},
+			}
+			target := &mirrorv1alpha1.MirrorTarget{
+				Spec: mirrorv1alpha1.MirrorTargetSpec{Registry: "mirror.io"},
+			}
+			results, err := col.CollectAdditional(context.TODO(), spec, target, nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(1))
+			Expect(results[0].Destination).To(Equal("mirror.io/custom/path:v2"))
+		})
+
 		It("marks Mirrored when meta has the dest", func() {
 			spec := &mirrorv1alpha1.ImageSetSpec{
 				Mirror: mirrorv1alpha1.Mirror{
