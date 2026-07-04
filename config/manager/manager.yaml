@@ -82,11 +82,11 @@ spec:
           periodSeconds: 10
         resources:
           limits:
-            cpu: 500m
-            memory: 128Mi
+            cpu: "2"
+            memory: 2Gi
           requests:
-            cpu: 10m
-            memory: 64Mi
+            cpu: 500m
+            memory: 512Mi
         volumeMounts: []
       volumes: []
       serviceAccountName: controller-manager
