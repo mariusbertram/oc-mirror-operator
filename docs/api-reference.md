@@ -224,6 +224,7 @@ kubectl get imagesets -n <namespace>
 | `maxVersion` | `string` | Maximum version to mirror. |
 | `shortestPath` | `bool` | Mirror only the shortest upgrade path between min and max. |
 | `full` | `bool` | Mirror all versions in the channel. |
+| `skipSignatureVerification` | `bool` | Skip GPG signature verification against the embedded Red Hat release keys. Default: `false` (verify). Only disable for test environments mirroring unpublished/unsigned payloads. |
 
 #### Operator
 

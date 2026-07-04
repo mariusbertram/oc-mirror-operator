@@ -292,13 +292,21 @@ func (m *MirrorManager) resolveReleaseSection( //nolint:unparam
 			carryOverByOriginAndSig(currentState, newState, imagestate.OriginRelease, sig, originRef)
 			continue
 		}
-		freshSig := release.ResolvedSignature(release.NodeImages(payloadNodes))
+
+		verifiedNodes := m.verifyReleaseNodes(ctx, ch, payloadNodes)
+		if len(verifiedNodes) == 0 {
+			oclog.Printf("Warning: no release nodes for channel %s passed signature verification; skipping\n", ch.Name)
+			carryOverByOriginAndSig(currentState, newState, imagestate.OriginRelease, sig, originRef)
+			continue
+		}
+
+		freshSig := release.ResolvedSignature(release.NodeImages(verifiedNodes))
 		if !recollect && cached != "" && cached == freshSig {
 			carryOverByOriginAndSig(currentState, newState, imagestate.OriginRelease, sig, originRef)
 			continue
 		}
 
-		images, err := collector.CollectReleasesForChannel(ctx, &is.Spec, mt, ch, payloadNodes)
+		images, err := collector.CollectReleasesForChannel(ctx, &is.Spec, mt, ch, verifiedNodes)
 		if err != nil {
 			oclog.Printf("Warning: collect release channel %s: %v\n", ch.Name, err)
 			carryOverByOriginAndSig(currentState, newState, imagestate.OriginRelease, sig, originRef)
@@ -306,9 +314,10 @@ func (m *MirrorManager) resolveReleaseSection( //nolint:unparam
 		}
 		mergeIntoStateWithSig(newState, images, imagestate.OriginRelease, sig, originRef, currentState)
 
-		// Download and persist GPG signatures for the resolved release nodes.
-		// Failures are best-effort — they do not block the main mirroring flow.
-		m.downloadSignaturesForNodes(ctx, payloadNodes)
+		// Persist the (already downloaded and verified) GPG signatures for the
+		// Resource API. Failures here are best-effort — they do not block the
+		// main mirroring flow, since verification already happened above.
+		m.downloadSignaturesForNodes(ctx, verifiedNodes)
 
 		if annotations[annoKey] != freshSig {
 			annotations[annoKey] = freshSig
@@ -322,6 +331,42 @@ func (m *MirrorManager) resolveReleaseSection( //nolint:unparam
 // GPG signatures for this MirrorTarget.
 func (m *MirrorManager) signatureConfigMapName() string {
 	return m.TargetName + "-signatures"
+}
+
+// verifyReleaseNodes downloads and cryptographically verifies the GPG
+// signature of each release node against the embedded Red Hat release
+// signing keys, returning only the nodes that verify successfully. A node
+// whose signature cannot be downloaded or fails verification is dropped
+// (logged, not mirrored) unless ch.SkipSignatureVerification is set.
+//
+// This runs before CollectReleasesForChannel/mergeIntoStateWithSig so a
+// tampered or unsigned release payload is never queued for mirroring in the
+// first place, rather than merely being flagged after the fact.
+func (m *MirrorManager) verifyReleaseNodes(ctx context.Context, ch mirrorv1alpha1.ReleaseChannel, nodes []release.Node) []release.Node {
+	if ch.SkipSignatureVerification || len(nodes) == 0 {
+		return nodes
+	}
+
+	sigClient := pkgrelease.NewSignatureClient(nil)
+	verified := make([]release.Node, 0, len(nodes))
+	for _, node := range nodes {
+		digest := extractDigest(node.Image)
+		if digest == "" {
+			oclog.Printf("Warning: release node %s (%s) has no digest, cannot verify signature; skipping\n", ch.Name, node.Image)
+			continue
+		}
+		sigData, err := sigClient.DownloadSignature(ctx, digest)
+		if err != nil {
+			oclog.Printf("Warning: download signature for %s (channel %s): %v; skipping until signed\n", digest, ch.Name, err)
+			continue
+		}
+		if err := pkgrelease.VerifySignature(sigData, digest); err != nil {
+			oclog.Printf("Warning: signature verification failed for %s (channel %s): %v; skipping\n", digest, ch.Name, err)
+			continue
+		}
+		verified = append(verified, node)
+	}
+	return verified
 }
 
 // downloadSignaturesForNodes downloads the GPG signature for each release node

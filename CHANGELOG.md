@@ -28,6 +28,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   expiry.
 
 ### Added
+- **Release Signature Verification**: Release payload GPG signatures downloaded
+  from `mirror.openshift.com` are now cryptographically verified against the
+  Red Hat release signing keys (fetched verbatim from
+  `github.com/openshift/cluster-update-keys`, the same keys the
+  cluster-version-operator trusts) before mirroring. A release node whose
+  signature cannot be downloaded, fails verification, or has expired is
+  skipped rather than silently mirrored. New per-channel
+  `skipSignatureVerification` field opts out for test environments and
+  `type: okd`/CI-nightly channels (whose signatures live in a different store
+  this operator doesn't query). Editable from the console plugin's Release
+  Browser.
 - **OpenShift Console Plugin**: A new `ConsolePlugin` controller deploys a dedicated plugin pod (`oc-mirror-plugin`) into the operator namespace and registers it with the OpenShift Console. The plugin provides an integrated multi-page UI directly in the OCP web console — no external URL needed.
   - Pages: MirrorTarget overview, ImageSet detail (with image status), CatalogBrowser, Failed Images
   - Auto-deployed on OpenShift clusters; gracefully skipped on non-OCP Kubernetes

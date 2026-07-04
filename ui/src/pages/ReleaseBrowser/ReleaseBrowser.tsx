@@ -321,6 +321,12 @@ export const ReleaseBrowser: React.FC = () => {
                       isChecked={ch.full ?? false}
                       onChange={(_e, checked) => updateChannel(ch.name, 'full', checked)}
                     />
+                    <Checkbox
+                      id={`skipsig-${ch.name}`}
+                      label="Skip signature verification"
+                      isChecked={ch.skipSignatureVerification ?? false}
+                      onChange={(_e, checked) => updateChannel(ch.name, 'skipSignatureVerification', checked)}
+                    />
                   </div>
                 </div>
               ))}
