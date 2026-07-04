@@ -485,10 +485,16 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	hasPlatformMap := make(map[string]bool, len(mt.Spec.ImageSets))
-	for _, isName := range mt.Spec.ImageSets {
-		var imgSet mirrorv1alpha1.ImageSet
-		if err := c.Get(r.Context(), client.ObjectKey{Namespace: mt.Namespace, Name: isName}, &imgSet); err == nil {
-			hasPlatformMap[isName] = len(imgSet.Spec.Mirror.Platform.Channels) > 0
+	isList := &mirrorv1alpha1.ImageSetList{}
+	if err := c.List(r.Context(), isList, client.InNamespace(mt.Namespace)); err == nil {
+		isMap := make(map[string]*mirrorv1alpha1.ImageSet, len(isList.Items))
+		for i := range isList.Items {
+			isMap[isList.Items[i].Name] = &isList.Items[i]
+		}
+		for _, isName := range mt.Spec.ImageSets {
+			if imgSet, ok := isMap[isName]; ok {
+				hasPlatformMap[isName] = len(imgSet.Spec.Mirror.Platform.Channels) > 0
+			}
 		}
 	}
 
@@ -1335,13 +1341,14 @@ func (s *Server) fetchChannelsFromConfigMap(ctx context.Context) ([]ocpChannelEn
 	}
 
 	var entries []ocpChannelEntry
+	channelTypes := strings.Split(channelTypesStr, ",")
 	for _, ver := range strings.Split(versionsStr, ",") {
 		ver = strings.TrimSpace(ver)
 		if ver == "" || !strings.Contains(ver, ".") {
 			continue
 		}
 		minor, _ := strconv.Atoi(strings.Split(ver, ".")[1])
-		for _, t := range strings.Split(channelTypesStr, ",") {
+		for _, t := range channelTypes {
 			t = strings.TrimSpace(t)
 			if t == "" {
 				continue

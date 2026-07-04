@@ -203,10 +203,14 @@ func (c *Collector) CollectOperatorEntry(ctx context.Context, op mirrorv1alpha1.
 func (c *Collector) CollectAdditional(_ context.Context, spec *mirrorv1alpha1.ImageSetSpec, target *mirrorv1alpha1.MirrorTarget, meta *state.Metadata) ([]TargetImage, error) {
 	results := make([]TargetImage, 0, len(spec.Mirror.AdditionalImages))
 	for _, img := range spec.Mirror.AdditionalImages {
-		dest := fmt.Sprintf("%s/%s", target.Spec.Registry, img.Name)
+		ref := img.Name
 		if img.TargetRepo != "" {
-			dest = fmt.Sprintf("%s/%s", target.Spec.Registry, img.TargetRepo)
+			ref = img.TargetRepo
 		}
+		if img.TargetTag != "" {
+			ref = stripTagOrDigest(ref) + ":" + img.TargetTag
+		}
+		dest := fmt.Sprintf("%s/%s", target.Spec.Registry, ref)
 		results = append(results, c.toTargetImage(img.Name, dest, meta))
 	}
 	return results, nil
@@ -231,22 +235,29 @@ func (c *Collector) toTargetImage(src, dest string, meta *state.Metadata) Target
 //	quay.io/foo/bar:v1.2@sha256:…        → "foo/bar"
 //	localhost:5001/org/bundle:v1.2@sha256 → "org/bundle"
 func imageNamePath(img string) string {
-	// 1. Remove digest (everything from "@" onwards).
-	if i := strings.Index(img, "@"); i >= 0 {
-		img = img[:i]
-	}
-	// 2. Remove tag: strip the last ":" segment only when it is NOT followed by
-	//    a "/" (a "/" after the colon means it is part of a registry:port prefix,
-	//    not a tag).
-	if i := strings.LastIndex(img, ":"); i >= 0 && !strings.Contains(img[i+1:], "/") {
-		img = img[:i]
-	}
-	// 3. Strip registry host (first path segment containing "." or ":").
+	img = stripTagOrDigest(img)
+	// Strip registry host (first path segment containing "." or ":").
 	parts := strings.SplitN(img, "/", 2)
 	if len(parts) > 1 && (strings.Contains(parts[0], ".") || strings.Contains(parts[0], ":")) {
 		return parts[1]
 	}
 	return img
+}
+
+// stripTagOrDigest removes a trailing "@sha256:…" digest or ":tag" suffix from
+// an image reference, leaving the registry host and repository path intact.
+func stripTagOrDigest(ref string) string {
+	// Remove digest (everything from "@" onwards).
+	if i := strings.Index(ref, "@"); i >= 0 {
+		ref = ref[:i]
+	}
+	// Remove tag: strip the last ":" segment only when it is NOT followed by a
+	// "/" (a "/" after the colon means it is part of a registry:port prefix,
+	// not a tag).
+	if i := strings.LastIndex(ref, ":"); i >= 0 && !strings.Contains(ref[i+1:], "/") {
+		ref = ref[:i]
+	}
+	return ref
 }
 
 // Destination repository layout for release content, identical to oc-mirror v2
