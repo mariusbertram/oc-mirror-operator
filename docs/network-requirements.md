@@ -13,6 +13,7 @@ All connections use port **443** (TLS).
 | `registry.redhat.io` | 443 | Worker pods | Red Hat operator catalog images and operator bundle images | **Required** for operator mirroring |
 | `api.github.com` | 443 | Console Plugin backend (Dashboard pod) | Queries [`openshift/cincinnati-graph-data`](https://github.com/openshift/cincinnati-graph-data/tree/master/channels) for the current list of available OCP release channels | **Optional** — has ConfigMap and built-in fallbacks (see below) |
 | *(target registry)* | 443 / 5000 | Worker pods | User-defined target OCI registry that images are mirrored into | **Required** |
+| *(Helm repository hosts)* | 443 | Manager pod | User-defined `spec.mirror.helm.repositories[].url` — chart index and archive downloads | **Required** for Helm chart mirroring |
 
 ## Air-Gapped / Restricted Environments
 

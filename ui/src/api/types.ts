@@ -115,6 +115,23 @@ export interface ReleaseSpec {
   channels?: ReleaseChannel[];
 }
 
+export interface HelmChart {
+  name: string;
+  version?: string;
+  path?: string;
+  imagePaths?: string[];
+}
+
+export interface HelmRepository {
+  name: string;
+  url: string;
+  charts: HelmChart[];
+}
+
+export interface HelmSpec {
+  repositories: HelmRepository[];
+}
+
 /** A single OCP/OKD release channel returned by GET /api/v1/releases/channels.
  *  Sourced from openshift/cincinnati-graph-data, with ConfigMap and built-in fallbacks. */
 export interface OcpChannelEntry {

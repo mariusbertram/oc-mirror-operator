@@ -25,6 +25,7 @@ This document describes the complete configuration and operation of the `oc-mirr
    - [OpenShift Releases](#61-openshift-releases)
    - [Operator Catalogs](#62-operator-catalogs)
    - [Additional Images](#63-additional-images)
+   - [Helm Charts](#64-helm-charts)
 7. [MirrorTarget Configuration](#7-mirrortarget-configuration)
    - [Basic Configuration](#71-basic-configuration)
    - [Performance Tuning](#72-performance-tuning)
@@ -617,7 +618,49 @@ spec:
         targetRepo: mein-mirror/nginx  # optional target path
 ```
 
-### 6.4 Splitting ImageSets (recommended)
+### 6.4 Helm Charts
+
+```yaml
+spec:
+  mirror:
+    helm:
+      repositories:
+        - name: bitnami
+          url: https://charts.bitnami.com/bitnami
+          charts:
+            - name: nginx
+              version: "15.5.1"   # optional; empty resolves to the latest
+            - name: redis
+              imagePaths:                    # optional, in addition to the default paths
+                - "{.spec.extraContainerImage}"
+```
+
+Each chart is downloaded from its repository's `index.yaml`, its templates are
+fully **rendered** with default values and capabilities (the same
+`helm.sh/helm/v3` SDK `helm template` itself uses — not a static scan of
+`values.yaml`, which would miss any chart that templates image references
+dynamically), and every rendered manifest is scanned via JSONPath for image
+fields. The built-in paths cover the common container/init-container
+locations:
+
+```
+{.spec.template.spec.initContainers[*].image}
+{.spec.template.spec.containers[*].image}
+{.spec.initContainers[*].image}
+{.spec.containers[*].image}
+```
+
+Add further JSONPath expressions per chart via `imagePaths` for images
+referenced elsewhere (e.g. a custom CRD field). Destinations preserve the
+full image reference (registry, path, and tag/digest) as-is under the target
+registry, the same convention used for `additionalImages`.
+
+> **Not implemented:** `spec.mirror.helm.local` (charts already present on
+> disk) — the manager pod has no general host filesystem access, so `path`
+> would only be meaningful if mounted via a ConfigMap/Secret/PVC, which this
+> operator does not currently support.
+
+### 6.5 Splitting ImageSets (recommended)
 
 For large deployments, it is recommended to split releases and operator catalogs into separate `ImageSet` objects:
 

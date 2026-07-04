@@ -48,13 +48,14 @@ Unlike the static `oc-mirror` CLI tool, this operator works cloud-natively and d
 | **Worker Pod Lifecycle** | ✗ | ✅ | Automatic cleanup of completed/failed worker and orphan pods |
 | **KubeVirt Container Disk** | ✅ | ✅ | `platform.kubeVirtContainer: true` extracts KubeVirt disk images from the release payload (RHCOS per architecture) |
 | **GatewayAPI Exposure** | ✗ | ✅ | `spec.expose.type: GatewayAPI` creates a `gateway.networking.k8s.io/v1` HTTPRoute attached to the Gateway referenced by `spec.expose.gatewayRef`; requires the Gateway API CRDs to be installed |
+| **Helm Chart Mirroring** | ✅ | ✅ | `spec.mirror.helm.repositories` downloads charts, fully renders their templates (real `helm.sh/helm/v3` SDK, not a static values.yaml scan), and scans every rendered manifest for image references via JSONPath (default paths + custom `imagePaths`) |
 
 ### ❌ Not Implemented Features
 
 | Feature | oc-mirror CLI | oc-mirror-operator | Note |
 |---------|:---:|:---:|-----------|
 | **Blocked Images** | ✅ | ❌ | API field `blockedImages` exists but is not evaluated anywhere |
-| **Helm Chart Mirroring** | ✅ | ❌ | Complete API types defined (`Helm`, `Repository`, `Chart`), but collector ignores `spec.mirror.helm` |
+| **Helm Local Charts** | ✅ | ❌ | `spec.mirror.helm.local` (charts already on disk) is not resolved — the manager pod has no general host filesystem access, so `Path` would only be meaningful if mounted via a ConfigMap/Secret/PVC, which isn't currently supported |
 | **Mirror-to-Disk** | ✅ | ❌ | `oc-mirror` can mirror to a local archive — no equivalent in the operator (not meaningful in cluster context) |
 | **Disk-to-Mirror** | ✅ | ❌ | `oc-mirror` can mirror from a local archive to a registry — `platform.release` field exists but is not used |
 | **Enclave Support** | ✅ | ❌ | No concept for air-gap transfer via media — the operator requires network access to both source and target registry |
@@ -880,7 +881,7 @@ make generate    # DeepCopy methods
 | **Polling-based manager** | 30s ticker instead of event-driven reconciliation |
 | **In-memory worker queue** | `inProgress` map is not persistent; on manager restart, running workers are restored via pod sync |
 | **Blocked images not implemented** | `spec.mirror.blockedImages` is accepted but ignored |
-| **Helm Charts not implemented** | `spec.mirror.helm` API types defined, but collector does not evaluate them |
+| **Helm local charts not implemented** | `spec.mirror.helm.local` (charts already on disk) is not resolved — no general host filesystem access in the manager pod |
 | **No mirror-to-disk** | Air-gap transfer via media is not possible — the operator requires network access to both registries |
 | **No HA mode** | Leader election configurable (`--leader-elect`), but disabled by default |
 | **No catalog cache pre-build** | Filtered catalog invalidates the source cache via opaque whiteout and uses `--cache-enforce-integrity=false` — cache is rebuilt on first `opm serve` (a few seconds startup delay) |

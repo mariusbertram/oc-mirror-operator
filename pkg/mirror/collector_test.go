@@ -1,7 +1,12 @@
 package mirror
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
@@ -12,6 +17,36 @@ import (
 	. "github.com/onsi/gomega"
 )
 
+// buildHelmChartArchive builds a minimal, valid Helm chart .tgz named
+// "mychart" version "1.0.0" with a single Deployment template referencing
+// the given image.
+func buildHelmChartArchive(image string) []byte {
+	var buf bytes.Buffer
+	gzw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gzw)
+	files := map[string]string{
+		"mychart/Chart.yaml": "apiVersion: v2\nname: mychart\nversion: 1.0.0\n",
+		"mychart/templates/deployment.yaml": `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp
+spec:
+  template:
+    spec:
+      containers:
+        - name: myapp
+          image: ` + image + `
+`,
+	}
+	for path, content := range files {
+		_ = tw.WriteHeader(&tar.Header{Typeflag: tar.TypeReg, Name: path, Size: int64(len(content)), Mode: 0644})
+		_, _ = tw.Write([]byte(content))
+	}
+	_ = tw.Close()
+	_ = gzw.Close()
+	return buf.Bytes()
+}
+
 var _ = Describe("Collector", func() {
 	var (
 		col *Collector
@@ -21,6 +56,89 @@ var _ = Describe("Collector", func() {
 	BeforeEach(func() {
 		mc = mirrorclient.NewMirrorClient(nil, "")
 		col = NewCollector(mc)
+	})
+
+	Context("CollectHelm", func() {
+		var srv *httptest.Server
+
+		AfterEach(func() {
+			if srv != nil {
+				srv.Close()
+			}
+		})
+
+		It("resolves a chart from a repository and preserves the image reference as the destination suffix", func() {
+			archive := buildHelmChartArchive("quay.io/example/myapp:1.2.3")
+			mux := http.NewServeMux()
+			mux.HandleFunc("/index.yaml", func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(`apiVersion: v1
+entries:
+  mychart:
+    - name: mychart
+      version: 1.0.0
+      urls:
+        - mychart-1.0.0.tgz
+`))
+			})
+			mux.HandleFunc("/mychart-1.0.0.tgz", func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write(archive)
+			})
+			srv = httptest.NewServer(mux)
+
+			spec := &mirrorv1alpha1.ImageSetSpec{
+				Mirror: mirrorv1alpha1.Mirror{
+					Helm: mirrorv1alpha1.Helm{
+						Repositories: []mirrorv1alpha1.Repository{
+							{
+								Name: "myrepo",
+								URL:  srv.URL,
+								Charts: []mirrorv1alpha1.Chart{
+									{Name: "mychart", Version: "1.0.0"},
+								},
+							},
+						},
+					},
+				},
+			}
+			target := &mirrorv1alpha1.MirrorTarget{
+				Spec: mirrorv1alpha1.MirrorTargetSpec{Registry: "internal.registry.io"},
+			}
+
+			results, err := col.CollectHelm(context.TODO(), spec, target, nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(1))
+			Expect(results[0].Source).To(Equal("quay.io/example/myapp:1.2.3"))
+			Expect(results[0].Destination).To(Equal("internal.registry.io/quay.io/example/myapp:1.2.3"))
+		})
+
+		It("skips a repository that fails to resolve without returning an error", func() {
+			srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusNotFound)
+			}))
+
+			spec := &mirrorv1alpha1.ImageSetSpec{
+				Mirror: mirrorv1alpha1.Mirror{
+					Helm: mirrorv1alpha1.Helm{
+						Repositories: []mirrorv1alpha1.Repository{
+							{Name: "broken", URL: srv.URL, Charts: []mirrorv1alpha1.Chart{{Name: "mychart"}}},
+						},
+					},
+				},
+			}
+			target := &mirrorv1alpha1.MirrorTarget{Spec: mirrorv1alpha1.MirrorTargetSpec{Registry: "internal.registry.io"}}
+
+			results, err := col.CollectHelm(context.TODO(), spec, target, nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(BeEmpty())
+		})
+
+		It("returns empty when no helm repositories are configured", func() {
+			spec := &mirrorv1alpha1.ImageSetSpec{}
+			target := &mirrorv1alpha1.MirrorTarget{Spec: mirrorv1alpha1.MirrorTargetSpec{Registry: "internal.registry.io"}}
+			results, err := col.CollectHelm(context.TODO(), spec, target, nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(BeEmpty())
+		})
 	})
 
 	Context("CollectTargetImages", func() {

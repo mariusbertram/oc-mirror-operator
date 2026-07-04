@@ -285,6 +285,8 @@ func (s *Server) RegisterAPIRoutes(r *mux.Router) {
 	api.HandleFunc("/releases/channels", s.handleGetOCPChannels).Methods("GET")
 	api.HandleFunc("/imagesets/{namespace}/{name}/releases", s.handleGetReleases).Methods("GET")
 	api.HandleFunc("/imagesets/{namespace}/{name}/releases", s.handlePatchReleases).Methods("PATCH")
+	api.HandleFunc("/imagesets/{namespace}/{name}/helm", s.handleGetHelm).Methods("GET")
+	api.HandleFunc("/imagesets/{namespace}/{name}/helm", s.handlePatchHelm).Methods("PATCH")
 	api.HandleFunc("/imagesets/{namespace}/{name}", s.handleDeleteImageSet).Methods("DELETE")
 
 	// Catalog browsing endpoints
@@ -1201,6 +1203,80 @@ func (s *Server) handlePatchReleases(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	is.Spec.Mirror.Platform.Channels = channels
+
+	if err := c.Update(r.Context(), is); err != nil {
+		if apierrors.IsForbidden(err) {
+			http.Error(w, "forbidden: insufficient permissions", http.StatusForbidden)
+		} else {
+			http.Error(w, fmt.Sprintf("update ImageSet: %v", err), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// helmSpec is the JSON wire format for GET/PATCH spec.mirror.helm.
+// spec.mirror.helm.local (charts already present on disk in the manager pod)
+// is intentionally not exposed here — see Collector.CollectHelm.
+type helmSpec struct {
+	Repositories []mirrorv1alpha1.Repository `json:"repositories"`
+}
+
+// handleGetHelm returns the current spec.mirror.helm.repositories configuration.
+func (s *Server) handleGetHelm(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	namespace, name := vars["namespace"], vars["name"]
+
+	c := s.clientForRequest(r)
+	is := &mirrorv1alpha1.ImageSet{}
+	if err := c.Get(r.Context(), client.ObjectKey{Namespace: namespace, Name: name}, is); err != nil {
+		if apierrors.IsNotFound(err) {
+			http.Error(w, "ImageSet not found", http.StatusNotFound)
+		} else {
+			http.Error(w, fmt.Sprintf("get ImageSet: %v", err), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	resp := helmSpec{Repositories: is.Spec.Mirror.Helm.Repositories}
+	if resp.Repositories == nil {
+		resp.Repositories = []mirrorv1alpha1.Repository{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// handlePatchHelm replaces spec.mirror.helm.repositories.
+func (s *Server) handlePatchHelm(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	namespace, name := vars["namespace"], vars["name"]
+
+	defer func() { _ = r.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		http.Error(w, "failed to read body", http.StatusBadRequest)
+		return
+	}
+	var patch helmSpec
+	if err := json.Unmarshal(body, &patch); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+
+	c := s.clientForRequest(r)
+	is := &mirrorv1alpha1.ImageSet{}
+	if err := c.Get(r.Context(), client.ObjectKey{Namespace: namespace, Name: name}, is); err != nil {
+		if apierrors.IsNotFound(err) {
+			http.Error(w, "ImageSet not found", http.StatusNotFound)
+		} else {
+			http.Error(w, fmt.Sprintf("get ImageSet: %v", err), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	is.Spec.Mirror.Helm.Repositories = patch.Repositories
 
 	if err := c.Update(r.Context(), is); err != nil {
 		if apierrors.IsForbidden(err) {

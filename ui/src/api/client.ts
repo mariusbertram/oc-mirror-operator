@@ -1,5 +1,6 @@
 import type {
   CatalogPackagesResponse,
+  HelmRepository,
   ImageFailuresResponse,
   OcpChannelEntry,
   PackageConstraint,
@@ -160,3 +161,9 @@ export const patchReleases = (namespace: string, imageSetName: string, body: Rel
  *  The backend queries openshift/cincinnati-graph-data (cached 1h),
  *  falls back to the oc-mirror-ocp-versions ConfigMap, then hardcoded defaults. */
 export const getOcpChannels = () => get<OcpChannelEntry[]>('/api/v1/releases/channels');
+
+export const getHelmRepositories = (namespace: string, imageSetName: string) =>
+  get<{ repositories: HelmRepository[] }>(`/api/v1/imagesets/${namespace}/${imageSetName}/helm`);
+
+export const patchHelmRepositories = (namespace: string, imageSetName: string, repositories: HelmRepository[]) =>
+  patch<void>(`/api/v1/imagesets/${namespace}/${imageSetName}/helm`, { repositories });
