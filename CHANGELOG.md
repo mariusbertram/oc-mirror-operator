@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **`AdditionalImage.TargetTag` was silently ignored**: `spec.mirror.additionalImages[].targetTag`
+  was defined in the API and documented as working, but the collector never applied it —
+  the destination always kept the source image's own tag (or whatever tag was baked into
+  `targetRepo`). `TargetTag`, when set, now always overrides the destination tag,
+  regardless of whether `targetRepo` is also set.
 - **CheckExist HTTP 400 on HAProxy/nginx routes**: When the manager pod performs
   drift-check verification against a target registry exposed via an OpenShift Route
   (HAProxy) or Quay's nginx proxy, the `Authorization` Bearer token scope can grow
