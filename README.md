@@ -47,12 +47,7 @@ Unlike the static `oc-mirror` CLI tool, this operator works cloud-natively and d
 | **OpenShift Console Plugin** | ✗ | ✅ | Integrated plugin tab in the OCP web console — MirrorTarget overview, ImageSet detail, CatalogBrowser (per-channel import, version constraints, catalog-version switcher), Failed Images. Auto-deployed on OpenShift; no config required |
 | **Worker Pod Lifecycle** | ✗ | ✅ | Automatic cleanup of completed/failed worker and orphan pods |
 | **KubeVirt Container Disk** | ✅ | ✅ | `platform.kubeVirtContainer: true` extracts KubeVirt disk images from the release payload (RHCOS per architecture) |
-
-### ⚠️ Partially Implemented
-
-| Feature | oc-mirror CLI | oc-mirror-operator | Status |
-|---------|:---:|:---:|--------|
-| **GatewayAPI Exposure** | ✗ | ⚠️ | API field defined (`spec.expose.type: GatewayAPI`), HTTPRoute creation not yet implemented |
+| **GatewayAPI Exposure** | ✗ | ✅ | `spec.expose.type: GatewayAPI` creates a `gateway.networking.k8s.io/v1` HTTPRoute attached to the Gateway referenced by `spec.expose.gatewayRef`; requires the Gateway API CRDs to be installed |
 
 ### ❌ Not Implemented Features
 
@@ -351,7 +346,7 @@ External accessibility is configured via `MirrorTarget.spec.expose`:
 |-----|-------------|-----------|
 | **Route** (default on OpenShift) | OpenShift Route with edge TLS termination | Auto-detection via Route API discovery |
 | **Ingress** | `networking.k8s.io/v1` Ingress | Requires `host` and optionally `ingressClassName` |
-| **GatewayAPI** | Gateway API HTTPRoute | API field defined, implementation pending |
+| **GatewayAPI** | Gateway API HTTPRoute | Requires `gatewayRef.name` and the Gateway API CRDs to be installed |
 | **Service** (default on K8s) | ClusterIP service only, no external exposure | Fallback when no Route API is available |
 
 When switching the exposure type (e.g. Route → Ingress), stale objects are automatically cleaned up.
@@ -886,7 +881,6 @@ make generate    # DeepCopy methods
 | **In-memory worker queue** | `inProgress` map is not persistent; on manager restart, running workers are restored via pod sync |
 | **Blocked images not implemented** | `spec.mirror.blockedImages` is accepted but ignored |
 | **Helm Charts not implemented** | `spec.mirror.helm` API types defined, but collector does not evaluate them |
-| **GatewayAPI not implemented** | `spec.expose.type: GatewayAPI` API field defined, HTTPRoute creation still pending |
 | **No mirror-to-disk** | Air-gap transfer via media is not possible — the operator requires network access to both registries |
 | **No HA mode** | Leader election configurable (`--leader-elect`), but disabled by default |
 | **No catalog cache pre-build** | Filtered catalog invalidates the source cache via opaque whiteout and uses `--cache-enforce-integrity=false` — cache is rebuilt on first `opm serve` (a few seconds startup delay) |
