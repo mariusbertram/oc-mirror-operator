@@ -285,6 +285,8 @@ func (s *Server) RegisterAPIRoutes(r *mux.Router) {
 	api.HandleFunc("/releases/channels", s.handleGetOCPChannels).Methods("GET")
 	api.HandleFunc("/imagesets/{namespace}/{name}/releases", s.handleGetReleases).Methods("GET")
 	api.HandleFunc("/imagesets/{namespace}/{name}/releases", s.handlePatchReleases).Methods("PATCH")
+	api.HandleFunc("/imagesets/{namespace}/{name}/blocked-images", s.handleGetBlockedImages).Methods("GET")
+	api.HandleFunc("/imagesets/{namespace}/{name}/blocked-images", s.handlePatchBlockedImages).Methods("PATCH")
 	api.HandleFunc("/imagesets/{namespace}/{name}", s.handleDeleteImageSet).Methods("DELETE")
 
 	// Catalog browsing endpoints
@@ -1201,6 +1203,86 @@ func (s *Server) handlePatchReleases(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	is.Spec.Mirror.Platform.Channels = channels
+
+	if err := c.Update(r.Context(), is); err != nil {
+		if apierrors.IsForbidden(err) {
+			http.Error(w, "forbidden: insufficient permissions", http.StatusForbidden)
+		} else {
+			http.Error(w, fmt.Sprintf("update ImageSet: %v", err), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// blockedImagesSpec is the JSON wire format for GET/PATCH
+// spec.mirror.blockedImages.
+type blockedImagesSpec struct {
+	BlockedImages []string `json:"blockedImages"`
+}
+
+// handleGetBlockedImages returns the current spec.mirror.blockedImages list.
+func (s *Server) handleGetBlockedImages(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	namespace, name := vars["namespace"], vars["name"]
+
+	c := s.clientForRequest(r)
+	is := &mirrorv1alpha1.ImageSet{}
+	if err := c.Get(r.Context(), client.ObjectKey{Namespace: namespace, Name: name}, is); err != nil {
+		if apierrors.IsNotFound(err) {
+			http.Error(w, "ImageSet not found", http.StatusNotFound)
+		} else {
+			http.Error(w, fmt.Sprintf("get ImageSet: %v", err), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	resp := blockedImagesSpec{BlockedImages: []string{}}
+	for _, b := range is.Spec.Mirror.BlockedImages {
+		resp.BlockedImages = append(resp.BlockedImages, b.Name)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// handlePatchBlockedImages replaces spec.mirror.blockedImages.
+func (s *Server) handlePatchBlockedImages(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	namespace, name := vars["namespace"], vars["name"]
+
+	defer func() { _ = r.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		http.Error(w, "failed to read body", http.StatusBadRequest)
+		return
+	}
+	var patch blockedImagesSpec
+	if err := json.Unmarshal(body, &patch); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+
+	c := s.clientForRequest(r)
+	is := &mirrorv1alpha1.ImageSet{}
+	if err := c.Get(r.Context(), client.ObjectKey{Namespace: namespace, Name: name}, is); err != nil {
+		if apierrors.IsNotFound(err) {
+			http.Error(w, "ImageSet not found", http.StatusNotFound)
+		} else {
+			http.Error(w, fmt.Sprintf("get ImageSet: %v", err), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	blocked := make([]mirrorv1alpha1.BlockedImage, 0, len(patch.BlockedImages))
+	for _, imgName := range patch.BlockedImages {
+		if imgName == "" {
+			continue
+		}
+		blocked = append(blocked, mirrorv1alpha1.BlockedImage{Name: imgName})
+	}
+	is.Spec.Mirror.BlockedImages = blocked
 
 	if err := c.Update(r.Context(), is); err != nil {
 		if apierrors.IsForbidden(err) {

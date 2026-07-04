@@ -1,4 +1,5 @@
 import type {
+  BlockedImagesSpec,
   CatalogPackagesResponse,
   ImageFailuresResponse,
   OcpChannelEntry,
@@ -160,3 +161,9 @@ export const patchReleases = (namespace: string, imageSetName: string, body: Rel
  *  The backend queries openshift/cincinnati-graph-data (cached 1h),
  *  falls back to the oc-mirror-ocp-versions ConfigMap, then hardcoded defaults. */
 export const getOcpChannels = () => get<OcpChannelEntry[]>('/api/v1/releases/channels');
+
+export const getBlockedImages = (namespace: string, imageSetName: string) =>
+  get<BlockedImagesSpec>(`/api/v1/imagesets/${namespace}/${imageSetName}/blocked-images`);
+
+export const patchBlockedImages = (namespace: string, imageSetName: string, blockedImages: string[]) =>
+  patch<void>(`/api/v1/imagesets/${namespace}/${imageSetName}/blocked-images`, { blockedImages });
