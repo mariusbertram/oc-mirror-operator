@@ -113,5 +113,5 @@ Pending → Mirrored (success)
 ## Unimplemented API Fields
 
 These fields exist in `api/v1alpha1/` types but are **not wired up** — do not assume they work:
-- `blockedImages`, `helm` (Helm chart mirroring), `samples`
+- `helm` (Helm chart mirroring), `samples`
 - `platform.graph`, `platform.release` (disk-to-mirror)

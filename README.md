@@ -48,12 +48,12 @@ Unlike the static `oc-mirror` CLI tool, this operator works cloud-natively and d
 | **Worker Pod Lifecycle** | ✗ | ✅ | Automatic cleanup of completed/failed worker and orphan pods |
 | **KubeVirt Container Disk** | ✅ | ✅ | `platform.kubeVirtContainer: true` extracts KubeVirt disk images from the release payload (RHCOS per architecture) |
 | **GatewayAPI Exposure** | ✗ | ✅ | `spec.expose.type: GatewayAPI` creates a `gateway.networking.k8s.io/v1` HTTPRoute attached to the Gateway referenced by `spec.expose.gatewayRef`; requires the Gateway API CRDs to be installed |
+| **Blocked Images** | ✅ | ✅ | `spec.mirror.blockedImages` excludes matching images (registry-agnostic repository path match) across releases, operators, and additional images alike; editable from the console plugin's ImageSet detail page |
 
 ### ❌ Not Implemented Features
 
 | Feature | oc-mirror CLI | oc-mirror-operator | Note |
 |---------|:---:|:---:|-----------|
-| **Blocked Images** | ✅ | ❌ | API field `blockedImages` exists but is not evaluated anywhere |
 | **Helm Chart Mirroring** | ✅ | ❌ | Complete API types defined (`Helm`, `Repository`, `Chart`), but collector ignores `spec.mirror.helm` |
 | **Mirror-to-Disk** | ✅ | ❌ | `oc-mirror` can mirror to a local archive — no equivalent in the operator (not meaningful in cluster context) |
 | **Disk-to-Mirror** | ✅ | ❌ | `oc-mirror` can mirror from a local archive to a registry — `platform.release` field exists but is not used |
@@ -879,7 +879,6 @@ make generate    # DeepCopy methods
 |---------------|---------|
 | **Polling-based manager** | 30s ticker instead of event-driven reconciliation |
 | **In-memory worker queue** | `inProgress` map is not persistent; on manager restart, running workers are restored via pod sync |
-| **Blocked images not implemented** | `spec.mirror.blockedImages` is accepted but ignored |
 | **Helm Charts not implemented** | `spec.mirror.helm` API types defined, but collector does not evaluate them |
 | **No mirror-to-disk** | Air-gap transfer via media is not possible — the operator requires network access to both registries |
 | **No HA mode** | Leader election configurable (`--leader-elect`), but disabled by default |
