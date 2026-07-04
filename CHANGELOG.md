@@ -42,6 +42,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   expiry.
 
 ### Added
+- **Release Signature Verification**: Release payload GPG signatures downloaded
+  from `mirror.openshift.com` are now cryptographically verified against the
+  Red Hat release signing keys (fetched verbatim from
+  `github.com/openshift/cluster-update-keys`, the same keys the
+  cluster-version-operator trusts) before mirroring. A release node whose
+  signature cannot be downloaded, fails verification, or has expired is
+  skipped rather than silently mirrored. New per-channel
+  `skipSignatureVerification` field opts out for test environments and
+  `type: okd`/CI-nightly channels (whose signatures live in a different store
+  this operator doesn't query). Editable from the console plugin's Release
+  Browser.
 - **GatewayAPI Exposure**: `spec.expose.type: GatewayAPI` now creates a
   `gateway.networking.k8s.io/v1` HTTPRoute attached to the Gateway referenced by
   `spec.expose.gatewayRef`, following the same create/update/cleanup pattern as

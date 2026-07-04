@@ -8,7 +8,7 @@ All connections use port **443** (TLS).
 | Domain | Port | Component | Purpose | Required? |
 |---|---|---|---|---|
 | `api.openshift.com` | 443 | Manager pod | Cincinnati upgrade graph — resolves OCP release nodes and edges for the requested channel/version ranges | **Required** for OCP release mirroring |
-| `mirror.openshift.com` | 443 | Manager pod | GPG signatures for OpenShift release images | **Required** for OCP release signature verification |
+| `mirror.openshift.com` | 443 | Manager pod | GPG signatures for OpenShift release images | **Required** for OCP release signature verification — release payloads whose signature cannot be downloaded or fails verification are not mirrored (see below for the opt-out) |
 | `quay.io` | 443 | Worker pods | OCP release images (`quay.io/openshift-release-dev/ocp-release`) | **Required** for OCP release mirroring |
 | `registry.redhat.io` | 443 | Worker pods | Red Hat operator catalog images and operator bundle images | **Required** for operator mirroring |
 | `api.github.com` | 443 | Console Plugin backend (Dashboard pod) | Queries [`openshift/cincinnati-graph-data`](https://github.com/openshift/cincinnati-graph-data/tree/master/channels) for the current list of available OCP release channels | **Optional** — has ConfigMap and built-in fallbacks (see below) |
@@ -36,6 +36,25 @@ The Console Plugin's Release Browser fetches the list of available OCP release c
    ```
 
 2. **Built-in defaults** — if both the GitHub API and the ConfigMap are unavailable, the backend falls back to a hardcoded list (OCP 4.14–4.19, channels: stable / fast / eus / candidate). EUS channels are only generated for even minor versions.
+
+### Release Signature Verification (mirror.openshift.com)
+
+Release payloads are cryptographically verified against the embedded Red Hat
+release signing keys before being mirrored — a release node whose signature
+cannot be downloaded from `mirror.openshift.com` (or fails verification) is
+skipped, not mirrored. In environments without access to `mirror.openshift.com`
+(e.g. mirroring unpublished/nightly builds, or genuinely air-gapped setups with
+no path to fetch signatures), set `skipSignatureVerification: true` on the
+affected channel:
+
+```yaml
+spec:
+  mirror:
+    platform:
+      channels:
+        - name: stable-4.18
+          skipSignatureVerification: true
+```
 
 ### Cincinnati Graph (api.openshift.com)
 
