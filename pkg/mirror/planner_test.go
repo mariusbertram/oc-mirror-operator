@@ -143,8 +143,15 @@ func greedyOrder(infos []imageBlobInfo) []int {
 		bestIdx := -1
 		bestScore := -1
 
-		for idx := range remaining {
+		bestTieBreaker := -1
+
+		for idx := 0; idx < n; idx++ {
+			if _, ok := remaining[idx]; !ok {
+				continue
+			}
+
 			var score int
+			var tieBreaker int
 			if len(uploaded) == 0 {
 				for b := range infos[idx].blobs {
 					score += blobFreq[b]
@@ -153,11 +160,15 @@ func greedyOrder(infos []imageBlobInfo) []int {
 				for b := range infos[idx].blobs {
 					if _, ok := uploaded[b]; ok {
 						score++
+					} else {
+						tieBreaker += blobFreq[b]
 					}
 				}
 			}
-			if score > bestScore || (score == bestScore && bestIdx == -1) {
+
+			if score > bestScore || (score == bestScore && tieBreaker > bestTieBreaker) || (score == bestScore && tieBreaker == bestTieBreaker && (bestIdx == -1 || idx < bestIdx)) {
 				bestScore = score
+				bestTieBreaker = tieBreaker
 				bestIdx = idx
 			}
 		}
