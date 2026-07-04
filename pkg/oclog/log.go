@@ -4,18 +4,18 @@ import (
 	"fmt"
 	"strings"
 
-	"sigs.k8s.io/controller-runtime/pkg/log"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-// Printf writes a timestamped log line to stdout.
+var log = logf.Log.WithName("oclog")
+
+// Printf writes a log line using controller-runtime's structured logger.
 func Printf(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
-	msg = strings.TrimSuffix(msg, "\n")
-	log.Log.Info(msg)
+	log.Info(strings.TrimSuffix(msg, "\n"))
 }
 
-// Println writes a timestamped log line to stdout.
+// Println writes a log line using controller-runtime's structured logger.
 func Println(msg string) {
-	msg = strings.TrimSuffix(msg, "\n")
-	log.Log.Info(msg)
+	log.Info(strings.TrimSuffix(msg, "\n"))
 }
