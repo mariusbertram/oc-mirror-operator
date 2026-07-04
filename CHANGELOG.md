@@ -28,6 +28,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   expiry.
 
 ### Added
+- **GatewayAPI Exposure**: `spec.expose.type: GatewayAPI` now creates a
+  `gateway.networking.k8s.io/v1` HTTPRoute attached to the Gateway referenced by
+  `spec.expose.gatewayRef`, following the same create/update/cleanup pattern as
+  the existing Route and Ingress exposure types. Requires the Gateway API CRDs
+  to be installed and `gatewayRef.name` to be set; the controller reports a
+  clear error condition when either is missing.
 - **OpenShift Console Plugin**: A new `ConsolePlugin` controller deploys a dedicated plugin pod (`oc-mirror-plugin`) into the operator namespace and registers it with the OpenShift Console. The plugin provides an integrated multi-page UI directly in the OCP web console — no external URL needed.
   - Pages: MirrorTarget overview, ImageSet detail (with image status), CatalogBrowser, Failed Images
   - Auto-deployed on OpenShift clusters; gracefully skipped on non-OCP Kubernetes
