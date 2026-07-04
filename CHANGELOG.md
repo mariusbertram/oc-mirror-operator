@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Operator catalog tag-to-digest drift**: `resolveOperatorSection` probed
+  the catalog's digest via `GetCatalogDigest` for caching purposes, then
+  separately re-pulled the catalog by its original tag reference in
+  `ResolveCatalogFull`/`LoadFBC` — if the upstream tag moved between the two
+  calls, the packages/images actually collected could silently correspond to
+  different catalog content than the digest recorded in the cache
+  annotation. `CatalogResolver.PinDigest` now rewrites the catalog reference
+  to the exact digest probed before every subsequent pull in the same
+  resolution pass, closing that window.
 - **`AdditionalImage.TargetTag` was silently ignored**: `spec.mirror.additionalImages[].targetTag`
   was defined in the API and documented as working, but the collector never applied it —
   the destination always kept the source image's own tag (or whatever tag was baked into
@@ -33,6 +42,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   expiry.
 
 ### Added
+- **Release Signature Verification**: Release payload GPG signatures downloaded
+  from `mirror.openshift.com` are now cryptographically verified against the
+  Red Hat release signing keys (fetched verbatim from
+  `github.com/openshift/cluster-update-keys`, the same keys the
+  cluster-version-operator trusts) before mirroring. A release node whose
+  signature cannot be downloaded, fails verification, or has expired is
+  skipped rather than silently mirrored. New per-channel
+  `skipSignatureVerification` field opts out for test environments and
+  `type: okd`/CI-nightly channels (whose signatures live in a different store
+  this operator doesn't query). Editable from the console plugin's Release
+  Browser.
 - **GatewayAPI Exposure**: `spec.expose.type: GatewayAPI` now creates a
   `gateway.networking.k8s.io/v1` HTTPRoute attached to the Gateway referenced by
   `spec.expose.gatewayRef`, following the same create/update/cleanup pattern as
@@ -51,6 +71,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the manager pod has no general host filesystem access. Editable via a new
   REST endpoint (`GET`/`PATCH .../helm`) and a new "Helm" tab on the console
   plugin's ImageSet detail page.
+- **Cincinnati Graph Data (OSUS)**: `spec.mirror.platform.graph: true` now
+  actually builds and pushes a graph-data image — previously the field was
+  UI-editable but had no backend effect. The manager downloads the current
+  graph-data archive from `api.openshift.com`, builds a
+  `registry.access.redhat.com/ubi9/ubi`-based OCI image with the data
+  embedded (matching oc-mirror v2's format exactly), and pushes it to
+  `<registry>/openshift/graph-image:latest` for consumption by the OpenShift
+  Update Service (OSUS) in disconnected clusters. Rebuilds are throttled to
+  the MirrorTarget's `pollInterval`, the same cadence as release/operator
+  polling.
 - **Blocked Images**: `spec.mirror.blockedImages` is now evaluated. Images whose
   registry-agnostic repository path matches a blocked name are removed from the
   resolved image set, regardless of whether they originated from a release, an

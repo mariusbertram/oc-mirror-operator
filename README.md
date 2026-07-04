@@ -29,7 +29,7 @@ Unlike the static `oc-mirror` CLI tool, this operator works cloud-natively and d
 | **Additional Images** | ✅ | ✅ | Individual images with optional `targetRepo` / `targetTag` |
 | **Cosign Signatures** | ✅ | ✅ | Tag-based `.sig` signatures are automatically copied along |
 | **OCI Referrers** | ✅ | ✅ | Attestations, SBOMs via `regclient.ImageWithReferrers()` |
-| **Release Signatures** | ✅ | ✅ | Download from mirror.openshift.com/pub/openshift-v4/signatures |
+| **Release Signatures** | ✅ | ✅ | Downloaded from mirror.openshift.com/pub/openshift-v4/signatures and cryptographically verified against the embedded Red Hat release signing keys before mirroring; unverifiable payloads are skipped (opt-out per channel via `skipSignatureVerification`) |
 | **IDMS/ITMS Generation** | ✅ | ✅ | ImageDigestMirrorSet and ImageTagMirrorSet — provided via Resource API |
 | **Incremental Mirroring** | ✅ | ✅ | Already mirrored images are skipped (consolidated per-MirrorTarget state) |
 | **Registry Drift Detection** | ✗ | ✅ | Manager verifies every 5 min whether mirrored images still exist in the registry; missing ones are automatically re-mirrored. Auth token refresh every 20 checks prevents Quay nginx 8KB header limit |
@@ -49,6 +49,7 @@ Unlike the static `oc-mirror` CLI tool, this operator works cloud-natively and d
 | **KubeVirt Container Disk** | ✅ | ✅ | `platform.kubeVirtContainer: true` extracts KubeVirt disk images from the release payload (RHCOS per architecture) |
 | **GatewayAPI Exposure** | ✗ | ✅ | `spec.expose.type: GatewayAPI` creates a `gateway.networking.k8s.io/v1` HTTPRoute attached to the Gateway referenced by `spec.expose.gatewayRef`; requires the Gateway API CRDs to be installed |
 | **Helm Chart Mirroring** | ✅ | ✅ | `spec.mirror.helm.repositories` downloads charts, fully renders their templates (real `helm.sh/helm/v3` SDK, not a static values.yaml scan), and scans every rendered manifest for image references via JSONPath (default paths + custom `imagePaths`) |
+| **Cincinnati Graph Data** | ✅ | ✅ | `platform.graph: true` builds and pushes a UBI9-based `openshift/graph-image:latest` OSUS graph-data image, matching oc-mirror v2's format; rebuilt on the same `pollInterval` cadence as release/operator polling |
 | **Blocked Images** | ✅ | ✅ | `spec.mirror.blockedImages` excludes matching images (registry-agnostic repository path match) across releases, operators, and additional images alike; editable from the console plugin's ImageSet detail page |
 
 ### ❌ Not Implemented Features
@@ -60,7 +61,6 @@ Unlike the static `oc-mirror` CLI tool, this operator works cloud-natively and d
 | **Disk-to-Mirror** | ✅ | ❌ | `oc-mirror` can mirror from a local archive to a registry — `platform.release` field exists but is not used |
 | **Enclave Support** | ✅ | ❌ | No concept for air-gap transfer via media — the operator requires network access to both source and target registry |
 | **UpdateService CR** | ✅ | ❌ | `oc-mirror` generates an UpdateService CR for OSUS — not implemented |
-| **Cincinnati Graph Data** | ✅ | ❌ | `platform.graph: true` field exists, but graph data is not pushed to the target registry |
 | **Samples** | ✅ | ❌ | API field exists, explicitly marked as "not implemented" |
 
 ### Operator-Specific Features (no equivalent in oc-mirror CLI)

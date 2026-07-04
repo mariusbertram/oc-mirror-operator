@@ -107,6 +107,7 @@ export interface ReleaseChannel {
   maxVersion?: string;
   shortestPath?: boolean;
   full?: boolean;
+  skipSignatureVerification?: boolean;
 }
 
 export interface ReleaseSpec {

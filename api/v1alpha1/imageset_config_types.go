@@ -87,6 +87,18 @@ type ReleaseChannel struct {
 	// to the last release in the channel.
 	// +optional
 	Full bool `json:"full,omitempty"`
+	// SkipSignatureVerification disables cryptographic verification of the
+	// release payload's GPG signature against the embedded Red Hat release
+	// signing keys before mirroring. Verification is enabled by default;
+	// only disable this for test environments mirroring unpublished or
+	// unsigned release payloads (e.g. CI/nightly builds without a matching
+	// trusted key). Release nodes whose signature cannot be downloaded or
+	// fails verification are skipped (not mirrored) unless this is set.
+	// Signature lookup only queries the official Red Hat release mirror, so
+	// this must be set to true for Type: okd channels and any OCP channel
+	// mirroring unpublished CI/nightly payloads.
+	// +optional
+	SkipSignatureVerification bool `json:"skipSignatureVerification,omitempty"`
 }
 
 // Operator defines the configuration for operator catalog mirroring.

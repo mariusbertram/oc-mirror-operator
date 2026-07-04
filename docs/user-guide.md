@@ -464,7 +464,16 @@ spec:
       channels:
         - name: stable-4.14
           type: okd
+          skipSignatureVerification: true   # see note below
 ```
+
+> **Note:** Release signature verification (see [10.5](#105-release-signatures))
+> only checks signatures against the official Red Hat release mirror
+> (`mirror.openshift.com`). OKD and CI/nightly builds are signed with a
+> different key and published to a separate signature store that this
+> operator does not query, so their signature lookup always fails. Set
+> `skipSignatureVerification: true` for `type: okd` channels (and any OCP
+> channel mirroring unpublished CI/nightly payloads).
 
 #### KubeVirt Container-Disk
 
@@ -479,6 +488,37 @@ spec:
         - name: stable-4.14
           minVersion: "4.14.30"
 ```
+
+#### Cincinnati Graph Data (OSUS)
+
+```yaml
+spec:
+  mirror:
+    platform:
+      graph: true
+      channels:
+        - name: stable-4.18
+```
+
+When `graph: true`, the manager downloads the current Cincinnati graph-data
+archive from `api.openshift.com`, builds a `registry.access.redhat.com/ubi9/ubi`-based
+OCI image with the data embedded, and pushes it to
+`<registry>/openshift/graph-image:latest` — the same format `oc-mirror` v2
+produces, consumable by the OpenShift Update Service (OSUS) in disconnected
+clusters. See [Configuring your update
+service](https://docs.openshift.com/container-platform/4.13/updating/updating-restricted-network-cluster/restricted-network-update-osus.html)
+for wiring the pushed image into an `UpdateService` resource on the target
+cluster.
+
+Rebuilds are throttled to the MirrorTarget's `pollInterval` (default 24h),
+the same cadence used for release/operator upstream polling — not on every
+reconcile. Trigger an immediate rebuild with the
+[recollect annotation](#91-recollect-force-re-sync).
+
+> **Note:** This requires outbound HTTPS access to `api.openshift.com` from
+> the manager pod, in addition to the Cincinnati graph API access already
+> required for release channel resolution (see
+> [Network Requirements](network-requirements.md)).
 
 ### 6.2 Operator Catalogs
 
@@ -1275,6 +1315,28 @@ curl https://${MIRROR_URL}/api/v1/targets/<mirrortarget-name>/imagesets/<imagese
 > Resources are only served once the associated ImageSet has reached `Ready` status.
 
 ### 10.5 Release Signatures
+
+Before a release payload is mirrored, its GPG signature is downloaded from
+`mirror.openshift.com` and cryptographically verified against the Red Hat
+release signing keys embedded in the manager (the same keys the
+cluster-version-operator trusts). A release node whose signature cannot be
+downloaded or fails verification is **not mirrored** — it is skipped with a
+warning log until a valid signature becomes available.
+
+For test environments mirroring unpublished or unsigned payloads (e.g. CI/
+nightly builds without a matching trusted key), disable verification per
+channel:
+
+```yaml
+spec:
+  mirror:
+    platform:
+      channels:
+        - name: stable-4.18
+          skipSignatureVerification: true   # default: false (verify)
+```
+
+Only the verified signatures are exposed via the Resource API:
 
 ```bash
 # ConfigMap with release signatures for the mirrored OCP release

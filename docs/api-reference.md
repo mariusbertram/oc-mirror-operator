@@ -211,7 +211,7 @@ kubectl get imagesets -n <namespace>
 |---|---|---|
 | `channels` | `[]ReleaseChannel` | Release channels to mirror. |
 | `architectures` | `[]string` | Architectures to include (e.g. `amd64`, `arm64`). |
-| `graph` | `bool` | Whether to include Cincinnati graph data. |
+| `graph` | `bool` | Builds and pushes a `<registry>/openshift/graph-image:latest` OSUS graph-data image (rebuilt on the MirrorTarget's `pollInterval` cadence). |
 | `kubeVirtContainer` | `bool` | Extract the KubeVirt container from release payload. |
 
 #### ReleaseChannel
@@ -224,6 +224,7 @@ kubectl get imagesets -n <namespace>
 | `maxVersion` | `string` | Maximum version to mirror. |
 | `shortestPath` | `bool` | Mirror only the shortest upgrade path between min and max. |
 | `full` | `bool` | Mirror all versions in the channel. |
+| `skipSignatureVerification` | `bool` | Skip GPG signature verification against the embedded Red Hat release keys. Default: `false` (verify). Only disable for test environments mirroring unpublished/unsigned payloads. |
 
 #### Operator
 

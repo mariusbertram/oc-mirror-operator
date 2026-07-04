@@ -11,6 +11,7 @@ import (
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/imagestate"
+	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/release"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/resources"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -507,6 +508,65 @@ var _ = Describe("Manager Coverage", func() {
 			removed := pruneObsoleteCacheAnnotations(annotations, is)
 			Expect(removed).To(BeTrue())
 			Expect(annotations).To(BeEmpty())
+		})
+	})
+
+	// ─── resolveGraphImage ────────────────────────────────────────────
+
+	Context("resolveGraphImage", func() {
+		It("returns false and touches no annotation when platform.graph is false", func() {
+			is := &mirrorv1alpha1.ImageSet{
+				Spec: mirrorv1alpha1.ImageSetSpec{
+					Mirror: mirrorv1alpha1.Mirror{Platform: mirrorv1alpha1.Platform{Graph: false}},
+				},
+			}
+			mt := &mirrorv1alpha1.MirrorTarget{Spec: mirrorv1alpha1.MirrorTargetSpec{Registry: "mirror.io"}}
+			annotations := map[string]string{}
+			changed := m.resolveGraphImage(context.TODO(), is, mt, annotations, false)
+			Expect(changed).To(BeFalse())
+			Expect(annotations).NotTo(HaveKey(mirrorv1alpha1.GraphImageBuiltAnnotation))
+		})
+
+		It("skips rebuild when already built within the poll interval", func() {
+			is := &mirrorv1alpha1.ImageSet{
+				Spec: mirrorv1alpha1.ImageSetSpec{
+					Mirror: mirrorv1alpha1.Mirror{Platform: mirrorv1alpha1.Platform{Graph: true}},
+				},
+			}
+			mt := &mirrorv1alpha1.MirrorTarget{Spec: mirrorv1alpha1.MirrorTargetSpec{Registry: "mirror.io"}}
+			annotations := map[string]string{
+				mirrorv1alpha1.GraphImageBuiltAnnotation: time.Now().UTC().Format(time.RFC3339),
+			}
+			changed := m.resolveGraphImage(context.TODO(), is, mt, annotations, false)
+			Expect(changed).To(BeFalse())
+		})
+	})
+
+	// ─── verifyReleaseNodes ───────────────────────────────────────────
+
+	Context("verifyReleaseNodes", func() {
+		It("returns nodes unchanged when SkipSignatureVerification is set (no network call)", func() {
+			ch := mirrorv1alpha1.ReleaseChannel{Name: "stable-4.18", SkipSignatureVerification: true}
+			nodes := []release.Node{
+				{Version: "4.18.1", Image: "quay.io/openshift-release-dev/ocp-release@sha256:abc"},
+			}
+			result := m.verifyReleaseNodes(context.TODO(), ch, nodes)
+			Expect(result).To(Equal(nodes))
+		})
+
+		It("returns an empty slice for an empty input without making any network call", func() {
+			ch := mirrorv1alpha1.ReleaseChannel{Name: "stable-4.18"}
+			result := m.verifyReleaseNodes(context.TODO(), ch, nil)
+			Expect(result).To(BeEmpty())
+		})
+
+		It("drops nodes without a digest before attempting signature verification", func() {
+			ch := mirrorv1alpha1.ReleaseChannel{Name: "stable-4.18"}
+			nodes := []release.Node{
+				{Version: "4.18.1", Image: "quay.io/openshift-release-dev/ocp-release:4.18.1"}, // no @sha256 digest
+			}
+			result := m.verifyReleaseNodes(context.TODO(), ch, nodes)
+			Expect(result).To(BeEmpty())
 		})
 	})
 
@@ -2395,7 +2455,7 @@ var _ = Describe("Manager Coverage", func() {
 
 			info := resources.CatalogInfo{SourceCatalog: "registry.example.com/catalog:v4.12"}
 			// resolver is nil — if LoadFBC were called it would panic.
-			err := m.ensureUpstreamCatalogPackages(context.TODO(), nil, "preexist-slug", info)
+			err := m.ensureUpstreamCatalogPackages(context.TODO(), nil, "preexist-slug", info, "registry.example.com/catalog@sha256:abc")
 			Expect(err).NotTo(HaveOccurred())
 		})
 	})
