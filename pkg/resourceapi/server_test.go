@@ -852,6 +852,80 @@ var _ = Describe("ResourceAPI Server", func() {
 		})
 	})
 
+	Describe("handleGetBlockedImages / handlePatchBlockedImages", func() {
+		var blockedRouter http.Handler
+
+		BeforeEach(func() {
+			sc := runtime.NewScheme()
+			_ = corev1.AddToScheme(sc)
+			_ = mirrorv1alpha1.AddToScheme(sc)
+			is := &mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "blocked-is", Namespace: ns},
+				Spec: mirrorv1alpha1.ImageSetSpec{
+					Mirror: mirrorv1alpha1.Mirror{
+						BlockedImages: []mirrorv1alpha1.BlockedImage{
+							{Name: "quay.io/foo/bar"},
+						},
+					},
+				},
+			}
+			c := fake.NewClientBuilder().WithScheme(sc).WithObjects(is).Build()
+			s := resourceapi.NewServer(c, ns)
+			r := mux.NewRouter()
+			s.RegisterAPIRoutes(r)
+			blockedRouter = r
+		})
+
+		It("returns the current blocked images list", func() {
+			url := fmt.Sprintf("/api/v1/imagesets/%s/blocked-is/blocked-images", ns)
+			req := httptest.NewRequest("GET", url, nil)
+			rr := httptest.NewRecorder()
+			blockedRouter.ServeHTTP(rr, req)
+			Expect(rr.Code).To(Equal(http.StatusOK))
+			Expect(rr.Body.String()).To(ContainSubstring("quay.io/foo/bar"))
+		})
+
+		It("returns 404 for a non-existent ImageSet on GET", func() {
+			url := fmt.Sprintf("/api/v1/imagesets/%s/ghost-is/blocked-images", ns)
+			req := httptest.NewRequest("GET", url, nil)
+			rr := httptest.NewRecorder()
+			blockedRouter.ServeHTTP(rr, req)
+			Expect(rr.Code).To(Equal(http.StatusNotFound))
+		})
+
+		It("replaces the blocked images list", func() {
+			url := fmt.Sprintf("/api/v1/imagesets/%s/blocked-is/blocked-images", ns)
+			body := `{"blockedImages":["quay.io/new/one","quay.io/new/two"]}`
+			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(body))
+			rr := httptest.NewRecorder()
+			blockedRouter.ServeHTTP(rr, req)
+			Expect(rr.Code).To(Equal(http.StatusNoContent))
+
+			getReq := httptest.NewRequest("GET", url, nil)
+			getRR := httptest.NewRecorder()
+			blockedRouter.ServeHTTP(getRR, getReq)
+			Expect(getRR.Body.String()).To(ContainSubstring("quay.io/new/one"))
+			Expect(getRR.Body.String()).To(ContainSubstring("quay.io/new/two"))
+			Expect(getRR.Body.String()).NotTo(ContainSubstring("quay.io/foo/bar"))
+		})
+
+		It("returns 400 for invalid JSON body on PATCH", func() {
+			url := fmt.Sprintf("/api/v1/imagesets/%s/blocked-is/blocked-images", ns)
+			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString("{invalid json"))
+			rr := httptest.NewRecorder()
+			blockedRouter.ServeHTTP(rr, req)
+			Expect(rr.Code).To(Equal(http.StatusBadRequest))
+		})
+
+		It("returns 404 for a non-existent ImageSet on PATCH", func() {
+			url := fmt.Sprintf("/api/v1/imagesets/%s/ghost-is/blocked-images", ns)
+			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(`{"blockedImages":[]}`))
+			rr := httptest.NewRecorder()
+			blockedRouter.ServeHTTP(rr, req)
+			Expect(rr.Code).To(Equal(http.StatusNotFound))
+		})
+	})
+
 	Describe("write handlers (recollect and delete)", func() {
 		var (
 			withIsRouter http.Handler

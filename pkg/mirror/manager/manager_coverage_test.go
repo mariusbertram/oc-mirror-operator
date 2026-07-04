@@ -510,6 +510,33 @@ var _ = Describe("Manager Coverage", func() {
 		})
 	})
 
+	// ─── filterBlockedImages ──────────────────────────────────────────
+
+	Context("filterBlockedImages", func() {
+		It("removes entries whose Source matches a blocked name", func() {
+			state := imagestate.ImageState{
+				"d1": &imagestate.ImageEntry{Source: "quay.io/foo/blocked:v1", State: "Mirrored"},
+				"d2": &imagestate.ImageEntry{Source: "quay.io/foo/keep:v1", State: "Pending"},
+			}
+			filterBlockedImages(state, []mirrorv1alpha1.BlockedImage{{Name: "foo/blocked"}})
+			Expect(state).To(HaveKey("d2"))
+			Expect(state).NotTo(HaveKey("d1"))
+		})
+
+		It("is a no-op when blocked list is empty", func() {
+			state := imagestate.ImageState{
+				"d1": &imagestate.ImageEntry{Source: "quay.io/foo/bar:v1", State: "Pending"},
+			}
+			filterBlockedImages(state, nil)
+			Expect(state).To(HaveKey("d1"))
+		})
+
+		It("skips nil entries", func() {
+			state := imagestate.ImageState{"d1": nil}
+			Expect(func() { filterBlockedImages(state, []mirrorv1alpha1.BlockedImage{{Name: "x"}}) }).NotTo(Panic())
+		})
+	})
+
 	// ─── workerTokenSecretName ───────────────────────────────────────
 
 	Context("workerTokenSecretName", func() {

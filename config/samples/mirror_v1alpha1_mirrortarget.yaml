@@ -6,3 +6,8 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: mirrortarget-sample
 spec:
+  registry: registry.example.com/mirror
+  imageSets:
+    - imageset-sample
+  insecure: false
+  authSecret: registry-credentials
