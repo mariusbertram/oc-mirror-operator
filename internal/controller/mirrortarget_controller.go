@@ -1284,18 +1284,25 @@ func (r *MirrorTargetReconciler) aggregateImageSetStatus(ctx context.Context, mt
 
 	summaries := make([]mirrorv1alpha1.ImageSetStatusSummary, 0, len(names))
 
+	var isList mirrorv1alpha1.ImageSetList
+	if err := r.List(ctx, &isList, client.InNamespace(mt.Namespace)); err != nil {
+		return fmt.Errorf("list ImageSets: %w", err)
+	}
+
+	isMap := make(map[string]*mirrorv1alpha1.ImageSet, len(isList.Items))
+	for i := range isList.Items {
+		is := &isList.Items[i]
+		isMap[is.Name] = is
+	}
+
 	for _, name := range names {
-		var is mirrorv1alpha1.ImageSet
-		err := r.Get(ctx, client.ObjectKey{Namespace: mt.Namespace, Name: name}, &is)
-		if err != nil {
-			if errors.IsNotFound(err) {
-				summaries = append(summaries, mirrorv1alpha1.ImageSetStatusSummary{
-					Name:  name,
-					Found: false,
-				})
-				continue
-			}
-			return fmt.Errorf("get ImageSet %q: %w", name, err)
+		is, ok := isMap[name]
+		if !ok {
+			summaries = append(summaries, mirrorv1alpha1.ImageSetStatusSummary{
+				Name:  name,
+				Found: false,
+			})
+			continue
 		}
 		summaries = append(summaries, mirrorv1alpha1.ImageSetStatusSummary{
 			Name:     name,
