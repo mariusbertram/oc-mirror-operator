@@ -64,9 +64,15 @@ func PlanMirrorOrder(ctx context.Context, client *mirrorclient.MirrorClient, sou
 	for len(remaining) > 0 {
 		bestIdx := -1
 		bestScore := -1
+		bestTieBreaker := -1
 
-		for idx := range remaining {
+		for idx := 0; idx < n; idx++ {
+			if _, ok := remaining[idx]; !ok {
+				continue
+			}
+
 			var score int
+			var tieBreaker int
 			if len(uploaded) == 0 {
 				// First pick: choose image whose blobs appear in the most other
 				// images — uploading these blobs first maximises future savings.
@@ -76,15 +82,22 @@ func PlanMirrorOrder(ctx context.Context, client *mirrorclient.MirrorClient, sou
 			} else {
 				// Subsequent picks: prefer the image with the most blobs already
 				// uploaded (= most anonymous-mount hits, fewest new uploads).
+				// We break ties by preferring images whose remaining blobs are
+				// needed by the most other images.
 				for b := range infos[idx].blobs {
 					if _, ok := uploaded[b]; ok {
 						score++
+					} else {
+						tieBreaker += blobFreq[b]
 					}
 				}
 			}
 
-			if score > bestScore || (score == bestScore && bestIdx == -1) {
+			// In case of a tie in both score and tieBreaker, we prefer the smaller index
+			// to ensure determinism.
+			if score > bestScore || (score == bestScore && tieBreaker > bestTieBreaker) || (score == bestScore && tieBreaker == bestTieBreaker && (bestIdx == -1 || idx < bestIdx)) {
 				bestScore = score
+				bestTieBreaker = tieBreaker
 				bestIdx = idx
 			}
 		}
@@ -120,7 +133,7 @@ func extractBlobDigests(ctx context.Context, client *mirrorclient.MirrorClient, 
 	if m.IsList() {
 		descs, err := m.GetManifestList() //nolint:staticcheck
 		if err != nil {
-			return blobs, nil
+			return nil, err
 		}
 		for _, d := range descs {
 			if dig := d.Digest.String(); dig != "" {
