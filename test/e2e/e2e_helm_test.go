@@ -233,15 +233,17 @@ spec:
 				return mirrorDiagnosticDump(ns, imageSetName)
 			})
 
-			By("verifying the chart's image is referenced in the generated IDMS")
+			By("verifying the chart's image is referenced in the generated ITMS")
+			// Helm images are tag-based (not pre-resolved to a digest), so they
+			// land in the ImageTagMirrorSet, not the ImageDigestMirrorSet.
 			cmd = exec.Command("kubectl", "get", "configmap",
 				fmt.Sprintf("oc-mirror-%s-resources", targetName),
 				"-n", ns,
-				"-o", "jsonpath={.data.idms\\.yaml}")
+				"-o", "jsonpath={.data.itms\\.yaml}")
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(output).To(ContainSubstring(chartImageName),
-				"IDMS should reference the Helm chart's image: %s", output)
+				"ITMS should reference the Helm chart's image: %s", output)
 		})
 	})
 })
