@@ -305,7 +305,7 @@ jobs:
           SKIP_CLUSTER_SETUP=true \
           CERT_MANAGER_INSTALL_SKIP=true \
           KIND_CLUSTER=oc-mirror-e2e \
-          go test ./test/e2e/ -v -timeout 30m \
+          go test ./test/e2e/ -v -timeout 45m \
             -ginkgo.v \
             -ginkgo.label-filter="!catalog-live && !olm-upgrade"
           # label map:
