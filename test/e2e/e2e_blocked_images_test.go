@@ -131,15 +131,19 @@ spec:
 				return mirrorDiagnosticDump(ns, imageSetName)
 			})
 
-			By("verifying the blocked image is absent from the generated IDMS")
+			By("verifying the allowed image is mirrored and the blocked image is absent from the generated ITMS")
+			// additionalImages are tag-based (not pre-resolved to a digest), so
+			// they land in the ImageTagMirrorSet, not the ImageDigestMirrorSet.
 			cmd = exec.Command("kubectl", "get", "configmap",
 				fmt.Sprintf("oc-mirror-%s-resources", targetName),
 				"-n", ns,
-				"-o", "jsonpath={.data.idms\\.yaml}")
+				"-o", "jsonpath={.data.itms\\.yaml}")
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
+			Expect(output).To(ContainSubstring("alpine"),
+				"ITMS should reference the allowed image: %s", output)
 			Expect(output).NotTo(ContainSubstring("busybox"),
-				"IDMS should not reference the blocked image: %s", output)
+				"ITMS should not reference the blocked image: %s", output)
 		})
 	})
 })
