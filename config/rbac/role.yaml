@@ -91,6 +91,7 @@ rules:
   - mirror.openshift.io
   resources:
   - imagesets
+  - mirrorexports
   - mirrortargets
   verbs:
   - create
@@ -104,6 +105,7 @@ rules:
   - mirror.openshift.io
   resources:
   - imagesets/finalizers
+  - mirrorexports/finalizers
   - mirrortargets/finalizers
   verbs:
   - update
@@ -120,6 +122,7 @@ rules:
 - apiGroups:
   - mirror.openshift.io
   resources:
+  - mirrorexports/status
   - mirrortargets/status
   verbs:
   - get

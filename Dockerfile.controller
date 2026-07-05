@@ -21,11 +21,13 @@ COPY api/ api/
 COPY pkg/ pkg/
 COPY internal/ internal/
 
-# Build the controller and catalog-builder binaries.
-# catalog-builder is included because the controller creates catalog-builder Jobs
-# using OPERATOR_IMAGE, so the controller image must contain /catalog-builder.
+# Build the controller, catalog-builder, and export-builder binaries.
+# catalog-builder and export-builder are included because the controller
+# creates their Jobs using OPERATOR_IMAGE, so the controller image must
+# contain both /catalog-builder and /export-builder.
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o controller ./cmd/controller/
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o catalog-builder ./cmd/catalog-builder/
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o export-builder ./cmd/export-builder/
 
 # Use distroless as minimal base image to package the controller binary
 # Refer to https://github.com/GoogleContainerTools/distroless for more details
@@ -33,6 +35,7 @@ FROM gcr.io/distroless/static:nonroot@sha256:64c43684e6d2b581d1eb362ea47b6a4defe
 WORKDIR /
 COPY --from=builder /workspace/controller .
 COPY --from=builder /workspace/catalog-builder .
+COPY --from=builder /workspace/export-builder .
 USER 65532:65532
 
 ENTRYPOINT ["/controller"]

@@ -257,6 +257,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err := (&controller.MirrorExportReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "MirrorExport")
+		os.Exit(1)
+	}
+
 	pluginImage := os.Getenv("PLUGIN_IMAGE")
 	if err := (&controller.ConsolePluginReconciler{
 		Client:      mgr.GetClient(),

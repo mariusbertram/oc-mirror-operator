@@ -1,0 +1,23 @@
+apiVersion: mirror.openshift.io/v1alpha1
+kind: MirrorExport
+metadata:
+  labels:
+    app.kubernetes.io/name: oc-mirror
+    app.kubernetes.io/managed-by: kustomize
+  name: mirrorexport-sample
+spec:
+  mirror:
+    platform:
+      architectures:
+        - "amd64"
+      channels:
+        - name: stable-4.14
+          minVersion: "4.14.30"
+          maxVersion: "4.14.35"
+          shortestPath: true
+    operators:
+      - catalog: registry.redhat.io/redhat/redhat-operator-index:v4.14
+        packages:
+          - name: web-terminal
+  destination:
+    registry: registry.example.com/mirror
