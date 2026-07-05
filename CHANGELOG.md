@@ -53,6 +53,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `type: okd`/CI-nightly channels (whose signatures live in a different store
   this operator doesn't query). Editable from the console plugin's Release
   Browser.
+- **Operator Catalog Signature Verification**: New optional
+  `operators[].signatureVerification.publicKeySecretRef` verifies a catalog
+  image's cosign/sigstore signature (against a caller-supplied PEM public key,
+  read from a Secret in the ImageSet's namespace) before every resolution.
+  Unlike release payloads, there is no single trusted signer for third-party
+  catalogs, so this is opt-in rather than on-by-default. A catalog that fails
+  verification is skipped for that pass — its previously mirrored state is
+  carried over — and retried on the next poll.
 - **GatewayAPI Exposure**: `spec.expose.type: GatewayAPI` now creates a
   `gateway.networking.k8s.io/v1` HTTPRoute attached to the Gateway referenced by
   `spec.expose.gatewayRef`, following the same create/update/cleanup pattern as

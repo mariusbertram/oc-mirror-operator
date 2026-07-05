@@ -1,5 +1,7 @@
 package v1alpha1
 
+import corev1 "k8s.io/api/core/v1"
+
 // PlatformType defines the content type for platforms
 // +kubebuilder:validation:Enum=ocp;okd
 type PlatformType string
@@ -120,6 +122,25 @@ type Operator struct {
 	// SkipDependencies will not include dependencies if true.
 	// +optional
 	SkipDependencies bool `json:"skipDependencies,omitempty"`
+	// SignatureVerification, when set, requires the catalog image to carry a
+	// valid cosign/sigstore signature verifiable against the referenced
+	// public key before it is resolved. Unlike OpenShift release payloads
+	// (which are always verified against embedded Red Hat keys), there is no
+	// single trusted signer for third-party operator catalogs, so
+	// verification here is opt-in and the key is supplied per-catalog.
+	// Unset (the default) means no verification is performed, matching
+	// pre-existing behavior.
+	// +optional
+	SignatureVerification *CosignVerification `json:"signatureVerification,omitempty"`
+}
+
+// CosignVerification defines cosign/sigstore public-key signature
+// verification for a container image.
+type CosignVerification struct {
+	// PublicKeySecretRef references a key within a Secret, in the same
+	// namespace as the ImageSet, whose value is a PEM-encoded cosign public
+	// key used to verify the image's signature.
+	PublicKeySecretRef corev1.SecretKeySelector `json:"publicKeySecretRef"`
 }
 
 // IncludeConfig defines a list of packages for

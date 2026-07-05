@@ -32,6 +32,7 @@ import (
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/catalog"
 	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
+	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/cosign"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/graph"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/imagestate"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/release"
@@ -552,6 +553,14 @@ func (m *MirrorManager) resolveOperatorSection( //nolint:unparam
 			continue
 		}
 
+		if op.SignatureVerification != nil {
+			if err := m.verifyOperatorCatalogSignature(ctx, mt, op, freshDigest); err != nil {
+				oclog.Printf("Warning: signature verification failed for catalog %s: %v; skipping until signed\n", op.Catalog, err)
+				carryOverByOriginAndSig(currentState, newState, imagestate.OriginOperator, sig, originRef)
+				continue
+			}
+		}
+
 		// Pin the catalog reference to the digest just probed above, so a tag
 		// that moves between this point and the ResolveCatalogFull/LoadFBC pull
 		// below cannot cause the FBC parse to see different content than what
@@ -610,6 +619,25 @@ func (m *MirrorManager) resolveOperatorSection( //nolint:unparam
 		}
 	}
 	return annoChanged, nil
+}
+
+// verifyOperatorCatalogSignature verifies op.Catalog's cosign/sigstore
+// signature at catalogDigest against the public key referenced by
+// op.SignatureVerification. Unlike release payloads (which are always
+// verified against embedded Red Hat keys), this is opt-in per catalog since
+// there is no single trusted signer for third-party operator catalogs.
+func (m *MirrorManager) verifyOperatorCatalogSignature(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget, op mirrorv1alpha1.Operator, catalogDigest string) error {
+	sv := op.SignatureVerification
+	secret := &corev1.Secret{}
+	secretKey := types.NamespacedName{Namespace: m.Namespace, Name: sv.PublicKeySecretRef.Name}
+	if err := m.Client.Get(ctx, secretKey, secret); err != nil {
+		return fmt.Errorf("get public key secret %s: %w", sv.PublicKeySecretRef.Name, err)
+	}
+	pubKeyPEM, ok := secret.Data[sv.PublicKeySecretRef.Key]
+	if !ok {
+		return fmt.Errorf("secret %s has no key %q", sv.PublicKeySecretRef.Name, sv.PublicKeySecretRef.Key)
+	}
+	return cosign.VerifyImageSignature(ctx, m.registryClientFor(mt), op.Catalog, catalogDigest, pubKeyPEM)
 }
 
 // mergeIntoStateWithSig writes entries into dst, tagging each with origin+sig.

@@ -236,6 +236,13 @@ kubectl get imagesets -n <namespace>
 | `targetCatalog` | `string` | Override the full URL of the built catalog image. |
 | `targetTag` | `string` | Override the tag for the built catalog image. |
 | `skipDependencies` | `bool` | Do not resolve `olm.gvk.required` dependencies. |
+| `signatureVerification` | `CosignVerification` | Optional. When set, the catalog image must carry a valid cosign/sigstore signature verifiable against the referenced public key, checked before every resolution. A catalog that fails verification is skipped (its previous mirrored state is carried over) until it is signed correctly. |
+
+#### CosignVerification
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `publicKeySecretRef` | `SecretKeySelector` | **yes** | Reference to a key within a Secret, in the same namespace as the ImageSet, whose value is a PEM-encoded cosign public key (e.g. as produced by `cosign generate-key-pair`). |
 
 #### IncludePackage
 
