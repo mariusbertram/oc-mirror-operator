@@ -34,6 +34,29 @@ jobs:
           go mod tidy
           make test
 
+      - name: Coverage summary
+        if: always()
+        run: |
+          if [ ! -f cover.out ]; then
+            echo "No cover.out produced (test run failed before coverage was written)."
+            exit 0
+          fi
+          {
+            echo "### Test coverage"
+            echo
+            echo '```'
+            go tool cover -func=cover.out | awk '{printf "%-80s %-40s %s\n", $1, $2, $3}'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: coverage-report
+          path: cover.out
+          retention-days: 7
+          if-no-files-found: ignore
+
   # ── 2. Build component images and export as artifacts ────────────────────────
   build:
     name: Build component images
