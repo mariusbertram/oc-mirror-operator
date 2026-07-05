@@ -631,6 +631,36 @@ spec:
           - name: web-terminal
 ```
 
+#### Verify a catalog's cosign/sigstore signature
+
+Unlike OpenShift release payloads (§10.5), which are always verified against
+embedded Red Hat keys, third-party operator catalogs have no single trusted
+signer — so verification here is opt-in per catalog, with the public key
+supplied via a Secret:
+
+```bash
+kubectl create secret generic acme-catalog-key \
+  --from-file=cosign.pub=./acme-cosign.pub \
+  -n <imageset-namespace>
+```
+
+```yaml
+spec:
+  mirror:
+    operators:
+      - catalog: registry.acme.example.com/acme/operator-index:v1.2
+        signatureVerification:
+          publicKeySecretRef:
+            name: acme-catalog-key
+            key: cosign.pub
+        packages:
+          - name: acme-operator
+```
+
+A catalog whose signature does not verify (missing, tampered, or signed by a
+different key) is skipped on that resolution pass — its previously mirrored
+state is carried over unchanged, and resolution is retried on the next poll.
+
 #### Multiple catalogs
 
 ```yaml

@@ -30,6 +30,7 @@ Unlike the static `oc-mirror` CLI tool, this operator works cloud-natively and d
 | **Cosign Signatures** | ✅ | ✅ | Tag-based `.sig` signatures are automatically copied along |
 | **OCI Referrers** | ✅ | ✅ | Attestations, SBOMs via `regclient.ImageWithReferrers()` |
 | **Release Signatures** | ✅ | ✅ | Downloaded from mirror.openshift.com/pub/openshift-v4/signatures and cryptographically verified against the embedded Red Hat release signing keys before mirroring; unverifiable payloads are skipped (opt-out per channel via `skipSignatureVerification`) |
+| **Operator Catalog Signature Verification** | ✗ | ✅ | Optional per-catalog cosign/sigstore signature verification via `operators[].signatureVerification.publicKeySecretRef` — there is no single trusted signer for third-party catalogs (unlike OpenShift releases), so this is opt-in with a caller-supplied public key instead of an embedded one |
 | **IDMS/ITMS Generation** | ✅ | ✅ | ImageDigestMirrorSet and ImageTagMirrorSet — provided via Resource API |
 | **Incremental Mirroring** | ✅ | ✅ | Already mirrored images are skipped (consolidated per-MirrorTarget state) |
 | **Registry Drift Detection** | ✗ | ✅ | Manager verifies every 5 min whether mirrored images still exist in the registry; missing ones are automatically re-mirrored. Auth token refresh every 20 checks prevents Quay nginx 8KB header limit |

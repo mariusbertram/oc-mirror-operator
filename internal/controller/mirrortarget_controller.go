@@ -418,8 +418,10 @@ func (r *MirrorTargetReconciler) ensureCoordinatorRBAC(ctx context.Context, mt *
 				Resources: []string{"pods"},
 				Verbs:     []string{"get", "list", "watch", "create", "delete"},
 			},
-			// Required to read the authSecret referenced in MirrorTarget and to
-			// create/manage the worker bearer-token secret (<target>-worker-token).
+			// Required to read the authSecret referenced in MirrorTarget, to
+			// create/manage the worker bearer-token secret (<target>-worker-token),
+			// and to read any cosign public-key secret referenced by an
+			// Operator's signatureVerification.publicKeySecretRef.
 			{
 				APIGroups: []string{""},
 				Resources: []string{"secrets"},
