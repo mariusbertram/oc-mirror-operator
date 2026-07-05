@@ -146,7 +146,7 @@ func (r *MirrorExportReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	switch phase {
 	case exportbuilder.JobPhaseSucceeded:
-		return r.recordSuccess(ctx, me, cmName, sig)
+		return ctrl.Result{}, r.recordSuccess(ctx, me, cmName, sig)
 	case exportbuilder.JobPhaseFailed:
 		setCondition(&me.Status.Conditions, conditionTypeReady, metav1.ConditionFalse,
 			"ExportBuildFailed", "export build Job failed; see Job/Pod logs for details", me.Generation)
@@ -160,10 +160,10 @@ func (r *MirrorExportReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 // recordSuccess reads the rendered manifest back from the artifacts
 // ConfigMap to report TotalImages, and marks the MirrorExport Ready.
-func (r *MirrorExportReconciler) recordSuccess(ctx context.Context, me *mirrorv1alpha1.MirrorExport, cmName, sig string) (ctrl.Result, error) {
+func (r *MirrorExportReconciler) recordSuccess(ctx context.Context, me *mirrorv1alpha1.MirrorExport, cmName, sig string) error {
 	cm := &corev1.ConfigMap{}
 	if err := r.Get(ctx, client.ObjectKey{Name: cmName, Namespace: me.Namespace}, cm); err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed to read artifacts ConfigMap %s: %w", cmName, err)
+		return fmt.Errorf("failed to read artifacts ConfigMap %s: %w", cmName, err)
 	}
 
 	total := 0
@@ -179,7 +179,7 @@ func (r *MirrorExportReconciler) recordSuccess(ctx context.Context, me *mirrorv1
 	me.Status.TotalImages = total
 	setCondition(&me.Status.Conditions, conditionTypeReady, metav1.ConditionTrue,
 		"Rendered", "content resolved and artifacts published", me.Generation)
-	return ctrl.Result{}, r.Status().Update(ctx, me)
+	return r.Status().Update(ctx, me)
 }
 
 // ensureArtifactsConfigMap creates the empty artifacts ConfigMap the export
