@@ -38,11 +38,12 @@ import (
 // Network requirement: outbound HTTPS to api.openshift.com:443 (Manager pod).
 var graphDataURL = "https://api.openshift.com/api/upgrades_info/graph-data"
 
-const (
-	// graphBaseImage is the base image the graph-data layer is appended to,
-	// matching oc-mirror v2 exactly.
-	graphBaseImage = "registry.access.redhat.com/ubi9/ubi:latest"
+// graphBaseImage is the base image the graph-data layer is appended to,
+// matching oc-mirror v2 exactly. It is a var (not const) so tests can
+// replace it with a local fake-registry reference.
+var graphBaseImage = "registry.access.redhat.com/ubi9/ubi:latest"
 
+const (
 	// graphImageRepo is the destination repository path (under the target
 	// registry) the graph image is pushed to.
 	graphImageRepo = "openshift/graph-image"
@@ -110,7 +111,7 @@ func (b *Builder) BuildAndPush(ctx context.Context, registry string) (string, er
 	if err := b.client.DownloadToOCILayout(ctx, graphBaseImage, tmpDir); err != nil {
 		return "", fmt.Errorf("download base image %s: %w", graphBaseImage, err)
 	}
-	localRef, err := ref.New(fmt.Sprintf("ocidir://%s:base", tmpDir))
+	localRef, err := ref.New(fmt.Sprintf("ocidir://%s:source", tmpDir))
 	if err != nil {
 		return "", fmt.Errorf("build local OCI layout ref: %w", err)
 	}

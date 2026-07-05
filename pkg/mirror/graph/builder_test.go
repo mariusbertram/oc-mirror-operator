@@ -5,11 +5,22 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
+	"github.com/regclient/regclient/types/descriptor"
+	"github.com/regclient/regclient/types/manifest"
+	v1 "github.com/regclient/regclient/types/oci/v1"
+	"github.com/regclient/regclient/types/platform"
+	"github.com/regclient/regclient/types/ref"
 )
 
 // buildTestArchive produces a minimal gzip-tar archive with the given
@@ -178,5 +189,196 @@ func TestBuildAndPush_NilClient(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "registry client is required") {
 		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestBuildAndPush_InvalidTargetRegistry(t *testing.T) {
+	b := New(mirrorclient.NewMirrorClient(nil, ""))
+	_, err := b.BuildAndPush(context.Background(), "")
+	if err == nil {
+		t.Fatal("expected error for an empty target registry")
+	}
+}
+
+// fakeUBIRegistry serves a minimal single-layer OCI image at <host>/ubi9/ubi:latest,
+// standing in for the real registry.access.redhat.com/ubi9/ubi base image so
+// DownloadToOCILayout can exercise its full pull path against a local server.
+func fakeUBIRegistry(t *testing.T) (host string) {
+	t.Helper()
+
+	layerBytes := []byte("fake-ubi-layer-content")
+	layerDigest := fmt.Sprintf("sha256:%x", sha256.Sum256(layerBytes))
+	diffID := "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+
+	configJSON, _ := json.Marshal(map[string]interface{}{
+		"architecture": "amd64",
+		"os":           "linux",
+		"config":       map[string]interface{}{},
+		"rootfs": map[string]interface{}{
+			"type":     "layers",
+			"diff_ids": []string{diffID},
+		},
+	})
+	configDigest := fmt.Sprintf("sha256:%x", sha256.Sum256(configJSON))
+
+	manifestJSON, _ := json.Marshal(map[string]interface{}{
+		"schemaVersion": 2,
+		"mediaType":     "application/vnd.oci.image.manifest.v1+json",
+		"config": map[string]interface{}{
+			"mediaType": "application/vnd.oci.image.config.v1+json",
+			"digest":    configDigest,
+			"size":      len(configJSON),
+		},
+		"layers": []map[string]interface{}{
+			{
+				"mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+				"digest":    layerDigest,
+				"size":      len(layerBytes),
+			},
+		},
+	})
+	manifestDigest := fmt.Sprintf("sha256:%x", sha256.Sum256(manifestJSON))
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v2/", func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		switch {
+		case path == "/v2/" || path == "/v2":
+			w.WriteHeader(http.StatusOK)
+		case strings.Contains(path, "/manifests/"):
+			w.Header().Set("Content-Type", "application/vnd.oci.image.manifest.v1+json")
+			w.Header().Set("Docker-Content-Digest", manifestDigest)
+			_, _ = w.Write(manifestJSON)
+		case strings.Contains(path, "/blobs/"):
+			switch {
+			case strings.Contains(path, layerDigest):
+				w.Header().Set("Content-Type", "application/octet-stream")
+				_, _ = w.Write(layerBytes)
+			case strings.Contains(path, configDigest):
+				w.Header().Set("Content-Type", "application/vnd.oci.image.config.v1+json")
+				_, _ = w.Write(configJSON)
+			default:
+				http.NotFound(w, r)
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return strings.TrimPrefix(srv.URL, "http://")
+}
+
+func TestBuildAndPush_CopiesBaseLayersThenFailsAgainstUnreachableDestination(t *testing.T) {
+	origBase := graphBaseImage
+	origDataURL := graphDataURL
+	defer func() {
+		graphBaseImage = origBase
+		graphDataURL = origDataURL
+	}()
+
+	host := fakeUBIRegistry(t)
+	graphBaseImage = host + "/ubi9/ubi:latest"
+
+	archiveSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(buildTestArchive(t, map[string]string{"channels/4.14.yaml": "x"}))
+	}))
+	defer archiveSrv.Close()
+	graphDataURL = archiveSrv.URL
+
+	// The base image host is reachable (insecure HTTP), but the destination
+	// ("localhost:1") is not — nothing listens there, so the blob-copy loop
+	// fails fast (connection refused) instead of hanging.
+	client := mirrorclient.NewMirrorClient([]string{host}, "")
+	b := New(client)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_, err := b.BuildAndPush(ctx, "localhost:1/mirror")
+	if err == nil {
+		t.Fatal("expected error copying to an unreachable destination registry")
+	}
+	if !strings.Contains(err.Error(), "copy base layer") {
+		t.Errorf("expected failure while copying base layers (meaning download+config resolution succeeded), got: %v", err)
+	}
+}
+
+func TestResolvePlatformManifest_NotAList(t *testing.T) {
+	mc := mirrorclient.NewMirrorClient(nil, "")
+	r, _ := ref.New("localhost:1/test:latest")
+	m, err := manifest.New(manifest.WithOrig(v1.Manifest{
+		Versioned: v1.ManifestSchemaVersion,
+		MediaType: "application/vnd.oci.image.manifest.v1+json",
+	}))
+	if err != nil {
+		t.Fatalf("failed to create test manifest: %v", err)
+	}
+
+	outRef, outM, err := resolvePlatformManifest(context.Background(), mc, r, m)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if outRef.Tag != r.Tag {
+		t.Errorf("expected ref unchanged, got tag=%q", outRef.Tag)
+	}
+	if outM != m {
+		t.Error("expected same manifest returned")
+	}
+}
+
+func TestResolvePlatformManifest_NoMatchingPlatform(t *testing.T) {
+	mc := mirrorclient.NewMirrorClient(nil, "")
+	r, _ := ref.New("localhost:1/test:latest")
+
+	m, err := manifest.New(manifest.WithOrig(v1.Index{
+		Versioned: v1.IndexSchemaVersion,
+		MediaType: "application/vnd.oci.image.index.v1+json",
+		Manifests: []descriptor.Descriptor{
+			{
+				MediaType: "application/vnd.oci.image.manifest.v1+json",
+				Digest:    "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+				Size:      2,
+				Platform:  &platform.Platform{OS: "linux", Architecture: "arm64"},
+			},
+		},
+	}))
+	if err != nil {
+		t.Fatalf("failed to create test manifest list: %v", err)
+	}
+
+	_, _, err = resolvePlatformManifest(context.Background(), mc, r, m)
+	if err == nil {
+		t.Fatal("expected error when no linux/amd64 manifest is present")
+	}
+	if !strings.Contains(err.Error(), "no linux/amd64 manifest in") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestCopyBlobWithRetry_RespectsParentCancel(t *testing.T) {
+	mc := mirrorclient.NewMirrorClient(nil, "")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := copyBlobWithRetry(ctx, mc, ref.Ref{}, ref.Ref{}, descriptor.Descriptor{}, 3, time.Minute)
+	if err == nil {
+		t.Error("expected error with cancelled context")
+	}
+}
+
+func TestCopyBlobOnce_InvalidSource(t *testing.T) {
+	mc := mirrorclient.NewMirrorClient(nil, "")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	srcRef, _ := ref.New("localhost:1/src:latest")
+	dstRef, _ := ref.New("localhost:1/dst:latest")
+	d := descriptor.Descriptor{Digest: "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+	err := copyBlobOnce(ctx, mc, srcRef, dstRef, d)
+	if err == nil {
+		t.Error("expected error from copyBlobOnce with unreachable hosts")
 	}
 }
