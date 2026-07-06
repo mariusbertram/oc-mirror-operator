@@ -44,7 +44,7 @@
     "mini-css-extract-plugin": "^2.9.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "react-router": "^7.16.0",
+    "react-router": "^7.17.0",
     "react-router-dom": "^6.11.2",
     "style-loader": "^4.0.0",
     "swc-loader": "^0.2.7",
@@ -52,7 +52,7 @@
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.61.0",
     "webpack": "^5.107.2",
-    "webpack-cli": "^7.0.3",
-    "webpack-dev-server": "^5.2.5"
+    "webpack-cli": "^7.2.1",
+    "webpack-dev-server": "^6.0.0"
   }
 }
