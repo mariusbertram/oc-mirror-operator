@@ -560,6 +560,35 @@ func (m *MirrorManager) cleanupFinishedWorkers(ctx context.Context) {
 	}
 }
 
+// checkExistWithRetry calls CheckExist for dest using the cached client. If
+// the call fails with an HTTP 400 — bearer token scope too large for
+// HAProxy/nginx proxies fronting some registries (e.g. Quay's nginx rejects
+// tokens > ~8 KB once accumulated across enough repositories) — the cached
+// client is discarded and the check is retried once against a fresh client
+// with an empty token scope, since the accumulated scope, not the image
+// itself, is almost always the cause.
+//
+// Caller must hold m.mu; it is released for the duration of each network
+// call and re-acquired before returning, exactly as a single CheckExist call
+// would.
+func (m *MirrorManager) checkExistWithRetry(ctx context.Context, dest string) (bool, error) {
+	// Use cached client; ClientCache automatically refreshes every 5 minutes
+	// to prevent auth token scope accumulation.
+	checkClient, _ := m.clientCache.GetOrCreate(nil, m.authConfigPath)
+	m.mu.Unlock()
+	exists, checkErr := checkClient.CheckExist(ctx, dest)
+	m.mu.Lock()
+	if checkErr == nil || !errors.Is(checkErr, errs.ErrHTTPStatus) || !strings.Contains(checkErr.Error(), "400") {
+		return exists, checkErr
+	}
+
+	freshClient, _ := m.clientCache.RefreshClient(nil, m.authConfigPath)
+	m.mu.Unlock()
+	exists, checkErr = freshClient.CheckExist(ctx, dest)
+	m.mu.Lock()
+	return exists, checkErr
+}
+
 func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 	m.cleanupFinishedWorkers(ctx)
 
@@ -667,21 +696,8 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 				m.mirrored[dest] = true
 				continue
 			}
-			// Use cached client; ClientCache automatically refreshes every 5 minutes
-			// to prevent auth token scope accumulation (Quay's nginx rejects tokens > ~8 KB).
-			checkClient, _ := m.clientCache.GetOrCreate(nil, m.authConfigPath)
-			// Release the manager lock while making the HTTP call so
-			// status callbacks from worker pods are not blocked on
-			// remote registry latency.
-			m.mu.Unlock()
-			exists, checkErr := checkClient.CheckExist(ctx, dest)
-			m.mu.Lock()
+			exists, checkErr := m.checkExistWithRetry(ctx, dest)
 			if checkErr != nil {
-				if errors.Is(checkErr, errs.ErrHTTPStatus) && strings.Contains(checkErr.Error(), "400") {
-					// Bearer token scope too large for HAProxy/nginx (> ~8 KB); refresh
-					// client so subsequent checks start with a clean token cache.
-					_, _ = m.clientCache.RefreshClient(nil, m.authConfigPath)
-				}
 				oclog.Printf("CheckExist error for %s: %v – assuming present\n", dest, checkErr)
 				m.mirrored[dest] = true
 				continue
@@ -724,14 +740,8 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 					// If not found, reset for a fresh retry cycle (handles
 					// transient upstream unavailability). PermanentlyFailed
 					// stays true so the catalog-build gate remains open.
-					checkClient, _ := m.clientCache.GetOrCreate(nil, m.authConfigPath)
-					m.mu.Unlock()
-					exists, checkErr := checkClient.CheckExist(ctx, dest)
-					m.mu.Lock()
+					exists, checkErr := m.checkExistWithRetry(ctx, dest)
 					if checkErr != nil {
-						if errors.Is(checkErr, errs.ErrHTTPStatus) && strings.Contains(checkErr.Error(), "400") {
-							_, _ = m.clientCache.RefreshClient(nil, m.authConfigPath)
-						}
 						oclog.Printf("CheckExist error for permanently-failed image %s: %v – keeping Failed\n", dest, checkErr)
 					} else if exists {
 						oclog.Printf("Permanently-failed image %s found in target; marking Mirrored\n", dest)
