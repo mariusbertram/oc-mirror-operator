@@ -16,7 +16,7 @@ spec:
           maxVersion: "4.14.35"
           shortestPath: true
     operators:
-      - catalog: registry.redhat.io/redhat/redhat-operator-index:v4.14
+      - catalog: <registry>/redhat/redhat-operator-index:v4.14
         packages:
           - name: web-terminal
           - name: cert-manager
