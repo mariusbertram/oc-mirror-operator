@@ -595,6 +595,26 @@ var _ = Describe("Manager Coverage", func() {
 			state := imagestate.ImageState{"d1": nil}
 			Expect(func() { filterBlockedImages(state, []mirrorv1alpha1.BlockedImage{{Name: "x"}}) }).NotTo(Panic())
 		})
+
+		It("narrows to a single digest when the blocked name specifies one", func() {
+			state := imagestate.ImageState{
+				"d1": &imagestate.ImageEntry{Source: "nvcr.io/nvidia/driver@sha256:aaa", State: "Failed"},
+				"d2": &imagestate.ImageEntry{Source: "nvcr.io/nvidia/driver@sha256:bbb", State: "Pending"},
+			}
+			filterBlockedImages(state, []mirrorv1alpha1.BlockedImage{{Name: "nvidia/driver@sha256:aaa"}})
+			Expect(state).NotTo(HaveKey("d1"))
+			Expect(state).To(HaveKey("d2"))
+		})
+
+		It("narrows to a single tag when the blocked name specifies one", func() {
+			state := imagestate.ImageState{
+				"d1": &imagestate.ImageEntry{Source: "quay.io/foo/bar:v1", State: "Failed"},
+				"d2": &imagestate.ImageEntry{Source: "quay.io/foo/bar:v2", State: "Pending"},
+			}
+			filterBlockedImages(state, []mirrorv1alpha1.BlockedImage{{Name: "foo/bar:v1"}})
+			Expect(state).NotTo(HaveKey("d1"))
+			Expect(state).To(HaveKey("d2"))
+		})
 	})
 
 	// ─── filterByImageSet ────────────────────────────────────────────

@@ -188,15 +188,44 @@ entries:
 			Expect(results[0].Source).To(Equal("quay.io/custom/other:v1"))
 		})
 
-		It("matches regardless of the blocked name's own registry/tag", func() {
+		It("matches regardless of the blocked name's own registry, blocking every tag", func() {
 			images := []TargetImage{
 				{Source: "quay.io/foo/bar:v1", Destination: "mirror.io/foo/bar:v1"},
+				{Source: "quay.io/foo/bar:v2", Destination: "mirror.io/foo/bar:v2"},
 				{Source: "quay.io/foo/baz:v1", Destination: "mirror.io/foo/baz:v1"},
 			}
-			blocked := []mirrorv1alpha1.BlockedImage{{Name: "otherregistry.io/foo/bar:latest"}}
+			blocked := []mirrorv1alpha1.BlockedImage{{Name: "otherregistry.io/foo/bar"}}
 			filtered := BlockImages(images, blocked)
 			Expect(filtered).To(HaveLen(1))
 			Expect(filtered[0].Source).To(Equal("quay.io/foo/baz:v1"))
+		})
+
+		It("narrows to a single tag when the blocked name specifies one", func() {
+			images := []TargetImage{
+				{Source: "quay.io/foo/bar:v1", Destination: "mirror.io/foo/bar:v1"},
+				{Source: "quay.io/foo/bar:v2", Destination: "mirror.io/foo/bar:v2"},
+			}
+			blocked := []mirrorv1alpha1.BlockedImage{{Name: "foo/bar:v1"}}
+			filtered := BlockImages(images, blocked)
+			Expect(filtered).To(HaveLen(1))
+			Expect(filtered[0].Source).To(Equal("quay.io/foo/bar:v2"))
+		})
+
+		It("narrows to a single digest when the blocked name specifies one", func() {
+			images := []TargetImage{
+				{Source: "nvcr.io/nvidia/driver@sha256:aaa", Destination: "mirror.io/nvidia/driver:sha256-aaa"},
+				{Source: "nvcr.io/nvidia/driver@sha256:bbb", Destination: "mirror.io/nvidia/driver:sha256-bbb"},
+			}
+			blocked := []mirrorv1alpha1.BlockedImage{{Name: "nvidia/driver@sha256:aaa"}}
+			filtered := BlockImages(images, blocked)
+			Expect(filtered).To(HaveLen(1))
+			Expect(filtered[0].Source).To(Equal("nvcr.io/nvidia/driver@sha256:bbb"))
+		})
+
+		It("does not block a differently-tagged image when the blocked name specifies a tag", func() {
+			images := []TargetImage{{Source: "quay.io/foo/bar:v2", Destination: "mirror.io/foo/bar:v2"}}
+			blocked := []mirrorv1alpha1.BlockedImage{{Name: "foo/bar:v1"}}
+			Expect(BlockImages(images, blocked)).To(HaveLen(1))
 		})
 
 		It("is a no-op when no images are blocked", func() {

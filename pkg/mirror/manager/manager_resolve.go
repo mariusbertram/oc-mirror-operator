@@ -724,22 +724,21 @@ func carryOverByOriginAndSig(src, dst imagestate.ImageState, origin imagestate.I
 }
 
 // filterBlockedImages deletes any state entry whose Source matches a
-// configured spec.mirror.blockedImages name (registry-agnostic repository
-// path match, consistent with mirror.BlockImages).
+// configured spec.mirror.blockedImages name. See mirror.ImageBlocked for the
+// matching rules (registry-agnostic path, with optional tag/digest narrowing).
 func filterBlockedImages(state imagestate.ImageState, blocked []mirrorv1alpha1.BlockedImage) {
 	if len(blocked) == 0 {
 		return
-	}
-	blockedPaths := make(map[string]struct{}, len(blocked))
-	for _, b := range blocked {
-		blockedPaths[mirror.ImageNamePath(b.Name)] = struct{}{}
 	}
 	for dest, entry := range state {
 		if entry == nil {
 			continue
 		}
-		if _, ok := blockedPaths[mirror.ImageNamePath(entry.Source)]; ok {
-			delete(state, dest)
+		for _, b := range blocked {
+			if mirror.ImageBlocked(entry.Source, b.Name) {
+				delete(state, dest)
+				break
+			}
 		}
 	}
 }

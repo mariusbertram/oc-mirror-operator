@@ -734,16 +734,18 @@ registry, the same convention used for `additionalImages`.
 ### 6.5 Blocked Images
 
 Exclude specific images from mirroring, regardless of which content type (release,
-operator catalog, or additional image) produced them. Matching is on the
-registry-agnostic repository path — the registry host and tag/digest are ignored, so
-a single entry blocks the image everywhere it would otherwise appear:
+operator catalog, or additional image) produced them. Matching always ignores the
+registry host. A bare repository name blocks every tag and digest of that
+repository; adding a `:tag` or `@digest` narrows the block to just that one
+tag or digest, leaving other versions of the same repository unaffected:
 
 ```yaml
 spec:
   mirror:
     blockedImages:
-      - name: openshift4/ose-jenkins-operator-bundle
-      - name: redhat/postgresql-operator-bundle
+      - name: openshift4/ose-jenkins-operator-bundle   # blocks every tag/digest
+      - name: redhat/postgresql-operator-bundle:v1     # blocks only tag v1
+      - name: nvidia/driver@sha256:d4639...             # blocks only this digest
 ```
 
 Blocked images are removed from the ImageSet's resolved image set on the next

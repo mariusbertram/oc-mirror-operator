@@ -83,25 +83,77 @@ func (c *Collector) CollectTargetImages(ctx context.Context, spec *mirrorv1alpha
 
 // BlockImages removes any entry whose Source matches a configured
 // spec.mirror.blockedImages name, regardless of which content type (release,
-// operator, additional image) produced it. Matching is on the
-// registry-agnostic repository path (see ImageNamePath), so a single blocked
-// name applies consistently across all origins.
+// operator, additional image) produced it. See ImageBlocked for the matching
+// rules (registry-agnostic path, with optional tag/digest narrowing).
 func BlockImages(images []TargetImage, blocked []mirrorv1alpha1.BlockedImage) []TargetImage {
 	if len(blocked) == 0 {
 		return images
 	}
-	blockedPaths := make(map[string]struct{}, len(blocked))
-	for _, b := range blocked {
-		blockedPaths[ImageNamePath(b.Name)] = struct{}{}
-	}
 	filtered := make([]TargetImage, 0, len(images))
 	for _, img := range images {
-		if _, ok := blockedPaths[ImageNamePath(img.Source)]; ok {
+		if imageMatchesAnyBlocked(img.Source, blocked) {
 			continue
 		}
 		filtered = append(filtered, img)
 	}
 	return filtered
+}
+
+// imageMatchesAnyBlocked reports whether source matches any of the configured
+// blocked patterns.
+func imageMatchesAnyBlocked(source string, blocked []mirrorv1alpha1.BlockedImage) bool {
+	for _, b := range blocked {
+		if ImageBlocked(source, b.Name) {
+			return true
+		}
+	}
+	return false
+}
+
+// ImageBlocked reports whether source matches the blockedName pattern from
+// spec.mirror.blockedImages. Matching always starts with the
+// registry-agnostic repository path (see ImageNamePath); if blockedName also
+// specifies a tag or digest, source must match that exact tag/digest too —
+// otherwise (a bare repository name) the pattern blocks every tag/digest of
+// that repository.
+//
+//	blockedName: "foo/bar"                    → blocks every tag/digest of foo/bar
+//	blockedName: "foo/bar:v1"                  → blocks only foo/bar:v1
+//	blockedName: "foo/bar@sha256:abc"          → blocks only that digest
+func ImageBlocked(source, blockedName string) bool {
+	sPath, sTag, sDigest := splitImageRef(source)
+	bPath, bTag, bDigest := splitImageRef(blockedName)
+	if sPath != bPath {
+		return false
+	}
+	switch {
+	case bDigest != "":
+		return sDigest == bDigest
+	case bTag != "":
+		return sTag == bTag
+	default:
+		return true
+	}
+}
+
+// splitImageRef splits an image reference into its registry-agnostic
+// repository path, and a trailing tag and/or digest if present.
+func splitImageRef(img string) (path, tag, digest string) {
+	ref := img
+	if i := strings.Index(ref, "@"); i >= 0 {
+		digest = ref[i+1:]
+		ref = ref[:i]
+	}
+	if i := strings.LastIndex(ref, ":"); i >= 0 && !strings.Contains(ref[i+1:], "/") {
+		tag = ref[i+1:]
+		ref = ref[:i]
+	}
+	path = ref
+	parts := strings.SplitN(path, "/", 2)
+	if len(parts) > 1 && (strings.Contains(parts[0], ".") || strings.Contains(parts[0], ":")) {
+		path = parts[1]
+	}
+	return path, tag, digest
 }
 
 // CollectReleases resolves all OCP/OKD release payloads referenced via
@@ -299,13 +351,8 @@ func (c *Collector) toTargetImage(src, dest string, meta *state.Metadata) Target
 //	quay.io/foo/bar:v1.2@sha256:…        → "foo/bar"
 //	localhost:5001/org/bundle:v1.2@sha256 → "org/bundle"
 func ImageNamePath(img string) string {
-	img = stripTagOrDigest(img)
-	// Strip registry host (first path segment containing "." or ":").
-	parts := strings.SplitN(img, "/", 2)
-	if len(parts) > 1 && (strings.Contains(parts[0], ".") || strings.Contains(parts[0], ":")) {
-		return parts[1]
-	}
-	return img
+	path, _, _ := splitImageRef(img)
+	return path
 }
 
 // stripTagOrDigest removes a trailing "@sha256:…" digest or ":tag" suffix from
