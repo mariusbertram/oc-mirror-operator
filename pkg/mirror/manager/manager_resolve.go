@@ -965,8 +965,14 @@ func hasStaleCacheAnnotations(is *mirrorv1alpha1.ImageSet) bool {
 // the flat fields so that resolveImageSet (which works with flat fields) sees the
 // correct per-IS metadata. The Refs slice is not included in the returned copies.
 //
-// Legacy entries (no Refs) are included unchanged — they belonged to a single IS
-// before the migration and are treated as belonging to all ISes.
+// Legacy entries (no Refs, but a populated flat Origin) predate the Refs
+// migration and are included unchanged in every IS's view for backward
+// compatibility. Entries with no Refs AND no Origin are orphans — their last
+// Ref was removed by mergeResolvedIntoConsolidated (e.g. the image was blocked
+// or dropped by spec narrowing) and they are intentionally left in the
+// consolidated state for reconcileOrphans' cleanup Job, not reattached to
+// every ImageSet. See reconcileOrphans in mirrortarget_controller.go, which
+// uses the same len(Refs)==0 && Origin=="" test to find them.
 func filterByImageSet(state imagestate.ImageState, isName string) imagestate.ImageState {
 	result := make(imagestate.ImageState, len(state)/2)
 	for dest, entry := range state {
@@ -974,6 +980,10 @@ func filterByImageSet(state imagestate.ImageState, isName string) imagestate.Ima
 			continue
 		}
 		if len(entry.Refs) == 0 {
+			if entry.Origin == "" {
+				// Orphaned entry — belongs to no ImageSet.
+				continue
+			}
 			// Legacy entry: include as-is (flat Origin/EntrySig/OriginRef already set).
 			cp := *entry
 			result[dest] = &cp

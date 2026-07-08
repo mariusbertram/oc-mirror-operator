@@ -650,6 +650,14 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 	pendingImages := make([]BatchItem, 0, len(m.imageState))
 
 	for dest, entry := range m.imageState {
+		// Orphaned entry (no ImageSet references it anymore — e.g. blocked via
+		// spec.mirror.blockedImages, or dropped by spec narrowing): leave it
+		// untouched for reconcileOrphans' cleanup Job to pick up. Retrying or
+		// drift-checking it here would keep re-mirroring an image nothing
+		// references, exactly what blocking is meant to prevent.
+		if len(entry.Refs) == 0 && entry.Origin == "" {
+			continue
+		}
 		// For images marked Mirrored in the ConfigMap but not yet verified
 		// in memory: check the registry during CheckExist windows to confirm
 		// they still exist (drift detection).
