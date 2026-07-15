@@ -8,7 +8,7 @@
  */
 import React from 'react';
 import { createRoot } from 'react-dom/client';
-import { BrowserRouter, Navigate, NavLink, Route, Routes } from 'react-router-dom';
+import { BrowserRouter, Navigate, NavLink, Route, Routes } from 'react-router';
 
 // PatternFly base CSS — provides global custom properties for colour, spacing, typography.
 import '@patternfly/react-core/dist/styles/base.css';
