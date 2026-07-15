@@ -12,8 +12,7 @@ import {
   ToolbarContent,
   ToolbarItem,
 } from '@patternfly/react-core';
-import { useParams } from 'react-router';
-import { Link } from 'react-router-dom';
+import { Link, useParams } from 'react-router';
 import { getOcpChannels, getReleases, patchReleases } from '../../api/client';
 import type { OcpChannelEntry, ReleaseChannel, ReleaseSpec } from '../../api/types';
 import '../../components/plugin-styles.css';

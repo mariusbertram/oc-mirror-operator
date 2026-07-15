@@ -30,8 +30,7 @@ import {
 } from '@patternfly/react-core';
 import { Table, Thead, Tr, Th, Tbody, Td } from '@patternfly/react-table';
 import { DatabaseIcon } from '@patternfly/react-icons';
-import { useParams } from 'react-router';
-import { Link } from 'react-router-dom';
+import { Link, useParams } from 'react-router';
 import { getTarget, triggerRecollect, deleteImageSet } from '../../api/client';
 import type { TargetDetail } from '../../api/types';
 import { StatusPill, computeStatus } from '../../components/StatusPill';

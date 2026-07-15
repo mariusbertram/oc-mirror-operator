@@ -15,7 +15,7 @@ import {
   ToolbarItem,
 } from '@patternfly/react-core';
 import { Table, Thead, Tr, Th, Tbody, Td } from '@patternfly/react-table';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { listTargets } from '../../api/client';
 import type { TargetSummary } from '../../api/types';
 import { StatusPill, computeStatus } from '../../components/StatusPill';
