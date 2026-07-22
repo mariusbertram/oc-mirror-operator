@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -700,6 +701,13 @@ var _ = Describe("Coverage tests", func() {
 			}
 			Expect(k8sClient.Create(localCtx, is)).To(Succeed())
 			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, is) })
+
+			// Real callers only ever pass pollExpired=true when
+			// Status.LastSuccessfulPollTime is set and stale; set a realistic
+			// stale timestamp so the new poll-rebuild dedup (which compares
+			// against this value) does not mistake this for the zero-value case.
+			is.Status.LastSuccessfulPollTime = &metav1.Time{Time: time.Now().Add(-48 * time.Hour)}
+			Expect(k8sClient.Status().Update(localCtx, is)).To(Succeed())
 
 			r := &ImageSetReconciler{
 				Client:          k8sClient,
