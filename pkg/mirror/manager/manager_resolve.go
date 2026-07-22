@@ -574,7 +574,7 @@ func (m *MirrorManager) resolveOperatorSection( //nolint:unparam
 		}
 
 		catSlug := resources.CatalogSlug(op.Catalog)
-		targetImage := resources.CatalogTargetImage(mt.Spec.Registry, op.Catalog)
+		targetImage := resources.CatalogTargetImage(mt.Spec.Registry, op)
 		catInfo := resources.CatalogInfo{
 			SourceCatalog: op.Catalog,
 			TargetImage:   targetImage,

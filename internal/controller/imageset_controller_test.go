@@ -27,6 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
+	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/resources"
 )
 
 func newImageSetReconciler() *ImageSetReconciler {
@@ -219,7 +220,7 @@ var _ = Describe("ImageSet Controller", func() {
 		})
 	})
 
-	Describe("catalogTargetRef", func() {
+	Describe("resources.CatalogTargetImage", func() {
 		const reg = "mirror.example.com"
 
 		DescribeTable("derives the correct target catalog reference",
@@ -229,7 +230,7 @@ var _ = Describe("ImageSet Controller", func() {
 					TargetTag:     targetTag,
 					TargetCatalog: targetCatalog,
 				}
-				Expect(catalogTargetRef(reg, op)).To(Equal(expected))
+				Expect(resources.CatalogTargetImage(reg, op)).To(Equal(expected))
 			},
 			// tag-only catalog
 			Entry("tag-only", "quay.io/redhat/catalog:v4.21", "", "",

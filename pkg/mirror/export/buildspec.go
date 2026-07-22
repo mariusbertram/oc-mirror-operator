@@ -18,9 +18,9 @@ package export
 
 import (
 	"fmt"
-	"strings"
 
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
+	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/resources"
 )
 
 // CatalogBuildEntry carries everything the (not-yet-implemented, see
@@ -65,8 +65,8 @@ type BuildSpec struct {
 }
 
 // BuildSpecFor derives a BuildSpec from spec — pure data transformation, no
-// registry access, mirroring catalogTargetRef in
-// internal/controller/imageset_controller.go and graph.TargetImage.
+// registry access, mirroring resources.CatalogTargetImage and
+// graph.TargetImage.
 func BuildSpecFor(spec *mirrorv1alpha1.ImageSetSpec, destRegistry string) BuildSpec {
 	var bs BuildSpec
 
@@ -80,7 +80,7 @@ func BuildSpecFor(spec *mirrorv1alpha1.ImageSetSpec, destRegistry string) BuildS
 		}
 		bs.Catalogs = append(bs.Catalogs, CatalogBuildEntry{
 			SourceCatalog: op.Catalog,
-			TargetRef:     catalogTargetRef(destRegistry, op),
+			TargetRef:     resources.CatalogTargetImage(destRegistry, op),
 			Full:          op.Full,
 			Packages:      packages,
 		})
@@ -94,37 +94,4 @@ func BuildSpecFor(spec *mirrorv1alpha1.ImageSetSpec, destRegistry string) BuildS
 	}
 
 	return bs
-}
-
-// catalogTargetRef builds the target image reference for a filtered catalog
-// image. Duplicated (rather than imported) from
-// internal/controller/imageset_controller.go's unexported helper of the same
-// name and behavior, to keep pkg/mirror/export independent of the internal/
-// controller package.
-func catalogTargetRef(registry string, op mirrorv1alpha1.Operator) string {
-	tag := op.TargetTag
-	if tag == "" {
-		catalogForTag := op.Catalog
-		if i := strings.Index(catalogForTag, "@"); i >= 0 {
-			catalogForTag = catalogForTag[:i]
-		}
-		if i := strings.LastIndex(catalogForTag, ":"); i >= 0 && !strings.Contains(catalogForTag[i:], "/") {
-			tag = catalogForTag[i+1:]
-		}
-	}
-	if tag == "" {
-		tag = "latest"
-	}
-	if op.TargetCatalog != "" {
-		return fmt.Sprintf("%s/%s:%s", registry, op.TargetCatalog, tag)
-	}
-	parts := strings.SplitN(op.Catalog, "/", 2)
-	path := op.Catalog
-	if len(parts) == 2 {
-		path = parts[1]
-	}
-	if i := strings.IndexAny(path, ":@"); i >= 0 {
-		path = path[:i]
-	}
-	return fmt.Sprintf("%s/%s:%s", registry, path, tag)
 }
