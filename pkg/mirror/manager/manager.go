@@ -820,7 +820,7 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 	}
 
 	// Phase H: Generate and save global resources (IDMS, ITMS, CatalogSource) to ConfigMap.
-	if err := m.saveGlobalResources(ctx, mt); err != nil {
+	if err := m.saveGlobalResources(ctx, mt, imageSets); err != nil {
 		oclog.Printf("Warning: failed to save global resources: %v\n", err)
 	}
 
@@ -853,7 +853,7 @@ func (m *MirrorManager) setImageStateLocked(dest, st, lastError string) {
 	}
 }
 
-func (m *MirrorManager) saveGlobalResources(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget) error {
+func (m *MirrorManager) saveGlobalResources(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget, imageSets *mirrorv1alpha1.ImageSetList) error {
 	idms, err := resources.GenerateIDMS(m.TargetName, m.imageState)
 	if err != nil {
 		return fmt.Errorf("generate IDMS: %w", err)
@@ -867,6 +867,24 @@ func (m *MirrorManager) saveGlobalResources(ctx context.Context, mt *mirrorv1alp
 	data := map[string]string{
 		"idms.yaml": string(idms),
 		"itms.yaml": string(itms),
+	}
+
+	// Index the Operator spec for every catalog referenced by this
+	// MirrorTarget's ImageSets, keyed by source catalog reference, so the
+	// CatalogSource/ClusterCatalog target image can be computed with the
+	// exact same TargetCatalog/TargetTag overrides the catalog-builder Job
+	// used to push it (see internal/controller reconcileCatalogBuildJobs).
+	opsBySource := make(map[string]mirrorv1alpha1.Operator)
+	for _, is := range imageSets.Items {
+		if !containsString(mt.Spec.ImageSets, is.Name) {
+			continue
+		}
+		for _, op := range is.Spec.Mirror.Operators {
+			if op.Catalog == "" {
+				continue
+			}
+			opsBySource[op.Catalog] = op
+		}
 	}
 
 	// Generate CatalogSources for all unique catalogs in the state.
@@ -896,9 +914,17 @@ func (m *MirrorManager) saveGlobalResources(ctx context.Context, mt *mirrorv1alp
 				}
 				slug := resources.CatalogSlug(catSource)
 				if _, ok := catalogs[slug]; !ok {
+					// Fall back to a synthetic Operator{Catalog: catSource} when
+					// the owning ImageSet's spec is no longer available (e.g.
+					// removed after this state entry was recorded) — still
+					// correct for the common case (no TargetCatalog/TargetTag).
+					op, ok := opsBySource[catSource]
+					if !ok {
+						op = mirrorv1alpha1.Operator{Catalog: catSource}
+					}
 					catalogs[slug] = resources.CatalogInfo{
 						SourceCatalog: catSource,
-						TargetImage:   resources.CatalogTargetImage(mt.Spec.Registry, catSource),
+						TargetImage:   resources.CatalogTargetImage(mt.Spec.Registry, op),
 						DisplayName:   slug,
 					}
 				}

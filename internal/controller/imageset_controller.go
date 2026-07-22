@@ -23,6 +23,7 @@ import (
 	ocmetrics "github.com/mariusbertram/oc-mirror-operator/pkg/metrics"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/catalog/builder"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/imagestate"
+	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/resources"
 )
 
 // ImageSetReconciler reconciles a ImageSet object
@@ -385,7 +386,7 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs( //nolint:gocyclo
 		}
 
 		// Derive the target catalog image reference.
-		targetRef := catalogTargetRef(mt.Spec.Registry, op)
+		targetRef := resources.CatalogTargetImage(mt.Spec.Registry, op)
 
 		jobName := builder.JobName(is.Name, op.Catalog)
 		phase, err := builder.GetBuildJobStatus(ctx, r.Client, jobName, is.Namespace)
@@ -512,42 +513,6 @@ func operatorImagesMirrored(ctx context.Context, c client.Client, is *mirrorv1al
 		}
 	}
 	return hasOperator, true
-}
-
-// catalogTargetRef builds the target image reference for a filtered catalog image.
-// It prefers Operator.TargetCatalog if set; otherwise derives a path from the
-// source catalog name and appends the TargetTag (defaulting to the source tag,
-// or "latest" when the source is digest-only).
-func catalogTargetRef(registry string, op mirrorv1alpha1.Operator) string {
-	tag := op.TargetTag
-	if tag == "" {
-		// Extract tag from the source catalog, handling "image:tag",
-		// "image@sha256:..." and "image:tag@sha256:..." forms.
-		catalogForTag := op.Catalog
-		if i := strings.Index(catalogForTag, "@"); i >= 0 {
-			catalogForTag = catalogForTag[:i] // strip digest, keep tag part
-		}
-		if i := strings.LastIndex(catalogForTag, ":"); i >= 0 && !strings.Contains(catalogForTag[i:], "/") {
-			tag = catalogForTag[i+1:]
-		}
-	}
-	if tag == "" {
-		tag = "latest"
-	}
-	if op.TargetCatalog != "" {
-		return fmt.Sprintf("%s/%s:%s", registry, op.TargetCatalog, tag)
-	}
-	// Derive a safe path from the source catalog: strip registry prefix, keep image name.
-	parts := strings.SplitN(op.Catalog, "/", 2)
-	path := op.Catalog
-	if len(parts) == 2 {
-		path = parts[1]
-	}
-	// Remove tag/digest from path.
-	if i := strings.IndexAny(path, ":@"); i >= 0 {
-		path = path[:i]
-	}
-	return fmt.Sprintf("%s/%s:%s", registry, path, tag)
 }
 
 // SetupWithManager sets up the controller with the Manager.
