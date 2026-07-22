@@ -240,8 +240,11 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs( //nolint:gocyclo
 		lastSig = is.Annotations["mirror.openshift.io/catalog-build-sig"]
 	}
 
-	catalogNeedsRebuild := lastSig != "" && lastSig != buildSig
-	if catalogNeedsRebuild {
+	catalogNeedsRebuild := recollectRequested || (lastSig != "" && lastSig != buildSig)
+	switch {
+	case recollectRequested:
+		l.Info("Catalog rebuild requested via recollect annotation", "imageSet", is.Name)
+	case catalogNeedsRebuild:
 		l.Info("Catalog build signature changed, forcing rebuild", "old", lastSig, "new", buildSig)
 	}
 	// Force catalog rebuild when poll interval expired — upstream catalog images

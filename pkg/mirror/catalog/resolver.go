@@ -618,10 +618,17 @@ func bundleMatchesVersionFilter(b declcfg.Bundle, vf channelVersionFilter) bool 
 	return true
 }
 
-// channelHeadPlusN returns the head bundle(s) of a channel plus up to
+// channelHeadPlusN returns the head bundle of a channel plus up to
 // `previous` older entries walking backwards through the Replaces chain.
-// With previous=0 only the head(s) are returned.
-func channelHeadPlusN(ch declcfg.Channel, previous int) []string {
+// With previous=0 only the head is returned.
+//
+// A well-formed channel has exactly one head (a bundle not superseded by any
+// other entry's Replaces/Skips). Some upstream catalogs leave a channel with
+// more than one — operator-registry's model validation rejects that
+// ("multiple channel heads found in graph") once the built catalog is
+// served, so only the highest-versioned candidate (ties broken by name) is
+// treated as the head; the rest are dropped from heads-only selection.
+func channelHeadPlusN(ch declcfg.Channel, previous int, bundlesByName map[string]declcfg.Bundle) []string {
 	if len(ch.Entries) == 0 {
 		return nil
 	}
@@ -643,6 +650,9 @@ func channelHeadPlusN(ch declcfg.Channel, previous int) []string {
 	if len(heads) == 0 {
 		// Safety fallback: return last entry.
 		heads = []string{ch.Entries[len(ch.Entries)-1].Name}
+	}
+	if len(heads) > 1 {
+		heads = []string{highestVersionBundle(heads, bundlesByName)}
 	}
 
 	if previous <= 0 {
@@ -676,6 +686,45 @@ func channelHeadPlusN(ch declcfg.Channel, previous int) []string {
 		}
 	}
 	return result
+}
+
+// highestVersionBundle picks the candidate with the highest olm.package
+// semver version; unparseable/missing versions sort last, ties (or when no
+// version can be parsed at all) are broken by name for determinism.
+func highestVersionBundle(candidates []string, bundlesByName map[string]declcfg.Bundle) string {
+	best := candidates[0]
+	bestSV, bestOK := parseBundleSemver(bundlesByName, best)
+	for _, c := range candidates[1:] {
+		sv, ok := parseBundleSemver(bundlesByName, c)
+		switch {
+		case ok && bestOK && sv.GT(bestSV):
+			best, bestSV = c, sv
+		case ok && !bestOK:
+			best, bestSV, bestOK = c, sv, true
+		case !ok && !bestOK && c < best:
+			best = c
+		}
+	}
+	return best
+}
+
+// parseBundleSemver looks up a bundle by name and parses its olm.package
+// version property, returning ok=false if the bundle or version is missing
+// or unparseable.
+func parseBundleSemver(bundlesByName map[string]declcfg.Bundle, name string) (semver.Version, bool) {
+	b, ok := bundlesByName[name]
+	if !ok {
+		return semver.Version{}, false
+	}
+	v := bundleVersion(b)
+	if v == "" {
+		return semver.Version{}, false
+	}
+	sv, err := semver.ParseTolerant(v)
+	if err != nil {
+		return semver.Version{}, false
+	}
+	return sv, true
 }
 
 // FilterFBC implements the in-memory filtering of a declarative configuration.
@@ -745,6 +794,20 @@ func (r *CatalogResolver) FilterFBC(_ context.Context, cfg *declcfg.DeclarativeC
 		channelNamesByPkg[c.Package][c.Name] = true
 	}
 
+	// pkgHasChannelEntries records, per package, whether ANY of its channels
+	// (in the full source catalog) has at least one entry. Packages with no
+	// entries at all (e.g. malformed/incomplete FBC) fall back to including
+	// every bundle rather than trying to compute channel heads for them.
+	pkgHasChannelEntries := make(map[string]bool, len(channelsByPkg))
+	for pkgName, chs := range channelsByPkg {
+		for _, ch := range chs {
+			if len(ch.Entries) > 0 {
+				pkgHasChannelEntries[pkgName] = true
+				break
+			}
+		}
+	}
+
 	// Build GVK provider index: GVK key → set of package names that provide it.
 	gvkProviders := make(map[string]map[string]bool)
 	for _, b := range cfg.Bundles {
@@ -772,22 +835,6 @@ func (r *CatalogResolver) FilterFBC(_ context.Context, cfg *declcfg.DeclarativeC
 		prevVersionsByPkg[inc.Name] = inc.PreviousVersions
 	}
 
-	// Pre-calculate channel heads for all packages.
-	allHeads := make(map[string]map[string][]string) // pkg -> channel -> head bundle names
-	allHeadSet := make(map[string]bool)              // bundleName -> isHead
-	for pkgName := range catalogPkgs {
-		allHeads[pkgName] = make(map[string][]string)
-		for _, ch := range channelsByPkg[pkgName] {
-			// For transitively discovered packages, we use prev=0 (head only).
-			// For explicit packages, we'll use inc.PreviousVersions later.
-			heads := channelHeadPlusN(ch, 0)
-			allHeads[pkgName][ch.Name] = heads
-			for _, h := range heads {
-				allHeadSet[h] = true
-			}
-		}
-	}
-
 	// Identify "heads-only" explicit packages: no channels, no version filters.
 	// These include the channel head plus PreviousVersions older entries
 	// of every channel (oc-mirror v2 behaviour).
@@ -812,7 +859,7 @@ func (r *CatalogResolver) FilterFBC(_ context.Context, cfg *declcfg.DeclarativeC
 		headsOnlyExplicit[pkgName] = true
 		prev := prevVersionsByPkg[pkgName]
 		for _, ch := range channelsByPkg[pkgName] {
-			selected := channelHeadPlusN(ch, prev)
+			selected := channelHeadPlusN(ch, prev, bundlesByName)
 			for _, s := range selected {
 				explicitHeadBundles[s] = true
 			}
@@ -851,13 +898,7 @@ func (r *CatalogResolver) FilterFBC(_ context.Context, cfg *declcfg.DeclarativeC
 		var currentAllowed []string
 
 		// Check if the package has any entries in its channels.
-		pkgHasEntries := false
-		for _, ch := range channelsByPkg[current] {
-			if len(ch.Entries) > 0 {
-				pkgHasEntries = true
-				break
-			}
-		}
+		pkgHasEntries := pkgHasChannelEntries[current]
 
 		if isExplicit && !pkgHasEntries {
 			// Explicit package but no channel entries found: include all its bundles.
@@ -868,7 +909,7 @@ func (r *CatalogResolver) FilterFBC(_ context.Context, cfg *declcfg.DeclarativeC
 		} else if isExplicit && headsOnlyExplicit[current] {
 			// Heads-only explicit: use pre-calculated heads.
 			for _, ch := range channelsByPkg[current] {
-				selected := channelHeadPlusN(ch, prevVersionsByPkg[current])
+				selected := channelHeadPlusN(ch, prevVersionsByPkg[current], bundlesByName)
 				for _, h := range selected {
 					allowedBundles[h] = true
 					currentAllowed = append(currentAllowed, h)
@@ -909,17 +950,18 @@ func (r *CatalogResolver) FilterFBC(_ context.Context, cfg *declcfg.DeclarativeC
 				currentAllowed = append(currentAllowed, b.Name)
 			}
 		} else {
-			// Transitive dependency: default to heads-only (prev=0).
+			// Transitive dependency: include all bundles, per FilterFBC's
+			// documented contract that transitively discovered dependency
+			// packages are always included in full (no filtering applied).
+			for _, b := range bundlesByPkg[current] {
+				allowedBundles[b.Name] = true
+				currentAllowed = append(currentAllowed, b.Name)
+			}
 			for _, ch := range channelsByPkg[current] {
-				heads := allHeads[current][ch.Name]
-				for _, h := range heads {
-					allowedBundles[h] = true
-					currentAllowed = append(currentAllowed, h)
-					if allowedChannels[current] == nil {
-						allowedChannels[current] = make(map[string]bool)
-					}
-					allowedChannels[current][ch.Name] = true
+				if allowedChannels[current] == nil {
+					allowedChannels[current] = make(map[string]bool)
 				}
+				allowedChannels[current][ch.Name] = true
 			}
 		}
 
@@ -961,11 +1003,10 @@ func (r *CatalogResolver) FilterFBC(_ context.Context, cfg *declcfg.DeclarativeC
 		Bundles:  make([]declcfg.Bundle, 0),
 	}
 
-	for _, p := range cfg.Packages {
-		if pkgSet[p.Name] {
-			filtered.Packages = append(filtered.Packages, p)
-		}
-	}
+	// survivingChannelsByPkg records which channels actually made it into the
+	// filtered output, so a package's DefaultChannel can be repointed below
+	// if the original one was dropped.
+	survivingChannelsByPkg := make(map[string]map[string]bool, len(pkgSet))
 
 	for _, ch := range cfg.Channels {
 		if !pkgSet[ch.Package] {
@@ -988,9 +1029,35 @@ func (r *CatalogResolver) FilterFBC(_ context.Context, cfg *declcfg.DeclarativeC
 				trimmed.Entries = append(trimmed.Entries, e)
 			}
 		}
-		if len(trimmed.Entries) > 0 {
-			filtered.Channels = append(filtered.Channels, trimmed)
+		if len(trimmed.Entries) == 0 {
+			continue
 		}
+		filtered.Channels = append(filtered.Channels, trimmed)
+
+		if survivingChannelsByPkg[ch.Package] == nil {
+			survivingChannelsByPkg[ch.Package] = make(map[string]bool)
+		}
+		survivingChannelsByPkg[ch.Package][ch.Name] = true
+	}
+
+	for _, p := range cfg.Packages {
+		if !pkgSet[p.Name] {
+			continue
+		}
+		// If the package's declared default channel did not survive
+		// filtering (or was never set upstream), operator-registry's model
+		// conversion synthesises an empty placeholder channel for it and
+		// fails validation ("channel must contain at least one bundle").
+		// Repoint DefaultChannel at a channel that actually survived.
+		if survived := survivingChannelsByPkg[p.Name]; len(survived) > 0 && !survived[p.DefaultChannel] {
+			names := make([]string, 0, len(survived))
+			for name := range survived {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			p.DefaultChannel = names[0]
+		}
+		filtered.Packages = append(filtered.Packages, p)
 	}
 
 	for _, b := range cfg.Bundles {

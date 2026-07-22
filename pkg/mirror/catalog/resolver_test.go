@@ -857,7 +857,7 @@ func TestChannelHeadPlusN(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := channelHeadPlusN(ch, tt.previous)
+			got := channelHeadPlusN(ch, tt.previous, nil)
 			if len(got) != len(tt.want) {
 				t.Fatalf("channelHeadPlusN(prev=%d) = %v, want %v", tt.previous, got, tt.want)
 			}
@@ -883,13 +883,13 @@ func TestChannelHeadPlusN_Skips(t *testing.T) {
 		},
 	}
 
-	got := channelHeadPlusN(ch, 0)
+	got := channelHeadPlusN(ch, 0, nil)
 	if len(got) != 1 || got[0] != "my-op.v3.0.0" {
 		t.Errorf("expected [my-op.v3.0.0] as sole head, got %v", got)
 	}
 
 	// head+1: walk back via Replaces (v3 → v1), so we get v1 + v3.
-	got = channelHeadPlusN(ch, 1)
+	got = channelHeadPlusN(ch, 1, nil)
 	if len(got) != 2 {
 		t.Fatalf("expected 2 entries for head+1, got %v", got)
 	}
@@ -982,4 +982,128 @@ func bundleNameSet(bundles []declcfg.Bundle) map[string]bool {
 		m[b.Name] = true
 	}
 	return m
+}
+
+// TestChannelHeadPlusN_MultipleHeadsResolveToHighestVersion verifies that when
+// a channel has more than one head (e.g. two entries with no Replaces/Skips
+// connecting them — a real-world catalog defect), channelHeadPlusN collapses
+// to a single head instead of returning both. operator-registry's model
+// validation rejects channels with more than one head ("multiple channel
+// heads found in graph"), so returning both would produce a catalog that
+// fails to serve.
+func TestChannelHeadPlusN_MultipleHeadsResolveToHighestVersion(t *testing.T) {
+	ch := declcfg.Channel{
+		Name:    "stable",
+		Package: "my-op",
+		Entries: []declcfg.ChannelEntry{
+			{Name: "my-op.v1.0.0"},
+			{Name: "my-op.v2.0.0"}, // disconnected — not superseded, no Replaces
+		},
+	}
+	bundlesByName := map[string]declcfg.Bundle{
+		"my-op.v1.0.0": {Name: "my-op.v1.0.0", Package: "my-op", Properties: []property.Property{
+			{Type: olmPackage, Value: json.RawMessage(`{"packageName":"my-op","version":"1.0.0"}`)},
+		}},
+		"my-op.v2.0.0": {Name: "my-op.v2.0.0", Package: "my-op", Properties: []property.Property{
+			{Type: olmPackage, Value: json.RawMessage(`{"packageName":"my-op","version":"2.0.0"}`)},
+		}},
+	}
+
+	got := channelHeadPlusN(ch, 0, bundlesByName)
+	if len(got) != 1 {
+		t.Fatalf("expected exactly 1 head, got %d: %v", len(got), got)
+	}
+	if got[0] != "my-op.v2.0.0" {
+		t.Errorf("expected the higher-version entry (v2.0.0) to win, got %q", got[0])
+	}
+}
+
+// TestFilterFBC_HeadsOnlyMultipleChannelHeads is an integration-level check
+// that a heads-only-filtered channel with two disconnected heads ends up with
+// exactly one entry in the output, so the built catalog does not fail
+// operator-registry's "multiple channel heads found in graph" validation.
+func TestFilterFBC_HeadsOnlyMultipleChannelHeads(t *testing.T) {
+	cfg := &declcfg.DeclarativeConfig{
+		Packages: []declcfg.Package{{Name: "my-op", DefaultChannel: "stable"}},
+		Channels: []declcfg.Channel{
+			{
+				Name:    "stable",
+				Package: "my-op",
+				Entries: []declcfg.ChannelEntry{
+					{Name: "my-op.v1.0.0"},
+					{Name: "my-op.v2.0.0"}, // disconnected fork, no Replaces/Skips
+				},
+			},
+		},
+		Bundles: []declcfg.Bundle{
+			{Name: "my-op.v1.0.0", Package: "my-op", Image: "reg/my-op@sha256:100",
+				Properties: []property.Property{{Type: olmPackage, Value: json.RawMessage(`{"packageName":"my-op","version":"1.0.0"}`)}}},
+			{Name: "my-op.v2.0.0", Package: "my-op", Image: "reg/my-op@sha256:200",
+				Properties: []property.Property{{Type: olmPackage, Value: json.RawMessage(`{"packageName":"my-op","version":"2.0.0"}`)}}},
+		},
+	}
+
+	resolver := &CatalogResolver{}
+	filtered, err := resolver.FilterFBC(context.Background(), cfg, []mirrorv1alpha1.IncludePackage{{Name: "my-op"}})
+	if err != nil {
+		t.Fatalf("FilterFBC: %v", err)
+	}
+
+	if len(filtered.Channels) != 1 {
+		t.Fatalf("expected 1 channel, got %d", len(filtered.Channels))
+	}
+	if len(filtered.Channels[0].Entries) != 1 {
+		t.Errorf("expected exactly 1 entry (single head) in channel %q, got %d: %v",
+			filtered.Channels[0].Name, len(filtered.Channels[0].Entries), filtered.Channels[0].Entries)
+	}
+	if len(filtered.Bundles) != 1 {
+		t.Errorf("expected exactly 1 bundle, got %d", len(filtered.Bundles))
+	}
+}
+
+// TestFilterFBC_DefaultChannelRepointedWhenFilteredOut verifies that when an
+// explicit channel selection drops the package's declared default channel,
+// FilterFBC repoints DefaultChannel at a channel that survived. Leaving it
+// pointed at a dropped channel makes operator-registry's model conversion
+// synthesise an empty placeholder channel and fail validation ("channel must
+// contain at least one bundle") when the built catalog is served.
+func TestFilterFBC_DefaultChannelRepointedWhenFilteredOut(t *testing.T) {
+	cfg := &declcfg.DeclarativeConfig{
+		Packages: []declcfg.Package{{Name: "my-op", DefaultChannel: "stable"}},
+		Channels: []declcfg.Channel{
+			{
+				Name:    "stable",
+				Package: "my-op",
+				Entries: []declcfg.ChannelEntry{{Name: "my-op.v1.0.0"}},
+			},
+			{
+				Name:    "fast",
+				Package: "my-op",
+				Entries: []declcfg.ChannelEntry{{Name: "my-op.v2.0.0"}},
+			},
+		},
+		Bundles: []declcfg.Bundle{
+			{Name: "my-op.v1.0.0", Package: "my-op", Image: "reg/my-op@sha256:100",
+				Properties: []property.Property{{Type: olmPackage, Value: json.RawMessage(`{"packageName":"my-op","version":"1.0.0"}`)}}},
+			{Name: "my-op.v2.0.0", Package: "my-op", Image: "reg/my-op@sha256:200",
+				Properties: []property.Property{{Type: olmPackage, Value: json.RawMessage(`{"packageName":"my-op","version":"2.0.0"}`)}}},
+		},
+	}
+
+	resolver := &CatalogResolver{}
+	// Explicitly select only "fast" — the package's default channel "stable"
+	// is dropped from the output.
+	filtered, err := resolver.FilterFBC(context.Background(), cfg, []mirrorv1alpha1.IncludePackage{
+		{Name: "my-op", Channels: []mirrorv1alpha1.IncludeChannel{{Name: "fast"}}},
+	})
+	if err != nil {
+		t.Fatalf("FilterFBC: %v", err)
+	}
+
+	if len(filtered.Packages) != 1 {
+		t.Fatalf("expected 1 package, got %d", len(filtered.Packages))
+	}
+	if filtered.Packages[0].DefaultChannel != "fast" {
+		t.Errorf("expected DefaultChannel repointed to surviving channel %q, got %q", "fast", filtered.Packages[0].DefaultChannel)
+	}
 }
