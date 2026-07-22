@@ -31,6 +31,7 @@ import (
 	v1 "github.com/regclient/regclient/types/oci/v1"
 	"github.com/regclient/regclient/types/platform"
 	"github.com/regclient/regclient/types/ref"
+	"golang.org/x/sync/errgroup"
 )
 
 // configsPath is the standard FBC directory inside a catalog image.
@@ -688,6 +689,72 @@ func channelHeadPlusN(ch declcfg.Channel, previous int, bundlesByName map[string
 	return result
 }
 
+// markChannelEntry records that entry was selected for the given package's
+// channel in the pkg -> channel -> entry-set map.
+func markChannelEntry(m map[string]map[string]map[string]bool, pkg, channel, entry string) {
+	if m[pkg] == nil {
+		m[pkg] = make(map[string]map[string]bool)
+	}
+	if m[pkg][channel] == nil {
+		m[pkg][channel] = make(map[string]bool)
+	}
+	m[pkg][channel][entry] = true
+}
+
+// repairChannelGraph returns the kept entries of a channel with their upgrade
+// graph repaired: for every kept entry whose Replaces points at a dropped
+// entry, the original replaces chain is walked until the nearest kept ancestor
+// (which becomes the new Replaces); the dropped entries traversed on the way
+// are added to Skips so clusters currently on those versions can still
+// upgrade. This mirrors oc-mirror's channel filtering and ensures that
+// dropping entries never turns interior chain members into extra channel
+// heads, which opm rejects ("multiple channel heads found in graph").
+func repairChannelGraph(original []declcfg.ChannelEntry, kept map[string]bool) []declcfg.ChannelEntry {
+	entryByName := make(map[string]declcfg.ChannelEntry, len(original))
+	for _, e := range original {
+		entryByName[e.Name] = e
+	}
+
+	result := make([]declcfg.ChannelEntry, 0, len(kept))
+	for _, e := range original {
+		if !kept[e.Name] {
+			continue
+		}
+		ne := e
+		if ne.Replaces != "" && !kept[ne.Replaces] {
+			// Clone Skips before appending — the slice is shared with the
+			// caller's DeclarativeConfig.
+			ne.Skips = append([]string(nil), ne.Skips...)
+			skipsSet := make(map[string]bool, len(ne.Skips))
+			for _, s := range ne.Skips {
+				skipsSet[s] = true
+			}
+			visited := map[string]bool{e.Name: true}
+			cur := ne.Replaces
+			newReplaces := ""
+			for cur != "" && !visited[cur] {
+				visited[cur] = true
+				if kept[cur] {
+					newReplaces = cur
+					break
+				}
+				if !skipsSet[cur] {
+					ne.Skips = append(ne.Skips, cur)
+					skipsSet[cur] = true
+				}
+				anc, ok := entryByName[cur]
+				if !ok {
+					break
+				}
+				cur = anc.Replaces
+			}
+			ne.Replaces = newReplaces
+		}
+		result = append(result, ne)
+	}
+	return result
+}
+
 // highestVersionBundle picks the candidate with the highest olm.package
 // semver version; unparseable/missing versions sort last, ties (or when no
 // version can be parsed at all) are broken by name for determinism.
@@ -872,7 +939,14 @@ func (r *CatalogResolver) FilterFBC(_ context.Context, cfg *declcfg.DeclarativeC
 	// For other explicit packages, we use their channel/version filters.
 	// For transitively discovered packages, we default to heads-only (prev=0).
 	allowedBundles := make(map[string]bool)
-	allowedChannels := make(map[string]map[string]bool) // pkgName -> channelName set
+	// allowedEntries records, per package and channel, exactly which entries
+	// were selected FOR THAT CHANNEL. Channel trimming must not use the global
+	// allowedBundles set: a bundle selected as the head of one channel (e.g.
+	// stable-3.0) frequently also appears as a historical entry of another
+	// channel (e.g. stable). Keeping it there would give that channel multiple
+	// heads — opm then refuses to serve the catalog ("multiple channel heads
+	// found in graph").
+	allowedEntries := make(map[string]map[string]map[string]bool) // pkg -> channel -> entry set
 
 	queue := make([]string, 0, len(pkgSet))
 	for p := range pkgSet {
@@ -913,10 +987,7 @@ func (r *CatalogResolver) FilterFBC(_ context.Context, cfg *declcfg.DeclarativeC
 				for _, h := range selected {
 					allowedBundles[h] = true
 					currentAllowed = append(currentAllowed, h)
-					if allowedChannels[current] == nil {
-						allowedChannels[current] = make(map[string]bool)
-					}
-					allowedChannels[current][ch.Name] = true
+					markChannelEntry(allowedEntries, current, ch.Name, h)
 				}
 			}
 		} else if isExplicit {
@@ -925,12 +996,6 @@ func (r *CatalogResolver) FilterFBC(_ context.Context, cfg *declcfg.DeclarativeC
 				if !f.allowAllChannels && !f.allowedChannels[ch.Name] {
 					continue
 				}
-				// Liberally mark channel as allowed. Final loop will trim it.
-				if allowedChannels[current] == nil {
-					allowedChannels[current] = make(map[string]bool)
-				}
-				allowedChannels[current][ch.Name] = true
-
 				vf := f.effectiveVersionFilter(ch.Name)
 				for _, entry := range ch.Entries {
 					b, ok := bundlesByName[entry.Name]
@@ -940,6 +1005,7 @@ func (r *CatalogResolver) FilterFBC(_ context.Context, cfg *declcfg.DeclarativeC
 					if bundleMatchesVersionFilter(b, vf) {
 						allowedBundles[entry.Name] = true
 						currentAllowed = append(currentAllowed, entry.Name)
+						markChannelEntry(allowedEntries, current, ch.Name, entry.Name)
 					}
 				}
 			}
@@ -958,10 +1024,11 @@ func (r *CatalogResolver) FilterFBC(_ context.Context, cfg *declcfg.DeclarativeC
 				currentAllowed = append(currentAllowed, b.Name)
 			}
 			for _, ch := range channelsByPkg[current] {
-				if allowedChannels[current] == nil {
-					allowedChannels[current] = make(map[string]bool)
+				for _, e := range ch.Entries {
+					if _, ok := bundlesByName[e.Name]; ok {
+						markChannelEntry(allowedEntries, current, ch.Name, e.Name)
+					}
 				}
-				allowedChannels[current][ch.Name] = true
 			}
 		}
 
@@ -1012,23 +1079,17 @@ func (r *CatalogResolver) FilterFBC(_ context.Context, cfg *declcfg.DeclarativeC
 		if !pkgSet[ch.Package] {
 			continue
 		}
-		// Check if this channel was allowed.
-		if allowedChannels[ch.Package] == nil || !allowedChannels[ch.Package][ch.Name] {
+		sel := allowedEntries[ch.Package][ch.Name]
+		if len(sel) == 0 {
 			continue
 		}
 
-		// Trim entries to allowed bundles.
+		// Keep only the entries selected for THIS channel and repair the
+		// Replaces/Skips graph across dropped entries so filtering never
+		// introduces additional channel heads (opm refuses to serve a
+		// catalog whose channels have more than one head).
 		trimmed := ch
-		trimmed.Entries = nil
-		for _, e := range ch.Entries {
-			if allowedBundles[e.Name] {
-				// We keep the original entry structure (Replaces/Skips) but OLM
-				// will handle missing references by treating them as new roots.
-				// This is better than clearing them because if we included a
-				// version range, we want to keep the graph between them.
-				trimmed.Entries = append(trimmed.Entries, e)
-			}
-		}
+		trimmed.Entries = repairChannelGraph(ch.Entries, sel)
 		if len(trimmed.Entries) == 0 {
 			continue
 		}
@@ -1163,6 +1224,21 @@ func (r *CatalogResolver) LoadFBC(ctx context.Context, catalogImage string) (*de
 	return r.loadFBCFromImage(ctx, catalogImage)
 }
 
+// tlog prints a timestamped log line with wall-clock time, elapsed duration
+// since start, and a step-level duration (since the previous tlog call).
+func tlog(ctx context.Context, start time.Time, prev *time.Time, format string, args ...any) {
+	now := time.Now()
+	elapsed := now.Sub(start)
+	step := now.Sub(*prev)
+	msg := fmt.Sprintf(format, args...)
+	slog.InfoContext(ctx, msg, "elapsed", elapsed, "step", step)
+	*prev = now
+}
+
+// layerUploadConcurrency bounds how many kept source layers are uploaded to the
+// target registry in parallel.
+const layerUploadConcurrency = 3
+
 // BuildFilteredCatalogImage pulls sourceCatalogImage, filters its FBC to the
 // requested packages, and pushes a new OCI catalog image to targetRef.
 //
@@ -1175,18 +1251,14 @@ func (r *CatalogResolver) LoadFBC(ctx context.Context, catalogImage string) (*de
 // Internally the source image is first downloaded into a local OCI directory
 // layout (via regclient's "ocidir://" scheme) so that all subsequent layer
 // reads are local disk I/O — this eliminates redundant network round-trips
-// and makes the build resilient to transient registry slowness.
-// tlog prints a timestamped log line with wall-clock time, elapsed duration
-// since start, and a step-level duration (since the previous tlog call).
-func tlog(ctx context.Context, start time.Time, prev *time.Time, format string, args ...any) {
-	now := time.Now()
-	elapsed := now.Sub(start)
-	step := now.Sub(*prev)
-	msg := fmt.Sprintf(format, args...)
-	slog.InfoContext(ctx, msg, "elapsed", elapsed, "step", step)
-	*prev = now
-}
-
+// and makes the build resilient to transient registry slowness. Only the
+// linux/amd64 platform is downloaded from multi-arch source catalogs.
+//
+// The build is deterministic for a given source image digest and filter
+// configuration: no wall-clock timestamps enter the produced image. This
+// allows an early exit — when the target reference already points at exactly
+// the manifest this build would produce, all uploads are skipped. Individual
+// blobs already present in the target repository are likewise skipped.
 func (r *CatalogResolver) BuildFilteredCatalogImage(ctx context.Context, sourceCatalogImage, targetRef string, includes []mirrorv1alpha1.IncludePackage) (string, error) {
 	if r.client == nil {
 		return "", fmt.Errorf("registry client is required for BuildFilteredCatalogImage")
@@ -1204,14 +1276,16 @@ func (r *CatalogResolver) BuildFilteredCatalogImage(ctx context.Context, sourceC
 
 	// 2. Download the source catalog to a local OCI layout.
 	// This is a single network pass; regclient handles retries internally.
+	// Only linux/amd64 is fetched — other platforms of a multi-arch catalog
+	// would be downloaded and then discarded by resolveManifestList anyway.
 	tmpDir, err := os.MkdirTemp("", "catalog-build-*")
 	if err != nil {
 		return "", fmt.Errorf("failed to create temp dir for OCI layout: %w", err)
 	}
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
-	tlog(ctx, start, &prev, "Downloading source catalog %s to local OCI layout…", sourceCatalogImage)
-	if err := r.client.DownloadToOCILayout(ctx, sourceCatalogImage, tmpDir); err != nil {
+	tlog(ctx, start, &prev, "Downloading source catalog %s (linux/amd64) to local OCI layout…", sourceCatalogImage)
+	if err := r.client.DownloadToOCILayout(ctx, sourceCatalogImage, tmpDir, "linux/amd64"); err != nil {
 		return "", fmt.Errorf("failed to download source catalog %s: %w", sourceCatalogImage, err)
 	}
 	tlog(ctx, start, &prev, "Download complete")
@@ -1253,17 +1327,7 @@ func (r *CatalogResolver) BuildFilteredCatalogImage(ctx context.Context, sourceC
 	cr := classifySourceLayers(ctx, r.client, localRef, srcLayers, srcDiffIDs, sourceCatalogImage)
 	tlog(ctx, start, &prev, "Layer classification complete: %d kept, %d skipped", len(cr.keptLayers), len(srcLayers)-len(cr.keptLayers))
 
-	// 7. Copy kept layers from local OCI layout to target registry.
-	// Reads from disk, uploads to network — each layer transferred only once.
-	for i, layer := range cr.keptLayers {
-		tlog(ctx, start, &prev, "Uploading layer %d/%d (%s, %d bytes)", i+1, len(cr.keptLayers), layer.Digest.String()[:16], layer.Size)
-		if err := blobCopyWithRetry(ctx, r.client, localRef, destRef, layer, 3, 5*time.Minute); err != nil {
-			return "", fmt.Errorf("failed to upload source layer %d (%s): %w", i, layer.Digest, err)
-		}
-		tlog(ctx, start, &prev, "Layer %d/%d uploaded", i+1, len(cr.keptLayers))
-	}
-
-	// 8. Parse the FBC from the already-extracted config files (no re-download).
+	// 7. Parse the FBC from the already-extracted config files (no re-download).
 	if len(cr.configFS) == 0 {
 		return "", fmt.Errorf("no FBC config files found under %s in %s", configsPath, sourceCatalogImage)
 	}
@@ -1283,7 +1347,7 @@ func (r *CatalogResolver) BuildFilteredCatalogImage(ctx context.Context, sourceC
 	tlog(ctx, start, &prev, "Filtered FBC: %d packages, %d channels, %d bundles",
 		len(filtered.Packages), len(filtered.Channels), len(filtered.Bundles))
 
-	// 9. Build the filtered FBC layer (gzip-tar with opaque whiteout).
+	// 8. Build the filtered FBC layer (gzip-tar with opaque whiteout).
 	tlog(ctx, start, &prev, "Building FBC overlay layer…")
 	layerData, uncompressedDigest, err := buildFBCLayer(filtered)
 	if err != nil {
@@ -1298,20 +1362,11 @@ func (r *CatalogResolver) BuildFilteredCatalogImage(ctx context.Context, sourceC
 		Size:      int64(len(layerData)),
 	}
 
-	// 10. Push the filtered FBC layer blob.
-	// Use a per-operation timeout to avoid indefinite hangs when the target
-	// registry only speaks HTTP and the TLS attempt stalls.
-	tlog(ctx, start, &prev, "Pushing FBC overlay layer (%d bytes)…", len(layerData))
-	pushCtx, pushCancel := context.WithTimeout(ctx, 5*time.Minute)
-	_, err = r.client.BlobPut(pushCtx, destRef, layerDesc, bytes.NewReader(layerData))
-	pushCancel()
-	if err != nil {
-		return "", fmt.Errorf("failed to push FBC layer blob: %w", err)
-	}
-	tlog(ctx, start, &prev, "FBC overlay layer pushed")
-
-	// 11. Build new image config: keep source config, replace RootFS.DiffIDs
-	// with the kept ones plus our new layer's diff_id.
+	// 9. Build new image config: keep source config, replace RootFS.DiffIDs
+	// with the kept ones plus our new layer's diff_id. The history entry
+	// reuses the source image's created timestamp instead of time.Now() so
+	// that identical inputs always produce a byte-identical config — and
+	// therefore an identical manifest digest (enables the early exit below).
 	imgCfg := localConfig.GetConfig()
 	imgCfg.RootFS.DiffIDs = append(append([]godigest.Digest{}, cr.keptDiffIDs...), uncompressedDigest)
 	if imgCfg.Config.Labels == nil {
@@ -1319,9 +1374,8 @@ func (r *CatalogResolver) BuildFilteredCatalogImage(ctx context.Context, sourceC
 	}
 	imgCfg.Config.Labels["operators.operatorframework.io.index.configs.v1"] = "/configs"
 	imgCfg.Config.Cmd = []string{"serve", "/configs", "--cache-dir=/tmp/cache", "--cache-enforce-integrity=false"}
-	now := time.Now().UTC()
 	imgCfg.History = append(imgCfg.History, v1.History{
-		Created:   &now,
+		Created:   imgCfg.Created,
 		CreatedBy: "oc-mirror-operator: filtered FBC overlay",
 		Comment:   fmt.Sprintf("filtered to %d packages", len(filtered.Packages)),
 	})
@@ -1333,17 +1387,7 @@ func (r *CatalogResolver) BuildFilteredCatalogImage(ctx context.Context, sourceC
 	}
 	configDesc := newConfig.GetDescriptor()
 
-	// 12. Push the new config blob.
-	tlog(ctx, start, &prev, "Pushing image config (%d bytes)…", len(configData))
-	cfgCtx, cfgCancel := context.WithTimeout(ctx, 2*time.Minute)
-	_, err = r.client.BlobPut(cfgCtx, destRef, configDesc, bytes.NewReader(configData))
-	cfgCancel()
-	if err != nil {
-		return "", fmt.Errorf("failed to push image config blob: %w", err)
-	}
-	tlog(ctx, start, &prev, "Image config pushed")
-
-	// 13. Build manifest: kept source layers + our FBC layer, new config.
+	// 10. Build manifest: kept source layers + our FBC layer, new config.
 	allLayers := make([]descriptor.Descriptor, len(cr.keptLayers)+1)
 	copy(allLayers, cr.keptLayers)
 	allLayers[len(cr.keptLayers)] = layerDesc
@@ -1359,8 +1403,79 @@ func (r *CatalogResolver) BuildFilteredCatalogImage(ctx context.Context, sourceC
 	if err != nil {
 		return "", fmt.Errorf("failed to create OCI manifest: %w", err)
 	}
+	manifestDigest := m.GetDescriptor().Digest
 
-	// 14. Push manifest to target.
+	// 11. Early exit: when the target reference already points at exactly this
+	// manifest, the previous build with identical inputs is still current and
+	// no uploads are needed at all.
+	headCtx, headCancel := context.WithTimeout(ctx, 1*time.Minute)
+	existing, headErr := r.client.ManifestHead(headCtx, destRef)
+	headCancel()
+	if headErr == nil && existing.GetDescriptor().Digest == manifestDigest {
+		tlog(ctx, start, &prev, "DONE — target %s already up to date (digest %s), skipping all uploads",
+			targetRef, manifestDigest.String())
+		return manifestDigest.String(), nil
+	}
+
+	// 12. Copy kept layers from local OCI layout to target registry, in
+	// parallel with bounded concurrency. Layers already present in the target
+	// repository are skipped; the rest are read from disk and uploaded once.
+	tlog(ctx, start, &prev, "Uploading %d kept layers (up to %d in parallel)…", len(cr.keptLayers), layerUploadConcurrency)
+	uploadGrp, uploadCtx := errgroup.WithContext(ctx)
+	uploadGrp.SetLimit(layerUploadConcurrency)
+	for i, layer := range cr.keptLayers {
+		uploadGrp.Go(func() error {
+			if r.client.BlobExists(uploadCtx, destRef, layer) {
+				slog.InfoContext(uploadCtx, "layer already present in target, skipping upload",
+					"layer", fmt.Sprintf("%d/%d", i+1, len(cr.keptLayers)),
+					"digest", layer.Digest.String()[:16], "bytes", layer.Size)
+				return nil
+			}
+			slog.InfoContext(uploadCtx, "uploading layer",
+				"layer", fmt.Sprintf("%d/%d", i+1, len(cr.keptLayers)),
+				"digest", layer.Digest.String()[:16], "bytes", layer.Size)
+			if err := blobCopyWithRetry(uploadCtx, r.client, localRef, destRef, layer, 3, 5*time.Minute); err != nil {
+				return fmt.Errorf("failed to upload source layer %d (%s): %w", i, layer.Digest, err)
+			}
+			return nil
+		})
+	}
+	if err := uploadGrp.Wait(); err != nil {
+		return "", err
+	}
+	tlog(ctx, start, &prev, "Kept layers uploaded")
+
+	// 13. Push the filtered FBC layer blob (unless already present).
+	// Use a per-operation timeout to avoid indefinite hangs when the target
+	// registry only speaks HTTP and the TLS attempt stalls.
+	if r.client.BlobExists(ctx, destRef, layerDesc) {
+		tlog(ctx, start, &prev, "FBC overlay layer already present in target, skipping upload")
+	} else {
+		tlog(ctx, start, &prev, "Pushing FBC overlay layer (%d bytes)…", len(layerData))
+		pushCtx, pushCancel := context.WithTimeout(ctx, 5*time.Minute)
+		_, err = r.client.BlobPut(pushCtx, destRef, layerDesc, bytes.NewReader(layerData))
+		pushCancel()
+		if err != nil {
+			return "", fmt.Errorf("failed to push FBC layer blob: %w", err)
+		}
+		tlog(ctx, start, &prev, "FBC overlay layer pushed")
+	}
+
+	// 14. Push the new config blob (unless already present).
+	if r.client.BlobExists(ctx, destRef, configDesc) {
+		tlog(ctx, start, &prev, "Image config already present in target, skipping upload")
+	} else {
+		tlog(ctx, start, &prev, "Pushing image config (%d bytes)…", len(configData))
+		cfgCtx, cfgCancel := context.WithTimeout(ctx, 2*time.Minute)
+		_, err = r.client.BlobPut(cfgCtx, destRef, configDesc, bytes.NewReader(configData))
+		cfgCancel()
+		if err != nil {
+			return "", fmt.Errorf("failed to push image config blob: %w", err)
+		}
+		tlog(ctx, start, &prev, "Image config pushed")
+	}
+
+	// 15. Push manifest to target.
 	tlog(ctx, start, &prev, "Pushing manifest to %s…", targetRef)
 	mfCtx, mfCancel := context.WithTimeout(ctx, 2*time.Minute)
 	err = r.client.ManifestPut(mfCtx, destRef, m)
@@ -1371,7 +1486,7 @@ func (r *CatalogResolver) BuildFilteredCatalogImage(ctx context.Context, sourceC
 
 	tlog(ctx, start, &prev, "DONE — catalog image pushed: %s (kept: %d/%d layers, %d packages)",
 		targetRef, len(cr.keptLayers), len(srcLayers), len(filtered.Packages))
-	return m.GetDescriptor().Digest.String(), nil
+	return manifestDigest.String(), nil
 }
 
 // buildFBCLayer serialises a DeclarativeConfig into an in-memory gzip-tar layer
@@ -1410,11 +1525,14 @@ func buildFBCLayer(cfg *declcfg.DeclarativeConfig) ([]byte, godigest.Digest, err
 	}
 	sort.Strings(pkgNames)
 
-	// Write uncompressed tar to compute diff_id, then gzip.
-	var uncompressedBuf bytes.Buffer
+	// Stream the tar simultaneously into the gzip writer (compressed layer
+	// data) and a SHA-256 hash (uncompressed diff_id) — the uncompressed tar
+	// is never buffered in memory.
+	var gzBuf bytes.Buffer
+	gzw := gzip.NewWriter(&gzBuf)
+	defer func() { _ = gzw.Close() }()
 	diffIDHash := sha256.New()
-	uncompressedWriter := io.MultiWriter(&uncompressedBuf, diffIDHash)
-	tw := tar.NewWriter(uncompressedWriter)
+	tw := tar.NewWriter(io.MultiWriter(gzw, diffIDHash))
 	defer func() { _ = tw.Close() }()
 
 	// Write the configs/ directory entry.
@@ -1502,19 +1620,11 @@ func buildFBCLayer(cfg *declcfg.DeclarativeConfig) ([]byte, godigest.Digest, err
 	if err := tw.Close(); err != nil {
 		return nil, "", fmt.Errorf("failed to finalise tar: %w", err)
 	}
-
-	diffID := godigest.NewDigestFromBytes(godigest.SHA256, diffIDHash.Sum(nil))
-
-	// Gzip the tar.
-	var gzBuf bytes.Buffer
-	gzw := gzip.NewWriter(&gzBuf)
-	defer func() { _ = gzw.Close() }()
-	if _, err := io.Copy(gzw, &uncompressedBuf); err != nil {
-		return nil, "", fmt.Errorf("failed to gzip tar: %w", err)
-	}
 	if err := gzw.Close(); err != nil {
 		return nil, "", fmt.Errorf("failed to finalise gzip: %w", err)
 	}
+
+	diffID := godigest.NewDigestFromBytes(godigest.SHA256, diffIDHash.Sum(nil))
 
 	return gzBuf.Bytes(), diffID, nil
 }

@@ -8,6 +8,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Filtered catalog unservable: "multiple channel heads found in graph"**:
+  Heads-only filtering selected the head bundle of every channel, but channel
+  trimming then kept any globally selected bundle in every channel it appeared
+  in. For catalogs whose aggregate channel (e.g. `stable`) also lists the heads
+  of per-minor stream channels (`stable-3.0`, `stable-3.1`, …) as historical
+  entries — such as `servicemeshoperator3` — the aggregate channel ended up
+  with one head per stream and `opm serve` refused to rebuild its cache,
+  making the entire catalog (and every operator in it) uninstallable. Channel
+  entries are now selected strictly per channel, and the `replaces` chain of
+  the surviving entries is repaired across dropped entries (nearest kept
+  ancestor becomes the new `replaces`, dropped intermediates are recorded in
+  `skips`), matching oc-mirror v2's channel filtering semantics. Filtering can
+  no longer introduce additional channel heads.
+
+### Changed
+- **Catalog image build is faster and idempotent**:
+  - Only the `linux/amd64` platform of a multi-arch source catalog is
+    downloaded (previously all platforms were pulled and then discarded).
+  - The build is now deterministic: the image config no longer embeds a
+    wall-clock timestamp, so identical inputs (source digest + filter config)
+    produce a byte-identical manifest. When the target reference already
+    points at exactly that manifest, the build exits early without uploading
+    anything.
+  - Individual blobs (kept source layers, FBC overlay layer, image config)
+    already present in the target repository are skipped via HEAD probes.
+  - Kept source layers upload in parallel (bounded at 3 concurrent uploads).
+  - The FBC overlay layer is streamed directly into gzip while hashing,
+    instead of buffering the uncompressed tar in memory.
+  - The graph-data image build likewise downloads only `linux/amd64` of its
+    base image.
 - **Operator catalog tag-to-digest drift**: `resolveOperatorSection` probed
   the catalog's digest via `GetCatalogDigest` for caching purposes, then
   separately re-pulled the catalog by its original tag reference in

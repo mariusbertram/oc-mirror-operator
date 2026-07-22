@@ -138,7 +138,12 @@ func NewMirrorClient(insecureHosts []string, authConfigPath string, destHosts ..
 // network round-trips for individual blob operations. All subsequent BlobGet,
 // ManifestGet, and ImageConfig calls using an "ocidir://" ref pointing at
 // ociDir will read from the local filesystem with zero network I/O.
-func (c *MirrorClient) DownloadToOCILayout(ctx context.Context, src string, ociDir string) error {
+//
+// When platforms are given and the source is a manifest list, only the child
+// manifests (and their blobs) matching those platforms are downloaded; the
+// top-level index is preserved so platform resolution against the local layout
+// still works. Single-platform images are unaffected.
+func (c *MirrorClient) DownloadToOCILayout(ctx context.Context, src string, ociDir string, platforms ...string) error {
 	srcRef, err := ref.New(src)
 	if err != nil {
 		return fmt.Errorf("failed to parse source reference %s: %w", src, err)
@@ -147,9 +152,13 @@ func (c *MirrorClient) DownloadToOCILayout(ctx context.Context, src string, ociD
 	if err != nil {
 		return fmt.Errorf("failed to build ocidir reference for %s: %w", ociDir, err)
 	}
-	if err := c.rc.ImageCopy(ctx, srcRef, dstRef); err != nil {
+	var opts []regclient.ImageOpts
+	if len(platforms) > 0 {
+		opts = append(opts, regclient.ImageWithPlatforms(platforms))
+	}
+	if err := c.rc.ImageCopy(ctx, srcRef, dstRef, opts...); err != nil {
 		if c.rcFallback != nil {
-			return c.rcFallback.ImageCopy(ctx, srcRef, dstRef)
+			return c.rcFallback.ImageCopy(ctx, srcRef, dstRef, opts...)
 		}
 		return fmt.Errorf("failed to download %s to OCI layout: %w", src, err)
 	}
@@ -268,6 +277,33 @@ func (c *MirrorClient) getDigestWith(ctx context.Context, rc *regclient.RegClien
 	}
 
 	return m.GetDescriptor().Digest.String(), nil
+}
+
+// BlobExists reports whether a blob is already present in the repository of r.
+// Errors (auth, network, 404) are treated as "not present" so callers can
+// simply fall back to uploading the blob.
+func (c *MirrorClient) BlobExists(ctx context.Context, r ref.Ref, d descriptor.Descriptor) bool {
+	if br, err := c.rc.BlobHead(ctx, r, d); err == nil {
+		_ = br.Close()
+		return true
+	}
+	if c.rcFallback != nil {
+		if br, err := c.rcFallback.BlobHead(ctx, r, d); err == nil {
+			_ = br.Close()
+			return true
+		}
+	}
+	return false
+}
+
+// ManifestHead performs a HEAD request for a manifest, returning its descriptor
+// without downloading the body.
+func (c *MirrorClient) ManifestHead(ctx context.Context, r ref.Ref) (manifest.Manifest, error) {
+	m, err := c.rc.ManifestHead(ctx, r)
+	if err != nil && c.rcFallback != nil {
+		return c.rcFallback.ManifestHead(ctx, r)
+	}
+	return m, err
 }
 
 // ManifestGet retrieves a manifest from the registry.

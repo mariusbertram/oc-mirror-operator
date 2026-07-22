@@ -14,6 +14,7 @@ require (
 	github.com/prometheus/client_golang v1.23.2
 	github.com/regclient/regclient v0.11.5
 	github.com/sigstore/sigstore v1.10.8
+	golang.org/x/sync v0.20.0
 	helm.sh/helm/v3 v3.20.2
 	k8s.io/api v0.35.3
 	k8s.io/apimachinery v0.35.3
@@ -143,7 +144,6 @@ require (
 	golang.org/x/mod v0.35.0 // indirect
 	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/oauth2 v0.35.0 // indirect
-	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.45.0 // indirect
 	golang.org/x/term v0.43.0 // indirect
 	golang.org/x/text v0.37.0 // indirect

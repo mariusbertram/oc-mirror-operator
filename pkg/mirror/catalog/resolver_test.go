@@ -1107,3 +1107,178 @@ func TestFilterFBC_DefaultChannelRepointedWhenFilteredOut(t *testing.T) {
 		t.Errorf("expected DefaultChannel repointed to surviving channel %q, got %q", "fast", filtered.Packages[0].DefaultChannel)
 	}
 }
+
+// channelHeads computes the head entries of a channel the same way
+// operator-registry's model validation does: an entry is a head when no other
+// entry supersedes it via Replaces or Skips.
+func channelHeads(ch declcfg.Channel) []string {
+	superseded := map[string]bool{}
+	for _, e := range ch.Entries {
+		if e.Replaces != "" {
+			superseded[e.Replaces] = true
+		}
+		for _, s := range e.Skips {
+			superseded[s] = true
+		}
+	}
+	var heads []string
+	for _, e := range ch.Entries {
+		if !superseded[e.Name] {
+			heads = append(heads, e.Name)
+		}
+	}
+	return heads
+}
+
+// smBundle builds a minimal bundle for the servicemeshoperator3 regression test.
+func smBundle(version string) declcfg.Bundle {
+	return declcfg.Bundle{
+		Name:    "servicemeshoperator3.v" + version,
+		Package: "servicemeshoperator3",
+		Image:   "registry.example.com/sm@sha256:" + version,
+		Properties: []property.Property{
+			{Type: olmPackage, Value: json.RawMessage(`{"packageName":"servicemeshoperator3","version":"` + version + `"}`)},
+		},
+	}
+}
+
+// Regression test for "multiple channel heads found in graph": the head of a
+// version-stream channel (e.g. stable-3.0) also appears as a historical entry
+// of the aggregate "stable" channel. Heads-only filtering must not keep those
+// foreign heads inside stable — otherwise opm refuses to serve the catalog.
+func TestFilterFBC_HeadsOnlyNoCrossChannelHeadLeakage(t *testing.T) {
+	cfg := &declcfg.DeclarativeConfig{
+		Packages: []declcfg.Package{{Name: "servicemeshoperator3", DefaultChannel: "stable"}},
+		Channels: []declcfg.Channel{
+			{
+				Name: "stable", Package: "servicemeshoperator3",
+				Entries: []declcfg.ChannelEntry{
+					{Name: "servicemeshoperator3.v3.0.13"},
+					{Name: "servicemeshoperator3.v3.1.10", Replaces: "servicemeshoperator3.v3.0.13"},
+					{Name: "servicemeshoperator3.v3.2.7", Replaces: "servicemeshoperator3.v3.1.10"},
+					{Name: "servicemeshoperator3.v3.4.0", Replaces: "servicemeshoperator3.v3.2.7"},
+				},
+			},
+			{
+				Name: "stable-3.0", Package: "servicemeshoperator3",
+				Entries: []declcfg.ChannelEntry{
+					{Name: "servicemeshoperator3.v3.0.12"},
+					{Name: "servicemeshoperator3.v3.0.13", Replaces: "servicemeshoperator3.v3.0.12"},
+				},
+			},
+			{
+				Name: "stable-3.1", Package: "servicemeshoperator3",
+				Entries: []declcfg.ChannelEntry{
+					{Name: "servicemeshoperator3.v3.1.10"},
+				},
+			},
+			{
+				Name: "stable-3.2", Package: "servicemeshoperator3",
+				Entries: []declcfg.ChannelEntry{
+					{Name: "servicemeshoperator3.v3.2.7"},
+				},
+			},
+		},
+		Bundles: []declcfg.Bundle{
+			smBundle("3.0.12"), smBundle("3.0.13"), smBundle("3.1.10"),
+			smBundle("3.2.7"), smBundle("3.4.0"),
+		},
+	}
+
+	resolver := &CatalogResolver{}
+	filtered, err := resolver.FilterFBC(context.Background(), cfg,
+		[]mirrorv1alpha1.IncludePackage{{Name: "servicemeshoperator3"}})
+	if err != nil {
+		t.Fatalf("FilterFBC: %v", err)
+	}
+
+	if len(filtered.Channels) != 4 {
+		t.Fatalf("expected 4 channels, got %d", len(filtered.Channels))
+	}
+	for _, ch := range filtered.Channels {
+		heads := channelHeads(ch)
+		if len(heads) != 1 {
+			t.Errorf("channel %q has %d heads (%v), want exactly 1 — opm rejects multi-head channels",
+				ch.Name, len(heads), heads)
+		}
+	}
+
+	// The stable channel must contain ONLY its own head, not the heads that
+	// were selected for the stable-3.x channels.
+	for _, ch := range filtered.Channels {
+		if ch.Name != "stable" {
+			continue
+		}
+		if len(ch.Entries) != 1 || ch.Entries[0].Name != "servicemeshoperator3.v3.4.0" {
+			t.Errorf("stable channel entries = %+v, want only servicemeshoperator3.v3.4.0", ch.Entries)
+		}
+	}
+}
+
+func TestRepairChannelGraph(t *testing.T) {
+	original := []declcfg.ChannelEntry{
+		{Name: "op.v1"},
+		{Name: "op.v2", Replaces: "op.v1"},
+		{Name: "op.v3", Replaces: "op.v2", Skips: []string{"op.v2.1"}},
+		{Name: "op.v4", Replaces: "op.v3"},
+	}
+
+	t.Run("drops and reconnects interior entries", func(t *testing.T) {
+		kept := map[string]bool{"op.v2": true, "op.v4": true}
+		result := repairChannelGraph(original, kept)
+		if len(result) != 2 {
+			t.Fatalf("expected 2 entries, got %d", len(result))
+		}
+		// op.v2's replaces target op.v1 was dropped: becomes a root, op.v1 skipped.
+		if result[0].Name != "op.v2" || result[0].Replaces != "" {
+			t.Errorf("op.v2 = %+v, want root entry (empty replaces)", result[0])
+		}
+		if len(result[0].Skips) != 1 || result[0].Skips[0] != "op.v1" {
+			t.Errorf("op.v2 skips = %v, want [op.v1]", result[0].Skips)
+		}
+		// op.v4 reconnects to nearest kept ancestor op.v2, skipping op.v3.
+		if result[1].Name != "op.v4" || result[1].Replaces != "op.v2" {
+			t.Errorf("op.v4 = %+v, want replaces=op.v2", result[1])
+		}
+		if len(result[1].Skips) != 1 || result[1].Skips[0] != "op.v3" {
+			t.Errorf("op.v4 skips = %v, want [op.v3]", result[1].Skips)
+		}
+		// The original entries must not be mutated (shared Skips slices).
+		if original[2].Skips[0] != "op.v2.1" || len(original[3].Skips) != 0 {
+			t.Errorf("original entries mutated: %+v", original)
+		}
+	})
+
+	t.Run("keeps intact chains untouched", func(t *testing.T) {
+		kept := map[string]bool{"op.v1": true, "op.v2": true, "op.v3": true, "op.v4": true}
+		result := repairChannelGraph(original, kept)
+		if len(result) != 4 {
+			t.Fatalf("expected 4 entries, got %d", len(result))
+		}
+		for i, e := range result {
+			if e.Name != original[i].Name || e.Replaces != original[i].Replaces {
+				t.Errorf("entry %d changed: %+v vs %+v", i, e, original[i])
+			}
+		}
+	})
+
+	t.Run("merges walked skips with existing skips", func(t *testing.T) {
+		kept := map[string]bool{"op.v3": true}
+		result := repairChannelGraph(original, kept)
+		if len(result) != 1 {
+			t.Fatalf("expected 1 entry, got %d", len(result))
+		}
+		if result[0].Replaces != "" {
+			t.Errorf("op.v3 replaces = %q, want empty", result[0].Replaces)
+		}
+		got := map[string]bool{}
+		for _, s := range result[0].Skips {
+			got[s] = true
+		}
+		for _, want := range []string{"op.v2.1", "op.v2", "op.v1"} {
+			if !got[want] {
+				t.Errorf("op.v3 skips missing %q: %v", want, result[0].Skips)
+			}
+		}
+	})
+}

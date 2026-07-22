@@ -108,7 +108,7 @@ func (b *Builder) BuildAndPush(ctx context.Context, registry string) (string, er
 	}
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
-	if err := b.client.DownloadToOCILayout(ctx, graphBaseImage, tmpDir); err != nil {
+	if err := b.client.DownloadToOCILayout(ctx, graphBaseImage, tmpDir, "linux/amd64"); err != nil {
 		return "", fmt.Errorf("download base image %s: %w", graphBaseImage, err)
 	}
 	localRef, err := ref.New(fmt.Sprintf("ocidir://%s:source", tmpDir))
