@@ -260,6 +260,47 @@ spec:
                             - name
                             type: object
                           type: array
+                        signatureVerification:
+                          description: |-
+                            SignatureVerification, when set, requires the catalog image to carry a
+                            valid cosign/sigstore signature verifiable against the referenced
+                            public key before it is resolved. Unlike OpenShift release payloads
+                            (which are always verified against embedded Red Hat keys), there is no
+                            single trusted signer for third-party operator catalogs, so
+                            verification here is opt-in and the key is supplied per-catalog.
+                            Unset (the default) means no verification is performed, matching
+                            pre-existing behavior.
+                          properties:
+                            publicKeySecretRef:
+                              description: |-
+                                PublicKeySecretRef references a key within a Secret, in the same
+                                namespace as the ImageSet, whose value is a PEM-encoded cosign public
+                                key used to verify the image's signature.
+                              properties:
+                                key:
+                                  description: The key of the secret to select from.  Must
+                                    be a valid secret key.
+                                  type: string
+                                name:
+                                  default: ""
+                                  description: |-
+                                    Name of the referent.
+                                    This field is effectively required, but due to backwards compatibility is
+                                    allowed to be empty. Instances of this type with an empty value here are
+                                    almost certainly wrong.
+                                    More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                  type: string
+                                optional:
+                                  description: Specify whether the Secret or its key
+                                    must be defined
+                                  type: boolean
+                              required:
+                              - key
+                              type: object
+                              x-kubernetes-map-type: atomic
+                          required:
+                          - publicKeySecretRef
+                          type: object
                         skipDependencies:
                           description: SkipDependencies will not include dependencies
                             if true.
