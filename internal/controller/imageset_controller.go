@@ -34,6 +34,18 @@ type ImageSetReconciler struct {
 
 const conditionCatalogReady = "CatalogReady"
 
+// catalogBuildSigAnnotation caches the signature (operator image + packages)
+// of the last catalog build, so a spec change can be detected without
+// recomputing it against a stale build.
+const catalogBuildSigAnnotation = "mirror.openshift.io/catalog-build-sig"
+
+// catalogRecollectSigAnnotation records the mirrorv1alpha1.RecollectAnnotation
+// value that was last honored as a catalog rebuild trigger, so the one-shot
+// recollect annotation (which stays set until the whole build succeeds) only
+// forces a rebuild once per distinct value instead of on every reconcile
+// while that value remains in place.
+const catalogRecollectSigAnnotation = "mirror.openshift.io/catalog-build-recollect-sig"
+
 // +kubebuilder:rbac:groups=mirror.openshift.io,resources=imagesets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=mirror.openshift.io,resources=imagesets/status,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=mirror.openshift.io,resources=imagesets/finalizers,verbs=update
@@ -236,13 +248,28 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs( //nolint:gocyclo
 	// when a rebuild is needed (operator image upgrade, package list change).
 	buildSig := r.CatalogBuildMgr.BuildSignature(operators)
 	lastSig := ""
+	lastHandledRecollect := ""
 	if is.Annotations != nil {
-		lastSig = is.Annotations["mirror.openshift.io/catalog-build-sig"]
+		lastSig = is.Annotations[catalogBuildSigAnnotation]
+		lastHandledRecollect = is.Annotations[catalogRecollectSigAnnotation]
 	}
 
-	catalogNeedsRebuild := recollectRequested || (lastSig != "" && lastSig != buildSig)
+	// recollectRequested already opens the gate above and bypasses the
+	// operator-mirroring wait below, but it must only force a REBUILD of an
+	// already-terminal CatalogBuildJob the first time a given recollect value
+	// is observed. The annotation stays set until the whole build succeeds, so
+	// without this dedup every reconcile while the rebuild is in flight (or
+	// the one that first observes it succeed) would see recollectRequested
+	// again and keep deleting+recreating the job, which could then never
+	// actually complete. Per the documented usage
+	// (mirror.openshift.io/recollect=$(date +%s)) a genuinely new request
+	// carries a distinct value from the one already handled.
+	recollectValue := is.Annotations[mirrorv1alpha1.RecollectAnnotation]
+	recollectForcesRebuild := recollectRequested && recollectValue != lastHandledRecollect
+
+	catalogNeedsRebuild := recollectForcesRebuild || (lastSig != "" && lastSig != buildSig)
 	switch {
-	case recollectRequested:
+	case recollectForcesRebuild:
 		l.Info("Catalog rebuild requested via recollect annotation", "imageSet", is.Name)
 	case catalogNeedsRebuild:
 		l.Info("Catalog build signature changed, forcing rebuild", "old", lastSig, "new", buildSig)
@@ -287,13 +314,17 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs( //nolint:gocyclo
 		return r.Status().Update(ctx, is)
 	}
 
-	// Persist the new build signature IMMEDIATELY so that concurrent/subsequent
-	// reconcile loops do not keep seeing a mismatch and endlessly delete+recreate jobs.
+	// Persist the new build signature (and, if applicable, the recollect value
+	// just honored) IMMEDIATELY so that concurrent/subsequent reconcile loops
+	// do not keep seeing a mismatch and endlessly delete+recreate jobs.
 	if catalogNeedsRebuild {
 		if is.Annotations == nil {
 			is.Annotations = make(map[string]string)
 		}
-		is.Annotations["mirror.openshift.io/catalog-build-sig"] = buildSig
+		is.Annotations[catalogBuildSigAnnotation] = buildSig
+		if recollectForcesRebuild {
+			is.Annotations[catalogRecollectSigAnnotation] = recollectValue
+		}
 		if err := r.Update(ctx, is); err != nil {
 			return fmt.Errorf("failed to persist catalog build signature: %w", err)
 		}
@@ -335,8 +366,13 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs( //nolint:gocyclo
 			return err
 		}
 
-		// If a rebuild is needed, delete the old Job first.
-		if catalogNeedsRebuild && phase != builder.JobPhaseNotFound {
+		// If a rebuild is needed, delete the old Job first. Only ever delete a
+		// terminal (Succeeded/Failed) job — never one that is Pending/Running,
+		// so a rebuild trigger that stays "true" across several reconciles
+		// (e.g. recollect, before its one-shot dedup marker above is visible,
+		// or a signature check racing a fresh Update) cannot kill a build that
+		// is already in flight.
+		if catalogNeedsRebuild && (phase == builder.JobPhaseSucceeded || phase == builder.JobPhaseFailed) {
 			l.Info("Deleting stale CatalogBuildJob for rebuild", "job", jobName)
 			if delErr := builder.DeleteBuildJob(ctx, r.Client, jobName, is.Namespace); delErr != nil {
 				l.Error(delErr, "Failed to delete stale CatalogBuildJob", "job", jobName)
