@@ -46,6 +46,15 @@ const catalogBuildSigAnnotation = "mirror.openshift.io/catalog-build-sig"
 // while that value remains in place.
 const catalogRecollectSigAnnotation = "mirror.openshift.io/catalog-build-recollect-sig"
 
+// catalogPollSigAnnotation records the is.Status.LastSuccessfulPollTime value
+// that was last honored as a poll-expiry catalog rebuild trigger. That
+// timestamp is owned by the Manager pod and can stay unchanged for a long
+// time after it goes stale, so without this dedup every reconcile that finds
+// the rebuilt job freshly terminal (Succeeded/Failed) would see pollExpired
+// still true and force yet another rebuild — an unbounded loop of real
+// builds, each pushing a fresh catalog image to the registry.
+const catalogPollSigAnnotation = "mirror.openshift.io/catalog-build-poll-sig"
+
 // +kubebuilder:rbac:groups=mirror.openshift.io,resources=imagesets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=mirror.openshift.io,resources=imagesets/status,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=mirror.openshift.io,resources=imagesets/finalizers,verbs=update
@@ -278,7 +287,21 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs( //nolint:gocyclo
 	// (e.g. redhat-operator-index:v4.21) may have been updated in-place.
 	// Only trigger when no job is already active; otherwise every reconcile
 	// while LastSuccessfulPollTime is stale would kill and recreate a running job.
-	if pollExpired && !catalogNeedsRebuild {
+	// Also dedup against the specific LastSuccessfulPollTime value already
+	// honored: that timestamp only advances when the Manager pod completes a
+	// fresh resolve, so once a job finishes and goes idle again, pollExpired
+	// alone would otherwise force another rebuild indefinitely until the
+	// Manager gets around to updating it.
+	pollForcesRebuild := false
+	lastHandledPoll := ""
+	currentPollMarker := ""
+	if is.Annotations != nil {
+		lastHandledPoll = is.Annotations[catalogPollSigAnnotation]
+	}
+	if is.Status.LastSuccessfulPollTime != nil {
+		currentPollMarker = is.Status.LastSuccessfulPollTime.Time.UTC().Format(time.RFC3339)
+	}
+	if pollExpired && !catalogNeedsRebuild && currentPollMarker != lastHandledPoll {
 		allJobsIdle := true
 		for _, op := range operators {
 			if op.Catalog == "" {
@@ -294,6 +317,7 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs( //nolint:gocyclo
 		if allJobsIdle {
 			l.Info("Poll interval expired, forcing catalog rebuild")
 			catalogNeedsRebuild = true
+			pollForcesRebuild = true
 		}
 	}
 
@@ -324,6 +348,9 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs( //nolint:gocyclo
 		is.Annotations[catalogBuildSigAnnotation] = buildSig
 		if recollectForcesRebuild {
 			is.Annotations[catalogRecollectSigAnnotation] = recollectValue
+		}
+		if pollForcesRebuild {
+			is.Annotations[catalogPollSigAnnotation] = currentPollMarker
 		}
 		if err := r.Update(ctx, is); err != nil {
 			return fmt.Errorf("failed to persist catalog build signature: %w", err)
