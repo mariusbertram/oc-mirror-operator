@@ -715,7 +715,7 @@ func TestRenderBundleRefs_ExactlyFour(t *testing.T) {
 
 func TestChannelHeadPlusN_EmptyEntries(t *testing.T) {
 	ch := declcfg.Channel{Name: "stable", Package: "op"}
-	got := channelHeadPlusN(ch, 0)
+	got := channelHeadPlusN(ch, 0, nil)
 	if got != nil {
 		t.Errorf("expected nil for empty entries, got %v", got)
 	}
@@ -731,7 +731,7 @@ func TestChannelHeadPlusN_AllSuperseded(t *testing.T) {
 			{Name: "op.v2.0.0", Replaces: "op.v1.0.0"},
 		},
 	}
-	got := channelHeadPlusN(ch, 0)
+	got := channelHeadPlusN(ch, 0, nil)
 	if len(got) != 1 || got[0] != "op.v2.0.0" {
 		t.Errorf("expected fallback to last entry, got %v", got)
 	}
@@ -746,7 +746,7 @@ func TestChannelHeadPlusN_NegativePrevious(t *testing.T) {
 			{Name: "op.v2.0.0", Replaces: "op.v1.0.0"},
 		},
 	}
-	got := channelHeadPlusN(ch, -1)
+	got := channelHeadPlusN(ch, -1, nil)
 	if len(got) != 1 || got[0] != "op.v2.0.0" {
 		t.Errorf("negative previous should behave like 0, got %v", got)
 	}
