@@ -127,6 +127,47 @@ gzip on top. Estimated 5–10× reduction → the same deployment lands at
 - ✅ Also shrinks the cleanup snapshot CMs (same encoder via `SaveRaw`).
 - ❌ Still a ceiling (just further away) and still full-blob rewrites.
 
+#### B′. Fully binary interned encoding — and the digest floor
+
+Schema v2 can go further than compact JSON: a binary encoding (CBOR or a
+hand-rolled layout) with interned tables — repo paths and ref tuples stored
+once, entries referencing them by varint index, digests stored as 32 raw bytes
+instead of 64 hex characters. Per entry that leaves roughly:
+
+| Field | Bytes |
+|---|---|
+| digest (raw) | 32 |
+| repo-table index + tag/exception flag | 2–4 |
+| state + retryCount + permanentlyFailed (packed) | 1 |
+| group indices (`refs`) | 1–3 |
+
+≈ 36–45 B/image plus amortized tables — about **2–2.5×** better than the
+current gzip-JSON (~60–80 B/image observed).
+
+Losing human readability costs little: the current format is *already* opaque
+(`images.json.gz` in `BinaryData` needs base64 + gunzip to inspect), and the
+practical debug views are the dashboard and resource API. A
+`state dump` debugging subcommand on the main binary (render any schema
+version as JSON) preserves operability regardless of encoding.
+
+The hard limit, however, is information-theoretic: a sha256 digest is 32 bytes
+of pure entropy per image. **No encoding gets below O(images × 32 B)** while
+per-image digests are stored, so 1 MiB caps out around ~25–30 k images. A
+binary format raises the ceiling; it does not remove it.
+
+The only way under that floor is to stop storing per-image data for the steady
+state: the resolved image list of a spec entry is deterministically
+reproducible from `(entrySig, catalog digest)` — both already tracked as
+cache-invalidation annotations. Store per group only a 2-bit state bitmap over
+the deterministically-ordered resolved list, plus full exception records for
+Pending/Failed entries. That is O(spec) + O(deviations) — a few KiB even at
+100 k images. The price: the state is meaningless without the resolver,
+cleanup worklists must be regenerated via re-resolution or registry listing,
+and stable resolution ordering becomes a hard invariant. This buys the same
+scaling as option C at noticeably higher coupling and complexity, which is why
+C remains the preferred architectural end-state and B′ is scoped as an
+optional encoding refinement of Stage 1.
+
 ### C. Manager-owned store, API-served (architectural fix)
 
 The manager pod becomes the sole owner of full-resolution state:
