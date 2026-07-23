@@ -153,6 +153,46 @@ func TestTargetNameFromStateCM(t *testing.T) {
 	}
 }
 
+func TestShardCountFromMeta_Bounds(t *testing.T) {
+	cases := []struct {
+		shards string
+		wantN  int
+		wantOK bool
+	}{
+		{"8", 8, true},
+		{"1", 1, true},
+		{"512", 512, true},
+		{"513", 0, false},
+		{"0", 0, false},
+		{"-3", 0, false},
+		{"1000000000000", 0, false},
+		{"nan", 0, false},
+		{"", 0, false},
+	}
+	for _, tc := range cases {
+		cm := &corev1.ConfigMap{Data: map[string]string{metaKeyShards: tc.shards}}
+		n, ok := shardCountFromMeta(cm)
+		if n != tc.wantN || ok != tc.wantOK {
+			t.Fatalf("shardCountFromMeta(shards=%q) = (%d, %v), want (%d, %v)", tc.shards, n, ok, tc.wantN, tc.wantOK)
+		}
+	}
+}
+
+func TestShardIndex_InRange(t *testing.T) {
+	for _, n := range []int{1, 2, 8, maxShardCount, maxShardCount + 100} {
+		for _, dest := range []string{"", "a", "registry.example.com/repo@sha256:abc"} {
+			i := shardIndex(dest, n)
+			bound := n
+			if bound > maxShardCount {
+				bound = maxShardCount
+			}
+			if i < 0 || i >= bound {
+				t.Fatalf("shardIndex(%q, %d) = %d out of range [0,%d)", dest, n, i, bound)
+			}
+		}
+	}
+}
+
 // --- Counts ---
 
 func TestCounts_Empty(t *testing.T) {

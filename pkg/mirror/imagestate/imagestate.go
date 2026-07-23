@@ -78,6 +78,11 @@ const (
 	// so changing this constant never re-shards existing state.
 	DefaultShardCount = 8
 
+	// maxShardCount bounds the shard count accepted from a meta ConfigMap so
+	// a corrupted or tampered value cannot trigger unbounded shard reads or
+	// integer-conversion overflow.
+	maxShardCount = 512
+
 	// maxLastErrorLen caps persisted LastError strings so registry error
 	// bursts cannot blow up the store size.
 	maxLastErrorLen = 512
@@ -221,9 +226,12 @@ func shardIndex(dest string, n int) int {
 	if n <= 1 {
 		return 0
 	}
+	if n > maxShardCount {
+		n = maxShardCount
+	}
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(dest))
-	return int(h.Sum32() % uint32(n)) //nolint:gosec // n is a small positive shard count
+	return int(h.Sum32() % uint32(n)) //nolint:gosec // n is bounded to [2, maxShardCount]
 }
 
 // Counts returns aggregate counts across the ImageState.
@@ -272,10 +280,11 @@ func LoadByConfigMapName(ctx context.Context, c client.Client, namespace, cmName
 }
 
 // shardCountFromMeta reports whether cm is the meta ConfigMap of a sharded
-// store and, if so, its shard count.
+// store and, if so, its shard count. Counts outside [1, maxShardCount] are
+// rejected (the code never writes them; treat them as corruption).
 func shardCountFromMeta(cm *corev1.ConfigMap) (int, bool) {
 	n, err := strconv.Atoi(cm.Data[metaKeyShards])
-	if err != nil || n < 1 {
+	if err != nil || n < 1 || n > maxShardCount {
 		return 0, false
 	}
 	return n, true
