@@ -21,7 +21,6 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
-	"fmt"
 	"net/http"
 	"net/url"
 	"os"
@@ -82,7 +81,7 @@ func runWorker() {
 	fs.StringVar(&src, "src", "", "Source image (legacy single-image mode)")
 	fs.StringVar(&dest, "dest", "", "Destination image (legacy single-image mode)")
 	if err := fs.Parse(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, "flag parse error:", err)
+		oclog.Printf("flag parse error: %v", err)
 		os.Exit(1)
 	}
 
@@ -94,7 +93,7 @@ func runWorker() {
 
 	// Legacy single-image mode (used only when called without MIRROR_BATCH).
 	if src == "" || dest == "" {
-		fmt.Fprintln(os.Stderr, "ERROR: MIRROR_BATCH env var or --src/--dest flags are required")
+		oclog.Println("ERROR: MIRROR_BATCH env var or --src/--dest flags are required")
 		os.Exit(1)
 	}
 	c := buildMirrorClient(insecure, dest)
@@ -111,7 +110,7 @@ type BatchItem struct {
 func runWorkerBatch(insecure bool, batchJSON string) {
 	var items []BatchItem
 	if err := json.Unmarshal([]byte(batchJSON), &items); err != nil {
-		fmt.Fprintf(os.Stderr, "ERROR: failed to parse MIRROR_BATCH: %v\n", err)
+		oclog.Printf("ERROR: failed to parse MIRROR_BATCH: %v", err)
 		os.Exit(1)
 	}
 	if len(items) == 0 {
@@ -199,7 +198,7 @@ func mirrorOneImage(c *mirrorclient.MirrorClient, src, dest string) bool {
 		oclog.Printf("Attempt %d failed: %v\n", attempt, lastErr)
 	}
 	if lastErr != nil {
-		fmt.Fprintf(os.Stderr, "ERROR: failed to mirror %s: %v\n", src, lastErr)
+		oclog.Printf("ERROR: failed to mirror %s: %v", src, lastErr)
 		setupLog.Error(lastErr, "failed to mirror image")
 		reportStatus(dest, "", lastErr.Error())
 		return false
@@ -210,7 +209,7 @@ func mirrorOneImage(c *mirrorclient.MirrorClient, src, dest string) bool {
 	digest, err := c.GetDigest(verifyCtx, effectiveDest)
 	verifyCancel()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "ERROR: failed to verify digest for %s: %v\n", src, err)
+		oclog.Printf("ERROR: failed to verify digest for %s: %v", src, err)
 		setupLog.Error(err, "failed to verify mirrored image digest")
 		reportStatus(dest, "", err.Error())
 		return false
@@ -317,16 +316,16 @@ func runCleanup() {
 	fs.BoolVar(&insecure, "insecure", false, "Allow insecure registry")
 	fs.StringVar(&configMapName, "configmap", "", "Override ConfigMap name (default: derived from --imageset)")
 	if err := fs.Parse(os.Args[2:]); err != nil {
-		fmt.Fprintln(os.Stderr, "flag parse error:", err)
+		oclog.Printf("flag parse error: %v", err)
 		os.Exit(1)
 	}
 
 	if namespace == "" || registry == "" {
-		fmt.Fprintln(os.Stderr, "ERROR: --namespace and --registry are required")
+		oclog.Println("ERROR: --namespace and --registry are required")
 		os.Exit(1)
 	}
 	if imageSetName == "" && configMapName == "" {
-		fmt.Fprintln(os.Stderr, "ERROR: --imageset or --configmap is required")
+		oclog.Println("ERROR: --imageset or --configmap is required")
 		os.Exit(1)
 	}
 	// Derive ConfigMap name from imageset if not explicitly set.
@@ -337,7 +336,7 @@ func runCleanup() {
 	cfg := ctrl.GetConfigOrDie()
 	c, err := client.New(cfg, client.Options{Scheme: scheme})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "ERROR: failed to create Kubernetes client: %v\n", err)
+		oclog.Printf("ERROR: failed to create Kubernetes client: %v", err)
 		os.Exit(1)
 	}
 
@@ -346,7 +345,7 @@ func runCleanup() {
 	// Load the image state from the specified ConfigMap.
 	state, err := imagestate.LoadByConfigMapName(ctx, c, namespace, configMapName)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "ERROR: failed to load image state from %s: %v\n", configMapName, err)
+		oclog.Printf("ERROR: failed to load image state from %s: %v", configMapName, err)
 		os.Exit(1)
 	}
 
@@ -381,7 +380,7 @@ func runCleanup() {
 			delCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			defer cancel()
 			if err := mc.DeleteManifest(delCtx, dest); err != nil {
-				fmt.Fprintf(os.Stderr, "WARN: failed to delete %s: %v\n", dest, err)
+				oclog.Printf("WARN: failed to delete %s: %v", dest, err)
 				failed++
 			} else {
 				oclog.Printf("Deleted: %s\n", dest)
@@ -393,7 +392,7 @@ func runCleanup() {
 	oclog.Printf("Cleanup complete: %d deleted, %d skipped (not mirrored), %d failed\n", deleted, skipped, failed)
 
 	if failed > 0 {
-		fmt.Fprintf(os.Stderr, "ERROR: %d images could not be deleted\n", failed)
+		oclog.Printf("ERROR: %d images could not be deleted", failed)
 		os.Exit(1)
 	}
 
@@ -407,7 +406,7 @@ func deleteConfigMapByName(ctx context.Context, c client.Client, namespace, cmNa
 	cm.Namespace = namespace
 	if err := c.Delete(ctx, cm); err != nil {
 		if !k8serrors.IsNotFound(err) {
-			fmt.Fprintf(os.Stderr, "WARN: failed to delete ConfigMap %s: %v\n", cmName, err)
+			oclog.Printf("WARN: failed to delete ConfigMap %s: %v", cmName, err)
 		}
 	} else {
 		oclog.Printf("Deleted ConfigMap %s\n", cmName)
