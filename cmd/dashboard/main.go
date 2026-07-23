@@ -22,7 +22,6 @@ package main
 import (
 	"context"
 	"flag"
-	"fmt"
 	"net/http"
 	"os"
 	"time"
@@ -61,12 +60,13 @@ func runPlugin() {
 	fs.StringVar(&addr, "bind-address", ":9001", "Address the plugin HTTPS server listens on")
 	fs.StringVar(&certFile, "cert-file", "/var/serving-cert/tls.crt", "TLS certificate file")
 	fs.StringVar(&keyFile, "key-file", "/var/serving-cert/tls.key", "TLS key file")
-	if err := fs.Parse(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, "flag parse error:", err)
-		os.Exit(1)
-	}
 
 	ctrl.SetLogger(zap.New())
+
+	if err := fs.Parse(os.Args[1:]); err != nil {
+		setupLog.Error(err, "flag parse error")
+		os.Exit(1)
+	}
 	ctx := ctrl.SetupSignalHandler()
 
 	cfg := ctrl.GetConfigOrDie()
