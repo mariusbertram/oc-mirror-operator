@@ -490,16 +490,34 @@ func operatorImagesMirrored(ctx context.Context, c client.Client, is *mirrorv1al
 	if err != nil || len(state) == 0 {
 		return false, false
 	}
+
+	// Expected per-entry signatures of the CURRENT spec. The imagestate
+	// ConfigMap only reflects the spec the manager last resolved — after an
+	// operator is added or changed, the state still shows the OLD content
+	// (typically all Mirrored). Without checking that every current spec
+	// entry has actually been resolved into the state, the catalog build
+	// would launch immediately on spec change, producing a catalog that
+	// references bundle images not yet present in the target registry.
+	expectedSigs := make(map[string]bool, len(is.Spec.Mirror.Operators))
+	for _, op := range is.Spec.Mirror.Operators {
+		if op.Catalog != "" {
+			expectedSigs[mirrorv1alpha1.OperatorEntrySignature(op)] = false
+		}
+	}
+
 	hasOperator := false
+	legacySigSeen := false
 	for _, e := range state {
 		if e == nil || !e.HasImageSet(is.Name) {
 			continue
 		}
 		// Find the Ref for this ImageSet to check the Origin.
 		var origin imagestate.ImageOrigin
+		var sig string
 		for _, ref := range e.Refs {
 			if ref.ImageSet == is.Name {
 				origin = ref.Origin
+				sig = ref.EntrySig
 				break
 			}
 		}
@@ -508,10 +526,31 @@ func operatorImagesMirrored(ctx context.Context, c client.Client, is *mirrorv1al
 		}
 
 		hasOperator = true
+		if sig == "" {
+			// Entry written by an operator version that predates per-entry
+			// signatures — cannot be attributed to a specific spec entry.
+			legacySigSeen = true
+		} else if _, ok := expectedSigs[sig]; ok {
+			expectedSigs[sig] = true
+		}
 		if e.State != "Mirrored" && !e.PermanentlyFailed {
 			return false, true
 		}
 	}
+
+	// Every operator entry of the current spec must have contributed at least
+	// one tracked image before mirroring can be considered complete. Skipped
+	// when legacy (pre-signature) entries exist, since those cannot be
+	// attributed — the next manager resolve adopts signatures and enforcement
+	// kicks in from then on.
+	if !legacySigSeen {
+		for _, seen := range expectedSigs {
+			if !seen {
+				return false, true
+			}
+		}
+	}
+
 	return hasOperator, true
 }
 
