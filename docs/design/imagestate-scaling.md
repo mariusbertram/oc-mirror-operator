@@ -155,18 +155,36 @@ of pure entropy per image. **No encoding gets below O(images × 32 B)** while
 per-image digests are stored, so 1 MiB caps out around ~25–30 k images. A
 binary format raises the ceiling; it does not remove it.
 
-The only way under that floor is to stop storing per-image data for the steady
-state: the resolved image list of a spec entry is deterministically
-reproducible from `(entrySig, catalog digest)` — both already tracked as
-cache-invalidation annotations. Store per group only a 2-bit state bitmap over
-the deterministically-ordered resolved list, plus full exception records for
-Pending/Failed entries. That is O(spec) + O(deviations) — a few KiB even at
-100 k images. The price: the state is meaningless without the resolver,
-cleanup worklists must be regenerated via re-resolution or registry listing,
-and stable resolution ordering becomes a hard invariant. This buys the same
-scaling as option C at noticeably higher coupling and complexity, which is why
-C remains the preferred architectural end-state and B′ is scoped as an
-optional encoding refinement of Stage 1.
+Getting under that floor means the store stops carrying full image identities
+and becomes a state annex to the (deterministic) resolution. Two variants:
+
+**B″ — truncated digest keys.** Hashing a sha256 digest is mathematically
+just truncation (the digest is already uniform), but truncation is enough for
+a *state key*: at 8 bytes (64 bits) the birthday-bound collision probability
+across 100 k images is ~10⁻¹⁰ — negligible, and including the repo index in
+the key confines any collision to a single repo. Entries shrink to
+~12–15 B/image (8 B key + repo index + packed flags + group index):
+**~70–80 k images per MiB**. Crucially this only needs deterministic
+*membership*, not ordering — resolution output is matched to prior state by
+key lookup, which the manager-restart carry-over
+(`manager_resolve.go`) effectively already does with full-ref keys.
+
+**B‴ — per-group state bitmap.** Store per `(entrySig, catalog digest)` group
+only a 2-bit state bitmap over the deterministically-*ordered* resolved list,
+plus full exception records for Pending/Failed. O(spec) + O(deviations) — a
+few KiB even at 100 k images — but stable resolution ordering becomes a hard
+invariant, making it the more fragile of the two.
+
+Both variants share the same structural consequence: without full refs in the
+ConfigMap, every consumer that needs actual image references must get them
+from a component that has run resolution — cleanup worklists must be produced
+by the manager (or regenerated via registry listing) instead of partitioned
+from the CM by the controller, and the dashboard must query the manager
+instead of decoding the CM. The gate check and counts keep working (they only
+need sigs and states). In other words, B″/B‴ quietly pull in the
+consumer-topology half of option C while keeping etcd in the write path —
+which is why C remains the preferred end-state, with B′ (and optionally B″)
+scoped as encoding refinements of Stage 1.
 
 ### C. Manager-owned store, API-served (architectural fix)
 
