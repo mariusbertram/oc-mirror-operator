@@ -229,22 +229,72 @@ manifests), but it couples every state write to registry availability and to
 artifact-type support of the target registry. Better suited as an optional
 **export/backup format** on top of C than as the primary store.
 
-## 5. Recommendation — two stages
+## 5. Recommendation — tiered store with threshold escalation
 
-**Stage 1 (next release, low risk): B + A behind the existing package API.**
-Schema v2 interned encoding, plus hash-sharding with dirty-shard flush as the
-safety valve. Everything stays inside `pkg/mirror/imagestate/`; no consumer
-outside the package changes. This buys an order of magnitude of headroom and
-cuts etcd churn immediately.
+The end state combines B and C as a **tiered backend behind one interface**,
+so small mirrors run with zero storage dependencies and very large ones
+migrate to a PVC when they outgrow the ConfigMap:
 
-**Stage 2 (architectural): C.** Promote the manager to sole state owner with a
-bbolt/PVC store and HTTP read endpoints; demote the ConfigMap to a small
-summary checkpoint; move controllers and dashboard to the API with checkpoint
-fallback; switch cleanup worklists to manager-served partitions. D remains an
-optional export format later.
+```yaml
+spec:
+  stateStore: Auto        # Auto (default) | ConfigMap | PVC
+```
 
-Stage 1 is worth doing even if Stage 2 follows soon: the encoder is reused for
-cleanup snapshots and the summary checkpoint, and it de-risks the interim.
+- **ConfigMap tier** (small/medium): full state persisted as the schema-v2
+  compact blob (optionally sharded). With v2 encoding, ~700 KiB covers
+  ≳15–20 k images — most installations never leave this tier.
+- **PVC tier** (large): bbolt store on a small RWO PVC mounted into the
+  manager Deployment (strategy `Recreate` to avoid multi-attach on rollout);
+  per-entry writes, no size ceiling. Because the state is reconstructible
+  (§3), PVC loss is a cold start, not data loss.
+
+The precondition that keeps this from becoming two parallel code paths:
+**consumers never read the full blob in either tier.** Stage 2's consumer
+topology ships first and applies to both tiers — the manager owns the full
+state in memory, controllers and dashboard read the small summary-checkpoint
+CM (`<mt>-state-summary`: counts + gate sigs) plus the manager's HTTP
+endpoints, and cleanup worklists are manager-produced. The tier then only
+changes how the *manager* persists its own state, hidden entirely behind a
+store interface in `pkg/mirror/imagestate/`.
+
+### 5.1 Auto-escalation
+
+The manager knows the encoded size at every flush:
+
+1. Below the threshold (default ~60 % of 1 MiB, configurable): ConfigMap tier.
+2. Crossing it: emit a metric + Event and set a MirrorTarget condition
+   (`StateStoreScale=True/reason=ApproachingConfigMapLimit`).
+   - If `stateStore: Auto` **and** a usable StorageClass exists: the operator
+     provisions the PVC (owner-ref'd to the MirrorTarget), patches the manager
+     Deployment, and the manager imports the CM blob into bbolt on startup.
+     Only after a verified import is the state CM truncated to the summary
+     checkpoint. One-way with hysteresis — no automatic downgrade.
+   - If no StorageClass is available (or `stateStore: ConfigMap` is pinned):
+     the condition remains as an actionable warning; sharding keeps the
+     installation running in the meantime.
+3. `stateStore: PVC` pins the large tier from the start for deployments that
+   know they are big (e.g. 15 ImageSets × 3 catalogs).
+
+Failure handling: the CM blob is kept intact until the bbolt import is
+verified, so a failed migration falls back to the ConfigMap tier; threshold
+flapping is prevented by escalating on a sustained crossing (N consecutive
+flushes) and never de-escalating automatically.
+
+### 5.2 Staging
+
+**Stage 1 (next release, low risk):** schema v2 interned encoding + sharding
+behind the existing package API (options B/A); no consumer outside
+`pkg/mirror/imagestate/` changes. Buys ~5–10× headroom and cuts etcd churn
+immediately — and the encoder is reused later for the summary checkpoint and
+cleanup snapshots.
+
+**Stage 2 (architectural):** consumer topology of option C — summary
+checkpoint CM, manager HTTP read endpoints, manager-produced cleanup
+worklists — while the full state still persists in the (v2) ConfigMap.
+
+**Stage 3:** the PVC tier + `spec.stateStore` + auto-escalation per §5.1,
+which at that point is only a new persistence backend inside the manager.
+D remains an optional export format later.
 
 ## 6. Migration
 
@@ -256,9 +306,10 @@ cleanup snapshots and the summary checkpoint, and it de-risks the interim.
   `cmd/main.go`, `cmd/worker/main.go`, `manager_resolve.go:1086`).
 - Keep v1 decoding for one release; drop it together with the deprecated
   flat `Origin`/`EntrySig`/`OriginRef` fields on `ImageEntry`.
-- Stage 2 ships behind a feature gate on the MirrorTarget
-  (e.g. `spec.stateStore: ConfigMap | Manager`), defaulting to `ConfigMap`
-  for one release.
+- `spec.stateStore` (`Auto | ConfigMap | PVC`) is introduced in Stage 3 and
+  defaults to `Auto`; the Auto-escalation path (§5.1) doubles as the
+  CM→PVC migration mechanism, so no separate migration tooling is needed.
+  Pinning `ConfigMap` opts out for clusters without a StorageClass.
 
 ## 7. Impact map (Stage 1)
 
