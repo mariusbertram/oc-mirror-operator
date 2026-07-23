@@ -585,19 +585,18 @@ func (r *ImageSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				return requests
 			}),
 		).
-		// Watch the per-MirrorTarget imagestate ConfigMap (suffixed "-images")
-		// owned by the manager pod. When the manager flips the last
-		// operator-origin entry to Mirrored we want to immediately re-evaluate
-		// the catalog-build gate instead of waiting for the next pollInterval.
+		// Watch the per-MirrorTarget imagestate store ConfigMaps (meta
+		// "<mt>-images" and shards "<mt>-images-s<N>") owned by the manager
+		// pod. When the manager flips the last operator-origin entry to
+		// Mirrored we want to immediately re-evaluate the catalog-build gate
+		// instead of waiting for the next pollInterval.
 		Watches(
 			&corev1.ConfigMap{},
 			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
-				name := obj.GetName()
-				const suffix = "-images"
-				if !strings.HasSuffix(name, suffix) {
+				mtName, ok := imagestate.TargetNameFromStateCM(obj.GetName())
+				if !ok {
 					return nil
 				}
-				mtName := strings.TrimSuffix(name, suffix)
 				// Find MirrorTarget to get associated ImageSets
 				mt := &mirrorv1alpha1.MirrorTarget{}
 				if err := r.Get(ctx, client.ObjectKey{Namespace: obj.GetNamespace(), Name: mtName}, mt); err != nil {

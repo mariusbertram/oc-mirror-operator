@@ -1,6 +1,6 @@
 # ImageState Store Scaling — Design Proposal
 
-Status: proposal
+Status: Stage 1 (schema v2 + sharding, §5.2) implemented; Stages 2–3 proposed
 Issue: consolidated imagestate ConfigMap reaches ~75 % of the 1 MiB limit with
 15 ImageSets × 3 large Red Hat / IBM catalogs.
 

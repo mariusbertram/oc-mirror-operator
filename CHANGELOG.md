@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Imagestate store re-architected (schema v2, sharded)**: the consolidated
+  per-MirrorTarget image state no longer lives in a single gzip-JSON
+  ConfigMap — large deployments (15 ImageSets × 3 big catalogs) were
+  approaching the 1 MiB ConfigMap limit, at which point saves would fail and
+  mirroring would stall. State is now stored as a small meta ConfigMap
+  (`<mt>-images`) plus 8 shard ConfigMaps (`<mt>-images-s<N>`) whose
+  documents intern the per-spec-entry provenance tuples
+  (imageSet/origin/entrySig/originRef) in a group table instead of repeating
+  them for every image, cap persisted `lastError` strings, and compress with
+  maximum gzip level. Saves are deterministic and skip unchanged shards, so
+  a single image flipping state rewrites one shard instead of the whole
+  store (~8× less etcd write traffic at steady state). Existing v1 stores
+  are read transparently and converted to the sharded layout on the first
+  save; cleanup snapshot ConfigMaps use the same compact document format.
+  See `docs/design/imagestate-scaling.md` for the full design (this is
+  Stage 1; the manager-served read API and the PVC tier for very large
+  mirrors are follow-ups).
+
 ### Fixed
 - **Catalog build launched immediately when adding an operator to an
   ImageSet**: the mirroring-complete gate only inspected the imagestate
