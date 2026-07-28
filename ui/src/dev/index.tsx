@@ -7,8 +7,9 @@
  * backend at https://localhost:9443.  No consoleFetch or ConsolePlugin SDK needed.
  */
 import React from 'react';
-import { createRoot } from 'react-dom/client';
-import { BrowserRouter, Navigate, NavLink, Route, Routes } from 'react-router';
+import ReactDOM from 'react-dom';
+import { BrowserRouter } from 'react-router-dom';
+import { CompatRouter, Navigate, NavLink, Route, Routes } from 'react-router-dom-v5-compat';
 
 // PatternFly base CSS — provides global custom properties for colour, spacing, typography.
 import '@patternfly/react-core/dist/styles/base.css';
@@ -39,48 +40,50 @@ function navStyle({ isActive }: { isActive: boolean }): React.CSSProperties {
 function App() {
   return (
     <BrowserRouter>
-      <div style={{ display: 'flex', height: '100vh' }}>
-        <nav style={{ width: 200, background: '#212427', padding: '16px 0', flexShrink: 0 }}>
-          <div style={{ padding: '8px 16px 20px', color: '#fff', fontWeight: 700, fontSize: 15 }}>
-            OC Mirror — Dev
-          </div>
-          <NavLink to="/oc-mirror/targets" style={navStyle} end>
-            Mirror Targets
-          </NavLink>
-          <NavLink to="/oc-mirror/imagesets" style={navStyle}>
-            ImageSets
-          </NavLink>
-          <NavLink to="/oc-mirror/failed" style={navStyle}>
-            Failed Images
-          </NavLink>
-        </nav>
-        <main style={{ flex: 1, overflow: 'auto' }}>
-          <Routes>
-            <Route path="/" element={<Navigate to="/oc-mirror/targets" replace />} />
-            <Route path="/oc-mirror/targets" element={<MirrorTargetList />} />
-            <Route path="/oc-mirror/targets/:name/failures" element={<FailedImages />} />
-            <Route
-              path="/oc-mirror/targets/:targetName/namespaces/:namespace/imagesets/:imageSetName/releases"
-              element={<ReleaseBrowser />}
-            />
-            <Route
-              path="/oc-mirror/targets/:targetName/namespaces/:namespace/imagesets/:imageSetName/catalogs/:slug"
-              element={<CatalogBrowser />}
-            />
-            <Route
-              path="/oc-mirror/targets/:targetName/imagesets/:imageSetName"
-              element={<ImageSetDetail />}
-            />
-            <Route path="/oc-mirror/targets/:name" element={<MirrorTargetDetail />} />
-            <Route path="/oc-mirror/imagesets" element={<ImageSetList />} />
-            <Route path="/oc-mirror/failed" element={<FailedImages crossTarget />} />
-          </Routes>
-        </main>
-      </div>
+      <CompatRouter>
+        <div style={{ display: 'flex', height: '100vh' }}>
+          <nav style={{ width: 200, background: '#212427', padding: '16px 0', flexShrink: 0 }}>
+            <div style={{ padding: '8px 16px 20px', color: '#fff', fontWeight: 700, fontSize: 15 }}>
+              OC Mirror — Dev
+            </div>
+            <NavLink to="/oc-mirror/targets" style={navStyle} end>
+              Mirror Targets
+            </NavLink>
+            <NavLink to="/oc-mirror/imagesets" style={navStyle}>
+              ImageSets
+            </NavLink>
+            <NavLink to="/oc-mirror/failed" style={navStyle}>
+              Failed Images
+            </NavLink>
+          </nav>
+          <main style={{ flex: 1, overflow: 'auto' }}>
+            <Routes>
+              <Route path="/" element={<Navigate to="/oc-mirror/targets" replace />} />
+              <Route path="/oc-mirror/targets" element={<MirrorTargetList />} />
+              <Route path="/oc-mirror/targets/:name/failures" element={<FailedImages />} />
+              <Route
+                path="/oc-mirror/targets/:targetName/namespaces/:namespace/imagesets/:imageSetName/releases"
+                element={<ReleaseBrowser />}
+              />
+              <Route
+                path="/oc-mirror/targets/:targetName/namespaces/:namespace/imagesets/:imageSetName/catalogs/:slug"
+                element={<CatalogBrowser />}
+              />
+              <Route
+                path="/oc-mirror/targets/:targetName/imagesets/:imageSetName"
+                element={<ImageSetDetail />}
+              />
+              <Route path="/oc-mirror/targets/:name" element={<MirrorTargetDetail />} />
+              <Route path="/oc-mirror/imagesets" element={<ImageSetList />} />
+              <Route path="/oc-mirror/failed" element={<FailedImages crossTarget />} />
+            </Routes>
+          </main>
+        </div>
+      </CompatRouter>
     </BrowserRouter>
   );
 }
 
 const container = document.getElementById('root');
 if (!container) throw new Error('Missing #root element in index.html');
-createRoot(container).render(<App />);
+ReactDOM.render(<App />, container);
