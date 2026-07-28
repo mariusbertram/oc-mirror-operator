@@ -1,0 +1,9 @@
+{
+  "name": "oc-mirror-plugin-smoke",
+  "private": true,
+  "description": "Headless-browser smoke test: loads the console plugin's pages against a real OpenShift console container and fails on any uncaught JS error.",
+  "type": "module",
+  "dependencies": {
+    "playwright": "1.62.0"
+  }
+}

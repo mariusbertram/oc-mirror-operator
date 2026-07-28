@@ -35,6 +35,15 @@ make test-integration     # Integration tests without a cluster (labels: integra
 E2E environment variables: `SKIP_CLUSTER_SETUP=true`, `SKIP_OPERATOR_DEPLOY=true`, `CERT_MANAGER_INSTALL_SKIP=true`.
 E2E Ginkgo labels: `cluster`, `integration`, `release`, `catalog`, `catalog-cluster`, `olm-upgrade`.
 
+Console plugin smoke test (CI job `plugin-smoke-test` in `.github/workflows/ci.yml`): runs the real
+`quay.io/openshift/origin-console` bridge container against a Kind cluster with the plugin binary
+registered via `BRIDGE_PLUGINS`/`BRIDGE_PLUGIN_PROXY` (Kind has no console-operator to reconcile a
+ConsolePlugin CR), then drives a headless browser (`hack/plugin-smoke/smoke-test.mjs`) to each plugin
+page and fails on any browser error. This is the only check that exercises actual runtime rendering —
+`npm run build:plugin` and the `e2e` job (which skips `ConsolePluginReconciler` on non-OpenShift
+clusters) cannot catch a version mismatch between what the plugin bundles and what the console
+federates at runtime.
+
 Container tool defaults to **podman** (`CONTAINER_TOOL ?= podman`). Override with `CONTAINER_TOOL=docker` if needed.
 
 ## Architecture
