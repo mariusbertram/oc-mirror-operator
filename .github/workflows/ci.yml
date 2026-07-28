@@ -470,7 +470,10 @@ jobs:
           kind: ImageSet
           metadata:
             name: demo-imageset
-          spec: {}
+          spec:
+            mirror:
+              additionalImages:
+                - name: registry.example.com/demo/pause:latest
           ---
           apiVersion: mirror.openshift.io/v1alpha1
           kind: MirrorTarget
