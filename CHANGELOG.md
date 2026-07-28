@@ -7,24 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Known Issues
-- The console plugin is now built against React 17 (matching what
-  `@openshift-console/dynamic-plugin-sdk@4.19-latest` declares), but
-  `@patternfly/react-core` 6.x calls `React.useId`, which does not exist
-  before React 18 — confirmed via a standalone (non-federated) build, which
-  fails with `export 'useId' was not found in 'react'`. In the actual
-  federated plugin build React itself is a shared/consumed module (not
-  bundled), so this may or may not surface depending on what OpenShift
-  4.19–4.21 consoles actually provide React 18 or 17 at runtime; the
-  `dynamic-plugin-sdk` package's own published dependency metadata is
-  self-contradictory on this point (declares both `react: ^17.0.1` and
-  `@patternfly/react-topology: ^6.2.0`, and the latter cannot render under
-  React 17). Verify against a real 4.19–4.21 cluster before relying on this.
-  If it still crashes, the plugin needs a PatternFly 5 migration (a larger,
-  separate effort — PatternFly 5→6 changed the API of `Table`, `FormSelect`,
-  `Modal`, `Dropdown`, and other components used throughout the UI) to be
-  genuinely compatible with pre-4.22 consoles.
-
 ### Fixed
 - **Console plugin crashed on the ImageSets and Mirror Targets pages on
   OpenShift 4.19–4.21 ("Minified React error #130" in `@patternfly/react-table`
@@ -35,9 +17,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   federate at runtime, so any page using the shared/dynamic PatternFly `Table`
   components (`ImageSetList`, `MirrorTargetList`) rendered `undefined`
   elements and crashed. The plugin now builds against
-  `@openshift-console/dynamic-plugin-sdk(-webpack)@4.19-latest`, React 17, and
+  `@openshift-console/dynamic-plugin-sdk(-webpack)@4.19-latest`, React 17,
   `react-router-dom` v5 (via `react-router-dom-v5-compat` for the v6-style
   `Link`/`useParams`/`Routes` API the pages already used), and
+  `@patternfly/react-core`/`react-icons`/`react-table` pinned to `6.2.2` —
+  matching exactly what `frontend/package.json` on the `openshift/console`
+  `release-4.19` branch pins, verified directly against that source rather
+  than assumed. (A looser `^6.4.3` range had let npm resolve PatternFly
+  6.6.0, which calls `React.useId` — a React 18-only hook not present in
+  6.2.2 — and would have broken the standalone dev harness; console 4.19's
+  own pinned combination of React 17 + PatternFly 6.2.2 has no such call.)
   `validateSharedModules` is re-enabled in `webpack.plugin.js` so future
   dependency drift is caught at build time instead of shipping a runtime
   crash.
