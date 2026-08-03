@@ -8,13 +8,17 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sigstore/sigstore/pkg/cryptoutils"
 	"github.com/sigstore/sigstore/pkg/signature"
@@ -23,6 +27,10 @@ import (
 )
 
 const testImageDigest = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+
+// v2PingPath is the registry v2 API base path used as a liveness ping by
+// both regclient and the fake registries below.
+const v2PingPath = "/v2/"
 
 func generateTestKeyPair(t *testing.T) (*ecdsa.PrivateKey, []byte) {
 	t.Helper()
@@ -68,12 +76,39 @@ func buildPayload(t *testing.T, digest string) []byte {
 	return b
 }
 
+// generateTestCert creates a minimal self-signed certificate for pub, signed
+// by priv, PEM-encoded — for testing the keyless-flow embedded-certificate
+// path of HasValidSignature.
+func generateTestCert(t *testing.T, priv *ecdsa.PrivateKey) []byte {
+	t.Helper()
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "test-signer"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &priv.PublicKey, priv)
+	if err != nil {
+		t.Fatalf("create certificate: %v", err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatalf("parse certificate: %v", err)
+	}
+	pemBytes, err := cryptoutils.MarshalCertificateToPEM(cert)
+	if err != nil {
+		t.Fatalf("marshal certificate to PEM: %v", err)
+	}
+	return pemBytes
+}
+
 // signatureLayer describes a single layer to serve in the fake signature
 // manifest.
 type signatureLayer struct {
 	payload    []byte
 	sigB64     string
-	noAnnotate bool // if true, omit the signature annotation entirely
+	certPEM    string // non-empty to simulate the keyless (Fulcio) flow
+	noAnnotate bool   // if true, omit the signature annotation entirely
 }
 
 // fakeSignatureRegistry serves a cosign signature manifest at
@@ -98,7 +133,11 @@ func fakeSignatureRegistry(t *testing.T, imageDigest string, layers []signatureL
 			"size":      len(l.payload),
 		}
 		if !l.noAnnotate {
-			desc["annotations"] = map[string]string{signatureAnnotationKey: l.sigB64}
+			annotations := map[string]string{signatureAnnotationKey: l.sigB64}
+			if l.certPEM != "" {
+				annotations[certificateAnnotationKey] = l.certPEM
+			}
+			desc["annotations"] = annotations
 		}
 		layerDescs = append(layerDescs, desc)
 	}
@@ -120,10 +159,10 @@ func fakeSignatureRegistry(t *testing.T, imageDigest string, layers []signatureL
 	sigTag := "sha256-" + strings.TrimPrefix(imageDigest, "sha256:") + ".sig"
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v2/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc(v2PingPath, func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 		switch {
-		case path == "/v2/" || path == "/v2":
+		case path == v2PingPath || path == "/v2":
 			w.WriteHeader(http.StatusOK)
 		case strings.Contains(path, "/manifests/"+sigTag):
 			w.Header().Set("Content-Type", "application/vnd.oci.image.manifest.v1+json")
@@ -240,8 +279,8 @@ func TestVerifyImageSignature_NoSignatureManifest(t *testing.T) {
 	_, pubPEM := generateTestKeyPair(t)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v2/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v2/" {
+	mux.HandleFunc(v2PingPath, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == v2PingPath {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
@@ -281,5 +320,122 @@ func TestVerifyImageSignature_InvalidImageRef(t *testing.T) {
 	err := VerifyImageSignature(context.Background(), client, ":::invalid", testImageDigest, pubPEM)
 	if err == nil {
 		t.Fatal("expected error for an invalid image reference")
+	}
+}
+
+// --- HasValidSignature (existence/shape check, no configured trust key) ---
+
+func TestHasValidSignature_PlainKeyPair_NoCertPresentButShapeValid(t *testing.T) {
+	priv, _ := generateTestKeyPair(t)
+	payload := buildPayload(t, testImageDigest)
+	sigB64 := base64.StdEncoding.EncodeToString(signPayload(t, priv, payload))
+
+	host := fakeSignatureRegistry(t, testImageDigest, []signatureLayer{{payload: payload, sigB64: sigB64}})
+	client := mirrorclient.NewMirrorClient([]string{host}, "")
+
+	err := HasValidSignature(context.Background(), client, host+"/example/repo:v1", testImageDigest)
+	if err != nil {
+		t.Fatalf("expected a well-formed plain-key signature (no embedded cert) to pass the existence check, got: %v", err)
+	}
+}
+
+func TestHasValidSignature_KeylessWithMatchingCert(t *testing.T) {
+	priv, _ := generateTestKeyPair(t)
+	certPEM := generateTestCert(t, priv)
+	payload := buildPayload(t, testImageDigest)
+	sigB64 := base64.StdEncoding.EncodeToString(signPayload(t, priv, payload))
+
+	host := fakeSignatureRegistry(t, testImageDigest, []signatureLayer{
+		{payload: payload, sigB64: sigB64, certPEM: string(certPEM)},
+	})
+	client := mirrorclient.NewMirrorClient([]string{host}, "")
+
+	err := HasValidSignature(context.Background(), client, host+"/example/repo:v1", testImageDigest)
+	if err != nil {
+		t.Fatalf("expected signature matching its embedded certificate to pass, got: %v", err)
+	}
+}
+
+func TestHasValidSignature_KeylessWithMismatchedCert(t *testing.T) {
+	priv, _ := generateTestKeyPair(t)
+	otherPriv, _ := generateTestKeyPair(t)
+	// Certificate embeds a DIFFERENT key than the one that produced the
+	// signature — self-consistency check must fail.
+	certPEM := generateTestCert(t, otherPriv)
+	payload := buildPayload(t, testImageDigest)
+	sigB64 := base64.StdEncoding.EncodeToString(signPayload(t, priv, payload))
+
+	host := fakeSignatureRegistry(t, testImageDigest, []signatureLayer{
+		{payload: payload, sigB64: sigB64, certPEM: string(certPEM)},
+	})
+	client := mirrorclient.NewMirrorClient([]string{host}, "")
+
+	err := HasValidSignature(context.Background(), client, host+"/example/repo:v1", testImageDigest)
+	if err == nil {
+		t.Fatal("expected error when the signature does not match its embedded certificate's key")
+	}
+}
+
+func TestHasValidSignature_TamperedPayloadDigest(t *testing.T) {
+	priv, _ := generateTestKeyPair(t)
+	otherDigest := "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+	payload := buildPayload(t, otherDigest)
+	sigB64 := base64.StdEncoding.EncodeToString(signPayload(t, priv, payload))
+
+	host := fakeSignatureRegistry(t, testImageDigest, []signatureLayer{{payload: payload, sigB64: sigB64}})
+	client := mirrorclient.NewMirrorClient([]string{host}, "")
+
+	err := HasValidSignature(context.Background(), client, host+"/example/repo:v1", testImageDigest)
+	if err == nil {
+		t.Fatal("expected error when signed payload digest does not match requested digest")
+	}
+}
+
+func TestHasValidSignature_MissingAnnotation(t *testing.T) {
+	payload := buildPayload(t, testImageDigest)
+	host := fakeSignatureRegistry(t, testImageDigest, []signatureLayer{{payload: payload, noAnnotate: true}})
+	client := mirrorclient.NewMirrorClient([]string{host}, "")
+
+	err := HasValidSignature(context.Background(), client, host+"/example/repo:v1", testImageDigest)
+	if err == nil {
+		t.Fatal("expected error when the signature layer has no signature annotation")
+	}
+}
+
+func TestHasValidSignature_NoLayers(t *testing.T) {
+	host := fakeSignatureRegistry(t, testImageDigest, nil)
+	client := mirrorclient.NewMirrorClient([]string{host}, "")
+
+	err := HasValidSignature(context.Background(), client, host+"/example/repo:v1", testImageDigest)
+	if err == nil {
+		t.Fatal("expected error when the signature manifest has no layers")
+	}
+}
+
+func TestHasValidSignature_NoSignatureManifest(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc(v2PingPath, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == v2PingPath {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.NotFound(w, r)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	host := strings.TrimPrefix(srv.URL, "http://")
+
+	client := mirrorclient.NewMirrorClient([]string{host}, "")
+	err := HasValidSignature(context.Background(), client, host+"/example/repo:v1", testImageDigest)
+	if err == nil {
+		t.Fatal("expected error when no signature manifest exists")
+	}
+}
+
+func TestHasValidSignature_InvalidImageDigest(t *testing.T) {
+	client := mirrorclient.NewMirrorClient(nil, "")
+	err := HasValidSignature(context.Background(), client, "registry.example.com/example/repo:v1", "not-a-digest")
+	if err == nil {
+		t.Fatal("expected error for a non-sha256 image digest")
 	}
 }

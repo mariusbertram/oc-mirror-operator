@@ -204,6 +204,7 @@ kubectl get imagesets -n <namespace>
 | `additionalImages` | `[]AdditionalImage` | Individual images by reference. |
 | `helm` | `Helm` | Helm chart images. See [Helm](#helm). |
 | `blockedImages` | `[]BlockedImage` | Images to exclude from all other entries. |
+| `requireSignedImages` | `bool` | When set, every mirrored image in this ImageSet — release components, operator bundles, additional images, and Helm images alike — must carry a cosign signature. This is a presence/shape check against the mirrored destination (confirms a well-formed signature exists for the image's digest), re-checked periodically as part of the manager's drift check; it does not verify the signature against any particular trusted key or identity. Use `operators[].signatureVerification` instead when a specific trusted public key must be enforced. Default: `false`. |
 
 #### Platform
 

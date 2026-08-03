@@ -1,6 +1,6 @@
 # Per-ImageSet State Partitioning, Shared-Image Index & Check-Time Signature Verification — Design Proposal
 
-Status: §3.1–§3.4 (state partitioning, shared index, cleanup/gate rewiring) implemented; §3.5 (check-time signature verification) still proposed.
+Status: Implemented (§3.1–§3.4 state partitioning/shared index/cleanup/gate rewiring; §3.5 check-time signature verification as `spec.mirror.requireSignedImages`, existence/shape check only — see note below).
 Issue: #104
 
 ## 1. Problem
@@ -206,6 +206,8 @@ could be implemented against the current consolidated store), but it slots in
 naturally once the check phase is already being re-scoped per ImageSet, and
 addresses the "images need the appropriate signature, if specified in the
 ImageSet" part of #104 directly.
+
+**As implemented**, this landed as `spec.mirror.requireSignedImages` (`api/v1alpha1/imageset_config_types.go`) — one bool per ImageSet covering every origin (release components, operator bundles, additional images, Helm images) uniformly, rather than per-origin knobs. Scope note from investigating the actual OpenShift signing model: only the release *payload* is GPG-signed by Red Hat (`pkg/release`) — individual release-component images are trusted transitively via digest-pinning from the verified payload, not via their own signatures — so `requireSignedImages` checks a **cosign** signature per mirrored destination instead (`pkg/mirror/cosign.HasValidSignature`), independent of the existing GPG release-payload check and the existing per-operator `signatureVerification` (which pins a specific trusted public key). `HasValidSignature` is deliberately an *existence/shape* check: a well-formed, digest-matching cosign signature must exist at the destination, self-consistency-checked against an embedded certificate when present (keyless/Fulcio flow), but not verified against any configured trusted key or identity — catches images with no signature at all, not a spoofed one signed by an untrusted party. The check runs during the manager's periodic drift-check sweep (Phase D, `manager.go`) against the mirrored *destination*, gated by a new `ImageEntry.SignatureVerified` marker (`pkg/mirror/imagestate`) so it only runs once per entry rather than every sweep.
 
 ## 4. Consistency
 

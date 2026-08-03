@@ -32,6 +32,7 @@ import (
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
 	ocmetrics "github.com/mariusbertram/oc-mirror-operator/pkg/metrics"
 	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
+	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/cosign"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/imagestate"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/resources"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/resourceapi"
@@ -597,6 +598,82 @@ func (m *MirrorManager) checkExistWithRetry(ctx context.Context, dest string) (b
 	return exists, checkErr
 }
 
+// anyOwnerRequiresSignedImages reports whether any ImageSet in owners has
+// Mirror.RequireSignedImages set, per requireSignedByIS (built once per
+// reconcile from the current ImageSet list).
+func anyOwnerRequiresSignedImages(owners []string, requireSignedByIS map[string]bool) bool {
+	for _, name := range owners {
+		if requireSignedByIS[name] {
+			return true
+		}
+	}
+	return false
+}
+
+// destinationDigest extracts a "sha256:<hex>" digest from a mirrored
+// destination reference, handling both conventions used across origins:
+// digest-derived tags ("...repo:sha256-<hex>", mirror.ComponentDestination —
+// release and operator images) and digest references
+// ("...repo@sha256:<hex>", additional/helm images already digest-pinned at
+// the source). Returns "" for tag-only destinations with no digest to check
+// a cosign signature against — cosign signatures are digest-scoped, so
+// RequireSignedImages cannot be enforced for those (logged, not failed).
+func destinationDigest(dest string) string {
+	if idx := strings.Index(dest, "@sha256:"); idx >= 0 {
+		return dest[idx+1:]
+	}
+	const tagPrefix = ":sha256-"
+	if idx := strings.LastIndex(dest, tagPrefix); idx >= 0 {
+		return "sha256:" + dest[idx+len(tagPrefix):]
+	}
+	return ""
+}
+
+// verifySignedImageLocked checks whether dest carries a valid cosign
+// signature, for entries whose owning ImageSet(s) have
+// Mirror.RequireSignedImages set and that have not been verified yet. Called
+// once per entry during the drift-check sweep (Phase D) — SignatureVerified
+// then makes it a no-op on future sweeps.
+//
+// On success, sets entry.SignatureVerified. On failure, fails the entry via
+// the normal retry lifecycle (State: Failed, RetryCount, PermanentlyFailed
+// after 10 attempts) with a descriptive lastError, and clears
+// m.mirrored[dest] so the next tick's "entry.State == stateMirrored" fast
+// path does not fire and silently flip the entry back to Mirrored.
+//
+// Caller must hold m.mu; released for the duration of the network call.
+func (m *MirrorManager) verifySignedImageLocked(ctx context.Context, dest string, entry *imagestate.ImageEntry) {
+	digest := destinationDigest(dest)
+	if digest == "" {
+		oclog.Printf("Warning: %s has no digest to check a signature against; skipping RequireSignedImages check\n", dest)
+		return
+	}
+
+	checkClient, _ := m.clientCache.GetOrCreate(nil, m.authConfigPath)
+	m.mu.Unlock()
+	sigErr := cosign.HasValidSignature(ctx, checkClient, dest, digest)
+	m.mu.Lock()
+
+	if sigErr == nil {
+		entry.SignatureVerified = true
+		m.stateDirty = true
+		return
+	}
+
+	oclog.Printf("Signature check failed for %s: %v\n", dest, sigErr)
+	entry.State = stateFailed
+	entry.LastError = fmt.Sprintf("signature check failed: %v", sigErr)
+	entry.SignatureVerified = false
+	entry.RetryCount++
+	ocmetrics.ManagerWorkerRetriesTotal.WithLabelValues(m.TargetName).Inc()
+	if entry.RetryCount >= 10 && !entry.PermanentlyFailed {
+		entry.PermanentlyFailed = true
+	}
+	m.mirrored[dest] = false
+	m.stateDirty = true
+	m.statusDirty = true
+}
+
 func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 	m.cleanupFinishedWorkers(ctx)
 
@@ -686,6 +763,16 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 		oclog.Println("CheckExist: verifying images in target registry")
 	}
 
+	// requireSignedByIS records, per currently-relevant ImageSet, whether
+	// Mirror.RequireSignedImages is set — consulted below so a shared
+	// destination is checked if ANY owning ImageSet requires it.
+	requireSignedByIS := make(map[string]bool, len(imageSets.Items))
+	for _, is := range imageSets.Items {
+		if containsString(mt.Spec.ImageSets, is.Name) {
+			requireSignedByIS[is.Name] = is.Spec.Mirror.RequireSignedImages
+		}
+	}
+
 	// Phase D: Process all entries — drift check + collect pending + sweep orphans.
 	pendingImages := make([]BatchItem, 0, len(m.imageState))
 	newOrphans := make(imagestate.ImageState)
@@ -721,6 +808,9 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 			}
 			if exists {
 				m.mirrored[dest] = true
+				if !entry.SignatureVerified && anyOwnerRequiresSignedImages(m.owners[dest], requireSignedByIS) {
+					m.verifySignedImageLocked(ctx, dest, entry)
+				}
 				continue
 			}
 			oclog.Printf("Image %s marked Mirrored but not found in registry; resetting to Pending\n", dest)
