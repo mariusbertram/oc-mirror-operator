@@ -613,45 +613,26 @@ func (s *Server) handleImageFailures(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Load the consolidated ImageState for the MirrorTarget.
-	state, err := imagestate.LoadForTarget(r.Context(), c, mt.Namespace, mtName)
-	if err != nil {
-		if apierrors.IsForbidden(err) {
-			http.Error(w, "forbidden: insufficient permissions", http.StatusForbidden)
-		} else {
-			http.Error(w, fmt.Sprintf("Failed to load image state: %v", err), http.StatusInternalServerError)
-		}
-		return
-	}
-
 	var failed, pending []FailedImageDetail
 
-	// Iterate through all images and collect failed/pending ones.
-	for destination, entry := range state {
-		if entry == nil {
-			continue
+	// Each ImageSet owns its own state ConfigMap; load them individually
+	// rather than a consolidated per-target blob.
+	for _, isName := range mt.Spec.ImageSets {
+		state, err := imagestate.Load(r.Context(), c, mt.Namespace, isName)
+		if err != nil {
+			if apierrors.IsForbidden(err) {
+				http.Error(w, "forbidden: insufficient permissions", http.StatusForbidden)
+			} else {
+				http.Error(w, fmt.Sprintf("Failed to load image state for imageset %s: %v", isName, err), http.StatusInternalServerError)
+			}
+			return
 		}
 
-		// Skip mirrored images.
-		if entry.State == "Mirrored" {
-			continue
-		}
+		for destination, entry := range state {
+			if entry == nil || entry.State == "Mirrored" {
+				continue
+			}
 
-		// Determine which ImageSet(s) this entry belongs to.
-		// If Refs is populated (new format), use it; otherwise fall back to legacy fields.
-		imageSetNames := entry.ImageSetNames()
-		if len(imageSetNames) == 0 && entry.Origin != "" {
-			// Backward compatibility: legacy entry without Refs.
-			imageSetNames = []string{"unknown"}
-		}
-
-		// Create a detail entry for each ImageSet that references this image.
-		// If there are no ImageSet names, skip it.
-		if len(imageSetNames) == 0 {
-			continue
-		}
-
-		for _, isName := range imageSetNames {
 			detail := FailedImageDetail{
 				Destination:       destination,
 				Source:            entry.Source,
@@ -662,7 +643,6 @@ func (s *Server) handleImageFailures(w http.ResponseWriter, r *http.Request) {
 				ImageSet:          isName,
 			}
 
-			// Categorize as failed or pending.
 			if entry.PermanentlyFailed {
 				failed = append(failed, detail)
 			} else {

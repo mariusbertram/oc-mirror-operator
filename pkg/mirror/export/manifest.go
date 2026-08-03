@@ -143,21 +143,17 @@ func blockEntries(entries []ManifestEntry, blocked []mirrorv1alpha1.BlockedImage
 // once the resolved images have actually been copied there (by regctl,
 // outside the cluster) — not the current state of the exporting cluster,
 // which never touches the image bytes at all.
-func (m Manifest) ToImageState(exportName string) imagestate.ImageState {
+func (m Manifest) ToImageState() imagestate.ImageState {
 	state := make(imagestate.ImageState, len(m.Images))
 	for _, e := range m.Images {
-		entry, ok := state[e.Destination]
-		if !ok {
-			entry = &imagestate.ImageEntry{
-				Source: e.Source,
-				State:  "Mirrored",
-			}
-			state[e.Destination] = entry
+		if _, ok := state[e.Destination]; ok {
+			continue
 		}
-		entry.AddRef(imagestate.ImageRef{
-			ImageSet: exportName,
-			Origin:   e.Origin,
-		})
+		state[e.Destination] = &imagestate.ImageEntry{
+			Source: e.Source,
+			State:  "Mirrored",
+			Origin: e.Origin,
+		}
 	}
 	return state
 }

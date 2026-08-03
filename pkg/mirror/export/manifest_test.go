@@ -107,7 +107,7 @@ func TestManifestToImageState(t *testing.T) {
 		{Source: "quay.io/foo/bar@sha256:abc", Destination: "registry.example.com/mirror/foo/bar", Origin: imagestate.OriginRelease},
 	}}
 
-	state := m.ToImageState("my-export")
+	state := m.ToImageState()
 	entry, ok := state["registry.example.com/mirror/foo/bar"]
 	if !ok {
 		t.Fatalf("destination not present in ImageState")
@@ -118,7 +118,7 @@ func TestManifestToImageState(t *testing.T) {
 	if entry.State != "Mirrored" {
 		t.Errorf("State = %q, want Mirrored", entry.State)
 	}
-	if !entry.HasImageSet("my-export") {
-		t.Errorf("expected Refs to include ImageSet %q", "my-export")
+	if entry.Origin != imagestate.OriginRelease {
+		t.Errorf("Origin = %q, want %q", entry.Origin, imagestate.OriginRelease)
 	}
 }

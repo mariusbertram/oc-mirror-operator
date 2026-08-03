@@ -620,11 +620,9 @@ var _ = Describe("Manager Coverage", func() {
 	// ─── filterByImageSet ────────────────────────────────────────────
 
 	Context("filterByImageSet", func() {
-		It("excludes an entry orphaned by blocking from every ImageSet's view", func() {
-			// Simulates blocking an image that only "other-is" referenced:
-			// mergeResolvedIntoConsolidated removes the last Ref, leaving the
-			// entry with Refs == nil and the flat Origin cleared (as it always
-			// is for entries created under the Refs-based consolidated state).
+		It("excludes an entry with no current owner from every ImageSet's view", func() {
+			// Simulates an image dropped by every ImageSet that used to need it
+			// (blocking or narrowing): owners has no entry for its destination.
 			state := imagestate.ImageState{
 				"reg.io/blocked:v1": &imagestate.ImageEntry{
 					Source:            "nvcr.io/nvidia/driver@sha256:deadbeef",
@@ -632,31 +630,35 @@ var _ = Describe("Manager Coverage", func() {
 					PermanentlyFailed: true,
 				},
 			}
-			Expect(filterByImageSet(state, "other-is")).To(BeEmpty())
-			Expect(filterByImageSet(state, testImageSetName)).To(BeEmpty())
+			owners := map[string][]string{}
+			Expect(filterByImageSet(state, owners, "other-is")).To(BeEmpty())
+			Expect(filterByImageSet(state, owners, testImageSetName)).To(BeEmpty())
 		})
 
-		It("includes a genuine pre-migration legacy entry (no Refs, flat Origin set) in every view", func() {
-			state := imagestate.ImageState{
-				"reg.io/legacy:v1": &imagestate.ImageEntry{
-					Source: "quay.io/legacy:v1",
-					State:  "Mirrored",
-					Origin: imagestate.OriginRelease,
-				},
-			}
-			Expect(filterByImageSet(state, "any-is")).To(HaveKey("reg.io/legacy:v1"))
-		})
-
-		It("includes an entry only for the ImageSet named in its Refs", func() {
+		It("includes an entry only for its current owner ImageSet", func() {
 			state := imagestate.ImageState{
 				"reg.io/shared:v1": &imagestate.ImageEntry{
 					Source: "quay.io/shared:v1",
 					State:  "Mirrored",
-					Refs:   []imagestate.ImageRef{{ImageSet: testImageSetName}},
+					Origin: imagestate.OriginRelease,
 				},
 			}
-			Expect(filterByImageSet(state, testImageSetName)).To(HaveKey("reg.io/shared:v1"))
-			Expect(filterByImageSet(state, "other-is")).NotTo(HaveKey("reg.io/shared:v1"))
+			owners := map[string][]string{"reg.io/shared:v1": {testImageSetName}}
+			Expect(filterByImageSet(state, owners, testImageSetName)).To(HaveKey("reg.io/shared:v1"))
+			Expect(filterByImageSet(state, owners, "other-is")).NotTo(HaveKey("reg.io/shared:v1"))
+		})
+
+		It("includes a shared entry in every owning ImageSet's view", func() {
+			state := imagestate.ImageState{
+				"reg.io/shared:v2": &imagestate.ImageEntry{
+					Source: "quay.io/shared:v2",
+					State:  "Mirrored",
+					Origin: imagestate.OriginOperator,
+				},
+			}
+			owners := map[string][]string{"reg.io/shared:v2": {testImageSetName, "other-is"}}
+			Expect(filterByImageSet(state, owners, testImageSetName)).To(HaveKey("reg.io/shared:v2"))
+			Expect(filterByImageSet(state, owners, "other-is")).To(HaveKey("reg.io/shared:v2"))
 		})
 	})
 
@@ -767,6 +769,7 @@ var _ = Describe("Manager Coverage", func() {
 					State:  statePending,
 				},
 			}
+			m.owners = map[string][]string{"reg.io/mirror/img:v1": {testImageSetName}}
 		})
 
 		It("rejects non-POST methods", func() {
@@ -1263,6 +1266,7 @@ var _ = Describe("Manager Coverage", func() {
 			m.imageState = imagestate.ImageState{
 				"reg.io/img:v1": &imagestate.ImageEntry{Source: "quay.io/img:v1", State: statePending},
 			}
+			m.owners = map[string][]string{"reg.io/img:v1": {testImageSetName}}
 			m.stateDirty = true
 
 			err := m.reconcile(context.TODO())
@@ -1428,6 +1432,7 @@ var _ = Describe("Manager Coverage", func() {
 			m.imageState = imagestate.ImageState{
 				"d1": &imagestate.ImageEntry{Source: "s1", State: stateFailed},
 			}
+			m.owners = map[string][]string{"d1": {testImageSetName}}
 
 			m.cleanupFinishedWorkers(context.TODO())
 			Expect(m.inProgress).NotTo(HaveKey("d1"))
@@ -1797,13 +1802,13 @@ var _ = Describe("Manager Coverage", func() {
 			m = NewWithClients(c, cs, "test", "default", "test-image:latest", "", scheme)
 			m.imageState = imagestate.ImageState{
 				"reg.io/img:v1": &imagestate.ImageEntry{
-					Refs:       []imagestate.ImageRef{{ImageSet: testImageSetName}},
 					Source:     "quay.io/img:v1",
 					State:      stateFailed,
 					RetryCount: 3,
 					LastError:  "timeout",
 				},
 			}
+			m.owners = map[string][]string{"reg.io/img:v1": {testImageSetName}}
 
 			err := m.reconcile(context.TODO())
 			Expect(err).NotTo(HaveOccurred())
@@ -1837,13 +1842,13 @@ var _ = Describe("Manager Coverage", func() {
 			m = NewWithClients(c, cs, "test", "default", "test-image:latest", "", scheme)
 			m.imageState = imagestate.ImageState{
 				"reg.io/img:v1": &imagestate.ImageEntry{
-					Refs:       []imagestate.ImageRef{{ImageSet: testImageSetName}},
 					Source:     "quay.io/img:v1",
 					State:      stateFailed,
 					RetryCount: 10,
 					LastError:  "permanent error",
 				},
 			}
+			m.owners = map[string][]string{"reg.io/img:v1": {testImageSetName}}
 
 			err := m.reconcile(context.TODO())
 			Expect(err).NotTo(HaveOccurred())
@@ -1876,11 +1881,11 @@ var _ = Describe("Manager Coverage", func() {
 			m = NewWithClients(c, cs, "test", "default", "test-image:latest", "", scheme)
 			m.imageState = imagestate.ImageState{
 				"reg.io/img:v1": &imagestate.ImageEntry{
-					Refs:   []imagestate.ImageRef{{ImageSet: testImageSetName}},
 					Source: "quay.io/img:v1",
 					State:  stateMirrored,
 				},
 			}
+			m.owners = map[string][]string{"reg.io/img:v1": {testImageSetName}}
 			// Set lastDriftCheck to recent to avoid drift check
 			m.lastDriftCheck = time.Now()
 
@@ -1914,11 +1919,11 @@ var _ = Describe("Manager Coverage", func() {
 			m = NewWithClients(c, cs, "test", "default", "test-image:latest", "", scheme)
 			m.imageState = imagestate.ImageState{
 				"reg.io/img:v1": &imagestate.ImageEntry{
-					Refs:   []imagestate.ImageRef{{ImageSet: testImageSetName}},
 					Source: "quay.io/img:v1",
 					State:  statePending,
 				},
 			}
+			m.owners = map[string][]string{"reg.io/img:v1": {testImageSetName}}
 			m.mirrored["reg.io/img:v1"] = true
 			m.lastDriftCheck = time.Now()
 
@@ -1956,6 +1961,7 @@ var _ = Describe("Manager Coverage", func() {
 					State:  statePending,
 				},
 			}
+			m.owners = map[string][]string{"reg.io/img:v1": {testImageSetName}}
 			m.inProgress["reg.io/img:v1"] = "existing-worker"
 			m.lastDriftCheck = time.Now()
 
@@ -1990,11 +1996,11 @@ var _ = Describe("Manager Coverage", func() {
 			m = NewWithClients(c, cs, "test", "default", "test-image:latest", "", scheme)
 			m.imageState = imagestate.ImageState{
 				"reg.io/img:v1": &imagestate.ImageEntry{
-					Refs:   []imagestate.ImageRef{{ImageSet: testImageSetName}},
 					Source: "quay.io/img:v1",
 					State:  statePending,
 				},
 			}
+			m.owners = map[string][]string{"reg.io/img:v1": {testImageSetName}}
 			m.lastDriftCheck = time.Now()
 
 			err := m.reconcile(context.TODO())
@@ -2042,6 +2048,7 @@ var _ = Describe("Manager Coverage", func() {
 					LastError:         "manifest unknown",
 				},
 			}
+			m.owners = map[string][]string{"reg.io/blocked:v1": {testImageSetName}}
 			m.lastDriftCheck = time.Now()
 
 			err := m.reconcile(context.TODO())
@@ -2081,6 +2088,7 @@ var _ = Describe("Manager Coverage", func() {
 					State:  "UnknownState",
 				},
 			}
+			m.owners = map[string][]string{"reg.io/img:v1": {testImageSetName}}
 			m.lastDriftCheck = time.Now()
 
 			err := m.reconcile(context.TODO())
@@ -2143,10 +2151,11 @@ var _ = Describe("Manager Coverage", func() {
 			cs := k8sfake.NewSimpleClientset()
 			m = NewWithClients(c, cs, "test", "default", "test-image:latest", "", scheme)
 			m.imageState = imagestate.ImageState{
-				"reg.io/img:v1": &imagestate.ImageEntry{Source: "quay.io/img:v1", State: statePending, Refs: []imagestate.ImageRef{{ImageSet: testImageSetName}}},
-				"reg.io/img:v2": &imagestate.ImageEntry{Source: "quay.io/img:v2", State: statePending, Refs: []imagestate.ImageRef{{ImageSet: testImageSetName}}},
-				"reg.io/img:v3": &imagestate.ImageEntry{Source: "quay.io/img:v3", State: statePending, Refs: []imagestate.ImageRef{{ImageSet: testImageSetName}}},
+				"reg.io/img:v1": &imagestate.ImageEntry{Source: "quay.io/img:v1", State: statePending},
+				"reg.io/img:v2": &imagestate.ImageEntry{Source: "quay.io/img:v2", State: statePending},
+				"reg.io/img:v3": &imagestate.ImageEntry{Source: "quay.io/img:v3", State: statePending},
 			}
+			m.owners = map[string][]string{"reg.io/img:v1": {testImageSetName}, "reg.io/img:v2": {testImageSetName}, "reg.io/img:v3": {testImageSetName}}
 			m.lastDriftCheck = time.Now()
 
 			err := m.reconcile(context.TODO())
@@ -2187,6 +2196,7 @@ var _ = Describe("Manager Coverage", func() {
 					PermanentlyFailed: true,
 				},
 			}
+			m.owners = map[string][]string{"reg.io/img:v1": {testImageSetName}}
 			m.lastDriftCheck = time.Now()
 
 			err := m.reconcile(context.TODO())
@@ -2267,6 +2277,7 @@ var _ = Describe("Manager Coverage", func() {
 				"reg.io/img:v1": &imagestate.ImageEntry{Source: "quay.io/img:v1", State: statePending},
 				"reg.io/img:v2": &imagestate.ImageEntry{Source: "quay.io/img:v2", State: statePending},
 			}
+			m.owners = map[string][]string{"reg.io/img:v1": {testImageSetName}, "reg.io/img:v2": {testImageSetName}}
 			m.lastDriftCheck = time.Now()
 
 			err := m.reconcile(context.TODO())
@@ -2303,18 +2314,17 @@ var _ = Describe("Manager Coverage", func() {
 			m = NewWithClients(c, cs, "test", "default", "test-image:latest", "", scheme)
 			m.imageState = imagestate.ImageState{
 				"reg.io/img:v1": &imagestate.ImageEntry{
-					Refs:       []imagestate.ImageRef{{ImageSet: testImageSetName}},
 					Source:     "quay.io/img:v1",
 					State:      stateFailed,
 					RetryCount: 5,
 					LastError:  "timeout",
 				},
 				"reg.io/img:v2": &imagestate.ImageEntry{
-					Refs:   []imagestate.ImageRef{{ImageSet: testImageSetName}},
 					Source: "quay.io/img:v2",
 					State:  stateMirrored,
 				},
 			}
+			m.owners = map[string][]string{"reg.io/img:v1": {testImageSetName}, "reg.io/img:v2": {testImageSetName}}
 			m.lastDriftCheck = time.Now()
 
 			err := m.reconcile(context.TODO())
@@ -2352,6 +2362,7 @@ var _ = Describe("Manager Coverage", func() {
 			m.imageState = imagestate.ImageState{
 				"reg.io/img:v1": &imagestate.ImageEntry{Source: "quay.io/img:v1", State: statePending},
 			}
+			m.owners = map[string][]string{"reg.io/img:v1": {testImageSetName}}
 			// Set lastDriftCheck to recent (within CheckExistInterval)
 			m.lastDriftCheck = time.Now()
 
@@ -2371,6 +2382,7 @@ var _ = Describe("Manager Coverage", func() {
 					RetryCount: 9,
 				},
 			}
+			m.owners = map[string][]string{"reg.io/img:v1": {testImageSetName}}
 			m.setImageStateLocked("reg.io/img:v1", stateFailed, "final error")
 			entry := m.imageState["reg.io/img:v1"]
 			Expect(entry.RetryCount).To(Equal(10))
@@ -2395,6 +2407,7 @@ var _ = Describe("Manager Coverage", func() {
 					State:  statePending,
 				},
 			}
+			m.owners = map[string][]string{"reg.io/img:v1": {testImageSetName}}
 			m.setImageStateLocked("reg.io/img:v1", stateMirrored, "")
 			Expect(m.stateDirty).To(BeTrue())
 		})

@@ -959,161 +959,168 @@ func hasStaleCacheAnnotations(is *mirrorv1alpha1.ImageSet) bool {
 	return false
 }
 
-// filterByImageSet returns a per-IS view of the consolidated state. Each entry
-// in the result has its IS-specific Ref's Origin/EntrySig/OriginRef promoted to
-// the flat fields so that resolveImageSet (which works with flat fields) sees the
-// correct per-IS metadata. The Refs slice is not included in the returned copies.
-//
-// Legacy entries (no Refs, but a populated flat Origin) predate the Refs
-// migration and are included unchanged in every IS's view for backward
-// compatibility. Entries with no Refs AND no Origin are orphans — their last
-// Ref was removed by mergeResolvedIntoConsolidated (e.g. the image was blocked
-// or dropped by spec narrowing) and they are intentionally left in the
-// consolidated state for reconcileOrphans' cleanup Job, not reattached to
-// every ImageSet. See reconcileOrphans in mirrortarget_controller.go, which
-// uses the same len(Refs)==0 && Origin=="" test to find them.
-func filterByImageSet(state imagestate.ImageState, isName string) imagestate.ImageState {
+// filterByImageSet returns a per-IS view of the manager's live in-memory
+// state (m.imageState), scoped to destinations currently owned by isName per
+// the owners map. Unlike the pre-partitioning consolidated model, entries
+// here already carry their own scoped Origin/EntrySig/OriginRef directly —
+// there is no Refs promotion step, since ownership lives out-of-band in
+// owners rather than inside the entry.
+func filterByImageSet(state imagestate.ImageState, owners map[string][]string, isName string) imagestate.ImageState {
 	result := make(imagestate.ImageState, len(state)/2)
 	for dest, entry := range state {
-		if entry == nil {
+		if entry == nil || !hasOwner(owners, dest, isName) {
 			continue
 		}
-		if len(entry.Refs) == 0 {
-			if entry.Origin == "" {
-				// Orphaned entry — belongs to no ImageSet.
-				continue
-			}
-			// Legacy entry: include as-is (flat Origin/EntrySig/OriginRef already set).
-			cp := *entry
-			result[dest] = &cp
-			continue
-		}
-		var matchRef *imagestate.ImageRef
-		for i := range entry.Refs {
-			if entry.Refs[i].ImageSet == isName {
-				matchRef = &entry.Refs[i]
-				break
-			}
-		}
-		if matchRef == nil {
-			continue
-		}
-		// Promote IS-specific Ref fields to flat fields for resolveImageSet.
 		cp := *entry
-		cp.Origin = matchRef.Origin
-		cp.EntrySig = matchRef.EntrySig
-		cp.OriginRef = matchRef.OriginRef
-		cp.Refs = nil
 		result[dest] = &cp
 	}
 	return result
 }
 
-// mergeResolvedIntoConsolidated integrates a freshly-resolved per-IS state into
-// the consolidated MirrorTarget state. It:
-//   - Adds or updates the IS Ref on each destination present in perISState.
-//   - Removes the IS Ref from destinations no longer in perISState.
-//   - Deletes entries from consolidated when all Refs are gone (entry is orphaned).
+// hasOwner reports whether isName is among owners[dest].
+func hasOwner(owners map[string][]string, dest, isName string) bool {
+	for _, n := range owners[dest] {
+		if n == isName {
+			return true
+		}
+	}
+	return false
+}
+
+// addOwner records isName as an owner of dest, deduplicating.
+func addOwner(owners map[string][]string, dest, isName string) {
+	if hasOwner(owners, dest, isName) {
+		return
+	}
+	owners[dest] = append(owners[dest], isName)
+}
+
+// removeOwner removes isName from owners[dest]. Returns true if isName was
+// present (and has now been removed).
+func removeOwner(owners map[string][]string, dest, isName string) bool {
+	names := owners[dest]
+	out := names[:0]
+	removed := false
+	for _, n := range names {
+		if n == isName {
+			removed = true
+			continue
+		}
+		out = append(out, n)
+	}
+	if !removed {
+		return false
+	}
+	if len(out) == 0 {
+		delete(owners, dest)
+	} else {
+		owners[dest] = out
+	}
+	return true
+}
+
+// mergeResolvedIntoConsolidated integrates a freshly-resolved per-IS state
+// into the manager's live in-memory state and owners map. It:
+//   - Adds/updates isName's ownership of each destination present in perISState.
+//   - Removes isName's ownership from destinations no longer in perISState.
 //
-// Global state fields (State, RetryCount, LastError, PermanentlyFailed) are
-// preserved for existing entries — only the IS Ref metadata is updated.
-// Source is updated if it changed.
-func mergeResolvedIntoConsolidated(consolidated imagestate.ImageState, perISState imagestate.ImageState, isName string) {
+// Global entry fields (State, RetryCount, LastError, PermanentlyFailed) are
+// preserved for existing entries — only Source and ownership are updated.
+// Destinations that lose their last owner are reported via the returned
+// slice so the caller (manager.go Phase D) can move them into the pending
+// orphans snapshot for the MirrorTarget controller's cleanup Job — they are
+// intentionally left in `state` for the caller to remove.
+func mergeResolvedIntoConsolidated(state imagestate.ImageState, owners map[string][]string, perISState imagestate.ImageState, isName string) (orphaned []string) {
 	// Step 1: Upsert entries that exist in the new per-IS state.
 	for dest, newEntry := range perISState {
 		if newEntry == nil {
 			continue
 		}
-		ref := imagestate.ImageRef{
-			ImageSet:  isName,
-			Origin:    newEntry.Origin,
-			EntrySig:  newEntry.EntrySig,
-			OriginRef: newEntry.OriginRef,
-		}
-		if existing, ok := consolidated[dest]; ok {
-			existing.AddRef(ref)
+		if existing, ok := state[dest]; ok {
 			if existing.Source != newEntry.Source {
 				existing.Source = newEntry.Source
 			}
 		} else {
 			e := *newEntry
-			e.Refs = []imagestate.ImageRef{ref}
-			// Clear flat fields — they live in Refs now.
-			e.Origin = ""
-			e.EntrySig = ""
-			e.OriginRef = ""
-			consolidated[dest] = &e
+			state[dest] = &e
 		}
+		addOwner(owners, dest, isName)
 	}
 
-	// Step 2: Remove stale IS refs for destinations no longer in perISState.
-	for dest, existing := range consolidated {
+	// Step 2: Remove stale ownership for destinations no longer in perISState.
+	for dest := range state {
 		if _, inNew := perISState[dest]; inNew {
 			continue
 		}
-		if existing.HasImageSet(isName) {
-			_ = existing.RemoveImageSet(isName)
-			// We no longer delete orphaned entries here. Instead, we leave them
-			// in the consolidated state with len(Refs) == 0. The MirrorTarget
-			// controller's reconcileCleanup loop will detect these orphans and
-			// trigger a cleanup Job for them.
+		if !removeOwner(owners, dest, isName) {
+			continue
+		}
+		if len(owners[dest]) == 0 {
+			orphaned = append(orphaned, dest)
 		}
 	}
+	return orphaned
 }
 
-// loadConsolidatedState initialises m.imageState from the per-MirrorTarget
-// ConfigMap. If the ConfigMap is missing or empty it falls back to importing
-// the legacy per-IS ConfigMaps so that existing installations survive the
-// upgrade without data loss (Phase 3 migration).
+// loadPartitionedState initialises m.imageState and m.owners by loading each
+// referenced ImageSet's own state ConfigMap and merging them into the
+// manager's single in-memory working set — kept dest-keyed for O(1) worker
+// status/should-mirror lookups. m.owners tracks which ImageSet(s) each
+// destination currently belongs to, mirroring (without persisting as) the
+// on-disk shared-image index. Runs the one-time legacy-consolidated-ConfigMap
+// migration first.
 // Caller must hold m.mu.
-func (m *MirrorManager) loadConsolidatedState(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget, imageSets *mirrorv1alpha1.ImageSetList) error {
-	state, err := imagestate.LoadForTarget(ctx, m.Client, m.Namespace, m.TargetName)
-	if err != nil {
-		return fmt.Errorf("load consolidated state: %w", err)
-	}
-	if len(state) > 0 {
-		m.imageState = state
-		oclog.Printf("Loaded %d entries from consolidated state ConfigMap\n", len(state))
-		return nil
+func (m *MirrorManager) loadPartitionedState(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget, imageSets *mirrorv1alpha1.ImageSetList) {
+	if err := imagestate.MigrateConsolidatedToPerImageSet(ctx, m.Client, m.Namespace, m.TargetName, mt, m.Scheme); err != nil {
+		oclog.Printf("Warning: failed to migrate legacy consolidated state: %v\n", err)
 	}
 
-	// Consolidated CM is empty — migrate from legacy per-IS CMs.
-	migrated := make(imagestate.ImageState)
+	imageState := make(imagestate.ImageState)
+	owners := make(map[string][]string)
+	loaded := 0
 	for _, is := range imageSets.Items {
 		if !containsString(mt.Spec.ImageSets, is.Name) {
 			continue
 		}
-		isState, loadErr := imagestate.Load(ctx, m.Client, m.Namespace, is.Name) //nolint:staticcheck // migration pending
+		isState, loadErr := imagestate.Load(ctx, m.Client, m.Namespace, is.Name)
 		if loadErr != nil {
-			oclog.Printf("Warning: migration: failed to load state for %s: %v\n", is.Name, loadErr)
+			oclog.Printf("Warning: failed to load state for ImageSet %s: %v\n", is.Name, loadErr)
 			continue
 		}
 		for dest, entry := range isState {
 			if entry == nil {
 				continue
 			}
-			ref := imagestate.ImageRef{
-				ImageSet:  is.Name,
-				Origin:    entry.Origin,
-				EntrySig:  entry.EntrySig,
-				OriginRef: entry.OriginRef,
-			}
-			if existing, ok := migrated[dest]; ok {
-				existing.AddRef(ref)
-			} else {
-				e := *entry
-				e.Refs = []imagestate.ImageRef{ref}
-				e.Origin = ""
-				e.EntrySig = ""
-				e.OriginRef = ""
-				migrated[dest] = &e
-			}
+			addOwner(owners, dest, is.Name)
+			imageState[dest] = mergeLoadedEntry(imageState[dest], entry)
 		}
+		loaded += len(isState)
 	}
-	m.imageState = migrated
-	if len(migrated) > 0 {
-		oclog.Printf("Migrated %d entries from per-IS ConfigMaps to consolidated state\n", len(migrated))
-		m.stateDirty = true
+	m.imageState = imageState
+	m.owners = owners
+	if loaded > 0 {
+		oclog.Printf("Loaded %d image entries across %d ImageSets\n", len(imageState), len(imageSets.Items))
 	}
-	return nil
+}
+
+// mergeLoadedEntry resolves a rare divergence between two ImageSets' own
+// copies of a shared destination (possible only if a manager crash landed
+// between writing some but not all owners during a prior flush — writes
+// across owning ConfigMaps are not atomic, see
+// docs/design/imagestate-per-imageset-partitioning.md §4): prefer whichever
+// copy reflects more progress (Mirrored, then higher RetryCount).
+func mergeLoadedEntry(existing, incoming *imagestate.ImageEntry) *imagestate.ImageEntry {
+	if existing == nil {
+		return incoming
+	}
+	if incoming.State == stateMirrored || existing.State == stateMirrored {
+		if incoming.State == stateMirrored {
+			return incoming
+		}
+		return existing
+	}
+	if incoming.RetryCount > existing.RetryCount {
+		return incoming
+	}
+	return existing
 }
