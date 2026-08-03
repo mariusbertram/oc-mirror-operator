@@ -10,7 +10,7 @@ import {
   ToolbarContent,
   ToolbarItem,
 } from '@patternfly/react-core';
-import { Link, useParams } from 'react-router';
+import { Link, useParams } from 'react-router-dom-v5-compat';
 import {
   getFilteredPackages,
   getPackageConstraints,

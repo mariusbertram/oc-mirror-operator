@@ -18,7 +18,6 @@ package main
 
 import (
 	"flag"
-	"fmt"
 	"os"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
@@ -94,7 +93,7 @@ func runResourceAPI() {
 	fs := flag.NewFlagSet("resource-api", flag.ExitOnError)
 	fs.StringVar(&namespace, "namespace", "", "Namespace to watch")
 	if err := fs.Parse(os.Args[2:]); err != nil {
-		fmt.Fprintln(os.Stderr, "flag parse error:", err)
+		setupLog.Error(err, "flag parse error")
 		os.Exit(1)
 	}
 	if namespace == "" {

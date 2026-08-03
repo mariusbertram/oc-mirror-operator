@@ -66,7 +66,7 @@ func RenderResources(name, namespace string, spec *mirrorv1alpha1.ImageSetSpec, 
 		slug := resources.CatalogSlug(op.Catalog)
 		cat := resources.CatalogInfo{
 			SourceCatalog: op.Catalog,
-			TargetImage:   catalogTargetRef(destRegistry, op),
+			TargetImage:   resources.CatalogTargetImage(destRegistry, op),
 			DisplayName:   op.Catalog,
 		}
 

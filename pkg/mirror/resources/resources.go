@@ -16,6 +16,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/yaml"
 
+	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/imagestate"
 )
 
@@ -260,15 +261,47 @@ func GenerateClusterCatalog(name string, catalog CatalogInfo) ([]byte, error) {
 
 // --- Release Signature ConfigMaps ---
 
-// CatalogTargetImage builds the destination for a catalog image.
-// The tag from the source ref is preserved so ClusterCatalog/CatalogSource
-// point to a tag-addressable image. Digest refs are not forwarded as tags.
-func CatalogTargetImage(registry, source string) string {
-	repo, tagOrDigest := splitImageRef(source)
-	if tagOrDigest != "" && !strings.HasPrefix(tagOrDigest, "@") {
-		return fmt.Sprintf("%s/%s%s", registry, repo, tagOrDigest)
+// CatalogTargetImage builds the target image reference for a filtered catalog
+// image — the exact location the catalog-builder Job pushes to (see
+// internal/controller reconcileCatalogBuildJobs). CatalogSource and
+// ClusterCatalog resources MUST reference this same value; any divergent
+// computation of the target path produces a resource that points at an image
+// that either doesn't exist or is stale.
+//
+// It prefers op.TargetCatalog if set; otherwise derives a path from the
+// source catalog name (its registry hostname is stripped — only the
+// repository path is kept) and appends op.TargetTag, defaulting to the
+// source's own tag, or "latest" when the source is digest-only.
+func CatalogTargetImage(registry string, op mirrorv1alpha1.Operator) string {
+	tag := op.TargetTag
+	if tag == "" {
+		// Extract tag from the source catalog, handling "image:tag",
+		// "image@sha256:..." and "image:tag@sha256:..." forms.
+		catalogForTag := op.Catalog
+		if i := strings.Index(catalogForTag, "@"); i >= 0 {
+			catalogForTag = catalogForTag[:i] // strip digest, keep tag part
+		}
+		if i := strings.LastIndex(catalogForTag, ":"); i >= 0 && !strings.Contains(catalogForTag[i:], "/") {
+			tag = catalogForTag[i+1:]
+		}
 	}
-	return fmt.Sprintf("%s/%s", registry, repo)
+	if tag == "" {
+		tag = "latest"
+	}
+	if op.TargetCatalog != "" {
+		return fmt.Sprintf("%s/%s:%s", registry, op.TargetCatalog, tag)
+	}
+	// Derive a safe path from the source catalog: strip registry prefix, keep image name.
+	parts := strings.SplitN(op.Catalog, "/", 2)
+	path := op.Catalog
+	if len(parts) == 2 {
+		path = parts[1]
+	}
+	// Remove tag/digest from path.
+	if i := strings.IndexAny(path, ":@"); i >= 0 {
+		path = path[:i]
+	}
+	return fmt.Sprintf("%s/%s:%s", registry, path, tag)
 }
 
 // --- Signature data type ---

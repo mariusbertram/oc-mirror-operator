@@ -23,6 +23,7 @@ import (
 	ocmetrics "github.com/mariusbertram/oc-mirror-operator/pkg/metrics"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/catalog/builder"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/imagestate"
+	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/resources"
 )
 
 // ImageSetReconciler reconciles a ImageSet object
@@ -385,7 +386,7 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs( //nolint:gocyclo
 		}
 
 		// Derive the target catalog image reference.
-		targetRef := catalogTargetRef(mt.Spec.Registry, op)
+		targetRef := resources.CatalogTargetImage(mt.Spec.Registry, op)
 
 		jobName := builder.JobName(is.Name, op.Catalog)
 		phase, err := builder.GetBuildJobStatus(ctx, r.Client, jobName, is.Namespace)
@@ -489,16 +490,34 @@ func operatorImagesMirrored(ctx context.Context, c client.Client, is *mirrorv1al
 	if err != nil || len(state) == 0 {
 		return false, false
 	}
+
+	// Expected per-entry signatures of the CURRENT spec. The imagestate
+	// ConfigMap only reflects the spec the manager last resolved — after an
+	// operator is added or changed, the state still shows the OLD content
+	// (typically all Mirrored). Without checking that every current spec
+	// entry has actually been resolved into the state, the catalog build
+	// would launch immediately on spec change, producing a catalog that
+	// references bundle images not yet present in the target registry.
+	expectedSigs := make(map[string]bool, len(is.Spec.Mirror.Operators))
+	for _, op := range is.Spec.Mirror.Operators {
+		if op.Catalog != "" {
+			expectedSigs[mirrorv1alpha1.OperatorEntrySignature(op)] = false
+		}
+	}
+
 	hasOperator := false
+	legacySigSeen := false
 	for _, e := range state {
 		if e == nil || !e.HasImageSet(is.Name) {
 			continue
 		}
 		// Find the Ref for this ImageSet to check the Origin.
 		var origin imagestate.ImageOrigin
+		var sig string
 		for _, ref := range e.Refs {
 			if ref.ImageSet == is.Name {
 				origin = ref.Origin
+				sig = ref.EntrySig
 				break
 			}
 		}
@@ -507,47 +526,32 @@ func operatorImagesMirrored(ctx context.Context, c client.Client, is *mirrorv1al
 		}
 
 		hasOperator = true
+		if sig == "" {
+			// Entry written by an operator version that predates per-entry
+			// signatures — cannot be attributed to a specific spec entry.
+			legacySigSeen = true
+		} else if _, ok := expectedSigs[sig]; ok {
+			expectedSigs[sig] = true
+		}
 		if e.State != "Mirrored" && !e.PermanentlyFailed {
 			return false, true
 		}
 	}
-	return hasOperator, true
-}
 
-// catalogTargetRef builds the target image reference for a filtered catalog image.
-// It prefers Operator.TargetCatalog if set; otherwise derives a path from the
-// source catalog name and appends the TargetTag (defaulting to the source tag,
-// or "latest" when the source is digest-only).
-func catalogTargetRef(registry string, op mirrorv1alpha1.Operator) string {
-	tag := op.TargetTag
-	if tag == "" {
-		// Extract tag from the source catalog, handling "image:tag",
-		// "image@sha256:..." and "image:tag@sha256:..." forms.
-		catalogForTag := op.Catalog
-		if i := strings.Index(catalogForTag, "@"); i >= 0 {
-			catalogForTag = catalogForTag[:i] // strip digest, keep tag part
-		}
-		if i := strings.LastIndex(catalogForTag, ":"); i >= 0 && !strings.Contains(catalogForTag[i:], "/") {
-			tag = catalogForTag[i+1:]
+	// Every operator entry of the current spec must have contributed at least
+	// one tracked image before mirroring can be considered complete. Skipped
+	// when legacy (pre-signature) entries exist, since those cannot be
+	// attributed — the next manager resolve adopts signatures and enforcement
+	// kicks in from then on.
+	if !legacySigSeen {
+		for _, seen := range expectedSigs {
+			if !seen {
+				return false, true
+			}
 		}
 	}
-	if tag == "" {
-		tag = "latest"
-	}
-	if op.TargetCatalog != "" {
-		return fmt.Sprintf("%s/%s:%s", registry, op.TargetCatalog, tag)
-	}
-	// Derive a safe path from the source catalog: strip registry prefix, keep image name.
-	parts := strings.SplitN(op.Catalog, "/", 2)
-	path := op.Catalog
-	if len(parts) == 2 {
-		path = parts[1]
-	}
-	// Remove tag/digest from path.
-	if i := strings.IndexAny(path, ":@"); i >= 0 {
-		path = path[:i]
-	}
-	return fmt.Sprintf("%s/%s:%s", registry, path, tag)
+
+	return hasOperator, true
 }
 
 // SetupWithManager sets up the controller with the Manager.

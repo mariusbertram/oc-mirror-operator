@@ -14,6 +14,6 @@
     "ImageSetDetailPage": "./plugin/pages/ImageSetDetailPage"
   },
   "dependencies": {
-    "@console/pluginAPI": ">=4.22.0-0"
+    "@console/pluginAPI": ">=4.19.0-0"
   }
 }

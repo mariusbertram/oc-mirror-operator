@@ -281,6 +281,79 @@ var _ = Describe("Coverage tests", func() {
 			Expect(complete).To(BeTrue())
 			Expect(know).To(BeTrue())
 		})
+
+		// Regression: a freshly added operator entry has no imagestate entries
+		// yet — the state still reflects the OLD spec (all Mirrored). The gate
+		// must NOT report complete until the manager has resolved the new entry,
+		// otherwise the catalog build launches before its bundle images exist.
+		It("returns (false, true) when a spec operator entry has no state entries yet", func() {
+			oldOp := mirrorv1alpha1.Operator{Catalog: "quay.io/old/catalog:v1"}
+			newOp := mirrorv1alpha1.Operator{Catalog: "quay.io/new/catalog:v1"}
+			oldSig := mirrorv1alpha1.OperatorEntrySignature(oldOp)
+
+			state := imagestate.ImageState{
+				"d1": {Source: "s1", State: "Mirrored", Refs: []imagestate.ImageRef{{ImageSet: "spec-drift", Origin: imagestate.OriginOperator, EntrySig: oldSig}}},
+			}
+			cm := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: "target-images", Namespace: ns},
+				BinaryData: map[string][]byte{"images.json.gz": mustGzipJSON(state)},
+			}
+			c := fake.NewClientBuilder().WithScheme(fakeScheme).WithObjects(cm).Build()
+			is := &mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "spec-drift", Namespace: ns},
+				Spec: mirrorv1alpha1.ImageSetSpec{Mirror: mirrorv1alpha1.Mirror{
+					Operators: []mirrorv1alpha1.Operator{oldOp, newOp},
+				}},
+			}
+			complete, know := operatorImagesMirrored(bgCtx, c, is, "target")
+			Expect(complete).To(BeFalse())
+			Expect(know).To(BeTrue())
+		})
+
+		It("returns (true, true) when every spec operator entry is resolved and Mirrored", func() {
+			op := mirrorv1alpha1.Operator{Catalog: "quay.io/ops/catalog:v1"}
+			sig := mirrorv1alpha1.OperatorEntrySignature(op)
+
+			state := imagestate.ImageState{
+				"d1": {Source: "s1", State: "Mirrored", Refs: []imagestate.ImageRef{{ImageSet: "spec-synced", Origin: imagestate.OriginOperator, EntrySig: sig}}},
+			}
+			cm := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: "target-images", Namespace: ns},
+				BinaryData: map[string][]byte{"images.json.gz": mustGzipJSON(state)},
+			}
+			c := fake.NewClientBuilder().WithScheme(fakeScheme).WithObjects(cm).Build()
+			is := &mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "spec-synced", Namespace: ns},
+				Spec: mirrorv1alpha1.ImageSetSpec{Mirror: mirrorv1alpha1.Mirror{
+					Operators: []mirrorv1alpha1.Operator{op},
+				}},
+			}
+			complete, know := operatorImagesMirrored(bgCtx, c, is, "target")
+			Expect(complete).To(BeTrue())
+			Expect(know).To(BeTrue())
+		})
+
+		It("skips signature enforcement when legacy entries without EntrySig exist", func() {
+			op := mirrorv1alpha1.Operator{Catalog: "quay.io/legacy/catalog:v1"}
+
+			state := imagestate.ImageState{
+				"d1": {Source: "s1", State: "Mirrored", Refs: []imagestate.ImageRef{{ImageSet: "legacy-state", Origin: imagestate.OriginOperator}}},
+			}
+			cm := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: "target-images", Namespace: ns},
+				BinaryData: map[string][]byte{"images.json.gz": mustGzipJSON(state)},
+			}
+			c := fake.NewClientBuilder().WithScheme(fakeScheme).WithObjects(cm).Build()
+			is := &mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "legacy-state", Namespace: ns},
+				Spec: mirrorv1alpha1.ImageSetSpec{Mirror: mirrorv1alpha1.Mirror{
+					Operators: []mirrorv1alpha1.Operator{op},
+				}},
+			}
+			complete, know := operatorImagesMirrored(bgCtx, c, is, "target")
+			Expect(complete).To(BeTrue())
+			Expect(know).To(BeTrue())
+		})
 	})
 
 	// ───────────────────── findOwningMirrorTarget ─────────────────────

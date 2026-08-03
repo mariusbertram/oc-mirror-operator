@@ -10,6 +10,7 @@ import (
 	"github.com/operator-framework/operator-registry/alpha/property"
 	"sigs.k8s.io/yaml"
 
+	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/imagestate"
 )
 
@@ -338,6 +339,42 @@ var _ = Describe("GenerateITMS", func() {
 		Expect(mirrors[0].(yamlMap)["source"]).To(Equal("upstream.io/a-repo"))
 		Expect(mirrors[1].(yamlMap)["source"]).To(Equal("upstream.io/z-repo"))
 	})
+})
+
+var _ = Describe("CatalogTargetImage", func() {
+	const reg = "mirror.example.com"
+
+	DescribeTable("derives the correct target catalog reference",
+		func(catalog, targetTag, targetCatalog, expected string) {
+			op := mirrorv1alpha1.Operator{
+				Catalog:       catalog,
+				TargetTag:     targetTag,
+				TargetCatalog: targetCatalog,
+			}
+			Expect(CatalogTargetImage(reg, op)).To(Equal(expected))
+		},
+		// tag-only catalog: the source registry hostname must NOT leak into
+		// the target path — only the repository path survives.
+		Entry("tag-only", "quay.io/redhat/catalog:v4.21", "", "",
+			"mirror.example.com/redhat/catalog:v4.21"),
+		// digest-only catalog → defaults to "latest"
+		Entry("digest-only", "quay.io/redhat/catalog@sha256:abc", "", "",
+			"mirror.example.com/redhat/catalog:latest"),
+		// tag AND digest → preserves the tag
+		Entry("tag and digest", "quay.io/redhat/catalog:v4.21@sha256:abc", "", "",
+			"mirror.example.com/redhat/catalog:v4.21"),
+		// explicit TargetTag overrides everything
+		Entry("explicit TargetTag", "quay.io/redhat/catalog:v4.21@sha256:abc", "custom", "",
+			"mirror.example.com/redhat/catalog:custom"),
+		// explicit TargetCatalog with tag@digest source
+		Entry("TargetCatalog with tag@digest", "quay.io/redhat/catalog:v4.21@sha256:abc", "", "my/catalog",
+			"mirror.example.com/my/catalog:v4.21"),
+		// multi-segment registry host (e.g. registry.redhat.io/redhat/...):
+		// only the first path segment (the host) is stripped, not the whole
+		// source repo — this is the exact bug this function fixes.
+		Entry("multi-segment source registry", "registry.redhat.io/redhat/redhat-operator-index:v4.21", "", "",
+			"mirror.example.com/redhat/redhat-operator-index:v4.21"),
+	)
 })
 
 var _ = Describe("GenerateCatalogSource", func() {

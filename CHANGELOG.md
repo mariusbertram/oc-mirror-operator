@@ -8,6 +8,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Console plugin crashed on the ImageSets and Mirror Targets pages on
+  OpenShift 4.19–4.21 ("Minified React error #130" in `@patternfly/react-table`
+  components)**: lowering `@console/pluginAPI` to `>=4.19.0-0` let the plugin
+  load on these console versions, but the plugin was still built against
+  `@openshift-console/dynamic-plugin-sdk(-webpack)@4.22-latest`, React 18, and
+  react-router 7 — none of which match what those console versions actually
+  federate at runtime, so any page using the shared/dynamic PatternFly `Table`
+  components (`ImageSetList`, `MirrorTargetList`) rendered `undefined`
+  elements and crashed. The plugin now builds against
+  `@openshift-console/dynamic-plugin-sdk(-webpack)@4.19-latest`, React 17,
+  `react-router-dom` v5 (via `react-router-dom-v5-compat` for the v6-style
+  `Link`/`useParams`/`Routes` API the pages already used), and
+  `@patternfly/react-core`/`react-icons`/`react-table` pinned to `6.2.2` —
+  matching exactly what `frontend/package.json` on the `openshift/console`
+  `release-4.19` branch pins, verified directly against that source rather
+  than assumed. (A looser `^6.4.3` range had let npm resolve PatternFly
+  6.6.0, which calls `React.useId` — a React 18-only hook not present in
+  6.2.2 — and would have broken the standalone dev harness; console 4.19's
+  own pinned combination of React 17 + PatternFly 6.2.2 has no such call.)
+  `validateSharedModules` is re-enabled in `webpack.plugin.js` so future
+  dependency drift is caught at build time instead of shipping a runtime
+  crash.
+- **Catalog build launched immediately when adding an operator to an
+  ImageSet**: the mirroring-complete gate only inspected the imagestate
+  ConfigMap, which still reflected the previously resolved spec (typically
+  all `Mirrored`). Adding a new operator therefore triggered the filtered
+  catalog rebuild instantly — before the manager had even enumerated the new
+  operator's bundle/operand images — so clusters consuming the catalog could
+  be offered an update whose bundle image did not yet exist in the target
+  registry. The gate now additionally requires that every operator entry of
+  the *current* spec has been resolved into the imagestate (matched via its
+  per-entry signature) before mirroring counts as complete; the build then
+  waits until those images are actually `Mirrored`/`PermanentlyFailed`.
+  Legacy state entries written before per-entry signatures existed are
+  exempt until the next resolve adopts signatures.
+- **Console plugin degraded: "Failed to resolve dependencies of plugin
+  oc-mirror-operator"**: the plugin manifest required
+  `@console/pluginAPI >= 4.22.0-0`, so the console-operator refused to load
+  the plugin on any cluster older than OpenShift 4.22. The requirement is
+  now `>= 4.19.0-0` (4.19 is the oldest console shipping the PatternFly 6
+  runtime the UI is built against).
 - **Filtered catalog unservable: "multiple channel heads found in graph"**:
   Heads-only filtering selected the head bundle of every channel, but channel
   trimming then kept any globally selected bundle in every channel it appeared
