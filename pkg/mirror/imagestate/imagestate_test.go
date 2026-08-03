@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -293,86 +294,125 @@ func TestSaveRaw_UpdatesExisting(t *testing.T) {
 	}
 }
 
-// --- ImageRef helper methods ---
+// --- SharedIndex ---
 
-func TestImageEntry_HasImageSet(t *testing.T) {
-	e := &ImageEntry{
-		Refs: []ImageRef{
-			{ImageSet: "is-a"},
-			{ImageSet: "is-b"},
-		},
+func TestSharedIndex_AddSharedRef_Deduplicates(t *testing.T) {
+	idx := make(SharedIndex)
+	idx.AddSharedRef("dest1", "is-a")
+	idx.AddSharedRef("dest1", "is-b")
+	idx.AddSharedRef("dest1", "is-a") // duplicate, no-op
+	if got := idx.Names("dest1"); len(got) != 2 {
+		t.Fatalf("expected 2 names, got %v", got)
 	}
-	if !e.HasImageSet("is-a") {
-		t.Fatal("expected HasImageSet(is-a) = true")
-	}
-	if !e.HasImageSet("is-b") {
-		t.Fatal("expected HasImageSet(is-b) = true")
-	}
-	if e.HasImageSet("is-c") {
-		t.Fatal("expected HasImageSet(is-c) = false")
+	if !idx.IsShared("dest1") {
+		t.Fatal("expected dest1 to be shared")
 	}
 }
 
-func TestImageEntry_AddRef_Deduplicates(t *testing.T) {
-	e := &ImageEntry{}
-	e.AddRef(ImageRef{ImageSet: "is-a", Origin: OriginRelease})
-	e.AddRef(ImageRef{ImageSet: "is-b", Origin: OriginOperator})
-	if len(e.Refs) != 2 {
-		t.Fatalf("expected 2 refs, got %d", len(e.Refs))
+func TestSharedIndex_RemoveSharedRef_DeletesEntryAtOneOrFewer(t *testing.T) {
+	idx := SharedIndex{"dest1": {"is-a", "is-b", "is-c"}}
+	idx.RemoveSharedRef("dest1", "is-a")
+	if got := idx.Names("dest1"); len(got) != 2 {
+		t.Fatalf("expected 2 remaining names, got %v", got)
 	}
-	// Update is-a ref
-	e.AddRef(ImageRef{ImageSet: "is-a", Origin: OriginAdditional})
-	if len(e.Refs) != 2 {
-		t.Fatalf("expected 2 refs after dedup, got %d", len(e.Refs))
+	if !idx.IsShared("dest1") {
+		t.Fatal("expected dest1 to still be shared with 2 names")
 	}
-	var ref *ImageRef
-	for i := range e.Refs {
-		if e.Refs[i].ImageSet == "is-a" {
-			ref = &e.Refs[i]
+
+	idx.RemoveSharedRef("dest1", "is-b")
+	if _, ok := idx["dest1"]; ok {
+		t.Fatalf("expected dest1 entry to be deleted once only 1 name remains, got %v", idx["dest1"])
+	}
+	if idx.IsShared("dest1") {
+		t.Fatal("expected dest1 to no longer be shared")
+	}
+}
+
+func TestSharedIndex_IsShared_UnknownDest(t *testing.T) {
+	idx := make(SharedIndex)
+	if idx.IsShared("missing") {
+		t.Fatal("expected unknown dest to not be shared")
+	}
+}
+
+// --- index encode/decode roundtrip ---
+
+func TestIndexEncodeDecode_Roundtrip(t *testing.T) {
+	original := SharedIndex{
+		"dest1": {"is-a", "is-b"},
+		"dest2": {"is-a", "is-c", "is-d"},
+	}
+	data, err := encodeIndex(original)
+	if err != nil {
+		t.Fatalf("encodeIndex error: %v", err)
+	}
+	cm := &corev1.ConfigMap{BinaryData: map[string][]byte{"index.json.gz": data}}
+	decoded, err := decodeIndex(cm)
+	if err != nil {
+		t.Fatalf("decodeIndex error: %v", err)
+	}
+	if len(decoded) != len(original) {
+		t.Fatalf("decoded length %d != original %d", len(decoded), len(original))
+	}
+	for k, names := range original {
+		if len(decoded[k]) != len(names) {
+			t.Fatalf("decoded names for %s = %v, want %v", k, decoded[k], names)
 		}
 	}
-	if ref == nil || ref.Origin != OriginAdditional {
-		t.Fatal("AddRef should update existing ref")
+}
+
+// --- LoadIndex / SaveIndex ---
+
+func TestSaveIndex_CreatesAndLoads(t *testing.T) {
+	c := newFakeClient().Build()
+	idx := SharedIndex{"dest1": {"is-a", "is-b"}}
+	if err := SaveIndex(context.Background(), c, "ns", "my-mt", idx, nil, nil); err != nil {
+		t.Fatalf("SaveIndex error: %v", err)
+	}
+	loaded, err := LoadIndex(context.Background(), c, "ns", "my-mt")
+	if err != nil {
+		t.Fatalf("LoadIndex error: %v", err)
+	}
+	if !loaded.IsShared("dest1") {
+		t.Fatalf("expected dest1 to be shared, got %v", loaded)
 	}
 }
 
-func TestImageEntry_RemoveImageSet(t *testing.T) {
-	e := &ImageEntry{
-		Refs: []ImageRef{
-			{ImageSet: "is-a"},
-			{ImageSet: "is-b"},
-		},
+func TestLoadIndex_MissingConfigMap(t *testing.T) {
+	c := newFakeClient().Build()
+	idx, err := LoadIndex(context.Background(), c, "ns", "missing-mt")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	orphaned := e.RemoveImageSet("is-a")
-	if orphaned {
-		t.Fatal("expected orphaned=false when one ref remains")
-	}
-	if len(e.Refs) != 1 || e.Refs[0].ImageSet != "is-b" {
-		t.Fatalf("unexpected refs: %v", e.Refs)
-	}
-	orphaned = e.RemoveImageSet("is-b")
-	if !orphaned {
-		t.Fatal("expected orphaned=true when no refs remain")
-	}
-	if len(e.Refs) != 0 {
-		t.Fatal("expected empty refs after removing last ref")
+	if idx == nil || len(idx) != 0 {
+		t.Fatalf("expected empty non-nil index, got %v", idx)
 	}
 }
 
-func TestImageEntry_ImageSetNames(t *testing.T) {
-	e := &ImageEntry{
-		Refs: []ImageRef{
-			{ImageSet: "is-a"},
-			{ImageSet: "is-b"},
-		},
+func TestSaveIndex_EmptyDeletesConfigMap(t *testing.T) {
+	c := newFakeClient().Build()
+	idx := SharedIndex{"dest1": {"is-a", "is-b"}}
+	if err := SaveIndex(context.Background(), c, "ns", "my-mt", idx, nil, nil); err != nil {
+		t.Fatalf("SaveIndex error: %v", err)
 	}
-	names := e.ImageSetNames()
-	if len(names) != 2 {
-		t.Fatalf("expected 2 names, got %d", len(names))
+	if err := SaveIndex(context.Background(), c, "ns", "my-mt", SharedIndex{}, nil, nil); err != nil {
+		t.Fatalf("SaveIndex (empty) error: %v", err)
+	}
+	cm := &corev1.ConfigMap{}
+	err := c.Get(context.Background(), types.NamespacedName{Namespace: "ns", Name: IndexConfigMapName("my-mt")}, cm)
+	if !errors.IsNotFound(err) {
+		t.Fatalf("expected index configmap to be deleted, got err=%v", err)
 	}
 }
 
-// --- ConfigMapNameForTarget ---
+func TestSaveIndex_EmptyNoopWhenAbsent(t *testing.T) {
+	c := newFakeClient().Build()
+	if err := SaveIndex(context.Background(), c, "ns", "my-mt", SharedIndex{}, nil, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// --- ConfigMapNameForTarget / IndexConfigMapName / OrphansConfigMapName ---
 
 func TestConfigMapNameForTarget(t *testing.T) {
 	if got := ConfigMapNameForTarget("my-mt"); got != "my-mt-images" {
@@ -380,19 +420,96 @@ func TestConfigMapNameForTarget(t *testing.T) {
 	}
 }
 
-// --- SaveForTarget / LoadForTarget ---
+func TestIndexConfigMapName(t *testing.T) {
+	if got := IndexConfigMapName("my-mt"); got != "my-mt-images-index" {
+		t.Fatalf("expected my-mt-images-index, got %s", got)
+	}
+}
 
-func TestSaveForTarget_CreatesAndLoads(t *testing.T) {
+func TestOrphansConfigMapName(t *testing.T) {
+	if got := OrphansConfigMapName("my-mt"); got != "my-mt-images-orphans" {
+		t.Fatalf("expected my-mt-images-orphans, got %s", got)
+	}
+}
+
+// --- MigrateConsolidatedToPerImageSet ---
+
+func TestMigrate_NoLegacyConfigMap_NoOp(t *testing.T) {
 	c := newFakeClient().Build()
-	state := ImageState{"dest": {Source: "src", State: "Pending"}}
-	if err := SaveForTarget(context.Background(), c, "ns", "my-mt", state, nil, nil); err != nil {
-		t.Fatalf("SaveForTarget error: %v", err)
+	if err := MigrateConsolidatedToPerImageSet(context.Background(), c, "ns", "my-mt", nil, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	loaded, err := LoadForTarget(context.Background(), c, "ns", "my-mt")
+}
+
+func TestMigrate_SplitsExclusiveAndSharedEntries(t *testing.T) {
+	legacy := map[string]*legacyImageEntry{
+		"dest-exclusive-a": {
+			Source: "src-a", State: testStateMirrored,
+			Refs: []legacyImageRef{{ImageSet: "is-a", Origin: OriginRelease, EntrySig: "sig-a"}},
+		},
+		"dest-shared": {
+			Source: "src-shared", State: testStateMirrored,
+			Refs: []legacyImageRef{
+				{ImageSet: "is-a", Origin: OriginOperator, EntrySig: "sig-shared-a"},
+				{ImageSet: "is-b", Origin: OriginOperator, EntrySig: "sig-shared-b"},
+			},
+		},
+		"dest-orphan": {
+			Source: "src-orphan", State: testStateMirrored,
+			Refs: nil, // no Refs and no flat Origin => dropped, not migrated
+		},
+	}
+	data, err := encodeGzipJSON(legacy)
 	if err != nil {
-		t.Fatalf("LoadForTarget error: %v", err)
+		t.Fatalf("encode legacy state: %v", err)
 	}
-	if len(loaded) != 1 || loaded["dest"].State != "Pending" {
-		t.Fatalf("unexpected loaded state: %v", loaded)
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-mt-images", Namespace: "ns"},
+		BinaryData: map[string][]byte{"images.json.gz": data},
+	}
+	c := newFakeClient().WithRuntimeObjects(cm).Build()
+
+	if err := MigrateConsolidatedToPerImageSet(context.Background(), c, "ns", "my-mt", nil, nil); err != nil {
+		t.Fatalf("migrate error: %v", err)
+	}
+
+	isAState, err := Load(context.Background(), c, "ns", "is-a")
+	if err != nil {
+		t.Fatalf("load is-a: %v", err)
+	}
+	if len(isAState) != 2 {
+		t.Fatalf("expected 2 entries for is-a, got %d: %v", len(isAState), isAState)
+	}
+	if isAState["dest-exclusive-a"].EntrySig != "sig-a" {
+		t.Fatalf("unexpected exclusive entry: %v", isAState["dest-exclusive-a"])
+	}
+	if isAState["dest-shared"].EntrySig != "sig-shared-a" {
+		t.Fatalf("unexpected shared entry for is-a: %v", isAState["dest-shared"])
+	}
+
+	isBState, err := Load(context.Background(), c, "ns", "is-b")
+	if err != nil {
+		t.Fatalf("load is-b: %v", err)
+	}
+	if len(isBState) != 1 || isBState["dest-shared"].EntrySig != "sig-shared-b" {
+		t.Fatalf("unexpected is-b state: %v", isBState)
+	}
+
+	idx, err := LoadIndex(context.Background(), c, "ns", "my-mt")
+	if err != nil {
+		t.Fatalf("load index: %v", err)
+	}
+	if !idx.IsShared("dest-shared") {
+		t.Fatalf("expected dest-shared to be in the index, got %v", idx)
+	}
+	if idx.IsShared("dest-exclusive-a") {
+		t.Fatalf("expected dest-exclusive-a to NOT be in the index, got %v", idx)
+	}
+
+	// Legacy consolidated ConfigMap must be gone after migration.
+	remaining := &corev1.ConfigMap{}
+	getErr := c.Get(context.Background(), types.NamespacedName{Namespace: "ns", Name: "my-mt-images"}, remaining)
+	if !errors.IsNotFound(getErr) {
+		t.Fatalf("expected legacy configmap to be deleted, got err=%v", getErr)
 	}
 }

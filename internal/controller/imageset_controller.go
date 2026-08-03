@@ -216,7 +216,7 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs( //nolint:gocyclo
 	// bundle images are present in the target registry would produce a catalog
 	// that references unresolved digests.
 	_, recollectRequested := is.Annotations[mirrorv1alpha1.RecollectAnnotation]
-	operatorMirroringComplete, knowState := operatorImagesMirrored(ctx, r.Client, is, mt.Name)
+	operatorMirroringComplete, knowState := operatorImagesMirrored(ctx, r.Client, is)
 	gateOpen := recollectRequested || operatorMirroringComplete || alreadyBuilt
 
 	// If the gate is otherwise closed, keep it open while a catalog build job
@@ -482,11 +482,11 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs( //nolint:gocyclo
 }
 
 // operatorImagesMirrored returns (complete, knowState).
-// complete = true when every operator-origin entry in the imagestate ConfigMap
-// is either "Mirrored" or has PermanentlyFailed=true.
+// complete = true when every operator-origin entry in the ImageSet's own
+// imagestate ConfigMap is either "Mirrored" or has PermanentlyFailed=true.
 // knowState = false when no imagestate ConfigMap exists yet.
-func operatorImagesMirrored(ctx context.Context, c client.Client, is *mirrorv1alpha1.ImageSet, mtName string) (bool, bool) {
-	state, err := imagestate.LoadForTarget(ctx, c, is.Namespace, mtName)
+func operatorImagesMirrored(ctx context.Context, c client.Client, is *mirrorv1alpha1.ImageSet) (bool, bool) {
+	state, err := imagestate.Load(ctx, c, is.Namespace, is.Name)
 	if err != nil || len(state) == 0 {
 		return false, false
 	}
@@ -508,24 +508,12 @@ func operatorImagesMirrored(ctx context.Context, c client.Client, is *mirrorv1al
 	hasOperator := false
 	legacySigSeen := false
 	for _, e := range state {
-		if e == nil || !e.HasImageSet(is.Name) {
-			continue
-		}
-		// Find the Ref for this ImageSet to check the Origin.
-		var origin imagestate.ImageOrigin
-		var sig string
-		for _, ref := range e.Refs {
-			if ref.ImageSet == is.Name {
-				origin = ref.Origin
-				sig = ref.EntrySig
-				break
-			}
-		}
-		if origin != imagestate.OriginOperator {
+		if e == nil || e.Origin != imagestate.OriginOperator {
 			continue
 		}
 
 		hasOperator = true
+		sig := e.EntrySig
 		if sig == "" {
 			// Entry written by an operator version that predates per-entry
 			// signatures — cannot be attributed to a specific spec entry.

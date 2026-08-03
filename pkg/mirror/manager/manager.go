@@ -85,13 +85,20 @@ type MirrorManager struct {
 	urgentFlush chan struct{}
 
 	// State in memory — protected by mu
-	mu             sync.RWMutex
-	inProgress     map[string]string     // dest → podName
-	mirrored       map[string]bool       // dest → true once successfully mirrored
-	imageState     imagestate.ImageState // consolidated per-MirrorTarget state
-	lastDriftCheck time.Time             // last time we verified all mirrored images
-	stateDirty     bool                  // true when imageState has unsaved changes
-	statusDirty    bool                  // true when ImageSet.status needs a Kubernetes write
+	mu         sync.RWMutex
+	inProgress map[string]string     // dest → podName
+	mirrored   map[string]bool       // dest → true once successfully mirrored
+	imageState imagestate.ImageState // dest → entry, merged across all ImageSets on this target
+	// owners tracks which ImageSet(s) each destination in imageState currently
+	// belongs to. It is the in-memory analogue of the on-disk partitioning
+	// (each ImageSet's own state ConfigMap + the shared-image index) — kept
+	// out-of-band rather than on ImageEntry so imageState can stay a single
+	// dest-keyed map for O(1) worker status/should-mirror lookups regardless
+	// of how many ImageSets reference a destination.
+	owners         map[string][]string
+	lastDriftCheck time.Time // last time we verified all mirrored images
+	stateDirty     bool      // true when imageState/owners has unsaved changes
+	statusDirty    bool      // true when ImageSet.status needs a Kubernetes write
 }
 
 func New(targetName, namespace string, scheme *runtime.Scheme) (*MirrorManager, error) {
@@ -141,6 +148,7 @@ func NewWithClients(c client.Client, cs kubernetes.Interface, targetName, namesp
 		inProgress: make(map[string]string),
 		mirrored:   make(map[string]bool),
 		imageState: make(imagestate.ImageState),
+		owners:     make(map[string][]string),
 	}
 }
 
@@ -383,8 +391,8 @@ func (m *MirrorManager) handleStatusUpdate(w http.ResponseWriter, r *http.Reques
 	oclog.Printf("Received status update from %s for %s\n", req.PodName, req.Destination)
 
 	imageset := ""
-	if entry := m.imageState[req.Destination]; entry != nil && len(entry.Refs) > 0 {
-		imageset = entry.Refs[0].ImageSet
+	if names := m.owners[req.Destination]; len(names) > 0 {
+		imageset = names[0]
 	}
 
 	if req.Error != "" {
@@ -620,14 +628,13 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 		batchSize = 50
 	}
 
-	// Phase A: Load consolidated state once on first run or after restart.
-	// Worker callbacks update m.imageState directly so we never reload from
-	// the ConfigMap unless the cache is empty (avoids overwriting RetryCount /
-	// PermanentlyFailed changes before they are flushed).
+	// Phase A: Load partitioned state (per-ImageSet ConfigMaps + shared index)
+	// once on first run or after restart. Worker callbacks update m.imageState
+	// directly so we never reload from the ConfigMaps unless the cache is
+	// empty (avoids overwriting RetryCount / PermanentlyFailed changes before
+	// they are flushed).
 	if len(m.imageState) == 0 {
-		if err := m.loadConsolidatedState(ctx, mt, imageSets); err != nil {
-			oclog.Printf("Warning: failed to load consolidated state: %v\n", err)
-		}
+		m.loadPartitionedState(ctx, mt, imageSets)
 	}
 
 	// Phase B: Per-IS resolution (may unlock mutex for network I/O).
@@ -639,7 +646,7 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 		if !containsString(mt.Spec.ImageSets, is.Name) {
 			continue
 		}
-		isView := filterByImageSet(m.imageState, is.Name)
+		isView := filterByImageSet(m.imageState, m.owners, is.Name)
 		if shouldResolve(&is, mt, isView) {
 			isCopy := is.DeepCopy()
 			isViewSnap := cloneImageState(isView)
@@ -653,7 +660,11 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 				newPerISState = mergeWorkerUpdates(newPerISState, m.imageState)
 				justResolvedISes[is.Name] = true
 				if resolved || len(isView) == 0 {
-					mergeResolvedIntoConsolidated(m.imageState, newPerISState, is.Name)
+					// Returned orphans are re-derived by Phase D's zero-owner
+					// sweep below (it also catches ones left over from a
+					// crash between a previous tick's ownership update and
+					// its flush); no need to track them here.
+					_ = mergeResolvedIntoConsolidated(m.imageState, m.owners, newPerISState, is.Name)
 					m.stateDirty = true
 				}
 			}
@@ -675,16 +686,22 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 		oclog.Println("CheckExist: verifying images in target registry")
 	}
 
-	// Phase D: Process all consolidated entries — drift check + collect pending.
+	// Phase D: Process all entries — drift check + collect pending + sweep orphans.
 	pendingImages := make([]BatchItem, 0, len(m.imageState))
+	newOrphans := make(imagestate.ImageState)
 
 	for dest, entry := range m.imageState {
 		// Orphaned entry (no ImageSet references it anymore — e.g. blocked via
-		// spec.mirror.blockedImages, or dropped by spec narrowing): leave it
-		// untouched for reconcileOrphans' cleanup Job to pick up. Retrying or
+		// spec.mirror.blockedImages, or dropped by spec narrowing): move it out
+		// of the live working set into the pending-orphans snapshot for the
+		// MirrorTarget controller's cleanup Job to pick up. Retrying or
 		// drift-checking it here would keep re-mirroring an image nothing
 		// references, exactly what blocking is meant to prevent.
-		if len(entry.Refs) == 0 && entry.Origin == "" {
+		if len(m.owners[dest]) == 0 {
+			newOrphans[dest] = entry
+			delete(m.imageState, dest)
+			delete(m.owners, dest)
+			m.stateDirty = true
 			continue
 		}
 		// For images marked Mirrored in the ConfigMap but not yet verified
@@ -769,6 +786,12 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 		pendingImages = append(pendingImages, BatchItem{Source: entry.Source, Dest: dest})
 	}
 
+	if len(newOrphans) > 0 {
+		if err := m.appendOrphans(ctx, mt, newOrphans); err != nil {
+			oclog.Printf("Warning: failed to persist orphaned images: %v\n", err)
+		}
+	}
+
 	// Phase E: Dispatch worker batches up to concurrency limit.
 	activePods := map[string]struct{}{}
 	for _, podName := range m.inProgress {
@@ -795,25 +818,27 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 		oclog.Printf("Started worker pod %s for batch of %d images\n", podName, len(batch))
 	}
 
-	// Phase F: Flush consolidated state to ConfigMap.
+	// Phase F: Flush state to each owning ImageSet's own ConfigMap + the
+	// shared-image index, replacing the single consolidated ConfigMap write.
 	if m.stateDirty {
-		if err := imagestate.SaveForTarget(ctx, m.Client, m.Namespace, m.TargetName, m.imageState, mt, m.Scheme); err != nil {
-			oclog.Printf("Warning: failed to save consolidated state: %v\n", err)
+		if err := m.flushPartitionedState(ctx, mt); err != nil {
+			oclog.Printf("Warning: failed to save partitioned state: %v\n", err)
 			// stateDirty remains true; save will be retried on next tick.
 		} else {
 			m.stateDirty = false
 		}
 	}
 
-	// Phase G: Update per-IS status from consolidated state (filtered view).
-	// Guarded by statusDirty so we skip the Kubernetes API write when nothing
-	// has changed since the last reconcile, reducing spurious conflict retries.
+	// Phase G: Update per-IS status from the live in-memory state (filtered
+	// view). Guarded by statusDirty so we skip the Kubernetes API write when
+	// nothing has changed since the last reconcile, reducing spurious
+	// conflict retries.
 	if m.statusDirty {
 		for _, is := range imageSets.Items {
 			if !containsString(mt.Spec.ImageSets, is.Name) {
 				continue
 			}
-			isView := filterByImageSet(m.imageState, is.Name)
+			isView := filterByImageSet(m.imageState, m.owners, is.Name)
 			m.updateImageSetStatusLocked(ctx, &is, isView, justResolvedISes[is.Name])
 		}
 		m.statusDirty = false
@@ -853,6 +878,73 @@ func (m *MirrorManager) setImageStateLocked(dest, st, lastError string) {
 	}
 }
 
+// flushPartitionedState writes m.imageState back out to each owning
+// ImageSet's own ConfigMap plus the MirrorTarget's shared-image index,
+// replacing the single consolidated ConfigMap write. All owners of a shared
+// destination get the same values (State/RetryCount/etc. describe one
+// underlying mirrored image, same as the pre-partitioning consolidated
+// model) — multi-CM writes are not atomic (see
+// docs/design/imagestate-per-imageset-partitioning.md §4), so a crash
+// mid-flush can transiently leave one owner's copy stale; the next
+// successful flush corrects it, and mergeLoadedEntry resolves any
+// divergence observed on the next load.
+// Caller must hold m.mu.
+func (m *MirrorManager) flushPartitionedState(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget) error {
+	perImageSet := make(map[string]imagestate.ImageState, len(mt.Spec.ImageSets))
+	for _, isName := range mt.Spec.ImageSets {
+		perImageSet[isName] = make(imagestate.ImageState)
+	}
+
+	index := make(imagestate.SharedIndex)
+	for dest, entry := range m.imageState {
+		names := m.owners[dest]
+		for _, isName := range names {
+			state, ok := perImageSet[isName]
+			if !ok {
+				// isName owns this dest but is no longer in mt.Spec.ImageSets
+				// (removal cleanup hasn't run yet) — still flush it so the
+				// controller sees accurate state for the partition decision.
+				state = make(imagestate.ImageState)
+				perImageSet[isName] = state
+			}
+			state[dest] = entry
+		}
+		if len(names) > 1 {
+			index[dest] = append([]string(nil), names...)
+		}
+	}
+
+	var firstErr error
+	for isName, state := range perImageSet {
+		if err := imagestate.Save(ctx, m.Client, m.Namespace, isName, state, mt, m.Scheme); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("save state for imageset %s: %w", isName, err)
+		}
+	}
+	if err := imagestate.SaveIndex(ctx, m.Client, m.Namespace, m.TargetName, index, mt, m.Scheme); err != nil && firstErr == nil {
+		firstErr = fmt.Errorf("save shared image index: %w", err)
+	}
+	return firstErr
+}
+
+// appendOrphans merges newOrphans into the MirrorTarget's pending-orphans
+// ConfigMap, which the MirrorTarget controller consumes to create a cleanup
+// Job for images dropped from every ImageSet that used to need them (spec
+// narrowing or blocking) — the same way it does for a fully removed
+// ImageSet, just sourced here instead of inferred by scanning a consolidated
+// map (there no longer is one).
+// Caller must hold m.mu.
+func (m *MirrorManager) appendOrphans(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget, newOrphans imagestate.ImageState) error {
+	cmName := imagestate.OrphansConfigMapName(m.TargetName)
+	existing, err := imagestate.LoadByConfigMapName(ctx, m.Client, m.Namespace, cmName)
+	if err != nil {
+		return fmt.Errorf("load pending orphans: %w", err)
+	}
+	for dest, entry := range newOrphans {
+		existing[dest] = entry
+	}
+	return imagestate.SaveRaw(ctx, m.Client, m.Namespace, cmName, existing, mt, m.Scheme)
+}
+
 func (m *MirrorManager) saveGlobalResources(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget, imageSets *mirrorv1alpha1.ImageSetList) error {
 	idms, err := resources.GenerateIDMS(m.TargetName, m.imageState)
 	if err != nil {
@@ -887,48 +979,41 @@ func (m *MirrorManager) saveGlobalResources(ctx context.Context, mt *mirrorv1alp
 		}
 	}
 
-	// Generate CatalogSources for all unique catalogs in the state.
+	// Generate CatalogSources for all unique catalogs in the state. Origin/
+	// OriginRef are single flat values per entry (ownership lives in
+	// m.owners, not on the entry) — for a destination shared by ImageSets
+	// resolved from differently-labeled catalog entries, whichever ImageSet
+	// first wrote the entry wins the displayed OriginRef; harmless here since
+	// it only drives catalog/slug extraction, which is the same catalog
+	// either way in the common case.
 	catalogs := make(map[string]resources.CatalogInfo)
 	for _, entry := range m.imageState {
-		// Check both legacy flat fields and consolidated refs.
-		refs := entry.Refs
-		if len(refs) == 0 {
-			// Backward compat: use flat fields as a single virtual ref.
-			refs = []imagestate.ImageRef{{
-				Origin:    entry.Origin,
-				OriginRef: entry.OriginRef,
-			}}
+		if entry.Origin != imagestate.OriginOperator || entry.OriginRef == "" {
+			continue
 		}
-
-		for _, ref := range refs {
-			if ref.Origin == imagestate.OriginOperator {
-				// Extract catalog from OriginRef (hacky, but we don't store it explicitly in entry)
-				// OriginRef format: "catalog [pkg1, pkg2]" or "catalog — bundle"
-				if ref.OriginRef == "" {
-					continue
-				}
-				parts := strings.Split(ref.OriginRef, " ")
-				catSource := parts[0]
-				if catSource == "" {
-					continue
-				}
-				slug := resources.CatalogSlug(catSource)
-				if _, ok := catalogs[slug]; !ok {
-					// Fall back to a synthetic Operator{Catalog: catSource} when
-					// the owning ImageSet's spec is no longer available (e.g.
-					// removed after this state entry was recorded) — still
-					// correct for the common case (no TargetCatalog/TargetTag).
-					op, ok := opsBySource[catSource]
-					if !ok {
-						op = mirrorv1alpha1.Operator{Catalog: catSource}
-					}
-					catalogs[slug] = resources.CatalogInfo{
-						SourceCatalog: catSource,
-						TargetImage:   resources.CatalogTargetImage(mt.Spec.Registry, op),
-						DisplayName:   slug,
-					}
-				}
-			}
+		// Extract catalog from OriginRef (hacky, but we don't store it explicitly
+		// in entry). OriginRef format: "catalog [pkg1, pkg2]" or "catalog — bundle"
+		parts := strings.Split(entry.OriginRef, " ")
+		catSource := parts[0]
+		if catSource == "" {
+			continue
+		}
+		slug := resources.CatalogSlug(catSource)
+		if _, ok := catalogs[slug]; ok {
+			continue
+		}
+		// Fall back to a synthetic Operator{Catalog: catSource} when the
+		// owning ImageSet's spec is no longer available (e.g. removed after
+		// this state entry was recorded) — still correct for the common case
+		// (no TargetCatalog/TargetTag).
+		op, ok := opsBySource[catSource]
+		if !ok {
+			op = mirrorv1alpha1.Operator{Catalog: catSource}
+		}
+		catalogs[slug] = resources.CatalogInfo{
+			SourceCatalog: catSource,
+			TargetImage:   resources.CatalogTargetImage(mt.Spec.Registry, op),
+			DisplayName:   slug,
 		}
 	}
 

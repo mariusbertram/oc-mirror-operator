@@ -45,7 +45,7 @@ type Resources map[string][]byte
 func RenderResources(name, namespace string, spec *mirrorv1alpha1.ImageSetSpec, manifest Manifest, destRegistry string) (Resources, error) {
 	out := make(Resources)
 
-	state := manifest.ToImageState(name)
+	state := manifest.ToImageState()
 
 	idms, err := resources.GenerateIDMS(name, state)
 	if err != nil {

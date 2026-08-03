@@ -1,6 +1,6 @@
 # Per-ImageSet State Partitioning, Shared-Image Index & Check-Time Signature Verification — Design Proposal
 
-Status: Proposed
+Status: §3.1–§3.4 (state partitioning, shared index, cleanup/gate rewiring) implemented; §3.5 (check-time signature verification) still proposed.
 Issue: #104
 
 ## 1. Problem

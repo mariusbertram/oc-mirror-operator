@@ -264,16 +264,16 @@ var _ = Describe("ResourceAPI Server", func() {
 			_ = corev1.AddToScheme(scheme)
 			_ = mirrorv1alpha1.AddToScheme(scheme)
 
-			state := imagestate.ImageState{
+			// Each ImageSet owns its own state ConfigMap. img2 is shared — it
+			// appears in both is-one's and is-two's own state.
+			isOneState := imagestate.ImageState{
 				"registry.example.com/img1": {
 					Source:            "quay.io/source1",
 					State:             "Pending",
 					LastError:         "",
 					RetryCount:        2,
 					PermanentlyFailed: false,
-					Refs: []imagestate.ImageRef{
-						{ImageSet: "is-one", Origin: imagestate.OriginRelease},
-					},
+					Origin:            imagestate.OriginRelease,
 				},
 				"registry.example.com/img2": {
 					Source:            "quay.io/source2",
@@ -281,36 +281,41 @@ var _ = Describe("ResourceAPI Server", func() {
 					LastError:         "connection timeout",
 					RetryCount:        10,
 					PermanentlyFailed: true,
-					Refs: []imagestate.ImageRef{
-						{ImageSet: "is-one", Origin: imagestate.OriginOperator},
-						{ImageSet: "is-two", Origin: imagestate.OriginOperator},
-					},
+					Origin:            imagestate.OriginOperator,
+				},
+			}
+			isTwoState := imagestate.ImageState{
+				"registry.example.com/img2": {
+					Source:            "quay.io/source2",
+					State:             "Failed",
+					LastError:         "connection timeout",
+					RetryCount:        10,
+					PermanentlyFailed: true,
+					Origin:            imagestate.OriginOperator,
 				},
 				"registry.example.com/img3": {
 					Source:            "quay.io/source3",
 					State:             "Mirrored",
 					RetryCount:        0,
 					PermanentlyFailed: false,
-					Refs: []imagestate.ImageRef{
-						{ImageSet: "is-two"},
-					},
 				},
 			}
 
-			// Encode as gzip and create ConfigMap
-			var buf bytes.Buffer
-			gz := gzip.NewWriter(&buf)
-			_ = json.NewEncoder(gz).Encode(state)
-			_ = gz.Close()
+			gzipEncode := func(state imagestate.ImageState) []byte {
+				var buf bytes.Buffer
+				gz := gzip.NewWriter(&buf)
+				_ = json.NewEncoder(gz).Encode(state)
+				_ = gz.Close()
+				return buf.Bytes()
+			}
 
-			cm := &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      mtName + "-images",
-					Namespace: ns,
-				},
-				BinaryData: map[string][]byte{
-					"images.json.gz": buf.Bytes(),
-				},
+			isOneCM := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: "is-one-images", Namespace: ns},
+				BinaryData: map[string][]byte{"images.json.gz": gzipEncode(isOneState)},
+			}
+			isTwoCM := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: "is-two-images", Namespace: ns},
+				BinaryData: map[string][]byte{"images.json.gz": gzipEncode(isTwoState)},
 			}
 
 			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
@@ -321,7 +326,8 @@ var _ = Describe("ResourceAPI Server", func() {
 						ImageSets: []string{"is-one", "is-two"},
 					},
 				},
-				cm,
+				isOneCM,
+				isTwoCM,
 			).Build()
 
 			s := resourceapi.NewServer(c, ns)
