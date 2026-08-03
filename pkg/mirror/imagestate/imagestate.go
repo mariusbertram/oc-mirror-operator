@@ -68,6 +68,12 @@ type ImageEntry struct {
 	// is used to keep the catalog-build gate open and to surface the image in
 	// failedImageDetails regardless of the current retry state.
 	PermanentlyFailed bool `json:"permanentlyFailed,omitempty"`
+	// SignatureVerified is set once the manager's drift check has confirmed a
+	// cosign signature exists for this entry's destination, for ImageSets
+	// with Mirror.RequireSignedImages set. Not implied by State == Mirrored:
+	// an entry can be Mirrored before the requirement existed or before the
+	// check has run, in which case this stays false until the next check.
+	SignatureVerified bool `json:"signatureVerified,omitempty"`
 }
 
 // ImageState maps destination image reference → ImageEntry, scoped to a

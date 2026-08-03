@@ -35,6 +35,23 @@ type Mirror struct {
 	// This is currently not implemented.
 	// +optional
 	Samples []SampleImage `json:"samples,omitempty"`
+	// RequireSignedImages requires every image mirrored for this ImageSet —
+	// release components, operator bundles, additional images, and Helm
+	// images alike — to carry a cosign signature. This is a presence/shape
+	// check: it confirms a well-formed cosign signature exists for the
+	// image's digest (and, when the signature embeds a certificate via the
+	// keyless/Fulcio flow, that the signature cryptographically matches that
+	// embedded certificate's key), but does not verify the image was signed
+	// by any particular trusted key or identity. Unlike
+	// ReleaseChannel.SkipSignatureVerification (checked once against the
+	// source before mirroring) and Operator.SignatureVerification (checked
+	// once against a specific public key), this is re-checked periodically
+	// against the mirrored destination as part of the manager's drift check,
+	// so an image that loses its signature (or never had one) after being
+	// mirrored is caught. Use Operator.SignatureVerification instead when a
+	// specific trusted public key must be enforced.
+	// +optional
+	RequireSignedImages bool `json:"requireSignedImages,omitempty"`
 }
 
 // Platform defines the configuration for OpenShift and OKD platform types.
