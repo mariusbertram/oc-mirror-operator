@@ -1,4 +1,4 @@
-# Per-ImageSet State Partitioning + Shared-Image Index — Design Proposal
+# Per-ImageSet State Partitioning, Shared-Image Index & Check-Time Signature Verification — Design Proposal
 
 Status: Proposed
 Issue: #104
@@ -33,6 +33,12 @@ This consolidated, single-blob design has two consequences that #104 calls out:
 Both are the same root cause: **ImageSet-scoped operations (check, resolve,
 cleanup) are implemented against a MirrorTarget-scoped data structure.**
 
+A third, separate gap in the same "check" codepath: signature verification
+today only runs once, against the *source* image, before initial mirroring —
+never against the destination copy, never periodically, and never re-run when
+an ImageSet's signature settings change after an image is already `Mirrored`.
+See §3.5.
+
 This proposal is about *where the data lives*, not how it is encoded. It is
 complementary to, not a replacement for, the schema-v2/sharding work in
 `docs/design/imagestate-scaling.md` (PR #101) — see §6.
@@ -47,6 +53,10 @@ complementary to, not a replacement for, the schema-v2/sharding work in
 - Per-ImageSet checks become independently parallelizable, the same way
   worker pods already mirror image batches independently (issue #104's "the
   checks could work in a way as the mirror worker" ask).
+- The per-ImageSet check verifies image signatures per that ImageSet's spec
+  (e.g. OpenShift release images, which Red Hat requires to be signature
+  verified), not just registry existence — including for images that were
+  already `Mirrored` before the requirement applied.
 
 ## 3. Proposed architecture
 
@@ -139,6 +149,64 @@ image batches concurrently) — the only shared coordination point left is
 writes to the small shared-image index, which is naturally low-traffic and
 can go through the existing `CreateOrUpdate` optimistic-concurrency retry.
 
+### 3.5 Signature verification during the check
+
+**Today.** Signature verification exists and is wired up, but only at one
+point: `verifyReleaseNodes` (`manager_resolve.go:416-441`) and
+`verifyOperatorCatalogSignature` (`manager_resolve.go:629-641`), driven by
+`ReleaseChannel.SkipSignatureVerification` (default: verification on) and
+`Operator.SignatureVerification *CosignVerification`
+(`api/v1alpha1/imageset_config_types.go:103,134,143`), run once against the
+*source* image before it is enqueued for mirroring in resolve (Phase B).
+Verified GPG release signatures are persisted to a `<target>-signatures`
+ConfigMap (`downloadSignaturesForNodes`, `manager_resolve.go:391,446`).
+
+Three gaps follow from that being the only integration point:
+
+1. **Never re-checked against the destination.** The verification is a
+   pre-flight against upstream; nothing later confirms the *mirrored* copy in
+   the target registry still matches what was verified.
+2. **Never re-checked periodically.** The drift-check (manager Phase D,
+   `manager.go:678-714`, `checkExistWithRetry` →
+   `client.go:242-257`'s `checkExistWith`) is a bare `ManifestHead` existence
+   probe — no digest comparison, no signature check at all.
+3. **Never re-triggered on config change.** `carryOverByOriginAndSig`
+   (`manager_resolve.go:700`) preserves `State: Mirrored` for an entry found
+   at the same destination on a later resolve/recollect pass, regardless of
+   whether `SkipSignatureVerification` was flipped off or a
+   `CosignVerification` key was added/changed since. An image mirrored before
+   a signature requirement existed silently stays "verified" forever.
+
+**Proposed.** Once the check is scoped per ImageSet (§3.1–§3.4), extend it to
+also validate signature compliance as configured on that ImageSet, as part of
+the same pass that currently only checks existence:
+
+- Track verification state per entry, e.g. a `SignatureVerified` marker (and,
+  for GPG-verified release images, a pointer/digest into the persisted
+  signature record) stored alongside `State` in the per-ImageSet CM — not
+  inferred implicitly from `State == Mirrored`.
+- When an ImageSet's spec requires verification for an entry
+  (`SkipSignatureVerification == false` for its release channel, or a
+  `SignatureVerification` configured for its operator catalog) and the entry
+  has no recorded verification, or the requirement was added/changed after
+  the entry was last verified, the check re-verifies it — reusing the
+  existing `pkg/release` (GPG, embedded Red Hat keys) and `pkg/mirror/cosign`
+  (public-key cosign) verifiers, which already implement the actual
+  cryptographic checks — before continuing to trust it as `Mirrored`.
+- A signature failure on an already-`Mirrored` entry surfaces as a clear
+  failure (`State: Failed`, `lastError` naming the signature problem), the
+  same as any other check failure — never silently left `Mirrored`, and never
+  auto-deleted as a side effect of failing verification.
+- This check reuses the per-ImageSet scoping from §3.1: an ImageSet with
+  strict release-signature requirements gets re-verified on its own schedule
+  without forcing a signature re-check of every other ImageSet's images too.
+
+This is logically independent of the state-partitioning work in §3.1–§3.4 (it
+could be implemented against the current consolidated store), but it slots in
+naturally once the check phase is already being re-scoped per ImageSet, and
+addresses the "images need the appropriate signature, if specified in the
+ImageSet" part of #104 directly.
+
 ## 4. Consistency
 
 Two ConfigMaps (an ImageSet's own state and the shared index) can no longer
@@ -207,9 +275,11 @@ shard.
 |---|---|
 | `pkg/mirror/imagestate/` | `ImageEntry.Refs` removed (scope is now implicit); add index CM encode/decode; per-ImageSet `Load/Save` becomes primary API; `LoadForTarget`/`SaveForTarget` removed after migration |
 | `pkg/mirror/manager/manager_resolve.go` | merge step writes one ImageSet's own CM + updates the shared index instead of merging into one consolidated map; `filterByImageSet` no longer needed (each CM is already scoped) |
-| `pkg/mirror/manager/manager.go` | per-ImageSet resolve/check passes can run concurrently (bounded pool), matching worker mirroring concurrency |
+| `pkg/mirror/manager/manager.go` | per-ImageSet resolve/check passes can run concurrently (bounded pool), matching worker mirroring concurrency; Phase D drift-check becomes per-ImageSet and gains signature re-verification (§3.5) alongside the existing existence probe |
 | `internal/controller/mirrortarget_controller.go` | `reconcileCleanup`/`reconcileOrphans`/`partitionAndCreateCleanupJob` read the removed ImageSet's own CM + the index instead of the consolidated map |
 | `internal/controller/imageset_controller.go` | gate check reads one ImageSet's own CM (no filtering step) |
 | ConfigMap watch mapping | `imagestate.TargetNameFromStateCM` extended to also map `<mt>-images-index` and per-ImageSet CM names back to the MirrorTarget |
 | RBAC | none (same ConfigMap verbs; more CM names, not new permissions) |
 | `pkg/resourceapi/server.go` | reads become per-ImageSet CM + index instead of one consolidated CM |
+| `pkg/mirror/imagestate/` (entry shape) | add a per-entry signature-verification marker (state + reference to the persisted proof), consulted/updated by §3.5 instead of being implied by `State == Mirrored` |
+| `pkg/release`, `pkg/mirror/cosign` | reused as-is for the actual crypto verification; called from the check phase in addition to resolve |
