@@ -30,6 +30,19 @@ runs:
         output-file: sbom-${{ inputs.artifact-name }}.spdx.json
         upload-artifact: false
 
+    # Human-readable findings in the job log itself — output-format: sarif
+    # below writes only a SARIF file (uploaded to the Security tab, not
+    # printed), so without this a failure here is otherwise only
+    # diagnosable by re-running the scan or reading the Security tab.
+    # Never fails the job itself; the step below is what enforces the gate.
+    - name: Scan for vulnerabilities (Grype, human-readable log)
+      continue-on-error: true
+      uses: anchore/scan-action@v6
+      with:
+        image: ${{ inputs.image-ref }}
+        fail-build: false
+        output-format: table
+
     - name: Scan for vulnerabilities (Grype)
       id: scan
       uses: anchore/scan-action@v6
