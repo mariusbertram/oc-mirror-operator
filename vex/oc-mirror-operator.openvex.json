@@ -42,6 +42,23 @@
     },
     {
       "vulnerability": {
+        "name": "CVE-2026-53489",
+        "aliases": [
+          "GHSA-rgh6-rfwx-v388",
+          "GO-2026-5622"
+        ]
+      },
+      "products": [
+        {
+          "@id": "pkg:golang/github.com/containerd/containerd@v1.7.33"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Same reasoning as CVE-2026-53492/CVE-2026-50195 in this document: this is an arbitrary-host-log-file-read-via-symlink vulnerability in containerd's CRI checkpoint restore path, reachable only through a CRI server. oc-mirror-operator only uses containerd transitively through Helm's generic OCI registry client, and no binary in this project runs a CRI server or performs checkpoint/restore. No fixed version exists for the github.com/containerd/containerd v1 module line as of triage date; the fix landed only in the unrelated github.com/containerd/containerd/v2 module, which this project does not depend on."
+    },
+    {
+      "vulnerability": {
         "name": "GO-2026-5932",
         "aliases": []
       },
