@@ -43,6 +43,7 @@ var _ = Describe("Manager Coverage", func() {
 	})
 
 	const testImageSetName = "my-is"
+	const testWorkerPodName = "worker-1"
 
 	// ─── Pure helper functions ────────────────────────────────────────
 
@@ -782,7 +783,7 @@ var _ = Describe("Manager Coverage", func() {
 
 		It("rejects missing auth", func() {
 			body, _ := json.Marshal(WorkerStatusRequest{
-				PodName:     "worker-1",
+				PodName:     testWorkerPodName,
 				Destination: "reg.io/mirror/img:v1",
 			})
 			req := httptest.NewRequest(http.MethodPost, "/status", bytes.NewReader(body))
@@ -793,7 +794,7 @@ var _ = Describe("Manager Coverage", func() {
 
 		It("rejects wrong token", func() {
 			body, _ := json.Marshal(WorkerStatusRequest{
-				PodName:     "worker-1",
+				PodName:     testWorkerPodName,
 				Destination: "reg.io/mirror/img:v1",
 			})
 			req := httptest.NewRequest(http.MethodPost, "/status", bytes.NewReader(body))
@@ -812,9 +813,9 @@ var _ = Describe("Manager Coverage", func() {
 		})
 
 		It("marks image as Mirrored on success", func() {
-			m.inProgress["reg.io/mirror/img:v1"] = "worker-1"
+			m.inProgress["reg.io/mirror/img:v1"] = testWorkerPodName
 			body, _ := json.Marshal(WorkerStatusRequest{
-				PodName:     "worker-1",
+				PodName:     testWorkerPodName,
 				Destination: "reg.io/mirror/img:v1",
 			})
 			req := httptest.NewRequest(http.MethodPost, "/status", bytes.NewReader(body))
@@ -828,9 +829,9 @@ var _ = Describe("Manager Coverage", func() {
 		})
 
 		It("marks image as Failed on error", func() {
-			m.inProgress["reg.io/mirror/img:v1"] = "worker-1"
+			m.inProgress["reg.io/mirror/img:v1"] = testWorkerPodName
 			body, _ := json.Marshal(WorkerStatusRequest{
-				PodName:     "worker-1",
+				PodName:     testWorkerPodName,
 				Destination: "reg.io/mirror/img:v1",
 				Error:       "timeout",
 			})
@@ -846,9 +847,9 @@ var _ = Describe("Manager Coverage", func() {
 
 		It("records the reported digest as the drift-check baseline for additional-origin entries", func() {
 			m.imageState["reg.io/mirror/img:v1"].Origin = imagestate.OriginAdditional
-			m.inProgress["reg.io/mirror/img:v1"] = "worker-1"
+			m.inProgress["reg.io/mirror/img:v1"] = testWorkerPodName
 			body, _ := json.Marshal(WorkerStatusRequest{
-				PodName:     "worker-1",
+				PodName:     testWorkerPodName,
 				Destination: "reg.io/mirror/img:v1",
 				Digest:      "sha256:" + strings.Repeat("a", 64),
 			})
@@ -862,9 +863,9 @@ var _ = Describe("Manager Coverage", func() {
 
 		It("does not record a digest for non-additional origins", func() {
 			m.imageState["reg.io/mirror/img:v1"].Origin = imagestate.OriginRelease
-			m.inProgress["reg.io/mirror/img:v1"] = "worker-1"
+			m.inProgress["reg.io/mirror/img:v1"] = testWorkerPodName
 			body, _ := json.Marshal(WorkerStatusRequest{
-				PodName:     "worker-1",
+				PodName:     testWorkerPodName,
 				Destination: "reg.io/mirror/img:v1",
 				Digest:      "sha256:" + strings.Repeat("a", 64),
 			})
@@ -1037,7 +1038,7 @@ var _ = Describe("Manager Coverage", func() {
 			destsJSON, _ := json.Marshal([]string{"d1", "d2"})
 			pod := &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "worker-1",
+					Name:      testWorkerPodName,
 					Namespace: "default",
 					Labels:    map[string]string{"app": "oc-mirror-worker", "mirrortarget": "test"},
 					Annotations: map[string]string{
@@ -1050,8 +1051,8 @@ var _ = Describe("Manager Coverage", func() {
 			m.Clientset = cs
 			err := m.syncInProgressFromPods(context.TODO())
 			Expect(err).NotTo(HaveOccurred())
-			Expect(m.inProgress["d1"]).To(Equal("worker-1"))
-			Expect(m.inProgress["d2"]).To(Equal("worker-1"))
+			Expect(m.inProgress["d1"]).To(Equal(testWorkerPodName))
+			Expect(m.inProgress["d2"]).To(Equal(testWorkerPodName))
 		})
 
 		It("recovers running pods with legacy single-dest annotation", func() {

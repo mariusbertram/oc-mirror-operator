@@ -11,6 +11,11 @@ import (
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/imagestate"
 )
 
+// registryPingPath is the fake registry v2 ping path shared by every
+// httptest-based fake registry in this package's tests (here and in
+// signature_verification_test.go).
+const registryPingPath = "/v2/"
+
 // fakeManifestServer serves a manifest whose Docker-Content-Digest header is
 // read from *digest at request time, so a test can mutate *digest between
 // calls to simulate an upstream tag moving to new content. Only responds to
@@ -20,8 +25,8 @@ func fakeManifestServer(t *testing.T, digest *string) string {
 	t.Helper()
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v2/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v2/" {
+	mux.HandleFunc(registryPingPath, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == registryPingPath {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
@@ -170,8 +175,8 @@ func TestAdditionalImageDriftedLocked_NoBaseline_EstablishesOneWithoutFlaggingDr
 func TestAdditionalImageDriftedLocked_ResolutionFailure_NotDrifted(t *testing.T) {
 	// Registry that 404s the manifest request entirely.
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v2/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v2/" {
+	mux.HandleFunc(registryPingPath, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == registryPingPath {
 			w.WriteHeader(http.StatusOK)
 			return
 		}

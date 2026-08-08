@@ -229,10 +229,10 @@ func fakeCosignSignatureServer(t *testing.T, imageDigest string) string {
 	blobs := map[string][]byte{configDigest: configJSON, payloadDigest: payload}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v2/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc(registryPingPath, func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 		switch {
-		case path == "/v2/" || path == "/v2":
+		case path == registryPingPath || path == "/v2":
 			w.WriteHeader(http.StatusOK)
 		case strings.Contains(path, "/manifests/"+sigTag):
 			w.Header().Set("Content-Type", "application/vnd.oci.image.manifest.v1+json")
@@ -297,8 +297,8 @@ func TestVerifySignedImageLocked_ValidSignature_MarksVerified(t *testing.T) {
 func TestVerifySignedImageLocked_MissingSignature_FailsEntry(t *testing.T) {
 	// Registry with no signature manifest at all (404 for everything but the ping).
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v2/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v2/" {
+	mux.HandleFunc(registryPingPath, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == registryPingPath {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
