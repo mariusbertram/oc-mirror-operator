@@ -65,6 +65,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      security-events: write # upload Grype SARIF to the Security tab
     steps:
       - uses: actions/checkout@v6
 
@@ -92,6 +93,48 @@ jobs:
           # Verify built image exists
           echo "Plugin image:"
           docker images | grep "oc-mirror-plugin"
+
+      # These images are only built locally for this job (never pushed to a
+      # registry), so attest: false — SBOM/scan/SARIF only, no cosign step.
+      # Unlike the release pipeline's scan (tag-triggered, so its SARIF only
+      # ever lands in the job log — see the composite action's description),
+      # this job runs on push/pull_request, so findings here DO show up in
+      # the repo's Security tab.
+      - name: SBOM + vulnerability scan (controller)
+        uses: ./.github/actions/sbom-scan-attest
+        with:
+          image-ref: example.com/oc-mirror-controller:v0.0.1
+          artifact-name: controller-ci
+          sarif-category: controller-image-ci
+          attest: "false"
+          fail-build: "false"
+
+      - name: SBOM + vulnerability scan (manager)
+        uses: ./.github/actions/sbom-scan-attest
+        with:
+          image-ref: example.com/oc-mirror-manager:v0.0.1
+          artifact-name: manager-ci
+          sarif-category: manager-image-ci
+          attest: "false"
+          fail-build: "false"
+
+      - name: SBOM + vulnerability scan (worker)
+        uses: ./.github/actions/sbom-scan-attest
+        with:
+          image-ref: example.com/oc-mirror-worker:v0.0.1
+          artifact-name: worker-ci
+          sarif-category: worker-image-ci
+          attest: "false"
+          fail-build: "false"
+
+      - name: SBOM + vulnerability scan (plugin)
+        uses: ./.github/actions/sbom-scan-attest
+        with:
+          image-ref: example.com/oc-mirror-plugin:v0.0.1
+          artifact-name: plugin-ci
+          sarif-category: plugin-image-ci
+          attest: "false"
+          fail-build: "false"
 
       - name: Export images to tar
         run: |

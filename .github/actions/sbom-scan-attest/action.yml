@@ -2,15 +2,24 @@ name: SBOM + vulnerability scan + attestation
 description: >
   Generates an SPDX SBOM with Syft, scans the image for vulnerabilities with
   Grype (failing only on Critical severity; all severities are uploaded to
-  the GitHub Security tab as SARIF), and attests the SBOM to the image via
-  keyless (OIDC) cosign. Requires the calling job to grant id-token: write
-  (for cosign) and security-events: write (for the SARIF upload), and to
-  already be authenticated to the image's registry (e.g. docker/login-action)
-  with sigstore/cosign-installer having already run.
+  the GitHub Security tab as SARIF — visible there only for scans of the
+  default branch or a pull request; a tag-triggered run's findings are only
+  in the job log, per GitHub's code scanning ref model), and, when attest is
+  true, attests the SBOM to the image via keyless (OIDC) cosign. Requires the
+  calling job to grant security-events: write (for the SARIF upload) and,
+  when attest is true, id-token: write (for cosign) plus already being
+  authenticated to the image's registry (e.g. docker/login-action) with
+  sigstore/cosign-installer having already run.
 
 inputs:
   image-ref:
-    description: Fully-qualified image reference, pinned to a digest (e.g. ghcr.io/org/repo@sha256:...).
+    description: >
+      Image reference to scan. For attest: true this must be a
+      fully-qualified, digest-pinned, pushed reference (e.g.
+      ghcr.io/org/repo@sha256:...) — cosign attests against a real registry
+      object. For attest: false this may also be a local image tag already
+      loaded into the runner's Docker daemon (e.g. from docker build without
+      a registry push), since no attestation step needs to reach a registry.
     required: true
   artifact-name:
     description: Short slug identifying the image (e.g. "controller"), used to name the SBOM file.
@@ -18,6 +27,23 @@ inputs:
   sarif-category:
     description: Unique category for the SARIF upload, so results from different images don't overwrite each other in the Security tab.
     required: true
+  attest:
+    description: >
+      Whether to attest the SBOM to image-ref via keyless cosign. Set false
+      for images that were only built locally and never pushed to a registry
+      (e.g. CI build-verification images) — there is nothing for cosign to
+      attach an attestation to.
+    required: false
+    default: "true"
+  fail-build:
+    description: >
+      Whether a Critical-severity finding fails this step (and therefore the
+      job, absent continue-on-error at the call site). Keep true for release
+      gating; set false for report-only scanning (e.g. PR-time CI, where the
+      goal is Security-tab visibility rather than blocking merges on a
+      vulnerability that may take time to triage or may have no fix yet).
+    required: false
+    default: "true"
 
 runs:
   using: composite
@@ -48,7 +74,7 @@ runs:
       uses: anchore/scan-action@v6
       with:
         image: ${{ inputs.image-ref }}
-        fail-build: true
+        fail-build: ${{ inputs.fail-build }}
         severity-cutoff: critical
         output-format: sarif
 
@@ -62,6 +88,7 @@ runs:
         category: ${{ inputs.sarif-category }}
 
     - name: Attest SBOM to image (keyless cosign)
+      if: inputs.attest == 'true'
       shell: bash
       run: |
         set -euo pipefail
