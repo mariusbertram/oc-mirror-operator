@@ -1,0 +1,58 @@
+name: SBOM + vulnerability scan + attestation
+description: >
+  Generates an SPDX SBOM with Syft, scans the image for vulnerabilities with
+  Grype (failing only on Critical severity; all severities are uploaded to
+  the GitHub Security tab as SARIF), and attests the SBOM to the image via
+  keyless (OIDC) cosign. Requires the calling job to grant id-token: write
+  (for cosign) and security-events: write (for the SARIF upload), and to
+  already be authenticated to the image's registry (e.g. docker/login-action)
+  with sigstore/cosign-installer having already run.
+
+inputs:
+  image-ref:
+    description: Fully-qualified image reference, pinned to a digest (e.g. ghcr.io/org/repo@sha256:...).
+    required: true
+  artifact-name:
+    description: Short slug identifying the image (e.g. "controller"), used to name the SBOM file.
+    required: true
+  sarif-category:
+    description: Unique category for the SARIF upload, so results from different images don't overwrite each other in the Security tab.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Generate SBOM (Syft)
+      uses: anchore/sbom-action@v0
+      with:
+        image: ${{ inputs.image-ref }}
+        format: spdx-json
+        output-file: sbom-${{ inputs.artifact-name }}.spdx.json
+        upload-artifact: false
+
+    - name: Scan for vulnerabilities (Grype)
+      id: scan
+      uses: anchore/scan-action@v6
+      with:
+        image: ${{ inputs.image-ref }}
+        fail-build: true
+        severity-cutoff: critical
+        output-format: sarif
+
+    # Runs even if the scan step above failed the build on a Critical
+    # finding, so those findings still show up in the Security tab.
+    - name: Upload vulnerability scan results
+      if: always()
+      uses: github/codeql-action/upload-sarif@v4
+      with:
+        sarif_file: ${{ steps.scan.outputs.sarif }}
+        category: ${{ inputs.sarif-category }}
+
+    - name: Attest SBOM to image (keyless cosign)
+      shell: bash
+      run: |
+        set -euo pipefail
+        cosign attest --yes \
+          --predicate "sbom-${{ inputs.artifact-name }}.spdx.json" \
+          --type spdxjson \
+          "${{ inputs.image-ref }}"

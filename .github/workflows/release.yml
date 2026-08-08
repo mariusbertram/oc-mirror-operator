@@ -53,6 +53,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write      # cosign keyless (OIDC) SBOM attestation
+      security-events: write # upload Grype SARIF to the Security tab
     outputs:
       controller_digest: ${{ steps.build-controller.outputs.digest }}
       manager_digest: ${{ steps.build-manager.outputs.digest }}
@@ -82,6 +84,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Keyless (OIDC) signing/attestation — no signing key to manage or leak.
+      # Requires the job's id-token: write permission (granted above).
+      - uses: sigstore/cosign-installer@v3
+
       - name: Build and push controller image
         id: build-controller
         uses: docker/build-push-action@v7
@@ -98,6 +104,13 @@ jobs:
             org.opencontainers.image.version=${{ steps.meta.outputs.version }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: SBOM + vulnerability scan + attestation (controller)
+        uses: ./.github/actions/sbom-scan-attest
+        with:
+          image-ref: ${{ env.CONTROLLER_IMAGE }}@${{ steps.build-controller.outputs.digest }}
+          artifact-name: controller
+          sarif-category: controller-image
 
       - name: Build and push manager image
         id: build-manager
@@ -116,6 +129,13 @@ jobs:
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
 
+      - name: SBOM + vulnerability scan + attestation (manager)
+        uses: ./.github/actions/sbom-scan-attest
+        with:
+          image-ref: ${{ env.MANAGER_IMAGE }}@${{ steps.build-manager.outputs.digest }}
+          artifact-name: manager
+          sarif-category: manager-image
+
       - name: Build and push worker image
         id: build-worker
         uses: docker/build-push-action@v7
@@ -132,6 +152,13 @@ jobs:
             org.opencontainers.image.version=${{ steps.meta.outputs.version }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: SBOM + vulnerability scan + attestation (worker)
+        uses: ./.github/actions/sbom-scan-attest
+        with:
+          image-ref: ${{ env.WORKER_IMAGE }}@${{ steps.build-worker.outputs.digest }}
+          artifact-name: worker
+          sarif-category: worker-image
 
       - name: Build and push plugin image
         id: build-plugin
@@ -150,6 +177,13 @@ jobs:
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
 
+      - name: SBOM + vulnerability scan + attestation (plugin)
+        uses: ./.github/actions/sbom-scan-attest
+        with:
+          image-ref: ${{ env.PLUGIN_IMAGE }}@${{ steps.build-plugin.outputs.digest }}
+          artifact-name: plugin
+          sarif-category: plugin-image
+
   # ── 3. Build & push bundle image (multi-arch) ────────────────────────────
   build-bundle:
     name: Build bundle image
@@ -158,6 +192,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write      # cosign keyless (OIDC) SBOM attestation
+      security-events: write # upload Grype SARIF to the Security tab
     outputs:
       # Tag reference (human-readable, mutable)
       bundle_image: ${{ steps.bundle-ref.outputs.ref }}
@@ -211,6 +247,9 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Keyless (OIDC) signing/attestation — no signing key to manage or leak.
+      - uses: sigstore/cosign-installer@v3
+
       - name: Build and push bundle image (multi-arch)
         id: build
         uses: docker/build-push-action@v7
@@ -225,6 +264,13 @@ jobs:
           tags: |
             ${{ env.BUNDLE_IMAGE }}:${{ needs.build-operator.outputs.version }}
             ${{ env.BUNDLE_IMAGE }}:latest
+
+      - name: SBOM + vulnerability scan + attestation (bundle)
+        uses: ./.github/actions/sbom-scan-attest
+        with:
+          image-ref: ${{ env.BUNDLE_IMAGE }}@${{ steps.build.outputs.digest }}
+          artifact-name: bundle
+          sarif-category: bundle-image
 
       - name: Emit bundle image ref
         id: bundle-ref
