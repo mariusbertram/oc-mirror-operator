@@ -86,6 +86,13 @@ runs:
         fail-build: false
         output-format: table
         vex: ${{ inputs.vex-files }}
+        # Pinned: grype < 0.108.0 (anchore/scan-action's own default as of
+        # this writing resolves to 0.97.1) silently ignores a VEX statement
+        # whose product @id is a package purl with no subcomponents -
+        # https://github.com/anchore/grype/pull/3168 fixed this in 0.108.0.
+        # Our vex-files documents use exactly that shape, so an unpinned or
+        # pre-fix grype version would report findings as if no VEX applied.
+        grype-version: v0.116.1
 
     - name: Scan for vulnerabilities (Grype)
       id: scan
@@ -96,6 +103,7 @@ runs:
         severity-cutoff: critical
         output-format: sarif
         vex: ${{ inputs.vex-files }}
+        grype-version: v0.116.1
 
     # Runs even if the scan step above failed the build on a Critical
     # finding, so those findings still show up in the Security tab.
