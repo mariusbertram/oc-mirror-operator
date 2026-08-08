@@ -52,13 +52,18 @@ inputs:
     default: "true"
   vex-files:
     description: >
-      Newline-separated list of OpenVEX document paths. Passed to both Grype
-      scan steps below via their vex input, so a not_affected statement
-      suppresses the corresponding finding here (human-readable log and the
-      blocking gate alike) — the same source of truth instead of a parallel
-      .grype.yaml entry. When attest is true, each file is also attested to
-      image-ref via cosign (--type openvex), so anyone pulling and scanning
-      the image sees the same statement. Leave empty (default) to skip.
+      OpenVEX document path(s) passed to both Grype scan steps below via
+      their vex input, so a not_affected statement suppresses the
+      corresponding finding here (human-readable log and the blocking gate
+      alike) — the same source of truth instead of a parallel .grype.yaml
+      entry. When attest is true, each file is also attested to image-ref
+      via cosign (--type openvex), so anyone pulling and scanning the image
+      sees the same statement. Despite anchore/scan-action's own docs
+      describing this as newline-separated, a multi-line value is passed
+      to grype as a single broken --vex argument (confirmed: "VEX document
+      ... not found") — pass exactly one file. Put multiple statements in
+      that one OpenVEX document instead of trying to pass multiple files.
+      Leave empty (default) to skip.
     required: false
     default: ""
 
@@ -124,15 +129,12 @@ runs:
           --type spdxjson \
           "${{ inputs.image-ref }}"
 
-    - name: Attest VEX document(s) to image (keyless cosign)
+    - name: Attest VEX document to image (keyless cosign)
       if: inputs.attest == 'true' && inputs.vex-files != ''
       shell: bash
       run: |
         set -euo pipefail
-        while IFS= read -r vex_file; do
-          [ -z "$vex_file" ] && continue
-          cosign attest --yes \
-            --predicate "$vex_file" \
-            --type openvex \
-            "${{ inputs.image-ref }}"
-        done <<< "${{ inputs.vex-files }}"
+        cosign attest --yes \
+          --predicate "${{ inputs.vex-files }}" \
+          --type openvex \
+          "${{ inputs.image-ref }}"

@@ -111,7 +111,7 @@ jobs:
           image-ref: ${{ env.CONTROLLER_IMAGE }}@${{ steps.build-controller.outputs.digest }}
           artifact-name: controller
           sarif-category: controller-image
-          vex-files: vex/containerd-cri-checkpoint-restore.openvex.json
+          vex-files: vex/oc-mirror-operator.openvex.json
 
       - name: Build and push manager image
         id: build-manager
@@ -136,7 +136,7 @@ jobs:
           image-ref: ${{ env.MANAGER_IMAGE }}@${{ steps.build-manager.outputs.digest }}
           artifact-name: manager
           sarif-category: manager-image
-          vex-files: vex/containerd-cri-checkpoint-restore.openvex.json
+          vex-files: vex/oc-mirror-operator.openvex.json
 
       - name: Build and push worker image
         id: build-worker
@@ -161,7 +161,7 @@ jobs:
           image-ref: ${{ env.WORKER_IMAGE }}@${{ steps.build-worker.outputs.digest }}
           artifact-name: worker
           sarif-category: worker-image
-          vex-files: vex/containerd-cri-checkpoint-restore.openvex.json
+          vex-files: vex/oc-mirror-operator.openvex.json
 
       - name: Build and push plugin image
         id: build-plugin
