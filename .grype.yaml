@@ -1,0 +1,31 @@
+# Grype vulnerability-scan exceptions.
+#
+# grype auto-detects this file from the current working directory - no
+# --config flag needed. Both .github/actions/sbom-scan-attest steps use it
+# unchanged: the blocking release-pipeline gate (release.yml, fail-build:
+# true, fails on Critical) and the report-only CI scan (ci.yml, fail-build:
+# false, Security-tab visibility only). An ignored finding disappears from
+# both - the SARIF upload, the human-readable job-log table, and the gate.
+#
+# Prefer an OpenVEX document (see vex/) over an entry here whenever the
+# exception has a formal not_affected justification (vulnerable code not in
+# the execute path, component not present, etc.) - VEX is wired into the
+# same two scan steps via vex-files, so it's the same suppression, and it
+# also gets attested onto the release image for downstream consumers to see
+# (an entry here is local to this repo's own pipeline only). Reserve this
+# file for exceptions that don't fit a VEX status/justification, e.g. "no
+# fix yet, but we've decided to ship anyway for reason X" without a claim
+# that the vulnerable code is actually unreachable.
+#
+# Only add an entry after triage confirms there is currently no upstream
+# fix, or that the finding does not apply to how the affected package is
+# actually used here. Each entry must be preceded by a comment recording:
+# who triaged it, when, why it's safe to ignore for now, and when to
+# re-check for a fix. Re-review every entry before cutting a release -
+# don't let this list grow stale.
+#
+# Example:
+#   # Triaged 2026-08-08 by @marius: no upstream fix yet in
+#   # golang.org/x/net as of this date; re-check before the next release.
+#   - vulnerability: CVE-2026-XXXXX
+ignore: []

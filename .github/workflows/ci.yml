@@ -108,6 +108,7 @@ jobs:
           sarif-category: controller-image-ci
           attest: "false"
           fail-build: "false"
+          vex-files: vex/containerd-cri-checkpoint-restore.openvex.json
 
       - name: SBOM + vulnerability scan (manager)
         uses: ./.github/actions/sbom-scan-attest
@@ -117,6 +118,7 @@ jobs:
           sarif-category: manager-image-ci
           attest: "false"
           fail-build: "false"
+          vex-files: vex/containerd-cri-checkpoint-restore.openvex.json
 
       - name: SBOM + vulnerability scan (worker)
         uses: ./.github/actions/sbom-scan-attest
@@ -126,6 +128,7 @@ jobs:
           sarif-category: worker-image-ci
           attest: "false"
           fail-build: "false"
+          vex-files: vex/containerd-cri-checkpoint-restore.openvex.json
 
       - name: SBOM + vulnerability scan (plugin)
         uses: ./.github/actions/sbom-scan-attest
