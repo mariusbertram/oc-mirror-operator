@@ -9,7 +9,9 @@ description: >
   calling job to grant security-events: write (for the SARIF upload) and,
   when attest is true, id-token: write (for cosign) plus already being
   authenticated to the image's registry (e.g. docker/login-action) with
-  sigstore/cosign-installer having already run.
+  sigstore/cosign-installer having already run. Grype auto-detects the
+  repo-root .grype.yaml ignore list, so a triaged exception there applies
+  here without any extra input.
 
 inputs:
   image-ref:
