@@ -402,6 +402,16 @@ func (m *MirrorManager) handleStatusUpdate(w http.ResponseWriter, r *http.Reques
 	} else {
 		m.mirrored[req.Destination] = true
 		m.setImageStateLocked(req.Destination, stateMirrored, "")
+		// Record the digest the worker actually mirrored as the drift-check
+		// baseline for tag-referenced additional images (see
+		// additionalImageDriftedLocked) — free, since the worker already
+		// resolves it to verify the copy. setImageStateLocked's idempotency
+		// check can early-return without this running again on a duplicate
+		// callback, but SourceDigest doesn't change between duplicates either.
+		if entry, ok := m.imageState[req.Destination]; ok && entry.Origin == imagestate.OriginAdditional && req.Digest != "" {
+			entry.SourceDigest = req.Digest
+			m.stateDirty = true
+		}
 		ocmetrics.ManagerImagesMirroredTotal.WithLabelValues(m.TargetName, imageset).Inc()
 	}
 
@@ -596,6 +606,53 @@ func (m *MirrorManager) checkExistWithRetry(ctx context.Context, dest string) (b
 	exists, checkErr = freshClient.CheckExist(ctx, dest)
 	m.mu.Lock()
 	return exists, checkErr
+}
+
+// additionalImageDriftedLocked reports whether a tag-referenced additional
+// image (imagestate.OriginAdditional) has changed upstream since it was
+// mirrored, by comparing entry.Source's current manifest digest against
+// entry.SourceDigest — the digest the worker resolved and reported at mirror
+// time (see handleStatusUpdate).
+//
+// This only applies to additional images: release and operator destinations
+// are content-addressed (mirror.ComponentDestination bakes the source digest
+// into the destination path), so a changed upstream digest naturally produces
+// a new destination and a fresh Pending entry — the existing orphan-cleanup
+// path already handles the old one. Additional images mirror straight to a
+// fixed, user-chosen destination (see Collector.CollectAdditional), so a
+// mutable tag moving upstream is otherwise invisible: the destination never
+// changes, and mergeIntoStateWithSig would keep preserving "Mirrored"
+// forever. Digest-pinned sources ("@sha256:...") can't drift and are skipped.
+//
+// Always records the freshly resolved digest (even when unchanged) as the
+// new baseline. A failed resolution is logged and treated as "not drifted"
+// rather than forcing a spurious re-mirror; an entry that somehow has no
+// baseline yet (e.g. state migrated from before this field existed) is
+// likewise treated as "not drifted" on this check, since a comparison is
+// meaningless without one — the freshly resolved digest recorded here
+// becomes the baseline for the next window.
+//
+// Caller must hold m.mu; it is released for the duration of the network call.
+func (m *MirrorManager) additionalImageDriftedLocked(ctx context.Context, entry *imagestate.ImageEntry) bool {
+	if entry.Origin != imagestate.OriginAdditional || strings.Contains(entry.Source, "@sha256:") {
+		return false
+	}
+
+	checkClient, _ := m.clientCache.GetOrCreate(nil, m.authConfigPath)
+	m.mu.Unlock()
+	digest, err := checkClient.GetDigest(ctx, entry.Source)
+	m.mu.Lock()
+	if err != nil {
+		oclog.Printf("CheckExist: failed to resolve digest for additional image source %s: %v\n", entry.Source, err)
+		return false
+	}
+
+	drifted := entry.SourceDigest != "" && entry.SourceDigest != digest
+	if entry.SourceDigest != digest {
+		entry.SourceDigest = digest
+		m.stateDirty = true
+	}
+	return drifted
 }
 
 // anyOwnerRequiresSignedImages reports whether any ImageSet in owners has
@@ -807,17 +864,26 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 				continue
 			}
 			if exists {
-				m.mirrored[dest] = true
-				if !entry.SignatureVerified && anyOwnerRequiresSignedImages(m.owners[dest], requireSignedByIS) {
-					m.verifySignedImageLocked(ctx, dest, entry)
+				if m.additionalImageDriftedLocked(ctx, entry) {
+					oclog.Printf("Additional image %s: upstream source %s has moved; resetting to Pending for re-mirror\n", dest, entry.Source)
+					entry.State = statePending
+					entry.LastError = ""
+					entry.RetryCount = 0
+					m.stateDirty = true
+				} else {
+					m.mirrored[dest] = true
+					if !entry.SignatureVerified && anyOwnerRequiresSignedImages(m.owners[dest], requireSignedByIS) {
+						m.verifySignedImageLocked(ctx, dest, entry)
+					}
+					continue
 				}
-				continue
+			} else {
+				oclog.Printf("Image %s marked Mirrored but not found in registry; resetting to Pending\n", dest)
+				entry.State = statePending
+				entry.LastError = ""
+				entry.RetryCount = 0
+				m.stateDirty = true
 			}
-			oclog.Printf("Image %s marked Mirrored but not found in registry; resetting to Pending\n", dest)
-			entry.State = statePending
-			entry.LastError = ""
-			entry.RetryCount = 0
-			m.stateDirty = true
 		}
 
 		if m.mirrored[dest] {

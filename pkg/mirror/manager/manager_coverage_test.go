@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"time"
 
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
@@ -841,6 +842,38 @@ var _ = Describe("Manager Coverage", func() {
 			entry := m.imageState["reg.io/mirror/img:v1"]
 			Expect(entry.State).To(Equal(stateFailed))
 			Expect(entry.RetryCount).To(Equal(1))
+		})
+
+		It("records the reported digest as the drift-check baseline for additional-origin entries", func() {
+			m.imageState["reg.io/mirror/img:v1"].Origin = imagestate.OriginAdditional
+			m.inProgress["reg.io/mirror/img:v1"] = "worker-1"
+			body, _ := json.Marshal(WorkerStatusRequest{
+				PodName:     "worker-1",
+				Destination: "reg.io/mirror/img:v1",
+				Digest:      "sha256:" + strings.Repeat("a", 64),
+			})
+			req := httptest.NewRequest(http.MethodPost, "/status", bytes.NewReader(body))
+			req.Header.Set("Authorization", "Bearer test-token")
+			rr := httptest.NewRecorder()
+			m.handleStatusUpdate(rr, req)
+			Expect(rr.Code).To(Equal(http.StatusOK))
+			Expect(m.imageState["reg.io/mirror/img:v1"].SourceDigest).To(Equal("sha256:" + strings.Repeat("a", 64)))
+		})
+
+		It("does not record a digest for non-additional origins", func() {
+			m.imageState["reg.io/mirror/img:v1"].Origin = imagestate.OriginRelease
+			m.inProgress["reg.io/mirror/img:v1"] = "worker-1"
+			body, _ := json.Marshal(WorkerStatusRequest{
+				PodName:     "worker-1",
+				Destination: "reg.io/mirror/img:v1",
+				Digest:      "sha256:" + strings.Repeat("a", 64),
+			})
+			req := httptest.NewRequest(http.MethodPost, "/status", bytes.NewReader(body))
+			req.Header.Set("Authorization", "Bearer test-token")
+			rr := httptest.NewRecorder()
+			m.handleStatusUpdate(rr, req)
+			Expect(rr.Code).To(Equal(http.StatusOK))
+			Expect(m.imageState["reg.io/mirror/img:v1"].SourceDigest).To(BeEmpty())
 		})
 	})
 

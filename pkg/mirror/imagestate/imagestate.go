@@ -74,6 +74,14 @@ type ImageEntry struct {
 	// an entry can be Mirrored before the requirement existed or before the
 	// check has run, in which case this stays false until the next check.
 	SignatureVerified bool `json:"signatureVerified,omitempty"`
+	// SourceDigest is the upstream manifest digest last observed for a
+	// tag-referenced source (currently only populated for OriginAdditional
+	// entries; see MirrorManager.handleStatusUpdate and
+	// MirrorManager.additionalImageDriftedLocked). Empty for digest-pinned
+	// sources, which cannot drift. Used to detect when a mutable tag has
+	// moved upstream so the entry can be reset to Pending instead of staying
+	// Mirrored against stale content forever.
+	SourceDigest string `json:"sourceDigest,omitempty"`
 }
 
 // ImageState maps destination image reference → ImageEntry, scoped to a
