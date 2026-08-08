@@ -11,7 +11,11 @@ description: >
   authenticated to the image's registry (e.g. docker/login-action) with
   sigstore/cosign-installer having already run. Grype auto-detects the
   repo-root .grype.yaml ignore list, so a triaged exception there applies
-  here without any extra input.
+  here without any extra input. For exceptions with a formal not_affected
+  justification, prefer vex-files over .grype.yaml — it's the same
+  suppression applied to both scan steps here, plus (when attest is true) an
+  attestation on the image itself so downstream consumers scanning the
+  pulled image see the same statement.
 
 inputs:
   image-ref:
@@ -46,6 +50,17 @@ inputs:
       vulnerability that may take time to triage or may have no fix yet).
     required: false
     default: "true"
+  vex-files:
+    description: >
+      Newline-separated list of OpenVEX document paths. Passed to both Grype
+      scan steps below via their vex input, so a not_affected statement
+      suppresses the corresponding finding here (human-readable log and the
+      blocking gate alike) — the same source of truth instead of a parallel
+      .grype.yaml entry. When attest is true, each file is also attested to
+      image-ref via cosign (--type openvex), so anyone pulling and scanning
+      the image sees the same statement. Leave empty (default) to skip.
+    required: false
+    default: ""
 
 runs:
   using: composite
@@ -70,6 +85,7 @@ runs:
         image: ${{ inputs.image-ref }}
         fail-build: false
         output-format: table
+        vex: ${{ inputs.vex-files }}
 
     - name: Scan for vulnerabilities (Grype)
       id: scan
@@ -79,6 +95,7 @@ runs:
         fail-build: ${{ inputs.fail-build }}
         severity-cutoff: critical
         output-format: sarif
+        vex: ${{ inputs.vex-files }}
 
     # Runs even if the scan step above failed the build on a Critical
     # finding, so those findings still show up in the Security tab.
@@ -98,3 +115,16 @@ runs:
           --predicate "sbom-${{ inputs.artifact-name }}.spdx.json" \
           --type spdxjson \
           "${{ inputs.image-ref }}"
+
+    - name: Attest VEX document(s) to image (keyless cosign)
+      if: inputs.attest == 'true' && inputs.vex-files != ''
+      shell: bash
+      run: |
+        set -euo pipefail
+        while IFS= read -r vex_file; do
+          [ -z "$vex_file" ] && continue
+          cosign attest --yes \
+            --predicate "$vex_file" \
+            --type openvex \
+            "${{ inputs.image-ref }}"
+        done <<< "${{ inputs.vex-files }}"

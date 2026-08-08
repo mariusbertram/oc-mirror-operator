@@ -1,0 +1,44 @@
+{
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "@id": "https://github.com/mariusbertram/oc-mirror-operator/vex/containerd-cri-checkpoint-restore",
+  "author": "oc-mirror-operator maintainers",
+  "role": "Document Creator",
+  "timestamp": "2026-08-08T00:00:00Z",
+  "version": 1,
+  "statements": [
+    {
+      "vulnerability": {
+        "name": "CVE-2026-53492",
+        "aliases": [
+          "GHSA-33vj-92qq-66hc",
+          "GO-2026-5064"
+        ]
+      },
+      "products": [
+        {
+          "@id": "pkg:golang/github.com/containerd/containerd@v1.7.33"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "This CVE is in containerd's CRI (Container Runtime Interface) checkpoint/restore plugin. oc-mirror-operator depends on github.com/containerd/containerd only transitively, via helm.sh/helm/v3's OCI registry client (pkg/mirror/helm -> helm.sh/helm/v3/pkg/repo -> pkg/getter -> pkg/registry -> containerd/containerd/remotes), which uses only generic OCI artifact pull/push primitives for oci:// Helm chart repos. No binary in this project (controller, manager, worker) runs a CRI server, registers a CRI plugin, or performs checkpoint/restore operations, so the vulnerable code path is never reached. No fixed version exists for the github.com/containerd/containerd v1 module line as of triage date; the fix landed only in the unrelated github.com/containerd/containerd/v2 module, which this project does not depend on."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-50195",
+        "aliases": [
+          "GHSA-cvxm-645q-p574",
+          "GO-2026-5338"
+        ]
+      },
+      "products": [
+        {
+          "@id": "pkg:golang/github.com/containerd/containerd@v1.7.33"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Same reasoning as CVE-2026-53492 in this document: this CVE is in containerd's CRI checkpoint-import path, reachable only through a CRI server. oc-mirror-operator only uses containerd transitively through Helm's generic OCI registry client, and no binary in this project runs a CRI server or performs checkpoint/restore. No fixed version exists for the github.com/containerd/containerd v1 module line as of triage date; the fix landed only in the unrelated github.com/containerd/containerd/v2 module, which this project does not depend on."
+    }
+  ]
+}

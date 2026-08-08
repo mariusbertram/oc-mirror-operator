@@ -7,6 +7,16 @@
 # false, Security-tab visibility only). An ignored finding disappears from
 # both - the SARIF upload, the human-readable job-log table, and the gate.
 #
+# Prefer an OpenVEX document (see vex/) over an entry here whenever the
+# exception has a formal not_affected justification (vulnerable code not in
+# the execute path, component not present, etc.) - VEX is wired into the
+# same two scan steps via vex-files, so it's the same suppression, and it
+# also gets attested onto the release image for downstream consumers to see
+# (an entry here is local to this repo's own pipeline only). Reserve this
+# file for exceptions that don't fit a VEX status/justification, e.g. "no
+# fix yet, but we've decided to ship anyway for reason X" without a claim
+# that the vulnerable code is actually unreachable.
+#
 # Only add an entry after triage confirms there is currently no upstream
 # fix, or that the finding does not apply to how the affected package is
 # actually used here. Each entry must be preceded by a comment recording:
@@ -18,22 +28,4 @@
 #   # Triaged 2026-08-08 by @marius: no upstream fix yet in
 #   # golang.org/x/net as of this date; re-check before the next release.
 #   - vulnerability: CVE-2026-XXXXX
-ignore:
-  # Triaged 2026-08-08: github.com/containerd/containerd v1.7.33 is a
-  # transitive dependency via pkg/mirror/helm -> helm.sh/helm/v3/pkg/repo ->
-  # .../pkg/getter -> .../pkg/registry -> containerd/containerd/remotes
-  # (Helm's generic OCI-artifact pull/push client for oci:// chart repos).
-  # Both CVEs are in containerd's CRI (Container Runtime Interface)
-  # checkpoint/restore plugin - code neither Helm's registry client nor
-  # this operator's binaries ever invoke; nothing here runs as a CRI
-  # runtime or performs checkpoint/restore. Confirmed via pkg.go.dev/vuln
-  # that github.com/containerd/containerd (the v1 module line) has no
-  # fixed version for either CVE - the fix landed only in the unrelated
-  # github.com/containerd/containerd/v2 module, which nothing in this
-  # dependency graph uses. Also confirmed helm.sh/helm/v3's latest release
-  # (v3.21.3, vs. our v3.20.2) still pins the same containerd v1.7.33, so
-  # there is no dependency-bump path either. Re-check when containerd
-  # ships a v1.7.x fix or Helm migrates its registry client to
-  # containerd/v2.
-  - vulnerability: GO-2026-5064 # CVE-2026-53492, GHSA-33vj-92qq-66hc
-  - vulnerability: GO-2026-5338 # CVE-2026-50195, GHSA-cvxm-645q-p574
+ignore: []
