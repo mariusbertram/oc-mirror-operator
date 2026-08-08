@@ -3,7 +3,7 @@
 # supply-chain auditable. To refresh, run:
 #   podman pull docker.io/library/golang:1.25 && podman inspect docker.io/library/golang:1.25 --format '{{.Digest}}'
 #   podman pull gcr.io/distroless/static:nonroot && podman inspect gcr.io/distroless/static:nonroot --format '{{.Digest}}'
-FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.25@sha256:4c22673170524e09a47a6e1a5f1ca99692f4796c9b4f2de25ec7137bcd897edd AS builder
+FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.25.12@sha256:fe5d57d3b718e7a4986bae156c2d73f44973bfd313073aed08a4de6692bb6161 AS builder
 ARG TARGETOS
 ARG TARGETARCH
 
