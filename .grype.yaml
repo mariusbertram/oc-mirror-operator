@@ -18,4 +18,22 @@
 #   # Triaged 2026-08-08 by @marius: no upstream fix yet in
 #   # golang.org/x/net as of this date; re-check before the next release.
 #   - vulnerability: CVE-2026-XXXXX
-ignore: []
+ignore:
+  # Triaged 2026-08-08: github.com/containerd/containerd v1.7.33 is a
+  # transitive dependency via pkg/mirror/helm -> helm.sh/helm/v3/pkg/repo ->
+  # .../pkg/getter -> .../pkg/registry -> containerd/containerd/remotes
+  # (Helm's generic OCI-artifact pull/push client for oci:// chart repos).
+  # Both CVEs are in containerd's CRI (Container Runtime Interface)
+  # checkpoint/restore plugin - code neither Helm's registry client nor
+  # this operator's binaries ever invoke; nothing here runs as a CRI
+  # runtime or performs checkpoint/restore. Confirmed via pkg.go.dev/vuln
+  # that github.com/containerd/containerd (the v1 module line) has no
+  # fixed version for either CVE - the fix landed only in the unrelated
+  # github.com/containerd/containerd/v2 module, which nothing in this
+  # dependency graph uses. Also confirmed helm.sh/helm/v3's latest release
+  # (v3.21.3, vs. our v3.20.2) still pins the same containerd v1.7.33, so
+  # there is no dependency-bump path either. Re-check when containerd
+  # ships a v1.7.x fix or Helm migrates its registry client to
+  # containerd/v2.
+  - vulnerability: GO-2026-5064 # CVE-2026-53492, GHSA-33vj-92qq-66hc
+  - vulnerability: GO-2026-5338 # CVE-2026-50195, GHSA-cvxm-645q-p574
