@@ -284,6 +284,12 @@ func (c *Collector) CollectOperatorEntry(ctx context.Context, op mirrorv1alpha1.
 // CollectAdditional returns the destination entries for every image listed in
 // spec.Mirror.AdditionalImages. No upstream resolution is needed because the
 // user has already supplied the fully-qualified source reference.
+//
+// Note: for images referenced by tag (no "@sha256:..." in Name), the manager
+// separately tracks upstream drift for the mirrored destination — see
+// MirrorManager.additionalImageDriftedLocked in manager.go, run during its
+// periodic CheckExist sweep — rather than here, so this collection stays a
+// cheap, network-free enumeration safe to re-run on every resolve.
 func (c *Collector) CollectAdditional(_ context.Context, spec *mirrorv1alpha1.ImageSetSpec, target *mirrorv1alpha1.MirrorTarget, meta *state.Metadata) ([]TargetImage, error) {
 	results := make([]TargetImage, 0, len(spec.Mirror.AdditionalImages))
 	for _, img := range spec.Mirror.AdditionalImages {

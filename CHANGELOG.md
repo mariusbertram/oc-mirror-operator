@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Tag-referenced `additionalImages` never picked up upstream changes**:
+  once mirrored, an additional image's imagestate entry stayed `Mirrored`
+  forever — `CollectAdditional` re-enumerates the spec on every resolve, but
+  its destination is a fixed, user-chosen path (unlike release/operator
+  images, which are content-addressed and get a new destination whenever
+  their source digest changes), so a mutable tag moving upstream was
+  invisible to the manager and never re-mirrored. The manager's existing
+  periodic CheckExist sweep now also resolves the current upstream digest for
+  such entries and compares it against the digest recorded when the image was
+  last mirrored (`ImageEntry.SourceDigest`, populated for free from the
+  digest the worker already resolves to verify its copy); a mismatch resets
+  the entry to `Pending` for a fresh mirror. Digest-pinned additional images
+  (`@sha256:...`) are unaffected, since they can't drift.
 - **Console plugin crashed on the ImageSets and Mirror Targets pages on
   OpenShift 4.19–4.21 ("Minified React error #130" in `@patternfly/react-table`
   components)**: lowering `@console/pluginAPI` to `>=4.19.0-0` let the plugin
