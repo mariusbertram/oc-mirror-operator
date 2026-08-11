@@ -1330,10 +1330,41 @@ var _ = Describe("Manager Coverage", func() {
 				"d2": &imagestate.ImageEntry{Source: "s2", State: "Pending"},
 				"d3": &imagestate.ImageEntry{Source: "s3", State: "Failed", PermanentlyFailed: true, LastError: "err", OriginRef: "ref"},
 			}
-			m.updateImageSetStatusLocked(context.TODO(), is, state, false)
+			// justResolved=true: ObservedGeneration only advances when a
+			// resolve was actually attempted and completed without error this
+			// tick (see updateImageSetStatusLocked's doc comment).
+			m.updateImageSetStatusLocked(context.TODO(), is, state, true)
 			Expect(is.Status.TotalImages).To(Equal(3))
 			Expect(is.Status.MirroredImages).To(Equal(1))
 			Expect(is.Status.ObservedGeneration).To(Equal(int64(2)))
+		})
+
+		It("does not advance ObservedGeneration when justResolved is false", func() {
+			is := &mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "status-is-not-resolved",
+					Namespace:  "default",
+					Generation: 2,
+				},
+			}
+			c := fake.NewClientBuilder().WithScheme(scheme).
+				WithRuntimeObjects(is).
+				WithStatusSubresource(is).
+				Build()
+			m = NewWithClients(c, m.Clientset, "test", "default", "test-image:latest", "", scheme)
+
+			state := imagestate.ImageState{
+				"d1": &imagestate.ImageEntry{Source: "s1", State: "Mirrored"},
+			}
+			// justResolved=false simulates a tick where no resolve was
+			// attempted (or one that hit a per-entry probe error and fell
+			// back to carrying over stale state) — ObservedGeneration must
+			// stay put so shouldResolve() retries again on the next tick
+			// instead of waiting out the full pollInterval.
+			m.updateImageSetStatusLocked(context.TODO(), is, state, false)
+			Expect(is.Status.TotalImages).To(Equal(1))
+			Expect(is.Status.ObservedGeneration).To(Equal(int64(0)))
+			Expect(is.Status.LastSuccessfulPollTime).To(BeNil())
 		})
 
 		It("sets Empty condition when no images", func() {
@@ -2624,6 +2655,95 @@ var _ = Describe("Manager Coverage", func() {
 			// resolver is nil — if LoadFBC were called it would panic.
 			err := m.ensureUpstreamCatalogPackages(context.TODO(), nil, "preexist-slug", info, "registry.example.com/catalog@sha256:abc")
 			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	// ─── resolveOperatorSection / resolveImageSet hadError propagation ──
+	//
+	// Regression coverage for the bug where a transient per-entry
+	// probe/collection failure (e.g. an unreachable catalog registry) was
+	// silently treated as a fully successful resolve: resolveImageSet always
+	// returned a nil error even when individual channels/catalogs fell back
+	// to carrying over stale state, so the caller (manager.go Phase B/G)
+	// unconditionally advanced ObservedGeneration/LastSuccessfulPollTime —
+	// deferring any retry of the failed entry until the next full
+	// pollInterval (default 24h) instead of the next 30s tick. hadError
+	// makes that failure visible to the caller.
+
+	Context("resolveOperatorSection hadError", func() {
+		It("reports hadError when a catalog entry fails to parse/probe", func() {
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com"},
+			}
+			is := &mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{Name: testImageSetName, Namespace: "default"},
+				Spec: mirrorv1alpha1.ImageSetSpec{
+					Mirror: mirrorv1alpha1.Mirror{
+						// An empty Catalog reference fails ref.New before any
+						// network call, deterministically exercising the
+						// "probe catalog" error branch.
+						Operators: []mirrorv1alpha1.Operator{{Catalog: ""}},
+					},
+				},
+			}
+			_, resolver := m.buildCollector(mt)
+
+			annoChanged, hadError, err := m.resolveOperatorSection(
+				context.TODO(), nil, resolver, is, mt,
+				imagestate.ImageState{}, imagestate.ImageState{}, map[string]string{}, false)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(hadError).To(BeTrue())
+			Expect(annoChanged).To(BeFalse())
+		})
+
+		It("reports no error when there are no operator entries", func() {
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com"},
+			}
+			is := &mirrorv1alpha1.ImageSet{ObjectMeta: metav1.ObjectMeta{Name: testImageSetName, Namespace: "default"}}
+			_, resolver := m.buildCollector(mt)
+
+			_, hadError, err := m.resolveOperatorSection(
+				context.TODO(), nil, resolver, is, mt,
+				imagestate.ImageState{}, imagestate.ImageState{}, map[string]string{}, false)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(hadError).To(BeFalse())
+		})
+	})
+
+	Context("resolveImageSet hadError propagation", func() {
+		It("surfaces hadError from a failing operator catalog entry", func() {
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com"},
+			}
+			is := &mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{Name: testImageSetName, Namespace: "default"},
+				Spec: mirrorv1alpha1.ImageSetSpec{
+					Mirror: mirrorv1alpha1.Mirror{
+						Operators: []mirrorv1alpha1.Operator{{Catalog: ""}},
+					},
+				},
+			}
+
+			_, stateChanged, hadError, err := m.resolveImageSet(context.TODO(), is, mt, imagestate.ImageState{})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(hadError).To(BeTrue())
+			Expect(stateChanged).To(BeFalse())
+		})
+
+		It("reports no error for an ImageSet with no content configured", func() {
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com"},
+			}
+			is := &mirrorv1alpha1.ImageSet{ObjectMeta: metav1.ObjectMeta{Name: testImageSetName, Namespace: "default"}}
+
+			_, _, hadError, err := m.resolveImageSet(context.TODO(), is, mt, imagestate.ImageState{})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(hadError).To(BeFalse())
 		})
 	})
 })

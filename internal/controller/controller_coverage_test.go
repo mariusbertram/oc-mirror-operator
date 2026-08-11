@@ -1144,6 +1144,105 @@ var _ = Describe("Coverage tests", func() {
 			// Failed IS stays in PendingCleanup for retry
 			Expect(mt.Status.PendingCleanup).To(ContainElement(failedIS))
 		})
+
+		It("does not delete orphaned images when cleanup-policy is not Delete", func() {
+			// Regression test: images the manager moves into the pending-orphans
+			// ConfigMap (spec narrowing/blocking — e.g. a catalog's heads-only
+			// channel selection advancing to a newer bundle version) must
+			// respect the same cleanup-policy=Delete gate as a fully removed
+			// ImageSet. Without the gate, these images get deleted from the
+			// registry (and immediately re-mirrored under a new destination)
+			// on every routine re-resolve, even for MirrorTargets that never
+			// opted into registry deletion.
+			localCtx := context.Background()
+			mtName := "mt-orphans-nopolicy"
+
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: mtName, Namespace: ns},
+				Spec: mirrorv1alpha1.MirrorTargetSpec{
+					Registry:  "reg.example.com",
+					ImageSets: []string{"is-orphans-nopolicy"},
+				},
+			}
+			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
+			DeferCleanup(func() { cleanupMT(localCtx, mtName) })
+
+			mt.Status.KnownImageSets = []string{"is-orphans-nopolicy"}
+
+			orphans := imagestate.ImageState{
+				"d-orphan": {Source: "s-orphan", State: "Mirrored", Origin: imagestate.OriginOperator},
+			}
+			orphansCM := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: imagestate.OrphansConfigMapName(mtName), Namespace: ns},
+				BinaryData: map[string][]byte{"images.json.gz": mustGzipJSON(orphans)},
+			}
+			Expect(k8sClient.Create(localCtx, orphansCM)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, orphansCM) })
+
+			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			Expect(r.reconcileCleanup(localCtx, mt)).To(Succeed())
+
+			// No cleanup job for the orphans should have been created.
+			jobName := cleanupJobName(mtName, "orphans")
+			j := &batchv1.Job{}
+			err := k8sClient.Get(localCtx, types.NamespacedName{Name: jobName, Namespace: ns}, j)
+			Expect(err).To(HaveOccurred())
+			Expect(mt.Status.PendingCleanup).NotTo(ContainElement("orphans"))
+
+			// The pending-orphans ConfigMap is left untouched — nothing was
+			// deleted, so there is nothing to hand off to a cleanup Job.
+			stillThere := &corev1.ConfigMap{}
+			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: imagestate.OrphansConfigMapName(mtName), Namespace: ns}, stillThere)).To(Succeed())
+		})
+
+		It("creates cleanup job for orphaned images when cleanup-policy is Delete", func() {
+			localCtx := context.Background()
+			mtName := "mt-orphans-delete"
+
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      mtName,
+					Namespace: ns,
+					Annotations: map[string]string{
+						mirrorv1alpha1.CleanupPolicyAnnotation: mirrorv1alpha1.CleanupPolicyDelete,
+					},
+				},
+				Spec: mirrorv1alpha1.MirrorTargetSpec{
+					Registry:  "reg.example.com",
+					ImageSets: []string{"is-orphans-delete"},
+				},
+			}
+			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
+			DeferCleanup(func() { cleanupMT(localCtx, mtName) })
+
+			mt.Status.KnownImageSets = []string{"is-orphans-delete"}
+
+			orphans := imagestate.ImageState{
+				"d-orphan2": {Source: "s-orphan2", State: "Mirrored", Origin: imagestate.OriginOperator},
+			}
+			orphansCM := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: imagestate.OrphansConfigMapName(mtName), Namespace: ns},
+				BinaryData: map[string][]byte{"images.json.gz": mustGzipJSON(orphans)},
+			}
+			Expect(k8sClient.Create(localCtx, orphansCM)).To(Succeed())
+
+			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			Expect(r.reconcileCleanup(localCtx, mt)).To(Succeed())
+
+			jobName := cleanupJobName(mtName, "orphans")
+			job := &batchv1.Job{}
+			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: jobName, Namespace: ns}, job)).To(Succeed())
+			DeferCleanup(func() {
+				prop := metav1.DeletePropagationBackground
+				_ = k8sClient.Delete(localCtx, job, &client.DeleteOptions{PropagationPolicy: &prop})
+			})
+			Expect(mt.Status.PendingCleanup).To(ContainElement("orphans"))
+
+			snapshotName := cleanupSnapshotCMName(mtName, "orphans")
+			snapshotCM := &corev1.ConfigMap{}
+			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: snapshotName, Namespace: ns}, snapshotCM)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, snapshotCM) })
+		})
 	})
 
 	// ───────────────────── createCleanupJob ─────────────────────

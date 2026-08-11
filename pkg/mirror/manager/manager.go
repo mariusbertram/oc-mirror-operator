@@ -776,6 +776,12 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 	// graph) and is gated via shouldResolve() so we don't hammer upstream
 	// registries on every 30 s tick.
 	justResolvedISes := map[string]bool{}
+	// hadErrorISes marks ImageSets whose resolution this tick hit a transient
+	// probe/collection error on at least one entry (see resolveImageSet's doc
+	// comment). Phase G consults this to avoid advancing ObservedGeneration/
+	// LastSuccessfulPollTime for those, so shouldResolve() retries again on
+	// the very next tick instead of waiting up to a full pollInterval.
+	hadErrorISes := map[string]bool{}
 	for _, is := range imageSets.Items {
 		if !containsString(mt.Spec.ImageSets, is.Name) {
 			continue
@@ -785,7 +791,7 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 			isCopy := is.DeepCopy()
 			isViewSnap := cloneImageState(isView)
 			m.mu.Unlock()
-			newPerISState, resolved, resolveErr := m.resolveImageSet(ctx, isCopy, mt, isViewSnap)
+			newPerISState, resolved, hadError, resolveErr := m.resolveImageSet(ctx, isCopy, mt, isViewSnap)
 			m.mu.Lock()
 			if resolveErr != nil {
 				oclog.Printf("Warning: failed to resolve ImageSet %s: %v\n", is.Name, resolveErr)
@@ -793,6 +799,7 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 				// Merge any worker callbacks that fired during the unlock window.
 				newPerISState = mergeWorkerUpdates(newPerISState, m.imageState)
 				justResolvedISes[is.Name] = true
+				hadErrorISes[is.Name] = hadError
 				if resolved || len(isView) == 0 {
 					// Returned orphans are re-derived by Phase D's zero-owner
 					// sweep below (it also catches ones left over from a
@@ -995,7 +1002,7 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 				continue
 			}
 			isView := filterByImageSet(m.imageState, m.owners, is.Name)
-			m.updateImageSetStatusLocked(ctx, &is, isView, justResolvedISes[is.Name])
+			m.updateImageSetStatusLocked(ctx, &is, isView, justResolvedISes[is.Name] && !hadErrorISes[is.Name])
 		}
 		m.statusDirty = false
 	}
@@ -1235,11 +1242,18 @@ func (m *MirrorManager) saveGlobalResources(ctx context.Context, mt *mirrorv1alp
 
 // updateImageSetStatusLocked updates the ImageSet status with aggregate counts
 // filtered to entries that reference this ImageSet (isView = filterByImageSet
-// result). ObservedGeneration and the Ready condition are also refreshed.
+// result). The Ready condition is also refreshed.
 //
-// LastSuccessfulPollTime is updated only when justResolved is true, so the
-// pollInterval gate in shouldResolve() works correctly. Status churn from
-// worker callbacks does not reset the poll clock.
+// ObservedGeneration and LastSuccessfulPollTime are only advanced when
+// justResolved is true, i.e. a resolve was attempted THIS tick and completed
+// with no per-entry probe/collection errors (see the caller, manager.go
+// Phase B/G, and resolveImageSet's doc comment). Status churn from worker
+// callbacks does not reset the poll clock. Crucially, a resolve that hit a
+// transient error and fell back to carrying over stale entries for one
+// channel/catalog must NOT advance ObservedGeneration to the current
+// Generation — doing so would make shouldResolve() believe this generation
+// was fully handled, silently deferring a retry of the failed entry until
+// the next full pollInterval (default 24h) instead of the next tick.
 //
 // Caller must hold m.mu.
 func (m *MirrorManager) updateImageSetStatusLocked(ctx context.Context, is *mirrorv1alpha1.ImageSet, isView imagestate.ImageState, justResolved bool) {
@@ -1254,8 +1268,8 @@ func (m *MirrorManager) updateImageSetStatusLocked(ctx context.Context, is *mirr
 		latestIS.Status.MirroredImages = mirrored
 		latestIS.Status.PendingImages = pending
 		latestIS.Status.FailedImages = failed
-		latestIS.Status.ObservedGeneration = latestIS.Generation
 		if justResolved {
+			latestIS.Status.ObservedGeneration = latestIS.Generation
 			now := metav1.Now()
 			latestIS.Status.LastSuccessfulPollTime = &now
 		}

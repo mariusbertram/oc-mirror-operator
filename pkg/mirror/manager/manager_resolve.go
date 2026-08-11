@@ -180,7 +180,18 @@ func operatorCacheHit(cached, digest string) bool {
 // the live in-memory imagestate after re-acquiring the lock; see
 // reconcile() in manager.go for the merge path that preserves concurrent
 // worker callbacks.
-func (m *MirrorManager) resolveImageSet(ctx context.Context, is *mirrorv1alpha1.ImageSet, mt *mirrorv1alpha1.MirrorTarget, currentState imagestate.ImageState) (imagestate.ImageState, bool, error) {
+// The final return value, hadError, reports whether ANY release channel or
+// operator catalog entry failed to resolve/probe and had to fall back to
+// carrying over its previous state (see carryOverByOriginAndSig call sites in
+// resolveReleaseSection/resolveOperatorSection). The caller (manager.go
+// Phase B) uses this to avoid marking the ImageSet as successfully polled —
+// see the caller's justResolvedISes handling — so a transient probe failure
+// does not silently suppress retries for up to a full pollInterval (default
+// 24h): without this, a spec change that lands at the same moment as a
+// transient upstream hiccup would have its ObservedGeneration/
+// LastSuccessfulPollTime advanced anyway, and the newly-added content would
+// not be picked up again until the next scheduled poll.
+func (m *MirrorManager) resolveImageSet(ctx context.Context, is *mirrorv1alpha1.ImageSet, mt *mirrorv1alpha1.MirrorTarget, currentState imagestate.ImageState) (newState imagestate.ImageState, stateChanged bool, hadError bool, err error) {
 	if currentState == nil {
 		currentState = make(imagestate.ImageState)
 	}
@@ -195,7 +206,7 @@ func (m *MirrorManager) resolveImageSet(ctx context.Context, is *mirrorv1alpha1.
 	annotationsChanged := false
 	newAnnotations := copyMap(annotations)
 
-	newState := make(imagestate.ImageState, len(currentState))
+	newState = make(imagestate.ImageState, len(currentState))
 	// Pre-populate with entries this method does NOT own (legacy / unknown
 	// origins) so we don't accidentally drop them.
 	for dest, entry := range currentState {
@@ -211,26 +222,28 @@ func (m *MirrorManager) resolveImageSet(ctx context.Context, is *mirrorv1alpha1.
 		}
 	}
 
-	releaseChanged, err := m.resolveReleaseSection(ctx, collector, is, mt, currentState, newState, newAnnotations, recollect)
+	releaseChanged, releaseHadError, err := m.resolveReleaseSection(ctx, collector, is, mt, currentState, newState, newAnnotations, recollect)
 	if err != nil {
-		return nil, false, fmt.Errorf("resolve releases: %w", err)
+		return nil, false, false, fmt.Errorf("resolve releases: %w", err)
 	}
 	if releaseChanged {
 		annotationsChanged = true
 	}
+	hadError = hadError || releaseHadError
 
-	operatorChanged, err := m.resolveOperatorSection(ctx, collector, resolver, is, mt, currentState, newState, newAnnotations, recollect)
+	operatorChanged, operatorHadError, err := m.resolveOperatorSection(ctx, collector, resolver, is, mt, currentState, newState, newAnnotations, recollect)
 	if err != nil {
-		return nil, false, fmt.Errorf("resolve operators: %w", err)
+		return nil, false, false, fmt.Errorf("resolve operators: %w", err)
 	}
 	if operatorChanged {
 		annotationsChanged = true
 	}
+	hadError = hadError || operatorHadError
 
 	// Additional images are cheap to enumerate; always re-collected.
 	additional, err := collector.CollectAdditional(ctx, &is.Spec, mt, nil)
 	if err != nil {
-		return nil, false, fmt.Errorf("collect additional images: %w", err)
+		return nil, false, false, fmt.Errorf("collect additional images: %w", err)
 	}
 	mergeIntoStateWithSig(newState, additional, imagestate.OriginAdditional, "", "additional", currentState)
 
@@ -240,7 +253,7 @@ func (m *MirrorManager) resolveImageSet(ctx context.Context, is *mirrorv1alpha1.
 	// shouldResolve cadence (spec change or pollInterval), not every reconcile tick.
 	helmImages, err := collector.CollectHelm(ctx, &is.Spec, mt, nil)
 	if err != nil {
-		return nil, false, fmt.Errorf("collect helm images: %w", err)
+		return nil, false, false, fmt.Errorf("collect helm images: %w", err)
 	}
 	mergeIntoStateWithSig(newState, helmImages, imagestate.OriginHelm, "", "helm", currentState)
 
@@ -273,8 +286,8 @@ func (m *MirrorManager) resolveImageSet(ctx context.Context, is *mirrorv1alpha1.
 		}
 	}
 
-	stateChanged := !equalState(currentState, newState)
-	return newState, stateChanged, nil
+	stateChanged = !equalState(currentState, newState)
+	return newState, stateChanged, hadError, nil
 }
 
 // buildCollector returns a Collector + CatalogResolver pair using
@@ -335,6 +348,10 @@ func (m *MirrorManager) resolveGraphImage(ctx context.Context, is *mirrorv1alpha
 	return true
 }
 
+// The second return value, hadError, reports whether any channel failed to
+// probe/collect (as opposed to a legitimate cache hit or an empty match set)
+// and had to fall back to carrying over its previous state — see
+// resolveImageSet's doc comment for why the caller needs this.
 func (m *MirrorManager) resolveReleaseSection( //nolint:unparam
 	ctx context.Context,
 	collector *mirror.Collector,
@@ -344,8 +361,7 @@ func (m *MirrorManager) resolveReleaseSection( //nolint:unparam
 	newState imagestate.ImageState,
 	annotations map[string]string,
 	recollect bool,
-) (bool, error) { //nolint:unparam
-	annoChanged := false
+) (annoChanged bool, hadError bool, err error) { //nolint:unparam
 	arch := is.Spec.Mirror.Platform.Architectures
 	if len(arch) == 0 {
 		arch = []string{"amd64"}
@@ -361,6 +377,7 @@ func (m *MirrorManager) resolveReleaseSection( //nolint:unparam
 		if resolveErr != nil {
 			oclog.Printf("Warning: probe release channel %s: %v\n", ch.Name, resolveErr)
 			carryOverByOriginAndSig(currentState, newState, imagestate.OriginRelease, sig, originRef)
+			hadError = true
 			continue
 		}
 
@@ -368,6 +385,11 @@ func (m *MirrorManager) resolveReleaseSection( //nolint:unparam
 		if len(verifiedNodes) == 0 {
 			oclog.Printf("Warning: no release nodes for channel %s passed signature verification; skipping\n", ch.Name)
 			carryOverByOriginAndSig(currentState, newState, imagestate.OriginRelease, sig, originRef)
+			// Only treat this as a transient failure worth retrying sooner
+			// than the next poll when nodes were actually found and rejected
+			// by verification — an empty payloadNodes set (no versions in the
+			// configured range yet) is a legitimate, stable outcome.
+			hadError = hadError || len(payloadNodes) > 0
 			continue
 		}
 
@@ -381,6 +403,7 @@ func (m *MirrorManager) resolveReleaseSection( //nolint:unparam
 		if err != nil {
 			oclog.Printf("Warning: collect release channel %s: %v\n", ch.Name, err)
 			carryOverByOriginAndSig(currentState, newState, imagestate.OriginRelease, sig, originRef)
+			hadError = true
 			continue
 		}
 		mergeIntoStateWithSig(newState, images, imagestate.OriginRelease, sig, originRef, currentState)
@@ -395,7 +418,7 @@ func (m *MirrorManager) resolveReleaseSection( //nolint:unparam
 			annoChanged = true
 		}
 	}
-	return annoChanged, nil
+	return annoChanged, hadError, nil
 }
 
 // signatureConfigMapName returns the name of the ConfigMap that stores release
@@ -518,6 +541,10 @@ func extractDigest(imageRef string) string {
 	return imageRef[idx+1:] // "sha256:<hex>"
 }
 
+// The second return value, hadError, reports whether any operator entry
+// failed to probe/resolve (as opposed to a legitimate cache hit) and had to
+// fall back to carrying over its previous state — see resolveImageSet's doc
+// comment for why the caller needs this.
 func (m *MirrorManager) resolveOperatorSection( //nolint:unparam
 	ctx context.Context,
 	_ *mirror.Collector,
@@ -528,9 +555,7 @@ func (m *MirrorManager) resolveOperatorSection( //nolint:unparam
 	newState imagestate.ImageState,
 	annotations map[string]string,
 	recollect bool,
-) (bool, error) { //nolint:unparam
-	annoChanged := false
-
+) (annoChanged bool, hadError bool, err error) { //nolint:unparam
 	for _, op := range is.Spec.Mirror.Operators {
 		sig := mirrorv1alpha1.OperatorEntrySignature(op)
 		annoKey := mirrorv1alpha1.CatalogDigestAnnotationKey(sig)
@@ -550,6 +575,7 @@ func (m *MirrorManager) resolveOperatorSection( //nolint:unparam
 		if err != nil {
 			oclog.Printf("Warning: probe catalog %s: %v\n", op.Catalog, err)
 			carryOverByOriginAndSig(currentState, newState, imagestate.OriginOperator, sig, originRef)
+			hadError = true
 			continue
 		}
 
@@ -557,6 +583,7 @@ func (m *MirrorManager) resolveOperatorSection( //nolint:unparam
 			if err := m.verifyOperatorCatalogSignature(ctx, mt, op, freshDigest); err != nil {
 				oclog.Printf("Warning: signature verification failed for catalog %s: %v; skipping until signed\n", op.Catalog, err)
 				carryOverByOriginAndSig(currentState, newState, imagestate.OriginOperator, sig, originRef)
+				hadError = true
 				continue
 			}
 		}
@@ -596,6 +623,7 @@ func (m *MirrorManager) resolveOperatorSection( //nolint:unparam
 		if err != nil {
 			oclog.Printf("Warning: collect catalog %s: %v\n", op.Catalog, err)
 			carryOverByOriginAndSig(currentState, newState, imagestate.OriginOperator, sig, originRef)
+			hadError = true
 			continue
 		}
 
@@ -618,7 +646,7 @@ func (m *MirrorManager) resolveOperatorSection( //nolint:unparam
 			annoChanged = true
 		}
 	}
-	return annoChanged, nil
+	return annoChanged, hadError, nil
 }
 
 // verifyOperatorCatalogSignature verifies op.Catalog's cosign/sigstore

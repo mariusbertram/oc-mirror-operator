@@ -720,7 +720,14 @@ func (r *MirrorTargetReconciler) checkPendingCleanups(ctx context.Context, mt *m
 // (populated by the manager when an ImageSet's resolve/merge step drops an
 // image that was exclusive to it — spec narrowing or blocking) and turns it
 // into a cleanup Job, the same way a fully removed ImageSet's exclusive
-// images are handled.
+// images are handled — including the same cleanup-policy=Delete gate (see
+// reconcileRemovedImageSets). Without this gate, images get deleted from the
+// registry on ANY narrowing that drops an exclusive image (e.g. a catalog's
+// heads-only channel selection advancing to a newer bundle version during a
+// routine re-resolve) even for MirrorTargets that never opted into registry
+// deletion, which then immediately re-mirrors the replacement image — visible
+// to users as images vanishing and reappearing right after an unrelated spec
+// edit.
 func (r *MirrorTargetReconciler) reconcileOrphans(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget) error {
 	l := log.FromContext(ctx)
 	orphansCMName := imagestate.OrphansConfigMapName(mt.Name)
@@ -729,6 +736,13 @@ func (r *MirrorTargetReconciler) reconcileOrphans(ctx context.Context, mt *mirro
 		return fmt.Errorf("failed to load pending orphans: %w", err)
 	}
 	if len(orphans) == 0 {
+		return nil
+	}
+
+	cleanupPolicy := mt.Annotations[mirrorv1alpha1.CleanupPolicyAnnotation]
+	if cleanupPolicy != mirrorv1alpha1.CleanupPolicyDelete {
+		l.Info("Images orphaned by spec narrowing/blocking but cleanup-policy not set to Delete — leaving them in the registry",
+			"count", len(orphans))
 		return nil
 	}
 
