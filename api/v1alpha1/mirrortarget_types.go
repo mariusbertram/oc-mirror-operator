@@ -210,9 +210,13 @@ type MirrorTargetSpec struct {
 
 const (
 	// CleanupPolicyAnnotation controls whether images are deleted from the target
-	// registry when an ImageSet is removed from spec.imageSets.
+	// registry when an ImageSet is removed from spec.imageSets, or when an
+	// image becomes exclusively orphaned by spec narrowing/blocking (e.g. a
+	// package or version range removed from an ImageSet still referenced by
+	// the MirrorTarget).
 	CleanupPolicyAnnotation = "mirror.openshift.io/cleanup-policy"
-	// CleanupPolicyDelete triggers registry image deletion on ImageSet removal.
+	// CleanupPolicyDelete triggers registry image deletion on ImageSet removal
+	// or spec narrowing.
 	CleanupPolicyDelete = "Delete"
 
 	// CatalogBuildSigAnnotation tracks the last input signature used to build
