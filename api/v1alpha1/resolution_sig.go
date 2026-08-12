@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 )
 
 // OperatorEntrySignature returns a stable, content-derived hash that uniquely
@@ -121,6 +122,50 @@ func ReleaseDigestAnnotationKey(sig string) string {
 		sig = sig[:48]
 	}
 	return ReleaseDigestAnnotationPrefix + sig
+}
+
+// OperatorCacheVersion is bumped whenever the operator resolution/filtering
+// logic changes semantically (e.g. heads-only channel filtering). Old cached
+// annotation values written with a different (or no) version prefix will not
+// match a freshly computed OperatorCacheValue, forcing re-resolution.
+const OperatorCacheVersion = "v5"
+
+// OperatorCacheValue builds the cache token the manager writes to a
+// CatalogDigestAnnotationKey annotation once it has resolved and mirrored an
+// operator-spec entry against upstream digest. Exported (rather than living
+// only in pkg/mirror/manager) so that the ImageSet controller can parse it
+// back out via ParseOperatorCacheDigest — see the doc comment there for why.
+func OperatorCacheValue(digest string) string {
+	return OperatorCacheVersion + ":" + digest
+}
+
+// OperatorCacheHit reports whether cached (an ImageSet annotation value)
+// matches the freshly probed digest, i.e. no re-resolution is needed.
+func OperatorCacheHit(cached, digest string) bool {
+	return cached != "" && cached == OperatorCacheValue(digest)
+}
+
+// ParseOperatorCacheDigest extracts the resolved upstream digest from a
+// CatalogDigestAnnotationKey annotation value previously written by
+// OperatorCacheValue (e.g. "v5:sha256:abc..." → "sha256:abc...", ok=true).
+// Returns ok=false for an empty, malformed, or stale-cache-version value —
+// callers must not treat "" as a valid digest.
+//
+// This exists so the ImageSet controller can pin a CatalogBuildJob's source
+// catalog reference to the EXACT digest the manager most recently resolved
+// and mirrored images against, rather than re-resolving the (mutable) tag
+// independently. Without this, the manager and the CatalogBuildJob can each
+// resolve the same tag to a DIFFERENT digest if the upstream catalog image
+// is republished between the two — the build then produces a catalog
+// advertising operator bundle versions that were never actually mirrored to
+// the target registry.
+func ParseOperatorCacheDigest(value string) (digest string, ok bool) {
+	prefix := OperatorCacheVersion + ":"
+	if !strings.HasPrefix(value, prefix) {
+		return "", false
+	}
+	digest = strings.TrimPrefix(value, prefix)
+	return digest, digest != ""
 }
 
 func hashJSON(v interface{}) string {
