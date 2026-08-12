@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -26,6 +27,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgorest "k8s.io/client-go/rest"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
 )
@@ -850,6 +852,41 @@ func writeJSON(w http.ResponseWriter, v any) {
 
 // --- Edit handlers ---
 
+// errCatalogSlugNotFound is returned by handlePatchCatalogPackages' mutate
+// callback when no operator in the ImageSet matches the requested catalog
+// slug, so updateImageSetWithRetry's caller can map it to a 404 without
+// retrying (retry.RetryOnConflict only retries actual conflicts).
+var errCatalogSlugNotFound = errors.New("catalog slug not found in ImageSet")
+
+// updateImageSetWithRetry re-fetches the ImageSet fresh on every attempt and
+// applies mutate before calling Update, retrying on optimistic-concurrency
+// conflicts (HTTP 409).
+//
+// The per-MirrorTarget Manager pod writes ImageSet status very frequently —
+// every ~30s reconcile tick, or immediately after a worker status callback —
+// and a Status().Update() bumps the object's resourceVersion the same as a
+// spec/annotation edit would. A naive Get-then-mutate-then-Update from an
+// HTTP handler therefore races the Manager: by the time the handler's Update
+// call lands, the resourceVersion it read may already be stale, and the
+// Update fails with a 409 even though nothing else touched the fields being
+// edited. Without a retry here, edits made through the console/dashboard UI
+// (the Recollect button in particular, whose failure is only
+// `.catch(console.error)`'d and never shown to the user — see
+// ImageSetDetail.tsx) can silently no-op, which is why the upstream catalog
+// package list can appear to never refresh even after clicking Recollect.
+func updateImageSetWithRetry(ctx context.Context, c client.Client, namespace, name string, mutate func(*mirrorv1alpha1.ImageSet) error) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		is := &mirrorv1alpha1.ImageSet{}
+		if err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, is); err != nil {
+			return err
+		}
+		if err := mutate(is); err != nil {
+			return err
+		}
+		return c.Update(ctx, is)
+	})
+}
+
 type packageChannelConstraint struct {
 	Name       string `json:"name"`
 	MinVersion string `json:"minVersion,omitempty"`
@@ -906,18 +943,11 @@ func (s *Server) handlePatchCatalogPackages(w http.ResponseWriter, r *http.Reque
 	}
 
 	c := s.clientForRequest(r)
-	is := &mirrorv1alpha1.ImageSet{}
-	if err := c.Get(r.Context(), client.ObjectKey{Namespace: namespace, Name: name}, is); err != nil {
-		if apierrors.IsNotFound(err) {
-			http.Error(w, "ImageSet not found", http.StatusNotFound)
-		} else {
-			http.Error(w, fmt.Sprintf("get ImageSet: %v", err), http.StatusInternalServerError)
-		}
-		return
-	}
 
 	// Resolve the source catalog ref from the packages CM so we can match
 	// operators even when the stored CM label uses an older slug format.
+	// This is independent of the ImageSet's resourceVersion, so it only
+	// needs to run once, outside the retry loop below.
 	sourceCatalog := ""
 	{
 		cmList := &corev1.ConfigMapList{}
@@ -937,59 +967,65 @@ func (s *Server) handlePatchCatalogPackages(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
-	found := false
-	for i, op := range is.Spec.Mirror.Operators {
-		var match bool
-		if sourceCatalog != "" {
-			match = op.Catalog == sourceCatalog
-		} else {
-			match = mirrorresources.CatalogSlug(op.Catalog) == slug
-		}
-		if !match {
-			continue
-		}
-		found = true
-		// Rebuild the package list. Prefer the extended `packages` format
-		// (which carries per-channel version constraints) over the legacy
-		// `include` string array.
-		var packages []mirrorv1alpha1.IncludePackage
-		if len(patch.Packages) > 0 {
-			for _, pc := range patch.Packages {
-				p := mirrorv1alpha1.IncludePackage{
-					Name: pc.Name,
-					IncludeBundle: mirrorv1alpha1.IncludeBundle{
-						MinVersion: pc.MinVersion,
-						MaxVersion: pc.MaxVersion,
-					},
-				}
-				for _, ch := range pc.Channels {
-					p.Channels = append(p.Channels, mirrorv1alpha1.IncludeChannel{
-						Name: ch.Name,
+	err = updateImageSetWithRetry(r.Context(), c, namespace, name, func(is *mirrorv1alpha1.ImageSet) error {
+		found := false
+		for i, op := range is.Spec.Mirror.Operators {
+			var match bool
+			if sourceCatalog != "" {
+				match = op.Catalog == sourceCatalog
+			} else {
+				match = mirrorresources.CatalogSlug(op.Catalog) == slug
+			}
+			if !match {
+				continue
+			}
+			found = true
+			// Rebuild the package list. Prefer the extended `packages` format
+			// (which carries per-channel version constraints) over the legacy
+			// `include` string array.
+			var packages []mirrorv1alpha1.IncludePackage
+			if len(patch.Packages) > 0 {
+				for _, pc := range patch.Packages {
+					p := mirrorv1alpha1.IncludePackage{
+						Name: pc.Name,
 						IncludeBundle: mirrorv1alpha1.IncludeBundle{
-							MinVersion: ch.MinVersion,
-							MaxVersion: ch.MaxVersion,
+							MinVersion: pc.MinVersion,
+							MaxVersion: pc.MaxVersion,
 						},
-					})
+					}
+					for _, ch := range pc.Channels {
+						p.Channels = append(p.Channels, mirrorv1alpha1.IncludeChannel{
+							Name: ch.Name,
+							IncludeBundle: mirrorv1alpha1.IncludeBundle{
+								MinVersion: ch.MinVersion,
+								MaxVersion: ch.MaxVersion,
+							},
+						})
+					}
+					packages = append(packages, p)
 				}
-				packages = append(packages, p)
+			} else {
+				for _, inc := range patch.Include {
+					packages = append(packages, mirrorv1alpha1.IncludePackage{Name: inc})
+				}
 			}
-		} else {
-			for _, name := range patch.Include {
-				packages = append(packages, mirrorv1alpha1.IncludePackage{Name: name})
-			}
+			is.Spec.Mirror.Operators[i].Packages = packages
 		}
-		is.Spec.Mirror.Operators[i].Packages = packages
-	}
+		if !found {
+			return errCatalogSlugNotFound
+		}
+		return nil
+	})
 
-	if !found {
-		http.Error(w, fmt.Sprintf("catalog slug %q not found in ImageSet", slug), http.StatusNotFound)
-		return
-	}
-
-	if err := c.Update(r.Context(), is); err != nil {
-		if apierrors.IsForbidden(err) {
+	if err != nil {
+		switch {
+		case errors.Is(err, errCatalogSlugNotFound):
+			http.Error(w, fmt.Sprintf("catalog slug %q not found in ImageSet", slug), http.StatusNotFound)
+		case apierrors.IsNotFound(err):
+			http.Error(w, "ImageSet not found", http.StatusNotFound)
+		case apierrors.IsForbidden(err):
 			http.Error(w, "forbidden: insufficient permissions", http.StatusForbidden)
-		} else {
+		default:
 			http.Error(w, fmt.Sprintf("update ImageSet: %v", err), http.StatusInternalServerError)
 		}
 		return
@@ -1051,23 +1087,23 @@ func (s *Server) handleTriggerRecollect(w http.ResponseWriter, r *http.Request) 
 	namespace, name := vars["namespace"], vars["name"]
 
 	c := s.clientForRequest(r)
-	is := &mirrorv1alpha1.ImageSet{}
-	if err := c.Get(r.Context(), client.ObjectKey{Namespace: namespace, Name: name}, is); err != nil {
+	err := updateImageSetWithRetry(r.Context(), c, namespace, name, func(is *mirrorv1alpha1.ImageSet) error {
+		if is.Annotations == nil {
+			is.Annotations = make(map[string]string)
+		}
+		// A distinct value per request — rather than a constant "true" —
+		// so the catalog-build controller's recollect dedup
+		// (catalogRecollectSigAnnotation in imageset_controller.go) treats
+		// each Recollect click as a genuinely new request rather than a
+		// repeat of one it already honored. See mirror.openshift.io/recollect's
+		// documented usage convention (…=$(date +%s)).
+		is.Annotations[mirrorv1alpha1.RecollectAnnotation] = strconv.FormatInt(time.Now().UnixNano(), 10)
+		return nil
+	})
+	if err != nil {
 		if apierrors.IsNotFound(err) {
 			http.Error(w, "ImageSet not found", http.StatusNotFound)
-		} else {
-			http.Error(w, fmt.Sprintf("get ImageSet: %v", err), http.StatusInternalServerError)
-		}
-		return
-	}
-
-	if is.Annotations == nil {
-		is.Annotations = make(map[string]string)
-	}
-	is.Annotations["mirror.openshift.io/recollect"] = "true"
-
-	if err := c.Update(r.Context(), is); err != nil {
-		if apierrors.IsForbidden(err) {
+		} else if apierrors.IsForbidden(err) {
 			http.Error(w, "forbidden: insufficient permissions", http.StatusForbidden)
 		} else {
 			http.Error(w, fmt.Sprintf("update ImageSet: %v", err), http.StatusInternalServerError)
@@ -1160,22 +1196,6 @@ func (s *Server) handlePatchReleases(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	c := s.clientForRequest(r)
-	is := &mirrorv1alpha1.ImageSet{}
-	if err := c.Get(r.Context(), client.ObjectKey{Namespace: namespace, Name: name}, is); err != nil {
-		if apierrors.IsNotFound(err) {
-			http.Error(w, "ImageSet not found", http.StatusNotFound)
-		} else {
-			http.Error(w, fmt.Sprintf("get ImageSet: %v", err), http.StatusInternalServerError)
-		}
-		return
-	}
-
-	is.Spec.Mirror.Platform.Graph = patch.Graph
-	if patch.Architectures != nil {
-		is.Spec.Mirror.Platform.Architectures = patch.Architectures
-	}
-
 	channels := make([]mirrorv1alpha1.ReleaseChannel, 0, len(patch.Channels))
 	for _, ch := range patch.Channels {
 		pt := mirrorv1alpha1.PlatformType(ch.Type)
@@ -1191,10 +1211,20 @@ func (s *Server) handlePatchReleases(w http.ResponseWriter, r *http.Request) {
 			Full:         ch.Full,
 		})
 	}
-	is.Spec.Mirror.Platform.Channels = channels
 
-	if err := c.Update(r.Context(), is); err != nil {
-		if apierrors.IsForbidden(err) {
+	c := s.clientForRequest(r)
+	err = updateImageSetWithRetry(r.Context(), c, namespace, name, func(is *mirrorv1alpha1.ImageSet) error {
+		is.Spec.Mirror.Platform.Graph = patch.Graph
+		if patch.Architectures != nil {
+			is.Spec.Mirror.Platform.Architectures = patch.Architectures
+		}
+		is.Spec.Mirror.Platform.Channels = channels
+		return nil
+	})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			http.Error(w, "ImageSet not found", http.StatusNotFound)
+		} else if apierrors.IsForbidden(err) {
 			http.Error(w, "forbidden: insufficient permissions", http.StatusForbidden)
 		} else {
 			http.Error(w, fmt.Sprintf("update ImageSet: %v", err), http.StatusInternalServerError)
@@ -1255,20 +1285,14 @@ func (s *Server) handlePatchHelm(w http.ResponseWriter, r *http.Request) {
 	}
 
 	c := s.clientForRequest(r)
-	is := &mirrorv1alpha1.ImageSet{}
-	if err := c.Get(r.Context(), client.ObjectKey{Namespace: namespace, Name: name}, is); err != nil {
+	err = updateImageSetWithRetry(r.Context(), c, namespace, name, func(is *mirrorv1alpha1.ImageSet) error {
+		is.Spec.Mirror.Helm.Repositories = patch.Repositories
+		return nil
+	})
+	if err != nil {
 		if apierrors.IsNotFound(err) {
 			http.Error(w, "ImageSet not found", http.StatusNotFound)
-		} else {
-			http.Error(w, fmt.Sprintf("get ImageSet: %v", err), http.StatusInternalServerError)
-		}
-		return
-	}
-
-	is.Spec.Mirror.Helm.Repositories = patch.Repositories
-
-	if err := c.Update(r.Context(), is); err != nil {
-		if apierrors.IsForbidden(err) {
+		} else if apierrors.IsForbidden(err) {
 			http.Error(w, "forbidden: insufficient permissions", http.StatusForbidden)
 		} else {
 			http.Error(w, fmt.Sprintf("update ImageSet: %v", err), http.StatusInternalServerError)
@@ -1327,17 +1351,6 @@ func (s *Server) handlePatchBlockedImages(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	c := s.clientForRequest(r)
-	is := &mirrorv1alpha1.ImageSet{}
-	if err := c.Get(r.Context(), client.ObjectKey{Namespace: namespace, Name: name}, is); err != nil {
-		if apierrors.IsNotFound(err) {
-			http.Error(w, "ImageSet not found", http.StatusNotFound)
-		} else {
-			http.Error(w, fmt.Sprintf("get ImageSet: %v", err), http.StatusInternalServerError)
-		}
-		return
-	}
-
 	blocked := make([]mirrorv1alpha1.BlockedImage, 0, len(patch.BlockedImages))
 	for _, imgName := range patch.BlockedImages {
 		if imgName == "" {
@@ -1345,10 +1358,16 @@ func (s *Server) handlePatchBlockedImages(w http.ResponseWriter, r *http.Request
 		}
 		blocked = append(blocked, mirrorv1alpha1.BlockedImage{Name: imgName})
 	}
-	is.Spec.Mirror.BlockedImages = blocked
 
-	if err := c.Update(r.Context(), is); err != nil {
-		if apierrors.IsForbidden(err) {
+	c := s.clientForRequest(r)
+	err = updateImageSetWithRetry(r.Context(), c, namespace, name, func(is *mirrorv1alpha1.ImageSet) error {
+		is.Spec.Mirror.BlockedImages = blocked
+		return nil
+	})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			http.Error(w, "ImageSet not found", http.StatusNotFound)
+		} else if apierrors.IsForbidden(err) {
 			http.Error(w, "forbidden: insufficient permissions", http.StatusForbidden)
 		} else {
 			http.Error(w, fmt.Sprintf("update ImageSet: %v", err), http.StatusInternalServerError)
