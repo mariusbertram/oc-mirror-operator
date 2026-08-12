@@ -289,6 +289,15 @@ func (r *CatalogResolver) GetCatalogDigest(ctx context.Context, catalogImage str
 // cannot cause the FBC parse to see different content than what was cached
 // against.
 func (r *CatalogResolver) PinDigest(catalogImage, digest string) (string, error) {
+	return PinDigest(catalogImage, digest)
+}
+
+// PinDigest is the package-level equivalent of (*CatalogResolver).PinDigest —
+// a pure string transform that needs no registry client, so callers outside
+// this package (e.g. the ImageSet controller pinning a CatalogBuildJob's
+// source reference to the digest the manager already resolved and mirrored
+// against) can use it without constructing a CatalogResolver.
+func PinDigest(catalogImage, digest string) (string, error) {
 	parsed, err := ref.New(catalogImage)
 	if err != nil {
 		return "", fmt.Errorf("parse catalog image reference: %w", err)

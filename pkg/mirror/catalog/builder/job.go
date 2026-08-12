@@ -129,18 +129,30 @@ func safeJobName(prefix string, parts ...string) string { //nolint:unparam
 }
 
 // EnsureCatalogBuildJob creates a Job that builds the filtered catalog image
-// from sourceCatalog and pushes the result to targetRef.  If a Job with the
+// from pullCatalog and pushes the result to targetRef. If a Job with the
 // same name already exists the call is a no-op.
+//
+// jobNameCatalog and pullCatalog are deliberately separate: jobNameCatalog
+// (typically the ImageSet spec's raw, possibly-tag-based catalog reference)
+// determines the Job's identity, so callers computing status/rebuild
+// decisions via JobName(is.Name, jobNameCatalog) elsewhere keep seeing the
+// same Job across reconciles. pullCatalog is what actually gets pulled by
+// the Job — callers should pass a digest-pinned reference here (see
+// pkg/mirror/catalog.PinDigest) rather than a mutable tag, so the catalog
+// that gets built and pushed is guaranteed to reference exactly the content
+// already mirrored, never a newer upstream revision the manager hasn't
+// mirrored yet.
 func (m *CatalogBuildManager) EnsureCatalogBuildJob(
 	ctx context.Context,
 	c client.Client,
 	is *mirrorv1alpha1.ImageSet,
 	mt *mirrorv1alpha1.MirrorTarget,
-	sourceCatalog string,
+	jobNameCatalog string,
+	pullCatalog string,
 	targetRef string,
 	packages []mirrorv1alpha1.IncludePackage,
 ) error {
-	name := JobName(is.Name, sourceCatalog)
+	name := JobName(is.Name, jobNameCatalog)
 
 	existing := &batchv1.Job{}
 	err := c.Get(ctx, client.ObjectKey{Name: name, Namespace: is.Namespace}, existing)
@@ -151,7 +163,7 @@ func (m *CatalogBuildManager) EnsureCatalogBuildJob(
 		return fmt.Errorf("failed to check for existing CatalogBuildJob %s: %w", name, err)
 	}
 
-	job := m.buildJobSpec(name, is, mt, sourceCatalog, targetRef, packages)
+	job := m.buildJobSpec(name, is, mt, pullCatalog, targetRef, packages)
 	if createErr := c.Create(ctx, job); createErr != nil {
 		return fmt.Errorf("failed to create CatalogBuildJob %s: %w", name, createErr)
 	}

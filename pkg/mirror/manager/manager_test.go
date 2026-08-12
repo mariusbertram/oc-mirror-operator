@@ -33,24 +33,24 @@ var _ = Describe("Mirror Manager", func() {
 
 	Context("Operator cache versioning", func() {
 		It("should build a versioned cache token", func() {
-			token := operatorCacheValue("sha256:abc123")
-			Expect(token).To(Equal(operatorCacheVersion + ":sha256:abc123"))
+			token := mirrorv1alpha1.OperatorCacheValue("sha256:abc123")
+			Expect(token).To(Equal(mirrorv1alpha1.OperatorCacheVersion + ":sha256:abc123"))
 		})
 
 		It("should match when version and digest are the same", func() {
-			Expect(operatorCacheHit("v5:sha256:abc123", "sha256:abc123")).To(BeTrue())
+			Expect(mirrorv1alpha1.OperatorCacheHit("v5:sha256:abc123", "sha256:abc123")).To(BeTrue())
 		})
 
 		It("should NOT match an old unversioned annotation (forces re-resolution on upgrade)", func() {
-			Expect(operatorCacheHit("sha256:abc123", "sha256:abc123")).To(BeFalse())
+			Expect(mirrorv1alpha1.OperatorCacheHit("sha256:abc123", "sha256:abc123")).To(BeFalse())
 		})
 
 		It("should NOT match when digest changed", func() {
-			Expect(operatorCacheHit("v5:sha256:old", "sha256:new")).To(BeFalse())
+			Expect(mirrorv1alpha1.OperatorCacheHit("v5:sha256:old", "sha256:new")).To(BeFalse())
 		})
 
 		It("should NOT match empty cached value", func() {
-			Expect(operatorCacheHit("", "sha256:abc123")).To(BeFalse())
+			Expect(mirrorv1alpha1.OperatorCacheHit("", "sha256:abc123")).To(BeFalse())
 		})
 	})
 
@@ -115,7 +115,7 @@ var _ = Describe("Mirror Manager", func() {
 			is := &mirrorv1alpha1.ImageSet{
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{
-						mirrorv1alpha1.CatalogDigestAnnotationPrefix + "abc": operatorCacheVersion + ":sha256:xyz",
+						mirrorv1alpha1.CatalogDigestAnnotationPrefix + "abc": mirrorv1alpha1.OperatorCacheVersion + ":sha256:xyz",
 						"unrelated-annotation":                               "value",
 					},
 				},
@@ -174,7 +174,7 @@ var _ = Describe("Mirror Manager", func() {
 			is := &mirrorv1alpha1.ImageSet{
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{
-						mirrorv1alpha1.CatalogDigestAnnotationPrefix + "abc": operatorCacheVersion + ":sha256:xyz",
+						mirrorv1alpha1.CatalogDigestAnnotationPrefix + "abc": mirrorv1alpha1.OperatorCacheVersion + ":sha256:xyz",
 					},
 					Generation: 1,
 				},

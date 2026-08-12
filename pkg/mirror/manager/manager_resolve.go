@@ -41,17 +41,6 @@ import (
 	"github.com/operator-framework/operator-registry/alpha/declcfg"
 )
 
-// operatorCacheVersion is bumped whenever the operator resolution or filtering
-// logic changes semantically (e.g. heads-only channel filtering).  Old cached
-// annotation values that were written with a different (or no) version prefix
-// will not match the fresh value, forcing a re-resolution.
-const operatorCacheVersion = "v5"
-
-// operatorCacheValue builds the cache token written to the ImageSet annotation.
-func operatorCacheValue(digest string) string {
-	return operatorCacheVersion + ":" + digest
-}
-
 // saveCatalogPackages persists catalog package information in two ConfigMaps:
 //   - oc-mirror-<target>-<slug>-packages: filtered packages (all selected bundles)
 //   - oc-mirror-<target>-<slug>-upstream-packages: upstream packages (channel heads only)
@@ -145,12 +134,6 @@ func (m *MirrorManager) writeCatalogPackagesCM(ctx context.Context, slug string,
 		_ = controllerutil.SetControllerReference(mt, existing, m.Scheme)
 	}
 	return m.Client.Update(ctx, existing)
-}
-
-// operatorCacheHit returns true if the cached annotation value matches the
-// current cache token for the given digest.
-func operatorCacheHit(cached, digest string) bool {
-	return cached != "" && cached == operatorCacheValue(digest)
 }
 
 // resolveImageSet enumerates the upstream content (releases, operator
@@ -608,8 +591,8 @@ func (m *MirrorManager) resolveOperatorSection( //nolint:unparam
 			DisplayName:   catSlug,
 		}
 
-		cacheToken := operatorCacheValue(freshDigest)
-		if !recollect && operatorCacheHit(cached, freshDigest) {
+		cacheToken := mirrorv1alpha1.OperatorCacheValue(freshDigest)
+		if !recollect && mirrorv1alpha1.OperatorCacheHit(cached, freshDigest) {
 			carryOverByOriginAndSig(currentState, newState, imagestate.OriginOperator, sig, originRef)
 			// Ensure upstream packages CM exists even on a cache hit. This handles
 			// the first run after the feature was added (existing clusters).
@@ -969,14 +952,15 @@ func effectivePollInterval(mt *mirrorv1alpha1.MirrorTarget) (time.Duration, bool
 }
 
 // hasStaleCacheAnnotations returns true if any catalog-digest cache annotation
-// on the ImageSet was written with an older operatorCacheVersion. This forces
-// re-resolution after an operator binary upgrade that changed the filtering
-// logic (e.g. heads-only), even if the ImageSet spec itself hasn't changed.
+// on the ImageSet was written with an older mirrorv1alpha1.OperatorCacheVersion.
+// This forces re-resolution after an operator binary upgrade that changed the
+// filtering logic (e.g. heads-only), even if the ImageSet spec itself hasn't
+// changed.
 func hasStaleCacheAnnotations(is *mirrorv1alpha1.ImageSet) bool {
 	if is.Annotations == nil {
 		return false
 	}
-	prefix := operatorCacheVersion + ":"
+	prefix := mirrorv1alpha1.OperatorCacheVersion + ":"
 	for k, v := range is.Annotations {
 		if strings.HasPrefix(k, mirrorv1alpha1.CatalogDigestAnnotationPrefix) {
 			if !strings.HasPrefix(v, prefix) {

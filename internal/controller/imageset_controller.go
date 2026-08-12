@@ -21,6 +21,7 @@ import (
 
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
 	ocmetrics "github.com/mariusbertram/oc-mirror-operator/pkg/metrics"
+	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/catalog"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/catalog/builder"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/imagestate"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/resources"
@@ -34,6 +35,12 @@ type ImageSetReconciler struct {
 }
 
 const conditionCatalogReady = "CatalogReady"
+
+// reasonWaitingForOperatorMirror is the CatalogReady condition reason used
+// whenever a catalog build is deferred because operator bundle images
+// aren't (yet) confirmed mirrored — including when there's no resolved
+// digest to pin the build to. Shared with tests, which assert on it too.
+const reasonWaitingForOperatorMirror = "WaitingForOperatorMirror"
 
 // catalogBuildSigAnnotation caches the signature (operator image + packages)
 // of the last catalog build, so a spec change can be detected without
@@ -248,7 +255,7 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs( //nolint:gocyclo
 				"imageSet", is.Name)
 		}
 		setCondition(&is.Status.Conditions, conditionCatalogReady, metav1.ConditionFalse,
-			"WaitingForOperatorMirror",
+			reasonWaitingForOperatorMirror,
 			"waiting for operator bundle images to be mirrored before building filtered catalog",
 			is.Generation)
 		return r.Status().Update(ctx, is)
@@ -333,7 +340,7 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs( //nolint:gocyclo
 				"imageSet", is.Name)
 		}
 		setCondition(&is.Status.Conditions, conditionCatalogReady, metav1.ConditionFalse,
-			"WaitingForOperatorMirror",
+			reasonWaitingForOperatorMirror,
 			"waiting for operator bundle images to be mirrored before rebuilding filtered catalog",
 			is.Generation)
 		return r.Status().Update(ctx, is)
@@ -416,7 +423,22 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs( //nolint:gocyclo
 
 		// Ensure the Job exists (no-op if it already does).
 		if phase == builder.JobPhaseNotFound {
-			if err := r.CatalogBuildMgr.EnsureCatalogBuildJob(ctx, r.Client, is, mt, op.Catalog, targetRef, packages); err != nil {
+			// Pin the Job's actual pull target to the exact digest the
+			// manager already resolved and mirrored images against (rather
+			// than the raw, possibly-tag-based op.Catalog): see
+			// pinnedCatalogRef's doc comment for why an unpinned pull here
+			// is unsafe.
+			pullCatalog, pinOK := pinnedCatalogRef(is, op)
+			if !pinOK {
+				l.Info("Catalog build deferred: no resolved digest recorded yet for catalog entry",
+					"imageSet", is.Name, "catalog", op.Catalog)
+				setCondition(&is.Status.Conditions, conditionCatalogReady, metav1.ConditionFalse,
+					reasonWaitingForOperatorMirror,
+					"waiting for the manager to record a resolved catalog digest before building the filtered catalog",
+					is.Generation)
+				return r.Status().Update(ctx, is)
+			}
+			if err := r.CatalogBuildMgr.EnsureCatalogBuildJob(ctx, r.Client, is, mt, op.Catalog, pullCatalog, targetRef, packages); err != nil {
 				return fmt.Errorf("failed to ensure CatalogBuildJob for %s: %w", op.Catalog, err)
 			}
 			phase, err = builder.GetBuildJobStatus(ctx, r.Client, jobName, is.Namespace)
@@ -540,6 +562,37 @@ func operatorImagesMirrored(ctx context.Context, c client.Client, is *mirrorv1al
 	}
 
 	return hasOperator, true
+}
+
+// pinnedCatalogRef returns op.Catalog rewritten to reference the exact
+// digest the manager last successfully resolved and mirrored images
+// against, read from the mirrorv1alpha1.CatalogDigestAnnotationKey
+// annotation the manager writes in resolveOperatorSection. Returns
+// ok=false if that annotation is absent or unparseable, i.e. there is no
+// known-good digest to pin to.
+//
+// This exists because op.Catalog is normally a mutable tag (e.g.
+// "…redhat-operator-index:v4.18"). Without pinning, a CatalogBuildJob
+// launched here would re-resolve that tag independently, at whatever
+// moment the Job pod actually runs — which can be long after (and thus
+// resolve to a NEWER digest than) the manager's last resolve. The result is
+// a pushed catalog image that advertises operator bundle versions the
+// manager has not mirrored yet (and may not even know about), which shows
+// up to cluster admins as ImagePullBackOff for operators the catalog claims
+// to have. Pinning to the manager's own last-resolved digest guarantees the
+// build only ever references content that is already known to be mirrored.
+func pinnedCatalogRef(is *mirrorv1alpha1.ImageSet, op mirrorv1alpha1.Operator) (string, bool) {
+	sig := mirrorv1alpha1.OperatorEntrySignature(op)
+	annoKey := mirrorv1alpha1.CatalogDigestAnnotationKey(sig)
+	digest, ok := mirrorv1alpha1.ParseOperatorCacheDigest(is.Annotations[annoKey])
+	if !ok {
+		return "", false
+	}
+	pinned, err := catalog.PinDigest(op.Catalog, digest)
+	if err != nil {
+		return "", false
+	}
+	return pinned, true
 }
 
 // SetupWithManager sets up the controller with the Manager.

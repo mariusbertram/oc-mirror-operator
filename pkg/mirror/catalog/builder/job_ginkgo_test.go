@@ -584,7 +584,7 @@ var _ = Describe("EnsureCatalogBuildJob", func() {
 
 	It("creates a new job when none exists", func() {
 		c := newFakeClient()
-		err := mgr.EnsureCatalogBuildJob(ctx, c, is, mt, "quay.io/catalog:v1", "mirror/catalog:v1", nil)
+		err := mgr.EnsureCatalogBuildJob(ctx, c, is, mt, "quay.io/catalog:v1", "quay.io/catalog:v1", "mirror/catalog:v1", nil)
 		Expect(err).NotTo(HaveOccurred())
 
 		name := JobName(is.Name, "quay.io/catalog:v1")
@@ -596,10 +596,10 @@ var _ = Describe("EnsureCatalogBuildJob", func() {
 	It("is a no-op when a job already exists", func() {
 		c := newFakeClient()
 
-		err := mgr.EnsureCatalogBuildJob(ctx, c, is, mt, "quay.io/catalog:v1", "mirror/catalog:v1", nil)
+		err := mgr.EnsureCatalogBuildJob(ctx, c, is, mt, "quay.io/catalog:v1", "quay.io/catalog:v1", "mirror/catalog:v1", nil)
 		Expect(err).NotTo(HaveOccurred())
 
-		err = mgr.EnsureCatalogBuildJob(ctx, c, is, mt, "quay.io/catalog:v1", "mirror/catalog:v1", nil)
+		err = mgr.EnsureCatalogBuildJob(ctx, c, is, mt, "quay.io/catalog:v1", "quay.io/catalog:v1", "mirror/catalog:v1", nil)
 		Expect(err).NotTo(HaveOccurred())
 	})
 
@@ -609,7 +609,7 @@ var _ = Describe("EnsureCatalogBuildJob", func() {
 			{Name: "web-terminal"},
 			{Name: "local-storage"},
 		}
-		err := mgr.EnsureCatalogBuildJob(ctx, c, is, mt, "quay.io/catalog:v1", "mirror/catalog:v1", p)
+		err := mgr.EnsureCatalogBuildJob(ctx, c, is, mt, "quay.io/catalog:v1", "quay.io/catalog:v1", "mirror/catalog:v1", p)
 		Expect(err).NotTo(HaveOccurred())
 
 		name := JobName(is.Name, "quay.io/catalog:v1")

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -438,7 +439,7 @@ var _ = Describe("Coverage tests", func() {
 			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: isName, Namespace: ns}, is)).To(Succeed())
 			var found bool
 			for _, c := range is.Status.Conditions {
-				if c.Type == conditionCatalogReady && c.Reason == "WaitingForOperatorMirror" {
+				if c.Type == conditionCatalogReady && c.Reason == reasonWaitingForOperatorMirror {
 					found = true
 				}
 			}
@@ -463,22 +464,31 @@ var _ = Describe("Coverage tests", func() {
 			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
 			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, mt) })
 
+			op := mirrorv1alpha1.Operator{
+				Catalog: "quay.io/redhat/catalog:v4.21",
+				IncludeConfig: mirrorv1alpha1.IncludeConfig{
+					Packages: []mirrorv1alpha1.IncludePackage{{Name: "web-terminal"}},
+				},
+			}
+			// pinnedCatalogRef requires a resolved-digest annotation (written
+			// by the manager once it has actually mirrored images for this
+			// entry) before a CatalogBuildJob will be created — this is the
+			// digest-pinning gate that stops a build from ever pulling
+			// content the manager hasn't mirrored yet.
+			digestAnnoKey := mirrorv1alpha1.CatalogDigestAnnotationKey(mirrorv1alpha1.OperatorEntrySignature(op))
+
 			is := &mirrorv1alpha1.ImageSet{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:        isName,
-					Namespace:   ns,
-					Annotations: map[string]string{mirrorv1alpha1.RecollectAnnotation: ""},
+					Name:      isName,
+					Namespace: ns,
+					Annotations: map[string]string{
+						mirrorv1alpha1.RecollectAnnotation: "",
+						digestAnnoKey:                      mirrorv1alpha1.OperatorCacheValue("sha256:abc123"),
+					},
 				},
 				Spec: mirrorv1alpha1.ImageSetSpec{
 					Mirror: mirrorv1alpha1.Mirror{
-						Operators: []mirrorv1alpha1.Operator{
-							{
-								Catalog: "quay.io/redhat/catalog:v4.21",
-								IncludeConfig: mirrorv1alpha1.IncludeConfig{
-									Packages: []mirrorv1alpha1.IncludePackage{{Name: "web-terminal"}},
-								},
-							},
-						},
+						Operators: []mirrorv1alpha1.Operator{op},
 					},
 				},
 			}
@@ -508,6 +518,140 @@ var _ = Describe("Coverage tests", func() {
 				}
 			}
 			Expect(foundRunning).To(BeTrue(), "expected CatalogReady=CatalogBuildRunning")
+		})
+
+		It("pins the CatalogBuildJob's pull target to the resolved digest, not the mutable tag", func() {
+			// Regression test: op.Catalog is a mutable tag. Without pinning,
+			// a CatalogBuildJob re-resolves that tag independently of the
+			// manager, at whatever moment the Job pod actually runs — which
+			// can land on a NEWER upstream digest than what the manager last
+			// mirrored, producing a catalog that advertises operator bundle
+			// versions never actually pushed to the target registry. The Job
+			// must instead pull the exact digest recorded in the manager's
+			// own resolved-digest annotation.
+			localCtx := context.Background()
+			isName := "is-catbuild-pin"
+			mtName := "mt-catbuild-pin"
+
+			Expect(os.Setenv("OPERATOR_IMAGE", "test-operator:latest")).To(Succeed())
+			Expect(os.Setenv("MANAGER_IMAGE", "test-manager:latest")).To(Succeed())
+			Expect(os.Setenv("WORKER_IMAGE", "test-worker:latest")).To(Succeed())
+			bm, bmErr := builder.New()
+			Expect(bmErr).NotTo(HaveOccurred())
+
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: mtName, Namespace: ns},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com", ImageSets: []string{isName}},
+			}
+			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, mt) })
+
+			op := mirrorv1alpha1.Operator{Catalog: "quay.io/redhat/pincat:v4.21"}
+			digestAnnoKey := mirrorv1alpha1.CatalogDigestAnnotationKey(mirrorv1alpha1.OperatorEntrySignature(op))
+			resolvedDigest := "sha256:" + strings.Repeat("a", 64)
+
+			is := &mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      isName,
+					Namespace: ns,
+					Annotations: map[string]string{
+						mirrorv1alpha1.RecollectAnnotation: "",
+						digestAnnoKey:                      mirrorv1alpha1.OperatorCacheValue(resolvedDigest),
+					},
+				},
+				Spec: mirrorv1alpha1.ImageSetSpec{
+					Mirror: mirrorv1alpha1.Mirror{Operators: []mirrorv1alpha1.Operator{op}},
+				},
+			}
+			Expect(k8sClient.Create(localCtx, is)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, is) })
+
+			r := &ImageSetReconciler{
+				Client:          k8sClient,
+				Scheme:          k8sClient.Scheme(),
+				CatalogBuildMgr: bm,
+			}
+			Expect(r.reconcileCatalogBuildJobs(localCtx, is, mt, false)).To(Succeed())
+
+			// The Job is still identified/tracked by the raw tag reference
+			// (stable across digest churn)...
+			jobName := builder.JobName(isName, "quay.io/redhat/pincat:v4.21")
+			job := &batchv1.Job{}
+			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: jobName, Namespace: ns}, job)).To(Succeed())
+			DeferCleanup(func() {
+				prop := metav1.DeletePropagationBackground
+				_ = k8sClient.Delete(localCtx, job, &client.DeleteOptions{PropagationPolicy: &prop})
+			})
+
+			// ...but what it actually pulls (SOURCE_CATALOG) must be pinned
+			// to the resolved digest, never the raw mutable tag.
+			var sourceCatalog string
+			for _, e := range job.Spec.Template.Spec.Containers[0].Env {
+				if e.Name == builder.EnvSourceCatalog {
+					sourceCatalog = e.Value
+				}
+			}
+			Expect(sourceCatalog).To(Equal("quay.io/redhat/pincat@" + resolvedDigest))
+		})
+
+		It("defers catalog build when the gate is open but no resolved digest is recorded yet", func() {
+			// Even when recollect (or any other gate) opens the door to a
+			// build, EnsureCatalogBuildJob must never run against an
+			// unpinned tag — if the manager hasn't recorded a resolved
+			// digest for this entry yet, the build has to wait rather than
+			// guess at upstream content.
+			localCtx := context.Background()
+			isName := "is-catbuild-nodigest"
+			mtName := "mt-catbuild-nodigest"
+
+			Expect(os.Setenv("OPERATOR_IMAGE", "test-operator:latest")).To(Succeed())
+			Expect(os.Setenv("MANAGER_IMAGE", "test-manager:latest")).To(Succeed())
+			Expect(os.Setenv("WORKER_IMAGE", "test-worker:latest")).To(Succeed())
+			bm, bmErr := builder.New()
+			Expect(bmErr).NotTo(HaveOccurred())
+
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: mtName, Namespace: ns},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com", ImageSets: []string{isName}},
+			}
+			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, mt) })
+
+			is := &mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        isName,
+					Namespace:   ns,
+					Annotations: map[string]string{mirrorv1alpha1.RecollectAnnotation: ""},
+				},
+				Spec: mirrorv1alpha1.ImageSetSpec{
+					Mirror: mirrorv1alpha1.Mirror{
+						Operators: []mirrorv1alpha1.Operator{{Catalog: "quay.io/redhat/nodigest:v4.21"}},
+					},
+				},
+			}
+			Expect(k8sClient.Create(localCtx, is)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, is) })
+
+			r := &ImageSetReconciler{
+				Client:          k8sClient,
+				Scheme:          k8sClient.Scheme(),
+				CatalogBuildMgr: bm,
+			}
+			Expect(r.reconcileCatalogBuildJobs(localCtx, is, mt, false)).To(Succeed())
+
+			jobName := builder.JobName(isName, "quay.io/redhat/nodigest:v4.21")
+			j := &batchv1.Job{}
+			err := k8sClient.Get(localCtx, types.NamespacedName{Name: jobName, Namespace: ns}, j)
+			Expect(err).To(HaveOccurred(), "no job should be created without a resolved digest to pin to")
+
+			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: isName, Namespace: ns}, is)).To(Succeed())
+			var foundDeferred bool
+			for _, c := range is.Status.Conditions {
+				if c.Type == conditionCatalogReady && c.Reason == reasonWaitingForOperatorMirror {
+					foundDeferred = true
+				}
+			}
+			Expect(foundDeferred).To(BeTrue(), "expected CatalogReady=WaitingForOperatorMirror")
 		})
 
 		It("sets CatalogReady=True when all jobs succeeded", func() {
@@ -939,7 +1083,7 @@ var _ = Describe("Coverage tests", func() {
 			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: isName, Namespace: ns}, is)).To(Succeed())
 			var foundDeferred bool
 			for _, c := range is.Status.Conditions {
-				if c.Type == conditionCatalogReady && c.Reason == "WaitingForOperatorMirror" {
+				if c.Type == conditionCatalogReady && c.Reason == reasonWaitingForOperatorMirror {
 					foundDeferred = true
 				}
 			}
