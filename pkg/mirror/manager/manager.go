@@ -97,9 +97,19 @@ type MirrorManager struct {
 	// dest-keyed map for O(1) worker status/should-mirror lookups regardless
 	// of how many ImageSets reference a destination.
 	owners         map[string][]string
-	lastDriftCheck time.Time // last time we verified all mirrored images
+	lastDriftCheck time.Time // last time a drift-check sweep was started
 	stateDirty     bool      // true when imageState/owners has unsaved changes
 	statusDirty    bool      // true when ImageSet.status needs a Kubernetes write
+
+	// driftSweepRunning is true while a background drift-check sweep (see
+	// startDriftSweepLocked) is in flight, so reconcile() doesn't launch a
+	// second overlapping one. The sweep itself runs outside reconcile()'s
+	// call stack — reconcile() only ever holds m.mu for as long as it takes
+	// to snapshot which destinations to check or apply one result, never for
+	// the CheckExist network calls themselves, so it stays responsive
+	// (dispatching new worker batches, handling status callbacks) for the
+	// entire, potentially hours-long, duration of a large sweep.
+	driftSweepRunning bool
 }
 
 func New(targetName, namespace string, scheme *runtime.Scheme) (*MirrorManager, error) {
@@ -579,33 +589,182 @@ func (m *MirrorManager) cleanupFinishedWorkers(ctx context.Context) {
 	}
 }
 
-// checkExistWithRetry calls CheckExist for dest using the cached client. If
-// the call fails with an HTTP 400 — bearer token scope too large for
-// HAProxy/nginx proxies fronting some registries (e.g. Quay's nginx rejects
-// tokens > ~8 KB once accumulated across enough repositories) — the cached
-// client is discarded and the check is retried once against a fresh client
-// with an empty token scope, since the accumulated scope, not the image
-// itself, is almost always the cause.
+// checkExistNoLock calls CheckExist for dest using the cached client. If the
+// call fails with an HTTP 400 — bearer token scope too large for HAProxy/
+// nginx proxies fronting some registries (e.g. Quay's nginx rejects tokens >
+// ~8 KB once accumulated across enough repositories) — the cached client is
+// discarded and the check is retried once against a fresh client with an
+// empty token scope, since the accumulated scope, not the image itself, is
+// almost always the cause.
 //
-// Caller must hold m.mu; it is released for the duration of each network
-// call and re-acquired before returning, exactly as a single CheckExist call
-// would.
-func (m *MirrorManager) checkExistWithRetry(ctx context.Context, dest string) (bool, error) {
+// Unlike the rest of the manager's helpers, this does NOT touch m.mu at all:
+// it is called concurrently by the background drift sweep (see
+// startDriftSweepLocked) across many goroutines at once, purely to perform
+// the network call. Callers apply the result under the lock separately.
+func (m *MirrorManager) checkExistNoLock(ctx context.Context, dest string) (bool, error) {
 	// Use cached client; ClientCache automatically refreshes every 5 minutes
 	// to prevent auth token scope accumulation.
 	checkClient, _ := m.clientCache.GetOrCreate(nil, m.authConfigPath)
-	m.mu.Unlock()
 	exists, checkErr := checkClient.CheckExist(ctx, dest)
-	m.mu.Lock()
 	if checkErr == nil || !errors.Is(checkErr, errs.ErrHTTPStatus) || !strings.Contains(checkErr.Error(), "400") {
 		return exists, checkErr
 	}
 
 	freshClient, _ := m.clientCache.RefreshClient(nil, m.authConfigPath)
-	m.mu.Unlock()
-	exists, checkErr = freshClient.CheckExist(ctx, dest)
+	return freshClient.CheckExist(ctx, dest)
+}
+
+// driftSweepConcurrency bounds how many CheckExist calls the background
+// drift sweep runs against the target registry in parallel. Chosen to make
+// meaningful progress through MirrorTargets with tens of thousands of
+// images without hammering the registry harder than the existing worker
+// concurrency already does.
+const driftSweepConcurrency = 20
+
+// startDriftSweepLocked launches an asynchronous drift-check sweep over every
+// currently Mirrored or PermanentlyFailed entry, unless one is already
+// running. Caller must hold m.mu; the actual CheckExist calls happen in
+// background goroutines that only briefly re-acquire m.mu per destination to
+// read a snapshot and apply results — the sweep never blocks reconcile()'s
+// own call stack.
+//
+// This replaces a previous design where the entire sweep ran inline inside a
+// single reconcile() call: for a MirrorTarget with tens of thousands of
+// images, that could take hours, during which Phase E (dispatching new
+// worker batches) never ran even with idle worker capacity — mirroring
+// progress visibly stalled for the whole sweep. Running it in the
+// background instead means reconcile() keeps ticking normally (new pending
+// images keep getting dispatched, status callbacks keep being handled)
+// while the sweep makes progress concurrently, and results are applied
+// incrementally as each check completes.
+func (m *MirrorManager) startDriftSweepLocked(ctx context.Context, requireSignedByIS map[string]bool) {
+	if m.driftSweepRunning {
+		return
+	}
+	destinations := make([]string, 0, len(m.imageState))
+	for dest, entry := range m.imageState {
+		if entry == nil {
+			continue
+		}
+		if entry.State == stateMirrored || (entry.State == stateFailed && entry.PermanentlyFailed) {
+			destinations = append(destinations, dest)
+		}
+	}
+	if len(destinations) == 0 {
+		return
+	}
+	m.driftSweepRunning = true
+	oclog.Printf("CheckExist: starting background drift sweep for %d images\n", len(destinations))
+	go m.runDriftSweep(ctx, destinations, requireSignedByIS)
+}
+
+// runDriftSweep checks every destination in destinations against the target
+// registry, bounded to driftSweepConcurrency in flight at once, and applies
+// each result to the shared imagestate as it completes. Must be started via
+// `go m.runDriftSweep(...)` — does not hold m.mu itself except briefly inside
+// checkDriftOne.
+func (m *MirrorManager) runDriftSweep(ctx context.Context, destinations []string, requireSignedByIS map[string]bool) {
+	defer func() {
+		m.mu.Lock()
+		m.driftSweepRunning = false
+		m.mu.Unlock()
+		oclog.Println("CheckExist: background drift sweep complete")
+	}()
+
+	sem := make(chan struct{}, driftSweepConcurrency)
+	var wg sync.WaitGroup
+	for _, dest := range destinations {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(dest string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			m.checkDriftOne(ctx, dest, requireSignedByIS)
+		}(dest)
+	}
+	wg.Wait()
+}
+
+// checkDriftOne verifies a single destination against the target registry
+// and applies the result to the shared imagestate, mirroring the checks a
+// synchronous sweep used to perform inline in reconcile()'s Phase D. Holds
+// m.mu only for the brief snapshot-read and result-apply steps around the
+// (lock-free) network call.
+func (m *MirrorManager) checkDriftOne(ctx context.Context, dest string, requireSignedByIS map[string]bool) {
 	m.mu.Lock()
-	return exists, checkErr
+	entry, ok := m.imageState[dest]
+	if !ok || entry == nil || len(m.owners[dest]) == 0 {
+		m.mu.Unlock()
+		return
+	}
+	permanentlyFailedRecoveryCheck := entry.State == stateFailed && entry.PermanentlyFailed
+	if entry.State != stateMirrored && !permanentlyFailedRecoveryCheck {
+		// Spec narrowing, a fresh resolve, or a worker callback already
+		// changed this entry since the sweep snapshot was taken — it's no
+		// longer in a state this sweep is responsible for.
+		m.mu.Unlock()
+		return
+	}
+	m.mu.Unlock()
+
+	exists, checkErr := m.checkExistNoLock(ctx, dest)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	entry, ok = m.imageState[dest]
+	if !ok || entry == nil {
+		return
+	}
+
+	if permanentlyFailedRecoveryCheck {
+		// During CheckExist windows, verify the target registry. If not
+		// found, reset for a fresh retry cycle (handles transient upstream
+		// unavailability). PermanentlyFailed stays true so the
+		// catalog-build gate remains open.
+		if checkErr != nil {
+			oclog.Printf("CheckExist error for permanently-failed image %s: %v – keeping Failed\n", dest, checkErr)
+			return
+		}
+		if exists {
+			oclog.Printf("Permanently-failed image %s found in target; marking Mirrored\n", dest)
+			m.mirrored[dest] = true
+			entry.State = stateMirrored
+			entry.LastError = ""
+			m.stateDirty = true
+		} else {
+			oclog.Printf("Permanently-failed image %s not in target; resetting for retry\n", dest)
+			entry.State = statePending
+			entry.RetryCount = 0 // fresh 10-attempt window; PermanentlyFailed stays true
+			m.stateDirty = true
+		}
+		return
+	}
+
+	if checkErr != nil {
+		oclog.Printf("CheckExist error for %s: %v – assuming present\n", dest, checkErr)
+		m.mirrored[dest] = true
+		return
+	}
+	if !exists {
+		oclog.Printf("Image %s marked Mirrored but not found in registry; resetting to Pending\n", dest)
+		entry.State = statePending
+		entry.LastError = ""
+		entry.RetryCount = 0
+		m.stateDirty = true
+		return
+	}
+	if m.additionalImageDriftedLocked(ctx, entry) {
+		oclog.Printf("Additional image %s: upstream source %s has moved; resetting to Pending for re-mirror\n", dest, entry.Source)
+		entry.State = statePending
+		entry.LastError = ""
+		entry.RetryCount = 0
+		m.stateDirty = true
+		return
+	}
+	m.mirrored[dest] = true
+	if !entry.SignatureVerified && anyOwnerRequiresSignedImages(m.owners[dest], requireSignedByIS) {
+		m.verifySignedImageLocked(ctx, dest, entry)
+	}
 }
 
 // additionalImageDriftedLocked reports whether a tag-referenced additional
@@ -812,24 +971,10 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 		}
 	}
 
-	// Phase C: Drift check setup — reset once per CheckExist interval.
-	checkExistInterval := 6 * time.Hour
-	if mt.Spec.CheckExistInterval != nil && mt.Spec.CheckExistInterval.Duration >= time.Hour {
-		checkExistInterval = mt.Spec.CheckExistInterval.Duration
-	}
-	driftCheckActive := time.Since(m.lastDriftCheck) > checkExistInterval
-	if driftCheckActive {
-		m.mirrored = make(map[string]bool)
-		m.lastDriftCheck = time.Now()
-		// Refresh the cached client to avoid auth token scope accumulation.
-		// Quay's nginx proxy returns 400 when the Bearer token exceeds ~8 KB.
-		_, _ = m.clientCache.RefreshClient(nil, m.authConfigPath)
-		oclog.Println("CheckExist: verifying images in target registry")
-	}
-
 	// requireSignedByIS records, per currently-relevant ImageSet, whether
-	// Mirror.RequireSignedImages is set — consulted below so a shared
-	// destination is checked if ANY owning ImageSet requires it.
+	// Mirror.RequireSignedImages is set — consulted below (and by the drift
+	// sweep) so a shared destination is checked if ANY owning ImageSet
+	// requires it.
 	requireSignedByIS := make(map[string]bool, len(imageSets.Items))
 	for _, is := range imageSets.Items {
 		if containsString(mt.Spec.ImageSets, is.Name) {
@@ -837,7 +982,26 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 		}
 	}
 
-	// Phase D: Process all entries — drift check + collect pending + sweep orphans.
+	// Phase C: Drift check — launch a background sweep once per CheckExist
+	// interval (see startDriftSweepLocked for why this runs asynchronously
+	// rather than inline).
+	checkExistInterval := 6 * time.Hour
+	if mt.Spec.CheckExistInterval != nil && mt.Spec.CheckExistInterval.Duration >= time.Hour {
+		checkExistInterval = mt.Spec.CheckExistInterval.Duration
+	}
+	if time.Since(m.lastDriftCheck) > checkExistInterval && !m.driftSweepRunning {
+		m.lastDriftCheck = time.Now()
+		// Refresh the cached client to avoid auth token scope accumulation.
+		// Quay's nginx proxy returns 400 when the Bearer token exceeds ~8 KB.
+		_, _ = m.clientCache.RefreshClient(nil, m.authConfigPath)
+		m.startDriftSweepLocked(ctx, requireSignedByIS)
+	}
+
+	// Phase D: Process all entries — collect pending + sweep orphans. Drift
+	// verification itself happens in the background (Phase C); entries are
+	// trusted here and only reset to Pending once the sweep actually finds
+	// them missing, at which point a later tick's pass through this loop
+	// picks up the state change.
 	pendingImages := make([]BatchItem, 0, len(m.imageState))
 	newOrphans := make(imagestate.ImageState)
 
@@ -855,49 +1019,18 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 			m.stateDirty = true
 			continue
 		}
-		// For images marked Mirrored in the ConfigMap but not yet verified
-		// in memory: check the registry during CheckExist windows to confirm
-		// they still exist (drift detection).
-		if entry.State == stateMirrored && !m.mirrored[dest] {
-			if !driftCheckActive {
-				// Outside check window: trust the ConfigMap state.
-				m.mirrored[dest] = true
-				continue
-			}
-			exists, checkErr := m.checkExistWithRetry(ctx, dest)
-			if checkErr != nil {
-				oclog.Printf("CheckExist error for %s: %v – assuming present\n", dest, checkErr)
-				m.mirrored[dest] = true
-				continue
-			}
-			if exists {
-				if m.additionalImageDriftedLocked(ctx, entry) {
-					oclog.Printf("Additional image %s: upstream source %s has moved; resetting to Pending for re-mirror\n", dest, entry.Source)
-					entry.State = statePending
-					entry.LastError = ""
-					entry.RetryCount = 0
-					m.stateDirty = true
-				} else {
-					m.mirrored[dest] = true
-					if !entry.SignatureVerified && anyOwnerRequiresSignedImages(m.owners[dest], requireSignedByIS) {
-						m.verifySignedImageLocked(ctx, dest, entry)
-					}
-					continue
-				}
-			} else {
-				oclog.Printf("Image %s marked Mirrored but not found in registry; resetting to Pending\n", dest)
-				entry.State = statePending
-				entry.LastError = ""
-				entry.RetryCount = 0
-				m.stateDirty = true
-			}
-		}
 
+		if entry.State == stateMirrored {
+			m.mirrored[dest] = true
+			continue
+		}
 		if m.mirrored[dest] {
-			if entry.State != stateMirrored {
-				entry.State = stateMirrored
-				m.stateDirty = true
-			}
+			// Defensive sync: something (e.g. a worker callback landing
+			// between two ticks) already confirmed this destination but the
+			// entry's own State hadn't been updated yet. No network call —
+			// just reconciling two in-memory views of the same fact.
+			entry.State = stateMirrored
+			m.stateDirty = true
 			continue
 		}
 
@@ -906,36 +1039,15 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 				// Transient failure: schedule immediate retry.
 				entry.State = statePending
 				m.stateDirty = true
-			} else {
+			} else if !entry.PermanentlyFailed {
 				// Permanently failed. Ensure the flag is persisted: it may
 				// be missing from the ConfigMap if the manager restarted
 				// before the dirty-flag flush ran (retryCount reached 10
-				// but permanentlyFailed=true was not yet written).
-				if !entry.PermanentlyFailed {
-					entry.PermanentlyFailed = true
-					m.stateDirty = true
-				}
-				if driftCheckActive {
-					// During CheckExist windows, verify the target registry.
-					// If not found, reset for a fresh retry cycle (handles
-					// transient upstream unavailability). PermanentlyFailed
-					// stays true so the catalog-build gate remains open.
-					exists, checkErr := m.checkExistWithRetry(ctx, dest)
-					if checkErr != nil {
-						oclog.Printf("CheckExist error for permanently-failed image %s: %v – keeping Failed\n", dest, checkErr)
-					} else if exists {
-						oclog.Printf("Permanently-failed image %s found in target; marking Mirrored\n", dest)
-						m.mirrored[dest] = true
-						entry.State = stateMirrored
-						entry.LastError = ""
-						m.stateDirty = true
-					} else {
-						oclog.Printf("Permanently-failed image %s not in target; resetting for retry\n", dest)
-						entry.State = statePending
-						entry.RetryCount = 0 // fresh 10-attempt window; PermanentlyFailed stays true
-						m.stateDirty = true
-					}
-				}
+				// but permanentlyFailed=true was not yet written). Recovery
+				// checks against the registry for already-PermanentlyFailed
+				// entries are handled by the background drift sweep.
+				entry.PermanentlyFailed = true
+				m.stateDirty = true
 			}
 			continue
 		}

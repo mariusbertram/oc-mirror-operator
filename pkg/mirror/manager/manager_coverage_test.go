@@ -2746,6 +2746,124 @@ var _ = Describe("Manager Coverage", func() {
 			Expect(hadError).To(BeFalse())
 		})
 	})
+
+	// ─── startDriftSweepLocked / async drift check ──────────────────────
+	//
+	// Regression coverage for the bug where the CheckExist drift sweep ran
+	// synchronously inline in reconcile()'s Phase D: for MirrorTargets with
+	// tens of thousands of images, a single reconcile() call could block for
+	// hours iterating the whole imagestate with one network round-trip per
+	// image, during which Phase E (dispatching new pending work) never ran
+	// even with idle worker capacity. The sweep now runs in a background
+	// goroutine; these tests assert the launcher itself never blocks on the
+	// network, and that a duplicate launch while one is in flight is a no-op.
+
+	Context("startDriftSweepLocked", func() {
+		It("does nothing when there are no Mirrored or PermanentlyFailed entries", func() {
+			m.imageState = imagestate.ImageState{
+				"reg.io/img:v1": &imagestate.ImageEntry{State: statePending},
+			}
+			m.mu.Lock()
+			m.startDriftSweepLocked(context.Background(), map[string]bool{})
+			running := m.driftSweepRunning
+			m.mu.Unlock()
+			Expect(running).To(BeFalse())
+		})
+
+		It("does not launch a second sweep while one is already running", func() {
+			m.imageState = imagestate.ImageState{
+				"reg.io/img:v1": {Source: "quay.io/img:v1", State: stateMirrored},
+			}
+			m.owners = map[string][]string{"reg.io/img:v1": {testImageSetName}}
+
+			m.mu.Lock()
+			m.driftSweepRunning = true // simulate a sweep already in flight
+			m.startDriftSweepLocked(context.Background(), map[string]bool{})
+			running := m.driftSweepRunning
+			m.mu.Unlock()
+			// Still true from the pre-set value — a second call must not
+			// touch it (and, since it returns before doing anything, must
+			// not launch a second background goroutine either).
+			Expect(running).To(BeTrue())
+		})
+
+		It("returns immediately without waiting for the network check, and the background sweep completes on its own", func() {
+			// "*.invalid" is reserved by RFC 2606 to always fail DNS
+			// resolution, so CheckExist fails fast and deterministically
+			// without hitting a real registry.
+			m.imageState = imagestate.ImageState{
+				"no-such-registry.invalid/repo:v1": {
+					Source: "quay.io/repo:v1",
+					State:  stateMirrored,
+					Origin: imagestate.OriginAdditional,
+				},
+			}
+			m.owners = map[string][]string{"no-such-registry.invalid/repo:v1": {testImageSetName}}
+
+			m.mu.Lock()
+			start := time.Now()
+			m.startDriftSweepLocked(context.Background(), map[string]bool{})
+			elapsed := time.Since(start)
+			running := m.driftSweepRunning
+			m.mu.Unlock()
+
+			Expect(elapsed).To(BeNumerically("<", 200*time.Millisecond),
+				"startDriftSweepLocked must launch the sweep in the background, not perform CheckExist calls inline")
+			Expect(running).To(BeTrue())
+
+			Eventually(func() bool {
+				m.mu.Lock()
+				defer m.mu.Unlock()
+				return m.driftSweepRunning
+			}, 10*time.Second, 50*time.Millisecond).Should(BeFalse(), "background sweep should finish on its own")
+		})
+	})
+
+	Context("reconcile with a due drift check", func() {
+		It("does not block waiting for the drift sweep to complete", func() {
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+				Spec: mirrorv1alpha1.MirrorTargetSpec{
+					Registry:  "reg.io",
+					ImageSets: []string{testImageSetName},
+				},
+			}
+			is := &mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{Name: testImageSetName, Namespace: "default", Generation: 1},
+				Status:     mirrorv1alpha1.ImageSetStatus{ObservedGeneration: 1},
+			}
+			c := fake.NewClientBuilder().WithScheme(scheme).
+				WithRuntimeObjects(mt, is).
+				WithStatusSubresource(is).
+				Build()
+			m = NewWithClients(c, m.Clientset, "test", "default", "test-image:latest", "", scheme)
+			m.imageState = imagestate.ImageState{
+				"no-such-registry.invalid/repo:v1": {
+					Source: "quay.io/repo:v1",
+					State:  stateMirrored,
+				},
+			}
+			m.owners = map[string][]string{"no-such-registry.invalid/repo:v1": {testImageSetName}}
+			// Force the drift check to be due.
+			m.lastDriftCheck = time.Now().Add(-7 * time.Hour)
+
+			start := time.Now()
+			err := m.reconcile(context.Background())
+			elapsed := time.Since(start)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(elapsed).To(BeNumerically("<", 1*time.Second),
+				"reconcile() must launch the drift sweep in the background and return promptly")
+			// Phase C should have recorded the sweep as started for this tick.
+			Expect(m.lastDriftCheck).To(BeTemporally(">", time.Now().Add(-1*time.Minute)))
+
+			Eventually(func() bool {
+				m.mu.Lock()
+				defer m.mu.Unlock()
+				return m.driftSweepRunning
+			}, 10*time.Second, 50*time.Millisecond).Should(BeFalse(), "background sweep should finish on its own")
+		})
+	})
 })
 
 // envVarMap converts a slice of env vars to a map for easy assertions.
