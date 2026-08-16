@@ -6,6 +6,6 @@ import { CatalogBrowser } from '../../pages/CatalogBrowser/CatalogBrowser';
 setFetchImpl((url, init) => consoleFetch(url, init));
 setApiBaseUrl('/api/proxy/plugin/oc-mirror-operator/resourceapi');
 
-const CatalogBrowserPage: React.FC<any> = (props) => <CatalogBrowser {...props} />;
+const CatalogBrowserPage: React.FC<Record<string, unknown>> = (props) => <CatalogBrowser {...props} />;
 
 export default CatalogBrowserPage;

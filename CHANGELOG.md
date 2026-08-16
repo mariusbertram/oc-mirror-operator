@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Working ESLint setup for the console plugin UI**: `ui/package.json` had a
+  `lint` script and `eslint`/`typescript-eslint` as devDependencies, but no
+  `eslint.config.js` (ESLint v9 requires flat config), so `npm run lint`
+  failed immediately, and no CI job ever ran it. Added `ui/eslint.config.js`
+  (typescript-eslint recommended rules + the two classic
+  `eslint-plugin-react-hooks` correctness rules — not its v7 "recommended"
+  preset, which bundles React Compiler-oriented rules that don't apply to
+  this React 17 codebase and would just be noise) and a `ui-lint` job in
+  `.github/workflows/lint.yml` that runs `npm run lint` and a `tsc --noEmit`
+  type-check on every push/PR. Also removed a handful of pre-existing dead
+  code the new lint config surfaced (an unused `post()` helper in
+  `api/client.ts`, unused imports/a dead function in `CatalogBrowser.tsx`)
+  and replaced `React.FC<any>` with `React.FC<Record<string, unknown>>` in
+  the plugin's thin page-wrapper components.
 - **MirrorTarget settings editable from the console plugin**: `registry`,
   `insecure`, `authSecret`, `concurrency`, `batchSize`, `pollInterval`, and
   `checkExistInterval` had no write path at all — the resource API only

@@ -67,23 +67,6 @@ async function patch<T>(path: string, body: unknown): Promise<T> {
   return JSON.parse(text) as T;
 }
 
-async function post<T>(path: string, body: unknown): Promise<T> {
-  console.log('API POST:', _baseUrl + path);
-  const resp = await _fetch(_baseUrl + path, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  if (!resp.ok) {
-    const text = await resp.text();
-    console.error('API POST failed:', _baseUrl + path, resp.status, resp.statusText, text);
-    throw new Error(`${resp.status} ${resp.statusText}: ${text}`);
-  }
-  const text = await resp.text();
-  if (!text) return {} as T;
-  return JSON.parse(text) as T;
-}
-
 async function del(path: string): Promise<void> {
   console.log('API DELETE:', _baseUrl + path);
   const resp = await _fetch(_baseUrl + path, { method: 'DELETE' });

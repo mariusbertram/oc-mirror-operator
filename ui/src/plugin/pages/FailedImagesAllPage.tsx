@@ -6,6 +6,6 @@ import { FailedImages } from '../../pages/MirrorTargets/FailedImages';
 setFetchImpl((url, init) => consoleFetch(url, init));
 setApiBaseUrl('/api/proxy/plugin/oc-mirror-operator/resourceapi');
 
-const FailedImagesAllPage: React.FC<any> = (props) => <FailedImages {...props} crossTarget />;
+const FailedImagesAllPage: React.FC<Record<string, unknown>> = (props) => <FailedImages {...props} crossTarget />;
 
 export default FailedImagesAllPage;

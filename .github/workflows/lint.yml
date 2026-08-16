@@ -26,3 +26,25 @@ jobs:
         uses: golangci/golangci-lint-action@v9
         with:
           version: v2.11.4
+
+  ui-lint:
+    name: Run on UI
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Install UI dependencies
+        run: npm --prefix ui ci
+
+      - name: Run ESLint
+        run: npm --prefix ui run lint
+
+      - name: Type-check
+        run: npx --prefix ui tsc --noEmit -p ui/tsconfig.json
