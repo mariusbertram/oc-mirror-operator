@@ -75,7 +75,8 @@ const platformTypeOKD = "okd"
 
 // openshift/cincinnati-graph-data channels directory.
 // See: https://github.com/openshift/cincinnati-graph-data/tree/master/channels
-const githubGraphDataChannelsURL = "https://api.github.com/repos/openshift/cincinnati-graph-data/contents/channels"
+// It is a var (not const) so tests can replace it with a local httptest server.
+var githubGraphDataChannelsURL = "https://api.github.com/repos/openshift/cincinnati-graph-data/contents/channels"
 
 // channelCacheTTL controls how long the OCP channel list is cached before
 // re-fetching from the upstream source.
