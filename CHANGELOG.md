@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **MirrorTarget settings editable from the console plugin**: `registry`,
+  `insecure`, `authSecret`, `concurrency`, `batchSize`, `pollInterval`, and
+  `checkExistInterval` had no write path at all — the resource API only
+  exposed read-only MirrorTarget endpoints. Added `GET`/`PATCH
+  /api/v1/targets/{namespace}/{name}/spec` and a "Settings" tab on the
+  MirrorTarget detail page. More infrastructure-oriented fields (`expose`,
+  `proxy`, `caBundle`, `workerStorage`, pod resources/tolerations) remain
+  `kubectl`/YAML-only.
+- **Operator catalog list editable from the console plugin**: previously only
+  package filters for an already-resolved catalog could be edited (via
+  `.../catalogs/{slug}/packages`) — adding, removing, or reconfiguring
+  (`targetCatalog`/`targetTag`/`full`/`skipDependencies`) a catalog itself
+  required `kubectl`. Added `GET`/`PATCH
+  /api/v1/imagesets/{namespace}/{name}/operators` and an "Operators" tab on
+  the ImageSet detail page. Saving preserves existing package filters and
+  cosign signature verification config for catalogs that are kept (matched by
+  catalog reference), since those aren't part of this wire format.
+- **`requireSignedImages` toggle in the console plugin**: added `GET`/`PATCH
+  /api/v1/imagesets/{namespace}/{name}/settings` and a switch in the
+  ImageSet Overview tab.
 - **Additional Images editable from the console plugin**: `spec.mirror.additionalImages`
   had no `GET`/`PATCH` API endpoint or UI, unlike Helm repositories and blocked
   images, which already had both. Added `GET`/`PATCH

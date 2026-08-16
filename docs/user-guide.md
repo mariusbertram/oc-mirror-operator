@@ -523,6 +523,14 @@ reconcile. Trigger an immediate rebuild with the
 
 ### 6.2 Operator Catalogs
 
+The catalog list itself (`catalog`, `targetCatalog`, `targetTag`, `full`,
+`skipDependencies`) is editable from the console plugin's **Operators** tab
+on the ImageSet detail page. Package filters for a catalog that has already
+been resolved are edited separately from the **Catalogs** tab, once it
+appears there; a newly added catalog starts with no filters until one is
+configured. Cosign signature verification (`signatureVerification`) remains
+`kubectl`/YAML-only.
+
 > **Heads-only default (oc-mirror v2 compatible):** When a package is listed
 > without explicit channels or version ranges, only the **channel head** (latest
 > version) of every channel is mirrored. This matches `oc-mirror v2` behaviour
@@ -808,6 +816,12 @@ spec:
 ---
 
 ## 7. MirrorTarget Configuration
+
+`registry`, `insecure`, `authSecret`, `concurrency`, `batchSize`, `pollInterval`,
+and `checkExistInterval` are also editable from the console plugin's
+**Settings** tab on the MirrorTarget detail page. Other fields (`expose`,
+`proxy`, `caBundle`, `workerStorage`, `manager`/`worker` pod resources and
+tolerations) remain `kubectl`/YAML-only.
 
 ### 7.1 Basic Configuration
 

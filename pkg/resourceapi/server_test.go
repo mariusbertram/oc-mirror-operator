@@ -152,6 +152,67 @@ var _ = Describe("ResourceAPI Server", func() {
 		})
 	})
 
+	Describe("handleGetMirrorTargetSpec / handlePatchMirrorTargetSpec", func() {
+		It("returns the current editable spec fields", func() {
+			url := fmt.Sprintf("/api/v1/targets/%s/%s/spec", ns, mtName)
+			req := httptest.NewRequest("GET", url, nil)
+			rr := httptest.NewRecorder()
+			router.ServeHTTP(rr, req)
+			Expect(rr.Code).To(Equal(http.StatusOK))
+			Expect(rr.Body.String()).To(ContainSubstring("registry.example.com/mirror"))
+		})
+
+		It("returns 404 for a non-existent MirrorTarget on GET", func() {
+			url := fmt.Sprintf("/api/v1/targets/%s/ghost-mt/spec", ns)
+			req := httptest.NewRequest("GET", url, nil)
+			rr := httptest.NewRecorder()
+			router.ServeHTTP(rr, req)
+			Expect(rr.Code).To(Equal(http.StatusNotFound))
+		})
+
+		It("updates the editable spec fields", func() {
+			url := fmt.Sprintf("/api/v1/targets/%s/%s/spec", ns, mtName)
+			body := `{"registry":"registry.example.com/mirror2","concurrency":5,"batchSize":20,"pollInterval":"12h"}`
+			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(body))
+			rr := httptest.NewRecorder()
+			router.ServeHTTP(rr, req)
+			Expect(rr.Code).To(Equal(http.StatusNoContent))
+
+			getReq := httptest.NewRequest("GET", url, nil)
+			getRR := httptest.NewRecorder()
+			router.ServeHTTP(getRR, getReq)
+			Expect(getRR.Body.String()).To(ContainSubstring("registry.example.com/mirror2"))
+			Expect(getRR.Body.String()).To(ContainSubstring(`"concurrency":5`))
+			Expect(getRR.Body.String()).To(ContainSubstring(`"batchSize":20`))
+			Expect(getRR.Body.String()).To(ContainSubstring("12h0m0s"))
+		})
+
+		It("returns 400 when registry is empty on PATCH", func() {
+			url := fmt.Sprintf("/api/v1/targets/%s/%s/spec", ns, mtName)
+			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(`{"registry":""}`))
+			rr := httptest.NewRecorder()
+			router.ServeHTTP(rr, req)
+			Expect(rr.Code).To(Equal(http.StatusBadRequest))
+		})
+
+		It("returns 400 for an invalid pollInterval on PATCH", func() {
+			url := fmt.Sprintf("/api/v1/targets/%s/%s/spec", ns, mtName)
+			body := `{"registry":"registry.example.com/mirror","pollInterval":"not-a-duration"}`
+			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(body))
+			rr := httptest.NewRecorder()
+			router.ServeHTTP(rr, req)
+			Expect(rr.Code).To(Equal(http.StatusBadRequest))
+		})
+
+		It("returns 404 for a non-existent MirrorTarget on PATCH", func() {
+			url := fmt.Sprintf("/api/v1/targets/%s/ghost-mt/spec", ns)
+			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(`{"registry":"r"}`))
+			rr := httptest.NewRecorder()
+			router.ServeHTTP(rr, req)
+			Expect(rr.Code).To(Equal(http.StatusNotFound))
+		})
+	})
+
 	Describe("API endpoints - raw resources", func() {
 		It("serves IDMS", func() {
 			url := fmt.Sprintf("/api/v1/targets/%s/imagesets/is-one/idms.yaml", mtName)
@@ -1101,6 +1162,173 @@ var _ = Describe("ResourceAPI Server", func() {
 			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(`{"additionalImages":[]}`))
 			rr := httptest.NewRecorder()
 			additionalRouter.ServeHTTP(rr, req)
+			Expect(rr.Code).To(Equal(http.StatusNotFound))
+		})
+	})
+
+	Describe("handleGetOperators / handlePatchOperators", func() {
+		var operatorsRouter http.Handler
+
+		BeforeEach(func() {
+			sc := runtime.NewScheme()
+			_ = corev1.AddToScheme(sc)
+			_ = mirrorv1alpha1.AddToScheme(sc)
+			is := &mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "operators-is", Namespace: ns},
+				Spec: mirrorv1alpha1.ImageSetSpec{
+					Mirror: mirrorv1alpha1.Mirror{
+						Operators: []mirrorv1alpha1.Operator{
+							{
+								Catalog: "registry.redhat.io/redhat/redhat-operator-index:v4.21",
+								Full:    false,
+								IncludeConfig: mirrorv1alpha1.IncludeConfig{
+									Packages: []mirrorv1alpha1.IncludePackage{{Name: "web-terminal"}},
+								},
+							},
+						},
+					},
+				},
+			}
+			c := fake.NewClientBuilder().WithScheme(sc).WithObjects(is).Build()
+			s := resourceapi.NewServer(c, ns)
+			r := mux.NewRouter()
+			s.RegisterAPIRoutes(r)
+			operatorsRouter = r
+		})
+
+		It("returns the current operators list with a packagesConfigured hint", func() {
+			url := fmt.Sprintf("/api/v1/imagesets/%s/operators-is/operators", ns)
+			req := httptest.NewRequest("GET", url, nil)
+			rr := httptest.NewRecorder()
+			operatorsRouter.ServeHTTP(rr, req)
+			Expect(rr.Code).To(Equal(http.StatusOK))
+			Expect(rr.Body.String()).To(ContainSubstring("redhat-operator-index"))
+			Expect(rr.Body.String()).To(ContainSubstring(`"packagesConfigured":true`))
+		})
+
+		It("returns 404 for a non-existent ImageSet on GET", func() {
+			url := fmt.Sprintf("/api/v1/imagesets/%s/ghost-is/operators", ns)
+			req := httptest.NewRequest("GET", url, nil)
+			rr := httptest.NewRecorder()
+			operatorsRouter.ServeHTTP(rr, req)
+			Expect(rr.Code).To(Equal(http.StatusNotFound))
+		})
+
+		It("adds a new catalog while preserving the existing one's package filters", func() {
+			url := fmt.Sprintf("/api/v1/imagesets/%s/operators-is/operators", ns)
+			body := `{"operators":[
+				{"catalog":"registry.redhat.io/redhat/redhat-operator-index:v4.21"},
+				{"catalog":"registry.redhat.io/redhat/certified-operator-index:v4.21","full":true}
+			]}`
+			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(body))
+			rr := httptest.NewRecorder()
+			operatorsRouter.ServeHTTP(rr, req)
+			Expect(rr.Code).To(Equal(http.StatusNoContent))
+
+			getReq := httptest.NewRequest("GET", url, nil)
+			getRR := httptest.NewRecorder()
+			operatorsRouter.ServeHTTP(getRR, getReq)
+			var resp struct {
+				Operators []struct {
+					Catalog            string `json:"catalog"`
+					Full               bool   `json:"full"`
+					PackagesConfigured bool   `json:"packagesConfigured"`
+				} `json:"operators"`
+			}
+			Expect(json.Unmarshal(getRR.Body.Bytes(), &resp)).To(Succeed())
+			Expect(resp.Operators).To(HaveLen(2))
+			Expect(resp.Operators[0].Catalog).To(Equal("registry.redhat.io/redhat/redhat-operator-index:v4.21"))
+			Expect(resp.Operators[0].PackagesConfigured).To(BeTrue(), "existing package filters must survive a PATCH that omits them")
+			Expect(resp.Operators[1].Catalog).To(Equal("registry.redhat.io/redhat/certified-operator-index:v4.21"))
+			Expect(resp.Operators[1].Full).To(BeTrue())
+			Expect(resp.Operators[1].PackagesConfigured).To(BeFalse())
+		})
+
+		It("removes a catalog omitted from the PATCH body", func() {
+			url := fmt.Sprintf("/api/v1/imagesets/%s/operators-is/operators", ns)
+			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(`{"operators":[]}`))
+			rr := httptest.NewRecorder()
+			operatorsRouter.ServeHTTP(rr, req)
+			Expect(rr.Code).To(Equal(http.StatusNoContent))
+
+			getReq := httptest.NewRequest("GET", url, nil)
+			getRR := httptest.NewRecorder()
+			operatorsRouter.ServeHTTP(getRR, getReq)
+			Expect(getRR.Body.String()).To(ContainSubstring(`"operators":[]`))
+		})
+
+		It("returns 400 for invalid JSON body on PATCH", func() {
+			url := fmt.Sprintf("/api/v1/imagesets/%s/operators-is/operators", ns)
+			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString("{invalid json"))
+			rr := httptest.NewRecorder()
+			operatorsRouter.ServeHTTP(rr, req)
+			Expect(rr.Code).To(Equal(http.StatusBadRequest))
+		})
+
+		It("returns 404 for a non-existent ImageSet on PATCH", func() {
+			url := fmt.Sprintf("/api/v1/imagesets/%s/ghost-is/operators", ns)
+			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(`{"operators":[]}`))
+			rr := httptest.NewRecorder()
+			operatorsRouter.ServeHTTP(rr, req)
+			Expect(rr.Code).To(Equal(http.StatusNotFound))
+		})
+	})
+
+	Describe("handleGetImageSetSettings / handlePatchImageSetSettings", func() {
+		var settingsRouter http.Handler
+
+		BeforeEach(func() {
+			sc := runtime.NewScheme()
+			_ = corev1.AddToScheme(sc)
+			_ = mirrorv1alpha1.AddToScheme(sc)
+			is := &mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "settings-is", Namespace: ns},
+				Spec: mirrorv1alpha1.ImageSetSpec{
+					Mirror: mirrorv1alpha1.Mirror{RequireSignedImages: false},
+				},
+			}
+			c := fake.NewClientBuilder().WithScheme(sc).WithObjects(is).Build()
+			s := resourceapi.NewServer(c, ns)
+			r := mux.NewRouter()
+			s.RegisterAPIRoutes(r)
+			settingsRouter = r
+		})
+
+		It("returns the current requireSignedImages value", func() {
+			url := fmt.Sprintf("/api/v1/imagesets/%s/settings-is/settings", ns)
+			req := httptest.NewRequest("GET", url, nil)
+			rr := httptest.NewRecorder()
+			settingsRouter.ServeHTTP(rr, req)
+			Expect(rr.Code).To(Equal(http.StatusOK))
+			Expect(rr.Body.String()).To(ContainSubstring(`"requireSignedImages":false`))
+		})
+
+		It("returns 404 for a non-existent ImageSet on GET", func() {
+			url := fmt.Sprintf("/api/v1/imagesets/%s/ghost-is/settings", ns)
+			req := httptest.NewRequest("GET", url, nil)
+			rr := httptest.NewRecorder()
+			settingsRouter.ServeHTTP(rr, req)
+			Expect(rr.Code).To(Equal(http.StatusNotFound))
+		})
+
+		It("updates requireSignedImages", func() {
+			url := fmt.Sprintf("/api/v1/imagesets/%s/settings-is/settings", ns)
+			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(`{"requireSignedImages":true}`))
+			rr := httptest.NewRecorder()
+			settingsRouter.ServeHTTP(rr, req)
+			Expect(rr.Code).To(Equal(http.StatusNoContent))
+
+			getReq := httptest.NewRequest("GET", url, nil)
+			getRR := httptest.NewRecorder()
+			settingsRouter.ServeHTTP(getRR, getReq)
+			Expect(getRR.Body.String()).To(ContainSubstring(`"requireSignedImages":true`))
+		})
+
+		It("returns 404 for a non-existent ImageSet on PATCH", func() {
+			url := fmt.Sprintf("/api/v1/imagesets/%s/ghost-is/settings", ns)
+			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(`{"requireSignedImages":true}`))
+			rr := httptest.NewRecorder()
+			settingsRouter.ServeHTTP(rr, req)
 			Expect(rr.Code).To(Equal(http.StatusNotFound))
 		})
 	})

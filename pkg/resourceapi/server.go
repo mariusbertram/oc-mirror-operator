@@ -25,6 +25,7 @@ import (
 	mirrorresources "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/resources"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgorest "k8s.io/client-go/rest"
 	"k8s.io/client-go/util/retry"
@@ -279,10 +280,16 @@ func (s *Server) RegisterAPIRoutes(r *mux.Router) {
 	api.HandleFunc("/targets", s.handleTargetsList).Methods("GET")
 	api.HandleFunc("/targets/{mt}", s.handleTargetDetail).Methods("GET")
 	api.HandleFunc("/targets/{mt}/image-failures", s.handleImageFailures).Methods("GET")
+	api.HandleFunc("/targets/{namespace}/{name}/spec", s.handleGetMirrorTargetSpec).Methods("GET")
+	api.HandleFunc("/targets/{namespace}/{name}/spec", s.handlePatchMirrorTargetSpec).Methods("PATCH")
 
 	// Edit endpoints (token-scoped writes — RBAC of the requesting user applies)
 	api.HandleFunc("/imagesets/{namespace}/{name}/catalogs/{slug}/packages", s.handleGetPackageConstraints).Methods("GET")
 	api.HandleFunc("/imagesets/{namespace}/{name}/catalogs/{slug}/packages", s.handlePatchCatalogPackages).Methods("PATCH")
+	api.HandleFunc("/imagesets/{namespace}/{name}/operators", s.handleGetOperators).Methods("GET")
+	api.HandleFunc("/imagesets/{namespace}/{name}/operators", s.handlePatchOperators).Methods("PATCH")
+	api.HandleFunc("/imagesets/{namespace}/{name}/settings", s.handleGetImageSetSettings).Methods("GET")
+	api.HandleFunc("/imagesets/{namespace}/{name}/settings", s.handlePatchImageSetSettings).Methods("PATCH")
 	api.HandleFunc("/imagesets/{namespace}/{name}/recollect", s.handleTriggerRecollect).Methods("PATCH")
 	api.HandleFunc("/imagesets/{namespace}/{name}/force-resync", s.handleTriggerForceResync).Methods("PATCH")
 	api.HandleFunc("/releases/channels", s.handleGetOCPChannels).Methods("GET")
@@ -890,6 +897,144 @@ func updateImageSetWithRetry(ctx context.Context, c client.Client, namespace, na
 	})
 }
 
+// updateMirrorTargetWithRetry re-fetches the MirrorTarget fresh on every
+// attempt and applies mutate before calling Update, retrying on
+// optimistic-concurrency conflicts (HTTP 409) — same rationale as
+// updateImageSetWithRetry.
+func updateMirrorTargetWithRetry(ctx context.Context, c client.Client, namespace, name string, mutate func(*mirrorv1alpha1.MirrorTarget) error) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		mt := &mirrorv1alpha1.MirrorTarget{}
+		if err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, mt); err != nil {
+			return err
+		}
+		if err := mutate(mt); err != nil {
+			return err
+		}
+		return c.Update(ctx, mt)
+	})
+}
+
+// mirrorTargetSpecWire is the JSON wire format for GET/PATCH
+// spec.{registry,insecure,authSecret,concurrency,batchSize,pollInterval,
+// checkExistInterval}. Fields not covered here (expose, manager/worker pod
+// config, proxy, caBundle, workerStorage) are more infrastructure-oriented
+// and intentionally left kubectl/YAML-only for now.
+type mirrorTargetSpecWire struct {
+	Registry           string `json:"registry"`
+	Insecure           bool   `json:"insecure"`
+	AuthSecret         string `json:"authSecret,omitempty"`
+	Concurrency        int    `json:"concurrency,omitempty"`
+	BatchSize          int    `json:"batchSize,omitempty"`
+	PollInterval       string `json:"pollInterval,omitempty"`
+	CheckExistInterval string `json:"checkExistInterval,omitempty"`
+}
+
+// handleGetMirrorTargetSpec returns the current editable subset of the
+// MirrorTarget spec.
+func (s *Server) handleGetMirrorTargetSpec(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	namespace, name := vars["namespace"], vars["name"]
+
+	c := s.clientForRequest(r)
+	mt := &mirrorv1alpha1.MirrorTarget{}
+	if err := c.Get(r.Context(), client.ObjectKey{Namespace: namespace, Name: name}, mt); err != nil {
+		if apierrors.IsNotFound(err) {
+			http.Error(w, "MirrorTarget not found", http.StatusNotFound)
+		} else if apierrors.IsForbidden(err) {
+			http.Error(w, "forbidden: insufficient permissions", http.StatusForbidden)
+		} else {
+			http.Error(w, fmt.Sprintf("get MirrorTarget: %v", err), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	resp := mirrorTargetSpecWire{
+		Registry:    mt.Spec.Registry,
+		Insecure:    mt.Spec.Insecure,
+		AuthSecret:  mt.Spec.AuthSecret,
+		Concurrency: mt.Spec.Concurrency,
+		BatchSize:   mt.Spec.BatchSize,
+	}
+	if mt.Spec.PollInterval != nil {
+		resp.PollInterval = mt.Spec.PollInterval.Duration.String()
+	}
+	if mt.Spec.CheckExistInterval != nil {
+		resp.CheckExistInterval = mt.Spec.CheckExistInterval.Duration.String()
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// handlePatchMirrorTargetSpec updates the editable subset of the MirrorTarget
+// spec. An empty pollInterval/checkExistInterval clears the field back to its
+// controller-side default; a non-empty value must parse as a Go duration
+// (e.g. "24h", "0s").
+func (s *Server) handlePatchMirrorTargetSpec(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	namespace, name := vars["namespace"], vars["name"]
+
+	defer func() { _ = r.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		http.Error(w, "failed to read body", http.StatusBadRequest)
+		return
+	}
+	var patch mirrorTargetSpecWire
+	if err := json.Unmarshal(body, &patch); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	if patch.Registry == "" {
+		http.Error(w, "registry is required", http.StatusBadRequest)
+		return
+	}
+
+	var pollInterval, checkExistInterval *metav1.Duration
+	if patch.PollInterval != "" {
+		d, parseErr := time.ParseDuration(patch.PollInterval)
+		if parseErr != nil {
+			http.Error(w, fmt.Sprintf("invalid pollInterval: %v", parseErr), http.StatusBadRequest)
+			return
+		}
+		pollInterval = &metav1.Duration{Duration: d}
+	}
+	if patch.CheckExistInterval != "" {
+		d, parseErr := time.ParseDuration(patch.CheckExistInterval)
+		if parseErr != nil {
+			http.Error(w, fmt.Sprintf("invalid checkExistInterval: %v", parseErr), http.StatusBadRequest)
+			return
+		}
+		checkExistInterval = &metav1.Duration{Duration: d}
+	}
+
+	c := s.clientForRequest(r)
+	err = updateMirrorTargetWithRetry(r.Context(), c, namespace, name, func(mt *mirrorv1alpha1.MirrorTarget) error {
+		mt.Spec.Registry = patch.Registry
+		mt.Spec.Insecure = patch.Insecure
+		mt.Spec.AuthSecret = patch.AuthSecret
+		mt.Spec.Concurrency = patch.Concurrency
+		mt.Spec.BatchSize = patch.BatchSize
+		mt.Spec.PollInterval = pollInterval
+		mt.Spec.CheckExistInterval = checkExistInterval
+		return nil
+	})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			http.Error(w, "MirrorTarget not found", http.StatusNotFound)
+		} else if apierrors.IsForbidden(err) {
+			http.Error(w, "forbidden: insufficient permissions", http.StatusForbidden)
+		} else if apierrors.IsInvalid(err) {
+			http.Error(w, fmt.Sprintf("invalid MirrorTarget spec: %v", err), http.StatusBadRequest)
+		} else {
+			http.Error(w, fmt.Sprintf("update MirrorTarget: %v", err), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
 type packageChannelConstraint struct {
 	Name       string `json:"name"`
 	MinVersion string `json:"minVersion,omitempty"`
@@ -1081,6 +1226,188 @@ func (s *Server) handleGetPackageConstraints(w http.ResponseWriter, r *http.Requ
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(result)
+}
+
+// operatorEntry is the JSON wire format for a single spec.mirror.operators
+// entry. Package filters are edited separately via
+// /catalogs/{slug}/packages, keyed by CatalogSlug(catalog); PackagesConfigured
+// and SignatureVerificationConfigured are read-only hints so the UI can
+// surface that state without exposing the full nested shape here.
+type operatorEntry struct {
+	Catalog                         string `json:"catalog"`
+	TargetCatalog                   string `json:"targetCatalog,omitempty"`
+	TargetTag                       string `json:"targetTag,omitempty"`
+	Full                            bool   `json:"full,omitempty"`
+	SkipDependencies                bool   `json:"skipDependencies,omitempty"`
+	PackagesConfigured              bool   `json:"packagesConfigured,omitempty"`
+	SignatureVerificationConfigured bool   `json:"signatureVerificationConfigured,omitempty"`
+}
+
+// operatorsSpec is the JSON wire format for GET/PATCH spec.mirror.operators.
+type operatorsSpec struct {
+	Operators []operatorEntry `json:"operators"`
+}
+
+// handleGetOperators returns the current spec.mirror.operators list.
+func (s *Server) handleGetOperators(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	namespace, name := vars["namespace"], vars["name"]
+
+	c := s.clientForRequest(r)
+	is := &mirrorv1alpha1.ImageSet{}
+	if err := c.Get(r.Context(), client.ObjectKey{Namespace: namespace, Name: name}, is); err != nil {
+		if apierrors.IsNotFound(err) {
+			http.Error(w, "ImageSet not found", http.StatusNotFound)
+		} else {
+			http.Error(w, fmt.Sprintf("get ImageSet: %v", err), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	resp := operatorsSpec{Operators: []operatorEntry{}}
+	for _, op := range is.Spec.Mirror.Operators {
+		resp.Operators = append(resp.Operators, operatorEntry{
+			Catalog:                         op.Catalog,
+			TargetCatalog:                   op.TargetCatalog,
+			TargetTag:                       op.TargetTag,
+			Full:                            op.Full,
+			SkipDependencies:                op.SkipDependencies,
+			PackagesConfigured:              len(op.Packages) > 0,
+			SignatureVerificationConfigured: op.SignatureVerification != nil,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// handlePatchOperators replaces spec.mirror.operators. Entries whose catalog
+// reference matches an existing entry keep their existing package filters
+// (spec.mirror.operators[].packages, edited via .../catalogs/{slug}/packages)
+// and cosign signature verification config — those aren't part of this
+// wire format, and a naive replace would otherwise silently wipe them out
+// whenever the operator list is saved from the UI.
+func (s *Server) handlePatchOperators(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	namespace, name := vars["namespace"], vars["name"]
+
+	defer func() { _ = r.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		http.Error(w, "failed to read body", http.StatusBadRequest)
+		return
+	}
+	var patch operatorsSpec
+	if err := json.Unmarshal(body, &patch); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+
+	c := s.clientForRequest(r)
+	err = updateImageSetWithRetry(r.Context(), c, namespace, name, func(is *mirrorv1alpha1.ImageSet) error {
+		existing := make(map[string]mirrorv1alpha1.Operator, len(is.Spec.Mirror.Operators))
+		for _, op := range is.Spec.Mirror.Operators {
+			existing[op.Catalog] = op
+		}
+
+		operators := make([]mirrorv1alpha1.Operator, 0, len(patch.Operators))
+		for _, po := range patch.Operators {
+			if po.Catalog == "" {
+				continue
+			}
+			op := mirrorv1alpha1.Operator{
+				Catalog:          po.Catalog,
+				TargetCatalog:    po.TargetCatalog,
+				TargetTag:        po.TargetTag,
+				Full:             po.Full,
+				SkipDependencies: po.SkipDependencies,
+			}
+			if prev, ok := existing[po.Catalog]; ok {
+				op.IncludeConfig = prev.IncludeConfig
+				op.SignatureVerification = prev.SignatureVerification
+			}
+			operators = append(operators, op)
+		}
+		is.Spec.Mirror.Operators = operators
+		return nil
+	})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			http.Error(w, "ImageSet not found", http.StatusNotFound)
+		} else if apierrors.IsForbidden(err) {
+			http.Error(w, "forbidden: insufficient permissions", http.StatusForbidden)
+		} else {
+			http.Error(w, fmt.Sprintf("update ImageSet: %v", err), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// imageSetSettings is the JSON wire format for GET/PATCH
+// spec.mirror.requireSignedImages. A small, dedicated endpoint since the
+// field applies across every content type (releases, operators, additional
+// images, Helm) rather than belonging to any one of the other edit
+// endpoints.
+type imageSetSettings struct {
+	RequireSignedImages bool `json:"requireSignedImages"`
+}
+
+// handleGetImageSetSettings returns spec.mirror.requireSignedImages.
+func (s *Server) handleGetImageSetSettings(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	namespace, name := vars["namespace"], vars["name"]
+
+	c := s.clientForRequest(r)
+	is := &mirrorv1alpha1.ImageSet{}
+	if err := c.Get(r.Context(), client.ObjectKey{Namespace: namespace, Name: name}, is); err != nil {
+		if apierrors.IsNotFound(err) {
+			http.Error(w, "ImageSet not found", http.StatusNotFound)
+		} else {
+			http.Error(w, fmt.Sprintf("get ImageSet: %v", err), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(imageSetSettings{RequireSignedImages: is.Spec.Mirror.RequireSignedImages})
+}
+
+// handlePatchImageSetSettings updates spec.mirror.requireSignedImages.
+func (s *Server) handlePatchImageSetSettings(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	namespace, name := vars["namespace"], vars["name"]
+
+	defer func() { _ = r.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		http.Error(w, "failed to read body", http.StatusBadRequest)
+		return
+	}
+	var patch imageSetSettings
+	if err := json.Unmarshal(body, &patch); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+
+	c := s.clientForRequest(r)
+	err = updateImageSetWithRetry(r.Context(), c, namespace, name, func(is *mirrorv1alpha1.ImageSet) error {
+		is.Spec.Mirror.RequireSignedImages = patch.RequireSignedImages
+		return nil
+	})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			http.Error(w, "ImageSet not found", http.StatusNotFound)
+		} else if apierrors.IsForbidden(err) {
+			http.Error(w, "forbidden: insufficient permissions", http.StatusForbidden)
+		} else {
+			http.Error(w, fmt.Sprintf("update ImageSet: %v", err), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // triggerOneShotAnnotation stamps annotationKey on the named ImageSet with a
