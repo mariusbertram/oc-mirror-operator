@@ -59,6 +59,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   this is for recovering from target-registry data loss or suspected
   corruption of previously-mirrored content.
 
+### Security
+- **Go toolchain bumped 1.25.7 → 1.25.13**, resolving 26 reachable
+  standard-library vulnerabilities flagged by `govulncheck` (call-graph
+  confirmed as actually reachable from this codebase, not just present in
+  `go.sum`). All five `Dockerfile*` base images were re-pinned to
+  `golang:1.25.13` by digest (verified against the `Docker-Content-Digest`
+  registry API response and a local `sha256sum` of the downloaded manifest
+  before pinning). The remaining `govulncheck` findings
+  (`golang.org/x/crypto/openpgp` — GO-2026-5932; `containerd` —
+  GO-2026-5622, GO-2026-5338, GO-2026-5064) are third-party modules with no
+  upstream fix available and are unaffected by this change; they are
+  already triaged as `not_affected` in `vex/oc-mirror-operator.openvex.json`.
+
 ### Fixed
 - **IDMS/ITMS entries kept a tag on the source repository for images
   resolved to both a tag and a digest** (e.g. `repo:v1.2@sha256:...`, as
