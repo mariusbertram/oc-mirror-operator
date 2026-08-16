@@ -1,6 +1,6 @@
 module github.com/mariusbertram/oc-mirror-operator
 
-go 1.25.7
+go 1.25.13
 
 require (
 	github.com/ProtonMail/go-crypto v1.1.6
