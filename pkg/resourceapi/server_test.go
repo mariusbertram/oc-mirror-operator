@@ -919,6 +919,114 @@ var _ = Describe("ResourceAPI Server", func() {
 		})
 	})
 
+	Describe("handleGetReleases / handlePatchReleases", func() {
+		var releasesRouter http.Handler
+
+		BeforeEach(func() {
+			sc := runtime.NewScheme()
+			_ = corev1.AddToScheme(sc)
+			_ = mirrorv1alpha1.AddToScheme(sc)
+			is := &mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "releases-is", Namespace: ns},
+				Spec: mirrorv1alpha1.ImageSetSpec{
+					Mirror: mirrorv1alpha1.Mirror{
+						Platform: mirrorv1alpha1.Platform{
+							Graph:         true,
+							Architectures: []string{"amd64"},
+							Channels: []mirrorv1alpha1.ReleaseChannel{
+								{Name: "stable-4.14", Type: mirrorv1alpha1.TypeOCP, MinVersion: "4.14.0", MaxVersion: "4.14.10"},
+							},
+						},
+					},
+				},
+			}
+			c := fake.NewClientBuilder().WithScheme(sc).WithObjects(is).Build()
+			s := resourceapi.NewServer(c, ns)
+			r := mux.NewRouter()
+			s.RegisterAPIRoutes(r)
+			releasesRouter = r
+		})
+
+		It("returns the current platform/release configuration", func() {
+			url := fmt.Sprintf("/api/v1/imagesets/%s/releases-is/releases", ns)
+			req := httptest.NewRequest("GET", url, nil)
+			rr := httptest.NewRecorder()
+			releasesRouter.ServeHTTP(rr, req)
+			Expect(rr.Code).To(Equal(http.StatusOK))
+			Expect(rr.Body.String()).To(ContainSubstring("stable-4.14"))
+			Expect(rr.Body.String()).To(ContainSubstring(`"graph":true`))
+		})
+
+		It("returns 404 for a non-existent ImageSet on GET", func() {
+			url := fmt.Sprintf("/api/v1/imagesets/%s/ghost-is/releases", ns)
+			req := httptest.NewRequest("GET", url, nil)
+			rr := httptest.NewRecorder()
+			releasesRouter.ServeHTTP(rr, req)
+			Expect(rr.Code).To(Equal(http.StatusNotFound))
+		})
+
+		It("replaces the platform/release configuration", func() {
+			url := fmt.Sprintf("/api/v1/imagesets/%s/releases-is/releases", ns)
+			body := `{"graph":false,"architectures":["amd64","arm64"],"channels":[{"name":"fast-4.15","minVersion":"4.15.0"}]}`
+			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(body))
+			rr := httptest.NewRecorder()
+			releasesRouter.ServeHTTP(rr, req)
+			Expect(rr.Code).To(Equal(http.StatusNoContent))
+
+			getReq := httptest.NewRequest("GET", url, nil)
+			getRR := httptest.NewRecorder()
+			releasesRouter.ServeHTTP(getRR, getReq)
+			Expect(getRR.Body.String()).To(ContainSubstring("fast-4.15"))
+			Expect(getRR.Body.String()).To(ContainSubstring("arm64"))
+			Expect(getRR.Body.String()).To(ContainSubstring(`"graph":false`))
+			Expect(getRR.Body.String()).NotTo(ContainSubstring("stable-4.14"))
+		})
+
+		It("defaults an empty channel type to ocp", func() {
+			url := fmt.Sprintf("/api/v1/imagesets/%s/releases-is/releases", ns)
+			body := `{"graph":false,"channels":[{"name":"stable-4.16"}]}`
+			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(body))
+			rr := httptest.NewRecorder()
+			releasesRouter.ServeHTTP(rr, req)
+			Expect(rr.Code).To(Equal(http.StatusNoContent))
+
+			getReq := httptest.NewRequest("GET", url, nil)
+			getRR := httptest.NewRecorder()
+			releasesRouter.ServeHTTP(getRR, getReq)
+			Expect(getRR.Body.String()).To(ContainSubstring(`"type":"ocp"`))
+		})
+
+		It("preserves architectures when the patch omits them", func() {
+			url := fmt.Sprintf("/api/v1/imagesets/%s/releases-is/releases", ns)
+			body := `{"graph":true,"channels":[]}`
+			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(body))
+			rr := httptest.NewRecorder()
+			releasesRouter.ServeHTTP(rr, req)
+			Expect(rr.Code).To(Equal(http.StatusNoContent))
+
+			getReq := httptest.NewRequest("GET", url, nil)
+			getRR := httptest.NewRecorder()
+			releasesRouter.ServeHTTP(getRR, getReq)
+			Expect(getRR.Body.String()).To(ContainSubstring("amd64"))
+		})
+
+		It("returns 400 for invalid JSON body on PATCH", func() {
+			url := fmt.Sprintf("/api/v1/imagesets/%s/releases-is/releases", ns)
+			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString("{invalid json"))
+			rr := httptest.NewRecorder()
+			releasesRouter.ServeHTTP(rr, req)
+			Expect(rr.Code).To(Equal(http.StatusBadRequest))
+		})
+
+		It("returns 404 for a non-existent ImageSet on PATCH", func() {
+			url := fmt.Sprintf("/api/v1/imagesets/%s/ghost-is/releases", ns)
+			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(`{"channels":[]}`))
+			rr := httptest.NewRecorder()
+			releasesRouter.ServeHTTP(rr, req)
+			Expect(rr.Code).To(Equal(http.StatusNotFound))
+		})
+	})
+
 	Describe("handleGetHelm / handlePatchHelm", func() {
 		var helmRouter http.Handler
 
