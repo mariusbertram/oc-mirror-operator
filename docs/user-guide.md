@@ -690,6 +690,9 @@ spec:
         targetRepo: mein-mirror/nginx  # optional target path
 ```
 
+Also editable from the console plugin's "Additional Images" tab on the ImageSet
+detail page.
+
 ### 6.4 Helm Charts
 
 ```yaml

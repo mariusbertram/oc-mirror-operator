@@ -137,6 +137,16 @@ export interface BlockedImagesSpec {
   blockedImages: string[];
 }
 
+export interface AdditionalImageEntry {
+  name: string;
+  targetRepo?: string;
+  targetTag?: string;
+}
+
+export interface AdditionalImagesSpec {
+  additionalImages: AdditionalImageEntry[];
+}
+
 /** A single OCP/OKD release channel returned by GET /api/v1/releases/channels.
  *  Sourced from openshift/cincinnati-graph-data, with ConfigMap and built-in fallbacks. */
 export interface OcpChannelEntry {

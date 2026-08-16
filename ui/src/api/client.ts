@@ -1,4 +1,6 @@
 import type {
+  AdditionalImageEntry,
+  AdditionalImagesSpec,
   BlockedImagesSpec,
   CatalogPackagesResponse,
   HelmRepository,
@@ -177,3 +179,9 @@ export const getBlockedImages = (namespace: string, imageSetName: string) =>
 
 export const patchBlockedImages = (namespace: string, imageSetName: string, blockedImages: string[]) =>
   patch<void>(`/api/v1/imagesets/${namespace}/${imageSetName}/blocked-images`, { blockedImages });
+
+export const getAdditionalImages = (namespace: string, imageSetName: string) =>
+  get<AdditionalImagesSpec>(`/api/v1/imagesets/${namespace}/${imageSetName}/additional-images`);
+
+export const patchAdditionalImages = (namespace: string, imageSetName: string, additionalImages: AdditionalImageEntry[]) =>
+  patch<void>(`/api/v1/imagesets/${namespace}/${imageSetName}/additional-images`, { additionalImages });

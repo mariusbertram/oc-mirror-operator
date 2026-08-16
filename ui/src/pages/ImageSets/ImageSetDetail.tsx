@@ -33,13 +33,15 @@ import { Link, useParams } from 'react-router-dom-v5-compat';
 import {
   getHelmRepositories,
   getBlockedImages,
+  getAdditionalImages,
   getTarget,
   patchHelmRepositories,
   patchBlockedImages,
+  patchAdditionalImages,
   triggerRecollect,
   triggerForceResync,
 } from '../../api/client';
-import type { HelmRepository, TargetDetail, ImageSetSummary } from '../../api/types';
+import type { AdditionalImageEntry, HelmRepository, TargetDetail, ImageSetSummary } from '../../api/types';
 import { StatusPill, computeStatus } from '../../components/StatusPill';
 import { ProgressBar } from '../../components/ProgressBar';
 import { ResourcesView } from '../../components/ResourcesView';
@@ -82,6 +84,12 @@ export const ImageSetDetail: React.FC = () => {
   const [blockedDirty, setBlockedDirty] = useState(false);
   const [blockedError, setBlockedError] = useState<string | null>(null);
   const [newBlockedName, setNewBlockedName] = useState('');
+
+  const [additionalImages, setAdditionalImages] = useState<AdditionalImageEntry[]>([]);
+  const [additionalLoading, setAdditionalLoading] = useState(true);
+  const [additionalSaving, setAdditionalSaving] = useState(false);
+  const [additionalDirty, setAdditionalDirty] = useState(false);
+  const [additionalError, setAdditionalError] = useState<string | null>(null);
 
   const [forceResyncOpen, setForceResyncOpen] = useState(false);
 
@@ -216,6 +224,49 @@ export const ImageSetDetail: React.FC = () => {
     }
   };
 
+  useEffect(() => {
+    if (!target?.namespace || !imageSetName) return;
+    setAdditionalLoading(true);
+    getAdditionalImages(target.namespace, imageSetName)
+      .then((spec) => {
+        setAdditionalImages(spec.additionalImages ?? []);
+        setAdditionalDirty(false);
+      })
+      .catch((e: Error) => setAdditionalError(e.message))
+      .finally(() => setAdditionalLoading(false));
+  }, [target?.namespace, imageSetName]);
+
+  const addAdditionalImage = () => {
+    setAdditionalImages((prev) => [...prev, { name: '', targetRepo: '', targetTag: '' }]);
+    setAdditionalDirty(true);
+  };
+
+  const removeAdditionalImage = (idx: number) => {
+    setAdditionalImages((prev) => prev.filter((_, i) => i !== idx));
+    setAdditionalDirty(true);
+  };
+
+  const updateAdditionalImage = (idx: number, field: keyof AdditionalImageEntry, value: string) => {
+    setAdditionalImages((prev) => prev.map((img, i) => (i === idx ? { ...img, [field]: value } : img)));
+    setAdditionalDirty(true);
+  };
+
+  const saveAdditionalImages = async () => {
+    if (!target?.namespace || !imageSetName) return;
+    setAdditionalSaving(true);
+    setAdditionalError(null);
+    try {
+      const cleaned = additionalImages.filter((img) => img.name.trim() !== '');
+      await patchAdditionalImages(target.namespace, imageSetName, cleaned);
+      setAdditionalImages(cleaned);
+      setAdditionalDirty(false);
+    } catch (e: unknown) {
+      setAdditionalError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setAdditionalSaving(false);
+    }
+  };
+
   if (loading && !target) return <PageSection><Spinner /></PageSection>;
   if (error) return (
     <PageSection>
@@ -298,6 +349,7 @@ export const ImageSetDetail: React.FC = () => {
             <Tab eventKey="catalogs" title={<TabTitleText>Catalogs</TabTitleText>} />
           )}
           <Tab eventKey="helm" title={<TabTitleText>Helm{helmRepos.length > 0 ? ` (${helmRepos.length})` : ''}</TabTitleText>} />
+          <Tab eventKey="additional" title={<TabTitleText>Additional Images{additionalImages.length > 0 ? ` (${additionalImages.length})` : ''}</TabTitleText>} />
           <Tab eventKey="blocked" title={<TabTitleText>Blocked Images{blockedImages.length > 0 ? ` (${blockedImages.length})` : ''}</TabTitleText>} />
         </Tabs>
       </PageSection>
@@ -489,6 +541,92 @@ export const ImageSetDetail: React.FC = () => {
                         onClick={saveHelmRepos}
                         isDisabled={!helmDirty || helmSaving}
                         isLoading={helmSaving}
+                      >
+                        Save
+                      </Button>
+                    </FlexItem>
+                  </Flex>
+                </>
+              )}
+            </CardBody>
+          </Card>
+        )}
+
+        {activeTab === 'additional' && (
+          <Card>
+            <CardTitle>Additional images</CardTitle>
+            <CardBody>
+              <Content component="p">
+                Individual images mirrored as-is, in addition to releases and operator
+                catalogs. <code className="mirror-mono">Target repo</code> and{' '}
+                <code className="mirror-mono">target tag</code> are optional overrides for
+                where the image lands in the target registry.
+              </Content>
+              {additionalError && (
+                <Alert variant="danger" title="Failed to load or save additional images" isInline style={{ marginBottom: 16 }}>
+                  {additionalError}
+                </Alert>
+              )}
+              {additionalLoading ? (
+                <Spinner size="md" />
+              ) : (
+                <>
+                  <Table aria-label="Additional images" variant="compact">
+                    <Thead>
+                      <Tr><Th>Name</Th><Th>Target repo</Th><Th>Target tag</Th><Th screenReaderText="Actions" /></Tr>
+                    </Thead>
+                    <Tbody>
+                      {additionalImages.map((img, idx) => (
+                        <Tr key={idx}>
+                          <Td dataLabel="Name">
+                            <TextInput
+                              aria-label="Image name"
+                              placeholder="e.g. quay.io/org/repo:tag"
+                              value={img.name}
+                              onChange={(_e, v) => updateAdditionalImage(idx, 'name', v)}
+                            />
+                          </Td>
+                          <Td dataLabel="Target repo">
+                            <TextInput
+                              aria-label="Target repo"
+                              placeholder="(default: same path)"
+                              value={img.targetRepo ?? ''}
+                              onChange={(_e, v) => updateAdditionalImage(idx, 'targetRepo', v)}
+                            />
+                          </Td>
+                          <Td dataLabel="Target tag">
+                            <TextInput
+                              aria-label="Target tag"
+                              placeholder="(default: same tag)"
+                              value={img.targetTag ?? ''}
+                              onChange={(_e, v) => updateAdditionalImage(idx, 'targetTag', v)}
+                            />
+                          </Td>
+                          <Td dataLabel="Actions">
+                            <Button variant="plain" size="sm" onClick={() => removeAdditionalImage(idx)} aria-label={`Remove image ${img.name}`}>
+                              ×
+                            </Button>
+                          </Td>
+                        </Tr>
+                      ))}
+                      {additionalImages.length === 0 && (
+                        <Tr><Td colSpan={4}>No additional images configured.</Td></Tr>
+                      )}
+                    </Tbody>
+                  </Table>
+
+                  <Flex style={{ marginTop: 16 }}>
+                    <FlexItem>
+                      <Button variant="secondary" onClick={addAdditionalImage}>
+                        + Add image
+                      </Button>
+                    </FlexItem>
+                    <FlexItem>
+                      <Button
+                        variant="primary"
+                        onClick={saveAdditionalImages}
+                        isDisabled={!additionalDirty || additionalSaving}
+                        isLoading={additionalSaving}
                       >
                         Save
                       </Button>

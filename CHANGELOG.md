@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Additional Images editable from the console plugin**: `spec.mirror.additionalImages`
+  had no `GET`/`PATCH` API endpoint or UI, unlike Helm repositories and blocked
+  images, which already had both. Added `GET`/`PATCH
+  /api/v1/imagesets/{namespace}/{name}/additional-images` and a new
+  "Additional Images" tab on the ImageSet detail page for adding, editing, and
+  removing entries (name, optional target repo, optional target tag).
 - **Force Resync trigger**: a new `mirror.openshift.io/force-resync`
   one-shot ImageSet annotation (and matching `PATCH
   .../force-resync` API endpoint / "Force Resync" button in the console

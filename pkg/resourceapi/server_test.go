@@ -1015,6 +1015,96 @@ var _ = Describe("ResourceAPI Server", func() {
 		})
 	})
 
+	Describe("handleGetAdditionalImages / handlePatchAdditionalImages", func() {
+		var additionalRouter http.Handler
+
+		BeforeEach(func() {
+			sc := runtime.NewScheme()
+			_ = corev1.AddToScheme(sc)
+			_ = mirrorv1alpha1.AddToScheme(sc)
+			is := &mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "additional-is", Namespace: ns},
+				Spec: mirrorv1alpha1.ImageSetSpec{
+					Mirror: mirrorv1alpha1.Mirror{
+						AdditionalImages: []mirrorv1alpha1.AdditionalImage{
+							{Name: "quay.io/foo/bar:v1", TargetRepo: "mirrored/bar", TargetTag: "v1"},
+						},
+					},
+				},
+			}
+			c := fake.NewClientBuilder().WithScheme(sc).WithObjects(is).Build()
+			s := resourceapi.NewServer(c, ns)
+			r := mux.NewRouter()
+			s.RegisterAPIRoutes(r)
+			additionalRouter = r
+		})
+
+		It("returns the current additional images list", func() {
+			url := fmt.Sprintf("/api/v1/imagesets/%s/additional-is/additional-images", ns)
+			req := httptest.NewRequest("GET", url, nil)
+			rr := httptest.NewRecorder()
+			additionalRouter.ServeHTTP(rr, req)
+			Expect(rr.Code).To(Equal(http.StatusOK))
+			Expect(rr.Body.String()).To(ContainSubstring("quay.io/foo/bar:v1"))
+			Expect(rr.Body.String()).To(ContainSubstring("mirrored/bar"))
+		})
+
+		It("returns 404 for a non-existent ImageSet on GET", func() {
+			url := fmt.Sprintf("/api/v1/imagesets/%s/ghost-is/additional-images", ns)
+			req := httptest.NewRequest("GET", url, nil)
+			rr := httptest.NewRecorder()
+			additionalRouter.ServeHTTP(rr, req)
+			Expect(rr.Code).To(Equal(http.StatusNotFound))
+		})
+
+		It("replaces the additional images list", func() {
+			url := fmt.Sprintf("/api/v1/imagesets/%s/additional-is/additional-images", ns)
+			body := `{"additionalImages":[{"name":"quay.io/new/one:latest"},{"name":"quay.io/new/two","targetTag":"custom"}]}`
+			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(body))
+			rr := httptest.NewRecorder()
+			additionalRouter.ServeHTTP(rr, req)
+			Expect(rr.Code).To(Equal(http.StatusNoContent))
+
+			getReq := httptest.NewRequest("GET", url, nil)
+			getRR := httptest.NewRecorder()
+			additionalRouter.ServeHTTP(getRR, getReq)
+			Expect(getRR.Body.String()).To(ContainSubstring("quay.io/new/one:latest"))
+			Expect(getRR.Body.String()).To(ContainSubstring("quay.io/new/two"))
+			Expect(getRR.Body.String()).To(ContainSubstring("custom"))
+			Expect(getRR.Body.String()).NotTo(ContainSubstring("quay.io/foo/bar:v1"))
+		})
+
+		It("drops entries with an empty name on PATCH", func() {
+			url := fmt.Sprintf("/api/v1/imagesets/%s/additional-is/additional-images", ns)
+			body := `{"additionalImages":[{"name":""},{"name":"quay.io/kept:v1"}]}`
+			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(body))
+			rr := httptest.NewRecorder()
+			additionalRouter.ServeHTTP(rr, req)
+			Expect(rr.Code).To(Equal(http.StatusNoContent))
+
+			getReq := httptest.NewRequest("GET", url, nil)
+			getRR := httptest.NewRecorder()
+			additionalRouter.ServeHTTP(getRR, getReq)
+			Expect(getRR.Body.String()).To(ContainSubstring("quay.io/kept:v1"))
+		})
+
+		It("returns 400 for invalid JSON body on PATCH", func() {
+			url := fmt.Sprintf("/api/v1/imagesets/%s/additional-is/additional-images", ns)
+			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString("{invalid json"))
+			rr := httptest.NewRecorder()
+			additionalRouter.ServeHTTP(rr, req)
+			Expect(rr.Code).To(Equal(http.StatusBadRequest))
+		})
+
+		It("returns 404 for a non-existent ImageSet on PATCH", func() {
+			url := fmt.Sprintf("/api/v1/imagesets/%s/ghost-is/additional-images", ns)
+			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(`{"additionalImages":[]}`))
+			rr := httptest.NewRecorder()
+			additionalRouter.ServeHTTP(rr, req)
+			Expect(rr.Code).To(Equal(http.StatusNotFound))
+		})
+	})
+
 	Describe("write handlers (recollect and delete)", func() {
 		var (
 			withIsRouter http.Handler
