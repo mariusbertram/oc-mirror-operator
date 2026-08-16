@@ -292,6 +292,8 @@ func (s *Server) RegisterAPIRoutes(r *mux.Router) {
 	api.HandleFunc("/imagesets/{namespace}/{name}/helm", s.handlePatchHelm).Methods("PATCH")
 	api.HandleFunc("/imagesets/{namespace}/{name}/blocked-images", s.handleGetBlockedImages).Methods("GET")
 	api.HandleFunc("/imagesets/{namespace}/{name}/blocked-images", s.handlePatchBlockedImages).Methods("PATCH")
+	api.HandleFunc("/imagesets/{namespace}/{name}/additional-images", s.handleGetAdditionalImages).Methods("GET")
+	api.HandleFunc("/imagesets/{namespace}/{name}/additional-images", s.handlePatchAdditionalImages).Methods("PATCH")
 	api.HandleFunc("/imagesets/{namespace}/{name}", s.handleDeleteImageSet).Methods("DELETE")
 
 	// Catalog browsing endpoints
@@ -1081,9 +1083,15 @@ func (s *Server) handleGetPackageConstraints(w http.ResponseWriter, r *http.Requ
 	_ = json.NewEncoder(w).Encode(result)
 }
 
-// handleTriggerRecollect sets the recollect annotation on an ImageSet to force
-// an upstream re-resolution on the next Manager reconcile cycle.
-func (s *Server) handleTriggerRecollect(w http.ResponseWriter, r *http.Request) {
+// triggerOneShotAnnotation stamps annotationKey on the named ImageSet with a
+// value distinct per request (a nanosecond timestamp, rather than a constant
+// "true") so downstream dedup logic keyed on the annotation's value — e.g.
+// the catalog-build controller's recollect dedup
+// (catalogRecollectSigAnnotation in imageset_controller.go) — treats each
+// trigger click as a genuinely new request rather than a repeat of one it
+// already honored. See mirror.openshift.io/recollect's documented usage
+// convention (…=$(date +%s)), which force-resync follows too.
+func (s *Server) triggerOneShotAnnotation(w http.ResponseWriter, r *http.Request, annotationKey string) {
 	vars := mux.Vars(r)
 	namespace, name := vars["namespace"], vars["name"]
 
@@ -1092,13 +1100,7 @@ func (s *Server) handleTriggerRecollect(w http.ResponseWriter, r *http.Request) 
 		if is.Annotations == nil {
 			is.Annotations = make(map[string]string)
 		}
-		// A distinct value per request — rather than a constant "true" —
-		// so the catalog-build controller's recollect dedup
-		// (catalogRecollectSigAnnotation in imageset_controller.go) treats
-		// each Recollect click as a genuinely new request rather than a
-		// repeat of one it already honored. See mirror.openshift.io/recollect's
-		// documented usage convention (…=$(date +%s)).
-		is.Annotations[mirrorv1alpha1.RecollectAnnotation] = strconv.FormatInt(time.Now().UnixNano(), 10)
+		is.Annotations[annotationKey] = strconv.FormatInt(time.Now().UnixNano(), 10)
 		return nil
 	})
 	if err != nil {
@@ -1115,6 +1117,12 @@ func (s *Server) handleTriggerRecollect(w http.ResponseWriter, r *http.Request) 
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleTriggerRecollect sets the recollect annotation on an ImageSet to force
+// an upstream re-resolution on the next Manager reconcile cycle.
+func (s *Server) handleTriggerRecollect(w http.ResponseWriter, r *http.Request) {
+	s.triggerOneShotAnnotation(w, r, mirrorv1alpha1.RecollectAnnotation)
+}
+
 // handleTriggerForceResync sets the force-resync annotation on an ImageSet to
 // make the manager reset every image it owns back to Pending on the next
 // reconcile — including ones already Mirrored — so all of them are
@@ -1123,29 +1131,7 @@ func (s *Server) handleTriggerRecollect(w http.ResponseWriter, r *http.Request) 
 // this is for recovering from target-registry data loss or suspected
 // corruption of already-mirrored content.
 func (s *Server) handleTriggerForceResync(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	namespace, name := vars["namespace"], vars["name"]
-
-	c := s.clientForRequest(r)
-	err := updateImageSetWithRetry(r.Context(), c, namespace, name, func(is *mirrorv1alpha1.ImageSet) error {
-		if is.Annotations == nil {
-			is.Annotations = make(map[string]string)
-		}
-		is.Annotations[mirrorv1alpha1.ForceResyncAnnotation] = strconv.FormatInt(time.Now().UnixNano(), 10)
-		return nil
-	})
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			http.Error(w, "ImageSet not found", http.StatusNotFound)
-		} else if apierrors.IsForbidden(err) {
-			http.Error(w, "forbidden: insufficient permissions", http.StatusForbidden)
-		} else {
-			http.Error(w, fmt.Sprintf("update ImageSet: %v", err), http.StatusInternalServerError)
-		}
-		return
-	}
-
-	w.WriteHeader(http.StatusNoContent)
+	s.triggerOneShotAnnotation(w, r, mirrorv1alpha1.ForceResyncAnnotation)
 }
 
 // handleDeleteImageSet deletes an ImageSet using the caller's token.
@@ -1396,6 +1382,97 @@ func (s *Server) handlePatchBlockedImages(w http.ResponseWriter, r *http.Request
 	c := s.clientForRequest(r)
 	err = updateImageSetWithRetry(r.Context(), c, namespace, name, func(is *mirrorv1alpha1.ImageSet) error {
 		is.Spec.Mirror.BlockedImages = blocked
+		return nil
+	})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			http.Error(w, "ImageSet not found", http.StatusNotFound)
+		} else if apierrors.IsForbidden(err) {
+			http.Error(w, "forbidden: insufficient permissions", http.StatusForbidden)
+		} else {
+			http.Error(w, fmt.Sprintf("update ImageSet: %v", err), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// additionalImageEntry is the JSON wire format for a single
+// spec.mirror.additionalImages entry.
+type additionalImageEntry struct {
+	Name       string `json:"name"`
+	TargetRepo string `json:"targetRepo,omitempty"`
+	TargetTag  string `json:"targetTag,omitempty"`
+}
+
+// additionalImagesSpec is the JSON wire format for GET/PATCH
+// spec.mirror.additionalImages.
+type additionalImagesSpec struct {
+	AdditionalImages []additionalImageEntry `json:"additionalImages"`
+}
+
+// handleGetAdditionalImages returns the current spec.mirror.additionalImages list.
+func (s *Server) handleGetAdditionalImages(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	namespace, name := vars["namespace"], vars["name"]
+
+	c := s.clientForRequest(r)
+	is := &mirrorv1alpha1.ImageSet{}
+	if err := c.Get(r.Context(), client.ObjectKey{Namespace: namespace, Name: name}, is); err != nil {
+		if apierrors.IsNotFound(err) {
+			http.Error(w, "ImageSet not found", http.StatusNotFound)
+		} else {
+			http.Error(w, fmt.Sprintf("get ImageSet: %v", err), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	resp := additionalImagesSpec{AdditionalImages: []additionalImageEntry{}}
+	for _, img := range is.Spec.Mirror.AdditionalImages {
+		resp.AdditionalImages = append(resp.AdditionalImages, additionalImageEntry{
+			Name:       img.Name,
+			TargetRepo: img.TargetRepo,
+			TargetTag:  img.TargetTag,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// handlePatchAdditionalImages replaces spec.mirror.additionalImages.
+func (s *Server) handlePatchAdditionalImages(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	namespace, name := vars["namespace"], vars["name"]
+
+	defer func() { _ = r.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		http.Error(w, "failed to read body", http.StatusBadRequest)
+		return
+	}
+	var patch additionalImagesSpec
+	if err := json.Unmarshal(body, &patch); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+
+	additional := make([]mirrorv1alpha1.AdditionalImage, 0, len(patch.AdditionalImages))
+	for _, img := range patch.AdditionalImages {
+		if img.Name == "" {
+			continue
+		}
+		additional = append(additional, mirrorv1alpha1.AdditionalImage{
+			Name:       img.Name,
+			TargetRepo: img.TargetRepo,
+			TargetTag:  img.TargetTag,
+		})
+	}
+
+	c := s.clientForRequest(r)
+	err = updateImageSetWithRetry(r.Context(), c, namespace, name, func(is *mirrorv1alpha1.ImageSet) error {
+		is.Spec.Mirror.AdditionalImages = additional
 		return nil
 	})
 	if err != nil {
