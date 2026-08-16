@@ -6,9 +6,6 @@ import {
   SearchInput,
   Spinner,
   Title,
-  Toolbar,
-  ToolbarContent,
-  ToolbarItem,
 } from '@patternfly/react-core';
 import { Link, useParams } from 'react-router-dom-v5-compat';
 import {
@@ -24,18 +21,6 @@ import '../../components/plugin-styles.css';
 type CatalogBrowserParams = 'targetName' | 'slug' | 'namespace' | 'imageSetName';
 
 type VersionConstraint = { minVersion: string; maxVersion: string };
-
-function sortVersions(versions: string[]): string[] {
-  return [...versions].sort((a, b) => {
-    const pa = a.split('.').map((s) => parseInt(s, 10) || 0);
-    const pb = b.split('.').map((s) => parseInt(s, 10) || 0);
-    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-      const diff = (pa[i] || 0) - (pb[i] || 0);
-      if (diff !== 0) return diff;
-    }
-    return a.localeCompare(b);
-  });
-}
 
 const versionSelectStyle: React.CSSProperties = {
   maxWidth: 90,

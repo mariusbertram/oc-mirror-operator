@@ -6,6 +6,6 @@ import { ImageSetList } from '../../pages/ImageSets/ImageSetList';
 setFetchImpl((url, init) => consoleFetch(url, init));
 setApiBaseUrl('/api/proxy/plugin/oc-mirror-operator/resourceapi');
 
-const ImageSetListPage: React.FC<any> = (props) => <ImageSetList {...props} />;
+const ImageSetListPage: React.FC<Record<string, unknown>> = (props) => <ImageSetList {...props} />;
 
 export default ImageSetListPage;

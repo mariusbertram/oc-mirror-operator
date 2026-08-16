@@ -14,6 +14,13 @@ make deploy               # Deploy operator to cluster
 make hooks                # Install pre-commit hook (fmt, vet, lint, tests)
 ```
 
+Console plugin UI (`ui/`):
+```bash
+npm --prefix ui run lint            # ESLint (flat config: ui/eslint.config.js)
+npx --prefix ui tsc --noEmit -p ui/tsconfig.json  # Type-check
+npm --prefix ui run build:plugin    # Production webpack build
+```
+
 Single test:
 ```bash
 go test ./internal/controller/ -run TestConditions -v

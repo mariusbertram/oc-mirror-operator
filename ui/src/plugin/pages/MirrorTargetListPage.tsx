@@ -8,6 +8,6 @@ import { MirrorTargetList } from '../../pages/MirrorTargets/MirrorTargetList';
 setFetchImpl((url, init) => consoleFetch(url, init));
 setApiBaseUrl('/api/proxy/plugin/oc-mirror-operator/resourceapi');
 
-const MirrorTargetListPage: React.FC<any> = (props) => <MirrorTargetList {...props} />;
+const MirrorTargetListPage: React.FC<Record<string, unknown>> = (props) => <MirrorTargetList {...props} />;
 
 export default MirrorTargetListPage;

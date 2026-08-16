@@ -6,7 +6,7 @@ import { MirrorTargetDetail } from '../../pages/MirrorTargets/MirrorTargetDetail
 setFetchImpl((url, init) => consoleFetch(url, init));
 setApiBaseUrl('/api/proxy/plugin/oc-mirror-operator/resourceapi');
 
-const MirrorTargetDetailPage: React.FC<any> = (props) => {
+const MirrorTargetDetailPage: React.FC<Record<string, unknown>> = (props) => {
   console.log('MirrorTargetDetailPage wrapper props:', JSON.stringify(props));
   return <MirrorTargetDetail {...props} />;
 };

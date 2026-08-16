@@ -6,6 +6,6 @@ import { ReleaseBrowser } from '../../pages/ReleaseBrowser/ReleaseBrowser';
 setFetchImpl((url, init) => consoleFetch(url, init));
 setApiBaseUrl('/api/proxy/plugin/oc-mirror-operator/resourceapi');
 
-const ReleaseBrowserPage: React.FC<any> = (props) => <ReleaseBrowser {...props} />;
+const ReleaseBrowserPage: React.FC<Record<string, unknown>> = (props) => <ReleaseBrowser {...props} />;
 
 export default ReleaseBrowserPage;
