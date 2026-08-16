@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -245,6 +246,16 @@ func fakeUBIRegistry(t *testing.T) (host string) {
 		switch {
 		case path == "/v2/" || path == "/v2":
 			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodPost && strings.HasSuffix(path, "/blobs/uploads/"):
+			// Blob mount/upload-session request: no anonymous mount support,
+			// so always hand back an upload URL (same path, PUT accepts any query).
+			w.Header().Set("Location", path)
+			w.Header().Set("Docker-Upload-UUID", "test-uuid")
+			w.WriteHeader(http.StatusAccepted)
+		case r.Method == http.MethodPut && strings.Contains(path, "/blobs/uploads/"):
+			w.WriteHeader(http.StatusCreated)
+		case r.Method == http.MethodPut && strings.Contains(path, "/manifests/"):
+			w.WriteHeader(http.StatusCreated)
 		case strings.Contains(path, "/manifests/"):
 			w.Header().Set("Content-Type", "application/vnd.oci.image.manifest.v1+json")
 			w.Header().Set("Docker-Content-Digest", manifestDigest)
@@ -306,6 +317,45 @@ func TestBuildAndPush_CopiesBaseLayersThenFailsAgainstUnreachableDestination(t *
 	}
 }
 
+func TestBuildAndPush_FullSuccess(t *testing.T) {
+	origBase := graphBaseImage
+	origDataURL := graphDataURL
+	defer func() {
+		graphBaseImage = origBase
+		graphDataURL = origDataURL
+	}()
+
+	host := fakeUBIRegistry(t)
+	graphBaseImage = host + "/ubi9/ubi:latest"
+
+	archiveSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(buildTestArchive(t, map[string]string{"channels/4.14.yaml": "x"}))
+	}))
+	defer archiveSrv.Close()
+	graphDataURL = archiveSrv.URL
+
+	// Base image (ubi9/ubi) and destination (openshift/graph-image) are
+	// different repositories on the same fake registry — fakeUBIRegistry
+	// answers GETs for the former and now also accepts pushes for any repo.
+	client := mirrorclient.NewMirrorClient([]string{host}, "")
+	b := New(client)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	digest, err := b.BuildAndPush(ctx, host)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if digest == "" {
+		t.Error("expected a non-empty pushed manifest digest")
+	}
+	if !strings.HasPrefix(digest, "sha256:") {
+		t.Errorf("expected a sha256 digest, got %q", digest)
+	}
+}
+
 func TestResolvePlatformManifest_NotAList(t *testing.T) {
 	mc := mirrorclient.NewMirrorClient(nil, "")
 	r, _ := ref.New("localhost:1/test:latest")
@@ -326,6 +376,137 @@ func TestResolvePlatformManifest_NotAList(t *testing.T) {
 	}
 	if outM != m {
 		t.Error("expected same manifest returned")
+	}
+}
+
+// fakeMismatchedUBIRegistry serves a base image whose config lists two
+// diff_ids but whose manifest lists only one layer, to trigger BuildAndPush's
+// "manifest/config mismatch" sanity check.
+func fakeMismatchedUBIRegistry(t *testing.T) (host string) {
+	t.Helper()
+
+	layerBytes := []byte("fake-ubi-layer-content")
+	layerDigest := fmt.Sprintf("sha256:%x", sha256.Sum256(layerBytes))
+
+	configJSON, _ := json.Marshal(map[string]interface{}{
+		"architecture": "amd64",
+		"os":           "linux",
+		"config":       map[string]interface{}{},
+		"rootfs": map[string]interface{}{
+			"type": "layers",
+			"diff_ids": []string{
+				"sha256:1111111111111111111111111111111111111111111111111111111111111111",
+				"sha256:2222222222222222222222222222222222222222222222222222222222222222",
+			},
+		},
+	})
+	configDigest := fmt.Sprintf("sha256:%x", sha256.Sum256(configJSON))
+
+	manifestJSON, _ := json.Marshal(map[string]interface{}{
+		"schemaVersion": 2,
+		"mediaType":     "application/vnd.oci.image.manifest.v1+json",
+		"config": map[string]interface{}{
+			"mediaType": "application/vnd.oci.image.config.v1+json",
+			"digest":    configDigest,
+			"size":      len(configJSON),
+		},
+		"layers": []map[string]interface{}{
+			{
+				"mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+				"digest":    layerDigest,
+				"size":      len(layerBytes),
+			},
+		},
+	})
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v2/", func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		switch {
+		case path == "/v2/" || path == "/v2":
+			w.WriteHeader(http.StatusOK)
+		case strings.Contains(path, "/manifests/"):
+			w.Header().Set("Content-Type", "application/vnd.oci.image.manifest.v1+json")
+			_, _ = w.Write(manifestJSON)
+		case strings.Contains(path, "/blobs/") && strings.Contains(path, layerDigest):
+			w.Header().Set("Content-Type", "application/octet-stream")
+			_, _ = w.Write(layerBytes)
+		case strings.Contains(path, "/blobs/") && strings.Contains(path, configDigest):
+			w.Header().Set("Content-Type", "application/vnd.oci.image.config.v1+json")
+			_, _ = w.Write(configJSON)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return strings.TrimPrefix(srv.URL, "http://")
+}
+
+func TestBuildAndPush_LayerConfigMismatch(t *testing.T) {
+	origBase := graphBaseImage
+	origDataURL := graphDataURL
+	defer func() {
+		graphBaseImage = origBase
+		graphDataURL = origDataURL
+	}()
+
+	host := fakeMismatchedUBIRegistry(t)
+	graphBaseImage = host + "/ubi9/ubi:latest"
+
+	archiveSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(buildTestArchive(t, map[string]string{"channels/4.14.yaml": "x"}))
+	}))
+	defer archiveSrv.Close()
+	graphDataURL = archiveSrv.URL
+
+	client := mirrorclient.NewMirrorClient([]string{host}, "")
+	b := New(client)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := b.BuildAndPush(ctx, host)
+	if err == nil {
+		t.Fatal("expected error for mismatched layer/diff_id counts")
+	}
+	if !strings.Contains(err.Error(), "manifest/config mismatch") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestResolvePlatformManifest_MatchingPlatformFetchFails(t *testing.T) {
+	// Unreachable client: the platform entry resolves, but fetching the
+	// resolved-digest manifest from it fails.
+	mc := mirrorclient.NewMirrorClient([]string{"localhost:1"}, "")
+	r, _ := ref.New("localhost:1/test:latest")
+
+	m, err := manifest.New(manifest.WithOrig(v1.Index{
+		Versioned: v1.IndexSchemaVersion,
+		MediaType: "application/vnd.oci.image.index.v1+json",
+		Manifests: []descriptor.Descriptor{
+			{
+				MediaType: "application/vnd.oci.image.manifest.v1+json",
+				Digest:    "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+				Size:      2,
+				Platform:  &platform.Platform{OS: "linux", Architecture: "amd64"},
+			},
+		},
+	}))
+	if err != nil {
+		t.Fatalf("failed to create test manifest list: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, _, err = resolvePlatformManifest(ctx, mc, r, m)
+	if err == nil {
+		t.Fatal("expected error when the resolved platform manifest can't be fetched")
+	}
+	if !strings.Contains(err.Error(), "get platform manifest") {
+		t.Errorf("unexpected error message: %v", err)
 	}
 }
 
@@ -366,6 +547,28 @@ func TestCopyBlobWithRetry_RespectsParentCancel(t *testing.T) {
 	err := copyBlobWithRetry(ctx, mc, ref.Ref{}, ref.Ref{}, descriptor.Descriptor{}, 3, time.Minute)
 	if err == nil {
 		t.Error("expected error with cancelled context")
+	}
+}
+
+func TestCopyBlobWithRetry_ExhaustsAttemptsAndReturnsLastErr(t *testing.T) {
+	mc := mirrorclient.NewMirrorClient([]string{"localhost:1"}, "")
+	srcRef, _ := ref.New("localhost:1/src:latest")
+	dstRef, _ := ref.New("localhost:1/dst:latest")
+	d := descriptor.Descriptor{Digest: "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+
+	// A live (non-cancelled) context with a short per-attempt timeout: every
+	// attempt fails against the unreachable host, exercising the inter-attempt
+	// backoff (attempt > 1) before returning the last real error rather than
+	// ctx.Err().
+	err := copyBlobWithRetry(context.Background(), mc, srcRef, dstRef, d, 2, 200*time.Millisecond)
+	if err == nil {
+		t.Fatal("expected error after exhausting all attempts")
+	}
+	// The parent context (context.Background()) is never done, so this must
+	// return the last per-attempt error (line "return lastErr"), not take the
+	// separate ctx.Err() early-return path.
+	if errors.Is(err, context.Canceled) {
+		t.Errorf("expected the last attempt's error, not the parent context's: %v", err)
 	}
 }
 
