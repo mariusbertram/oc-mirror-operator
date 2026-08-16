@@ -23,16 +23,18 @@ import {
   ModalVariant,
   PageSection,
   Spinner,
+  Switch,
   Tab,
   Tabs,
   TabTitleText,
+  TextInput,
   Title,
 } from '@patternfly/react-core';
 import { Table, Thead, Tr, Th, Tbody, Td } from '@patternfly/react-table';
 import { DatabaseIcon } from '@patternfly/react-icons';
 import { Link, useParams } from 'react-router-dom-v5-compat';
-import { getTarget, triggerRecollect, deleteImageSet } from '../../api/client';
-import type { TargetDetail } from '../../api/types';
+import { getTarget, triggerRecollect, deleteImageSet, getMirrorTargetSpec, patchMirrorTargetSpec } from '../../api/client';
+import type { TargetDetail, MirrorTargetSpecWire } from '../../api/types';
 import { StatusPill, computeStatus } from '../../components/StatusPill';
 import { ProgressBar } from '../../components/ProgressBar';
 import { ResourcesView } from '../../components/ResourcesView';
@@ -142,6 +144,7 @@ export const MirrorTargetDetail: React.FC = () => {
           <Tab eventKey="imagesets" title={<TabTitleText>ImageSets ({target.imageSets.length})</TabTitleText>} />
           <Tab eventKey="resources" title={<TabTitleText>Resources</TabTitleText>} />
           <Tab eventKey="catalogs" title={<TabTitleText>Catalogs</TabTitleText>} />
+          <Tab eventKey="settings" title={<TabTitleText>Settings</TabTitleText>} />
           <Tab eventKey="conditions" title={<TabTitleText>Conditions</TabTitleText>} />
         </Tabs>
       </PageSection>
@@ -162,6 +165,9 @@ export const MirrorTargetDetail: React.FC = () => {
         )}
         {activeTab === 'catalogs' && (
           <CatalogsTab target={target} />
+        )}
+        {activeTab === 'settings' && (
+          <SettingsTab target={target} />
         )}
         {activeTab === 'conditions' && (
           <ConditionsTab target={target} />
@@ -450,6 +456,144 @@ const ConditionsTab: React.FC<{ target: TargetDetail }> = ({ target }) => {
             ))}
           </Tbody>
         </Table>
+      </CardBody>
+    </Card>
+  );
+};
+
+const emptyMirrorTargetSpec: MirrorTargetSpecWire = { registry: '', insecure: false };
+
+const SettingsTab: React.FC<{ target: TargetDetail }> = ({ target }) => {
+  const [spec, setSpec] = useState<MirrorTargetSpecWire>(emptyMirrorTargetSpec);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setLoading(true);
+    getMirrorTargetSpec(target.namespace, target.name)
+      .then(setSpec)
+      .catch((e: Error) => setError(e.message))
+      .finally(() => setLoading(false));
+  }, [target.namespace, target.name]);
+
+  const save = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      await patchMirrorTargetSpec(target.namespace, target.name, spec);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) return <Spinner size="md" />;
+
+  return (
+    <Card>
+      <CardTitle>Settings</CardTitle>
+      <CardBody>
+        <Content component="p">
+          Fields not shown here (expose, proxy, CA bundle, worker storage, pod
+          resources/tolerations) remain editable via <code className="mirror-mono">kubectl</code> only.
+        </Content>
+        {error && (
+          <Alert variant="danger" title="Failed to load or save settings" isInline style={{ marginBottom: 16 }}>
+            {error}
+          </Alert>
+        )}
+        <DescriptionList isCompact>
+          <DescriptionListGroup>
+            <DescriptionListTerm>Registry</DescriptionListTerm>
+            <DescriptionListDescription>
+              <TextInput
+                aria-label="Registry"
+                value={spec.registry}
+                onChange={(_e, v) => setSpec((s) => ({ ...s, registry: v }))}
+              />
+            </DescriptionListDescription>
+          </DescriptionListGroup>
+          <DescriptionListGroup>
+            <DescriptionListTerm>Insecure</DescriptionListTerm>
+            <DescriptionListDescription>
+              <Switch
+                aria-label="Insecure"
+                isChecked={spec.insecure}
+                onChange={(_e, checked) => setSpec((s) => ({ ...s, insecure: checked }))}
+                label="Allow non-TLS / self-signed connections to the target registry"
+              />
+            </DescriptionListDescription>
+          </DescriptionListGroup>
+          <DescriptionListGroup>
+            <DescriptionListTerm>Auth secret</DescriptionListTerm>
+            <DescriptionListDescription>
+              <TextInput
+                aria-label="Auth secret"
+                placeholder="(none)"
+                value={spec.authSecret ?? ''}
+                onChange={(_e, v) => setSpec((s) => ({ ...s, authSecret: v }))}
+              />
+            </DescriptionListDescription>
+          </DescriptionListGroup>
+          <DescriptionListGroup>
+            <DescriptionListTerm>Concurrency</DescriptionListTerm>
+            <DescriptionListDescription>
+              <TextInput
+                aria-label="Concurrency"
+                type="number"
+                placeholder="20 (default)"
+                value={spec.concurrency ?? ''}
+                onChange={(_e, v) => setSpec((s) => ({ ...s, concurrency: v === '' ? undefined : Number(v) }))}
+              />
+            </DescriptionListDescription>
+          </DescriptionListGroup>
+          <DescriptionListGroup>
+            <DescriptionListTerm>Batch size</DescriptionListTerm>
+            <DescriptionListDescription>
+              <TextInput
+                aria-label="Batch size"
+                type="number"
+                placeholder="10 (default)"
+                value={spec.batchSize ?? ''}
+                onChange={(_e, v) => setSpec((s) => ({ ...s, batchSize: v === '' ? undefined : Number(v) }))}
+              />
+            </DescriptionListDescription>
+          </DescriptionListGroup>
+          <DescriptionListGroup>
+            <DescriptionListTerm>Poll interval</DescriptionListTerm>
+            <DescriptionListDescription>
+              <TextInput
+                aria-label="Poll interval"
+                placeholder="24h (default); 0 disables polling"
+                value={spec.pollInterval ?? ''}
+                onChange={(_e, v) => setSpec((s) => ({ ...s, pollInterval: v }))}
+              />
+            </DescriptionListDescription>
+          </DescriptionListGroup>
+          <DescriptionListGroup>
+            <DescriptionListTerm>Check-exist interval</DescriptionListTerm>
+            <DescriptionListDescription>
+              <TextInput
+                aria-label="Check-exist interval"
+                placeholder="6h (default)"
+                value={spec.checkExistInterval ?? ''}
+                onChange={(_e, v) => setSpec((s) => ({ ...s, checkExistInterval: v }))}
+              />
+            </DescriptionListDescription>
+          </DescriptionListGroup>
+        </DescriptionList>
+
+        <Button
+          variant="primary"
+          style={{ marginTop: 16 }}
+          onClick={save}
+          isDisabled={saving || !spec.registry.trim()}
+          isLoading={saving}
+        >
+          Save
+        </Button>
       </CardBody>
     </Card>
   );

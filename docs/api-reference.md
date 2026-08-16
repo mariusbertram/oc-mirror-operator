@@ -15,6 +15,11 @@ kubectl get mirrortargets -n <namespace>
 
 ### Spec
 
+`registry`, `insecure`, `authSecret`, `concurrency`, `batchSize`, `pollInterval`,
+and `checkExistInterval` are editable via `GET`/`PATCH /api/v1/targets/{namespace}/{name}/spec`
+and the console plugin's "Settings" tab on the MirrorTarget detail page. All
+other fields below remain `kubectl`/YAML-only.
+
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `registry` | `string` | **yes** | URL of the target registry, e.g. `registry.example.com/mirror`. |
@@ -200,11 +205,11 @@ kubectl get imagesets -n <namespace>
 | Field | Type | Description |
 |---|---|---|
 | `platform` | `Platform` | OpenShift/OKD release channels. |
-| `operators` | `[]Operator` | OLM operator catalogs. |
-| `additionalImages` | `[]AdditionalImage` | Individual images by reference. |
+| `operators` | `[]Operator` | OLM operator catalogs. Catalog/targetCatalog/targetTag/full/skipDependencies editable via `GET`/`PATCH /api/v1/imagesets/{namespace}/{name}/operators` and the console plugin's "Operators" tab. |
+| `additionalImages` | `[]AdditionalImage` | Individual images by reference. Editable via `GET`/`PATCH /api/v1/imagesets/{namespace}/{name}/additional-images` and the console plugin's "Additional Images" tab. |
 | `helm` | `Helm` | Helm chart images. See [Helm](#helm). |
 | `blockedImages` | `[]BlockedImage` | Images to exclude from all other entries. |
-| `requireSignedImages` | `bool` | When set, every mirrored image in this ImageSet — release components, operator bundles, additional images, and Helm images alike — must carry a cosign signature. This is a presence/shape check against the mirrored destination (confirms a well-formed signature exists for the image's digest), re-checked periodically as part of the manager's drift check; it does not verify the signature against any particular trusted key or identity. Use `operators[].signatureVerification` instead when a specific trusted public key must be enforced. Default: `false`. |
+| `requireSignedImages` | `bool` | When set, every mirrored image in this ImageSet — release components, operator bundles, additional images, and Helm images alike — must carry a cosign signature. This is a presence/shape check against the mirrored destination (confirms a well-formed signature exists for the image's digest), re-checked periodically as part of the manager's drift check; it does not verify the signature against any particular trusted key or identity. Use `operators[].signatureVerification` instead when a specific trusted public key must be enforced. Default: `false`. Editable via `GET`/`PATCH /api/v1/imagesets/{namespace}/{name}/settings` and the console plugin's ImageSet Overview tab. |
 
 #### Platform
 

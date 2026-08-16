@@ -22,6 +22,7 @@ import {
   ModalVariant,
   PageSection,
   Spinner,
+  Switch,
   Tab,
   Tabs,
   TabTitleText,
@@ -34,14 +35,24 @@ import {
   getHelmRepositories,
   getBlockedImages,
   getAdditionalImages,
+  getOperators,
+  getImageSetSettings,
   getTarget,
   patchHelmRepositories,
   patchBlockedImages,
   patchAdditionalImages,
+  patchOperators,
+  patchImageSetSettings,
   triggerRecollect,
   triggerForceResync,
 } from '../../api/client';
-import type { AdditionalImageEntry, HelmRepository, TargetDetail, ImageSetSummary } from '../../api/types';
+import type {
+  AdditionalImageEntry,
+  HelmRepository,
+  OperatorEntry,
+  TargetDetail,
+  ImageSetSummary,
+} from '../../api/types';
 import { StatusPill, computeStatus } from '../../components/StatusPill';
 import { ProgressBar } from '../../components/ProgressBar';
 import { ResourcesView } from '../../components/ResourcesView';
@@ -90,6 +101,17 @@ export const ImageSetDetail: React.FC = () => {
   const [additionalSaving, setAdditionalSaving] = useState(false);
   const [additionalDirty, setAdditionalDirty] = useState(false);
   const [additionalError, setAdditionalError] = useState<string | null>(null);
+
+  const [operators, setOperators] = useState<OperatorEntry[]>([]);
+  const [operatorsLoading, setOperatorsLoading] = useState(true);
+  const [operatorsSaving, setOperatorsSaving] = useState(false);
+  const [operatorsDirty, setOperatorsDirty] = useState(false);
+  const [operatorsError, setOperatorsError] = useState<string | null>(null);
+
+  const [requireSignedImages, setRequireSignedImages] = useState(false);
+  const [settingsLoading, setSettingsLoading] = useState(true);
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
 
   const [forceResyncOpen, setForceResyncOpen] = useState(false);
 
@@ -267,6 +289,80 @@ export const ImageSetDetail: React.FC = () => {
     }
   };
 
+  useEffect(() => {
+    if (!target?.namespace || !imageSetName) return;
+    setOperatorsLoading(true);
+    getOperators(target.namespace, imageSetName)
+      .then((spec) => {
+        setOperators(spec.operators ?? []);
+        setOperatorsDirty(false);
+      })
+      .catch((e: Error) => setOperatorsError(e.message))
+      .finally(() => setOperatorsLoading(false));
+  }, [target?.namespace, imageSetName]);
+
+  const addOperator = () => {
+    setOperators((prev) => [...prev, { catalog: '' }]);
+    setOperatorsDirty(true);
+  };
+
+  const removeOperator = (idx: number) => {
+    setOperators((prev) => prev.filter((_, i) => i !== idx));
+    setOperatorsDirty(true);
+  };
+
+  const updateOperator = (idx: number, field: 'catalog' | 'targetCatalog' | 'targetTag', value: string) => {
+    setOperators((prev) => prev.map((op, i) => (i === idx ? { ...op, [field]: value } : op)));
+    setOperatorsDirty(true);
+  };
+
+  const toggleOperatorFlag = (idx: number, field: 'full' | 'skipDependencies', value: boolean) => {
+    setOperators((prev) => prev.map((op, i) => (i === idx ? { ...op, [field]: value } : op)));
+    setOperatorsDirty(true);
+  };
+
+  const saveOperators = async () => {
+    if (!target?.namespace || !imageSetName) return;
+    setOperatorsSaving(true);
+    setOperatorsError(null);
+    try {
+      const cleaned = operators.filter((op) => op.catalog.trim() !== '');
+      await patchOperators(target.namespace, imageSetName, cleaned);
+      const spec = await getOperators(target.namespace, imageSetName);
+      setOperators(spec.operators ?? []);
+      setOperatorsDirty(false);
+    } catch (e: unknown) {
+      setOperatorsError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setOperatorsSaving(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!target?.namespace || !imageSetName) return;
+    setSettingsLoading(true);
+    getImageSetSettings(target.namespace, imageSetName)
+      .then((s) => setRequireSignedImages(s.requireSignedImages))
+      .catch((e: Error) => setSettingsError(e.message))
+      .finally(() => setSettingsLoading(false));
+  }, [target?.namespace, imageSetName]);
+
+  const toggleRequireSignedImages = async (checked: boolean) => {
+    if (!target?.namespace || !imageSetName) return;
+    const previous = requireSignedImages;
+    setRequireSignedImages(checked);
+    setSettingsSaving(true);
+    setSettingsError(null);
+    try {
+      await patchImageSetSettings(target.namespace, imageSetName, { requireSignedImages: checked });
+    } catch (e: unknown) {
+      setRequireSignedImages(previous);
+      setSettingsError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSettingsSaving(false);
+    }
+  };
+
   if (loading && !target) return <PageSection><Spinner /></PageSection>;
   if (error) return (
     <PageSection>
@@ -348,6 +444,7 @@ export const ImageSetDetail: React.FC = () => {
           {imageSetCatalogs.length > 0 && (
             <Tab eventKey="catalogs" title={<TabTitleText>Catalogs</TabTitleText>} />
           )}
+          <Tab eventKey="operators" title={<TabTitleText>Operators{operators.length > 0 ? ` (${operators.length})` : ''}</TabTitleText>} />
           <Tab eventKey="helm" title={<TabTitleText>Helm{helmRepos.length > 0 ? ` (${helmRepos.length})` : ''}</TabTitleText>} />
           <Tab eventKey="additional" title={<TabTitleText>Additional Images{additionalImages.length > 0 ? ` (${additionalImages.length})` : ''}</TabTitleText>} />
           <Tab eventKey="blocked" title={<TabTitleText>Blocked Images{blockedImages.length > 0 ? ` (${blockedImages.length})` : ''}</TabTitleText>} />
@@ -402,6 +499,26 @@ export const ImageSetDetail: React.FC = () => {
                     <DescriptionListTerm>Resources</DescriptionListTerm>
                     <DescriptionListDescription>{is.resources.length} available</DescriptionListDescription>
                   </DescriptionListGroup>
+                  <DescriptionListGroup>
+                    <DescriptionListTerm>Require signed images</DescriptionListTerm>
+                    <DescriptionListDescription>
+                      {settingsLoading ? (
+                        <Spinner size="sm" />
+                      ) : (
+                        <Switch
+                          aria-label="Require signed images"
+                          isChecked={requireSignedImages}
+                          isDisabled={settingsSaving}
+                          onChange={(_e, checked) => toggleRequireSignedImages(checked)}
+                        />
+                      )}
+                      {settingsError && (
+                        <Alert variant="danger" title="Failed to save" isInline isPlain style={{ marginTop: 8 }}>
+                          {settingsError}
+                        </Alert>
+                      )}
+                    </DescriptionListDescription>
+                  </DescriptionListGroup>
                 </DescriptionList>
               </CardBody>
             </Card>
@@ -434,6 +551,119 @@ export const ImageSetDetail: React.FC = () => {
                   ))}
                 </Tbody>
               </Table>
+            </CardBody>
+          </Card>
+        )}
+
+        {activeTab === 'operators' && (
+          <Card>
+            <CardTitle>Operator catalogs (spec)</CardTitle>
+            <CardBody>
+              <Content component="p">
+                Catalogs to mirror. Package filters for an already-resolved catalog
+                are edited from the <strong>Catalogs</strong> tab once it appears there;
+                adding a catalog here starts with no filters (mirrors everything) until
+                one is configured. Cosign signature verification is kubectl-only.
+              </Content>
+              {operatorsError && (
+                <Alert variant="danger" title="Failed to load or save operators" isInline style={{ marginBottom: 16 }}>
+                  {operatorsError}
+                </Alert>
+              )}
+              {operatorsLoading ? (
+                <Spinner size="md" />
+              ) : (
+                <>
+                  <Table aria-label="Operators" variant="compact">
+                    <Thead>
+                      <Tr>
+                        <Th>Catalog</Th>
+                        <Th>Target catalog</Th>
+                        <Th>Target tag</Th>
+                        <Th>Full</Th>
+                        <Th>Skip deps</Th>
+                        <Th screenReaderText="Actions" />
+                      </Tr>
+                    </Thead>
+                    <Tbody>
+                      {operators.map((op, idx) => (
+                        <Tr key={idx}>
+                          <Td dataLabel="Catalog">
+                            <TextInput
+                              aria-label="Catalog"
+                              placeholder="e.g. registry.redhat.io/redhat/redhat-operator-index:v4.21"
+                              value={op.catalog}
+                              onChange={(_e, v) => updateOperator(idx, 'catalog', v)}
+                            />
+                            {op.packagesConfigured && (
+                              <Label isCompact color="blue" style={{ marginTop: 4 }}>packages configured</Label>
+                            )}
+                            {op.signatureVerificationConfigured && (
+                              <Label isCompact color="purple" style={{ marginTop: 4, marginLeft: 4 }}>signature-verified</Label>
+                            )}
+                          </Td>
+                          <Td dataLabel="Target catalog">
+                            <TextInput
+                              aria-label="Target catalog"
+                              placeholder="(default)"
+                              value={op.targetCatalog ?? ''}
+                              onChange={(_e, v) => updateOperator(idx, 'targetCatalog', v)}
+                            />
+                          </Td>
+                          <Td dataLabel="Target tag">
+                            <TextInput
+                              aria-label="Target tag"
+                              placeholder="(default)"
+                              value={op.targetTag ?? ''}
+                              onChange={(_e, v) => updateOperator(idx, 'targetTag', v)}
+                            />
+                          </Td>
+                          <Td dataLabel="Full">
+                            <Switch
+                              aria-label="Mirror full catalog"
+                              isChecked={!!op.full}
+                              onChange={(_e, checked) => toggleOperatorFlag(idx, 'full', checked)}
+                            />
+                          </Td>
+                          <Td dataLabel="Skip deps">
+                            <Switch
+                              aria-label="Skip dependencies"
+                              isChecked={!!op.skipDependencies}
+                              onChange={(_e, checked) => toggleOperatorFlag(idx, 'skipDependencies', checked)}
+                            />
+                          </Td>
+                          <Td dataLabel="Actions">
+                            <Button variant="plain" size="sm" onClick={() => removeOperator(idx)} aria-label={`Remove catalog ${op.catalog}`}>
+                              ×
+                            </Button>
+                          </Td>
+                        </Tr>
+                      ))}
+                      {operators.length === 0 && (
+                        <Tr><Td colSpan={6}>No operator catalogs configured.</Td></Tr>
+                      )}
+                    </Tbody>
+                  </Table>
+
+                  <Flex style={{ marginTop: 16 }}>
+                    <FlexItem>
+                      <Button variant="secondary" onClick={addOperator}>
+                        + Add catalog
+                      </Button>
+                    </FlexItem>
+                    <FlexItem>
+                      <Button
+                        variant="primary"
+                        onClick={saveOperators}
+                        isDisabled={!operatorsDirty || operatorsSaving}
+                        isLoading={operatorsSaving}
+                      >
+                        Save
+                      </Button>
+                    </FlexItem>
+                  </Flex>
+                </>
+              )}
             </CardBody>
           </Card>
         )}

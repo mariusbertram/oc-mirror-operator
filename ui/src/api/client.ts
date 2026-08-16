@@ -5,7 +5,11 @@ import type {
   CatalogPackagesResponse,
   HelmRepository,
   ImageFailuresResponse,
+  ImageSetSettings,
+  MirrorTargetSpecWire,
   OcpChannelEntry,
+  OperatorEntry,
+  OperatorsSpec,
   PackageConstraint,
   ReleaseSpec,
   TargetDetail,
@@ -122,6 +126,12 @@ export const getImageFailures = (targetName: string) =>
 export const getFilteredPackages = (targetName: string, slug: string) =>
   get<CatalogPackagesResponse>(`/api/v1/targets/${targetName}/catalogs/${slug}/packages.json`);
 
+export const getMirrorTargetSpec = (namespace: string, targetName: string) =>
+  get<MirrorTargetSpecWire>(`/api/v1/targets/${namespace}/${targetName}/spec`);
+
+export const patchMirrorTargetSpec = (namespace: string, targetName: string, spec: MirrorTargetSpecWire) =>
+  patch<void>(`/api/v1/targets/${namespace}/${targetName}/spec`, spec);
+
 export const getUpstreamPackages = (targetName: string, slug: string) =>
   get<CatalogPackagesResponse>(`/api/v1/targets/${targetName}/catalogs/${slug}/upstream-packages.json`);
 
@@ -185,3 +195,15 @@ export const getAdditionalImages = (namespace: string, imageSetName: string) =>
 
 export const patchAdditionalImages = (namespace: string, imageSetName: string, additionalImages: AdditionalImageEntry[]) =>
   patch<void>(`/api/v1/imagesets/${namespace}/${imageSetName}/additional-images`, { additionalImages });
+
+export const getOperators = (namespace: string, imageSetName: string) =>
+  get<OperatorsSpec>(`/api/v1/imagesets/${namespace}/${imageSetName}/operators`);
+
+export const patchOperators = (namespace: string, imageSetName: string, operators: OperatorEntry[]) =>
+  patch<void>(`/api/v1/imagesets/${namespace}/${imageSetName}/operators`, { operators });
+
+export const getImageSetSettings = (namespace: string, imageSetName: string) =>
+  get<ImageSetSettings>(`/api/v1/imagesets/${namespace}/${imageSetName}/settings`);
+
+export const patchImageSetSettings = (namespace: string, imageSetName: string, settings: ImageSetSettings) =>
+  patch<void>(`/api/v1/imagesets/${namespace}/${imageSetName}/settings`, settings);

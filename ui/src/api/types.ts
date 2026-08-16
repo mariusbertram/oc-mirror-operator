@@ -147,6 +147,38 @@ export interface AdditionalImagesSpec {
   additionalImages: AdditionalImageEntry[];
 }
 
+export interface OperatorEntry {
+  catalog: string;
+  targetCatalog?: string;
+  targetTag?: string;
+  full?: boolean;
+  skipDependencies?: boolean;
+  /** Read-only hint: this catalog has package filters configured via the Catalogs tab. */
+  packagesConfigured?: boolean;
+  /** Read-only hint: this catalog has cosign signature verification configured (kubectl-only). */
+  signatureVerificationConfigured?: boolean;
+}
+
+export interface OperatorsSpec {
+  operators: OperatorEntry[];
+}
+
+export interface ImageSetSettings {
+  requireSignedImages: boolean;
+}
+
+export interface MirrorTargetSpecWire {
+  registry: string;
+  insecure: boolean;
+  authSecret?: string;
+  concurrency?: number;
+  batchSize?: number;
+  /** Go duration string, e.g. "24h0m0s". Empty means "use the controller default". */
+  pollInterval?: string;
+  /** Go duration string, e.g. "6h0m0s". Empty means "use the controller default". */
+  checkExistInterval?: string;
+}
+
 /** A single OCP/OKD release channel returned by GET /api/v1/releases/channels.
  *  Sourced from openshift/cincinnati-graph-data, with ConfigMap and built-in fallbacks. */
 export interface OcpChannelEntry {
