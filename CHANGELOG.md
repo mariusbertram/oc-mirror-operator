@@ -7,7 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Force Resync trigger**: a new `mirror.openshift.io/force-resync`
+  one-shot ImageSet annotation (and matching `PATCH
+  .../force-resync` API endpoint / "Force Resync" button in the console
+  plugin) resets every image owned by the ImageSet back to `Pending`,
+  independent of its current state — including images already `Mirrored` —
+  so all of them are re-verified and re-transferred to the target registry.
+  Unlike the existing `recollect` trigger, which only forces re-resolution of
+  the upstream content list and leaves already-mirrored images untouched,
+  this is for recovering from target-registry data loss or suspected
+  corruption of previously-mirrored content.
+
 ### Fixed
+- **IDMS/ITMS entries kept a tag on the source repository for images
+  resolved to both a tag and a digest** (e.g. `repo:v1.2@sha256:...`, as
+  produced by Helm-templated and some catalog bundle image references):
+  `GenerateIDMS`/`GenerateITMS` derive each entry's `source` field via
+  `repoOnly`, which only stripped a digest when a reference carried both a
+  tag and a digest, silently leaving the tag on the reported repository. The
+  `source` field of an `ImageDigestMirrorSet`/`ImageTagMirrorSet` entry must
+  be a bare repository — one with a lingering tag is rejected as invalid by
+  the cluster. `splitImageRef` now always strips both, in either order.
 - **Tag-referenced `additionalImages` never picked up upstream changes**:
   once mirrored, an additional image's imagestate entry stayed `Mirrored`
   forever — `CollectAdditional` re-enumerates the spec on every resolve, but

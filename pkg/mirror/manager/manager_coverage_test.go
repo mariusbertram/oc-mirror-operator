@@ -664,6 +664,81 @@ var _ = Describe("Manager Coverage", func() {
 		})
 	})
 
+	// ─── resetImageSetToPendingLocked ─────────────────────────────────
+
+	Context("resetImageSetToPendingLocked", func() {
+		It("resets a Mirrored entry back to Pending, independent of state", func() {
+			m.imageState = imagestate.ImageState{
+				"reg.io/img:v1": &imagestate.ImageEntry{
+					Source:            "quay.io/img:v1",
+					State:             "Mirrored",
+					RetryCount:        3,
+					LastError:         "stale",
+					SignatureVerified: true,
+				},
+			}
+			m.owners = map[string][]string{"reg.io/img:v1": {testImageSetName}}
+			m.mirrored["reg.io/img:v1"] = true
+
+			Expect(m.resetImageSetToPendingLocked(testImageSetName)).To(BeTrue())
+
+			entry := m.imageState["reg.io/img:v1"]
+			Expect(entry.State).To(Equal("Pending"))
+			Expect(entry.RetryCount).To(Equal(0))
+			Expect(entry.LastError).To(BeEmpty())
+			Expect(entry.SignatureVerified).To(BeFalse())
+			Expect(m.mirrored["reg.io/img:v1"]).To(BeFalse())
+		})
+
+		It("preserves PermanentlyFailed as a sticky marker across the reset", func() {
+			m.imageState = imagestate.ImageState{
+				"reg.io/img:v1": &imagestate.ImageEntry{
+					Source:            "quay.io/img:v1",
+					State:             "Failed",
+					RetryCount:        10,
+					PermanentlyFailed: true,
+				},
+			}
+			m.owners = map[string][]string{"reg.io/img:v1": {testImageSetName}}
+
+			Expect(m.resetImageSetToPendingLocked(testImageSetName)).To(BeTrue())
+
+			entry := m.imageState["reg.io/img:v1"]
+			Expect(entry.State).To(Equal("Pending"))
+			Expect(entry.PermanentlyFailed).To(BeTrue())
+		})
+
+		It("leaves entries owned by a different ImageSet untouched", func() {
+			m.imageState = imagestate.ImageState{
+				"reg.io/img:v1": &imagestate.ImageEntry{Source: "quay.io/img:v1", State: "Mirrored"},
+			}
+			m.owners = map[string][]string{"reg.io/img:v1": {"other-is"}}
+
+			Expect(m.resetImageSetToPendingLocked(testImageSetName)).To(BeFalse())
+			Expect(m.imageState["reg.io/img:v1"].State).To(Equal("Mirrored"))
+		})
+
+		It("leaves an in-flight entry untouched", func() {
+			m.imageState = imagestate.ImageState{
+				"reg.io/img:v1": &imagestate.ImageEntry{Source: "quay.io/img:v1", State: "Mirrored"},
+			}
+			m.owners = map[string][]string{"reg.io/img:v1": {testImageSetName}}
+			m.inProgress["reg.io/img:v1"] = testWorkerPodName
+
+			Expect(m.resetImageSetToPendingLocked(testImageSetName)).To(BeFalse())
+			Expect(m.imageState["reg.io/img:v1"].State).To(Equal("Mirrored"))
+		})
+
+		It("is a no-op when already fully Pending", func() {
+			m.imageState = imagestate.ImageState{
+				"reg.io/img:v1": &imagestate.ImageEntry{Source: "quay.io/img:v1", State: "Pending"},
+			}
+			m.owners = map[string][]string{"reg.io/img:v1": {testImageSetName}}
+
+			Expect(m.resetImageSetToPendingLocked(testImageSetName)).To(BeFalse())
+		})
+	})
+
 	// ─── workerTokenSecretName ───────────────────────────────────────
 
 	Context("workerTokenSecretName", func() {

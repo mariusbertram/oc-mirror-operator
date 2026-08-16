@@ -143,6 +143,9 @@ export const patchCatalogPackages = (
 export const triggerRecollect = (namespace: string, imageSetName: string) =>
   patch<void>(`/api/v1/imagesets/${namespace}/${imageSetName}/recollect`, {});
 
+export const triggerForceResync = (namespace: string, imageSetName: string) =>
+  patch<void>(`/api/v1/imagesets/${namespace}/${imageSetName}/force-resync`, {});
+
 export const deleteImageSet = (namespace: string, imageSetName: string) =>
   del(`/api/v1/imagesets/${namespace}/${imageSetName}`);
 

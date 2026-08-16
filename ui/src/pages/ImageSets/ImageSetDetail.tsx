@@ -15,6 +15,11 @@ import {
   Flex,
   FlexItem,
   Label,
+  Modal,
+  ModalBody,
+  ModalFooter,
+  ModalHeader,
+  ModalVariant,
   PageSection,
   Spinner,
   Tab,
@@ -32,6 +37,7 @@ import {
   patchHelmRepositories,
   patchBlockedImages,
   triggerRecollect,
+  triggerForceResync,
 } from '../../api/client';
 import type { HelmRepository, TargetDetail, ImageSetSummary } from '../../api/types';
 import { StatusPill, computeStatus } from '../../components/StatusPill';
@@ -77,6 +83,8 @@ export const ImageSetDetail: React.FC = () => {
   const [blockedError, setBlockedError] = useState<string | null>(null);
   const [newBlockedName, setNewBlockedName] = useState('');
 
+  const [forceResyncOpen, setForceResyncOpen] = useState(false);
+
   const load = () => {
     if (!targetName) return;
     setLoading(true);
@@ -91,6 +99,17 @@ export const ImageSetDetail: React.FC = () => {
     const interval = setInterval(load, 30_000);
     return () => clearInterval(interval);
   }, [targetName]);
+
+  const confirmForceResync = async () => {
+    if (!target?.namespace || !imageSetName) return;
+    try {
+      await triggerForceResync(target.namespace, imageSetName);
+    } catch (e) {
+      alert(`Failed: ${(e as Error).message}`);
+    } finally {
+      setForceResyncOpen(false);
+    }
+  };
 
   useEffect(() => {
     if (!target?.namespace || !imageSetName) return;
@@ -248,6 +267,11 @@ export const ImageSetDetail: React.FC = () => {
                   onClick={() => triggerRecollect(target.namespace, imageSetName!).catch(console.error)}
                 >
                   Recollect
+                </Button>
+              </FlexItem>
+              <FlexItem>
+                <Button variant="secondary" size="sm" onClick={() => setForceResyncOpen(true)}>
+                  Force Resync
                 </Button>
               </FlexItem>
               <FlexItem>
@@ -548,6 +572,28 @@ export const ImageSetDetail: React.FC = () => {
           </Card>
         )}
       </PageSection>
+
+      <Modal
+        variant={ModalVariant.small}
+        isOpen={forceResyncOpen}
+        onClose={() => setForceResyncOpen(false)}
+        aria-label="Force Resync ImageSet"
+      >
+        <ModalHeader title="Force resync this ImageSet?" titleIconVariant="warning" />
+        <ModalBody>
+          <p>
+            This resets every image in <strong>{imageSetName}</strong> back to Pending —
+            including ones already mirrored — so all of them are re-verified and
+            re-transferred to the target registry, regardless of their current state.
+            Use this to recover from target-registry data loss or suspected corruption
+            of already-mirrored content.
+          </p>
+        </ModalBody>
+        <ModalFooter>
+          <Button variant="warning" onClick={confirmForceResync}>Force Resync</Button>
+          <Button variant="link" onClick={() => setForceResyncOpen(false)}>Cancel</Button>
+        </ModalFooter>
+      </Modal>
     </>
   );
 };

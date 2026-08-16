@@ -284,6 +284,7 @@ func (s *Server) RegisterAPIRoutes(r *mux.Router) {
 	api.HandleFunc("/imagesets/{namespace}/{name}/catalogs/{slug}/packages", s.handleGetPackageConstraints).Methods("GET")
 	api.HandleFunc("/imagesets/{namespace}/{name}/catalogs/{slug}/packages", s.handlePatchCatalogPackages).Methods("PATCH")
 	api.HandleFunc("/imagesets/{namespace}/{name}/recollect", s.handleTriggerRecollect).Methods("PATCH")
+	api.HandleFunc("/imagesets/{namespace}/{name}/force-resync", s.handleTriggerForceResync).Methods("PATCH")
 	api.HandleFunc("/releases/channels", s.handleGetOCPChannels).Methods("GET")
 	api.HandleFunc("/imagesets/{namespace}/{name}/releases", s.handleGetReleases).Methods("GET")
 	api.HandleFunc("/imagesets/{namespace}/{name}/releases", s.handlePatchReleases).Methods("PATCH")
@@ -1098,6 +1099,39 @@ func (s *Server) handleTriggerRecollect(w http.ResponseWriter, r *http.Request) 
 		// repeat of one it already honored. See mirror.openshift.io/recollect's
 		// documented usage convention (…=$(date +%s)).
 		is.Annotations[mirrorv1alpha1.RecollectAnnotation] = strconv.FormatInt(time.Now().UnixNano(), 10)
+		return nil
+	})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			http.Error(w, "ImageSet not found", http.StatusNotFound)
+		} else if apierrors.IsForbidden(err) {
+			http.Error(w, "forbidden: insufficient permissions", http.StatusForbidden)
+		} else {
+			http.Error(w, fmt.Sprintf("update ImageSet: %v", err), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleTriggerForceResync sets the force-resync annotation on an ImageSet to
+// make the manager reset every image it owns back to Pending on the next
+// reconcile — including ones already Mirrored — so all of them are
+// re-verified and re-transferred regardless of their current state. Unlike
+// Recollect (which only forces re-resolution of the upstream content list),
+// this is for recovering from target-registry data loss or suspected
+// corruption of already-mirrored content.
+func (s *Server) handleTriggerForceResync(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	namespace, name := vars["namespace"], vars["name"]
+
+	c := s.clientForRequest(r)
+	err := updateImageSetWithRetry(r.Context(), c, namespace, name, func(is *mirrorv1alpha1.ImageSet) error {
+		if is.Annotations == nil {
+			is.Annotations = make(map[string]string)
+		}
+		is.Annotations[mirrorv1alpha1.ForceResyncAnnotation] = strconv.FormatInt(time.Now().UnixNano(), 10)
 		return nil
 	})
 	if err != nil {

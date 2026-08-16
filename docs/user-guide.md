@@ -42,10 +42,11 @@ This document describes the complete configuration and operation of the `oc-mirr
    - [ImageSet Status](#82-imageset-status)
    - [Failed Images](#83-failed-images)
 9. [Operations and Maintenance](#9-operations-and-maintenance)
-   - [Recollect (Force Re-sync)](#91-recollect-force-re-sync)
-   - [Cleanup (Delete Images)](#92-cleanup-delete-images)
-   - [ImageSet Changes](#93-imageset-changes)
-   - [Image Retries and Permanent Failures](#94-image-retries-and-permanent-failures)
+   - [Recollect (Re-resolve Upstream)](#91-recollect-re-resolve-upstream)
+   - [Force Resync (Re-transfer Everything)](#92-force-resync-re-transfer-everything)
+   - [Cleanup (Delete Images)](#93-cleanup-delete-images)
+   - [ImageSet Changes](#94-imageset-changes)
+   - [Image Retries and Permanent Failures](#95-image-retries-and-permanent-failures)
 10. [Resource API + Web UI](#10-resource-api--web-ui)
     - [Retrieving IDMS and ITMS](#101-retrieving-idms-and-itms)
     - [CatalogSource and ClusterCatalog](#102-catalogsource-and-clustercatalog)
@@ -513,7 +514,7 @@ cluster.
 Rebuilds are throttled to the MirrorTarget's `pollInterval` (default 24h),
 the same cadence used for release/operator upstream polling — not on every
 reconcile. Trigger an immediate rebuild with the
-[recollect annotation](#91-recollect-force-re-sync).
+[recollect annotation](#91-recollect-re-resolve-upstream).
 
 > **Note:** This requires outbound HTTPS access to `api.openshift.com` from
 > the manager pod, in addition to the Cincinnati graph API access already
@@ -1153,7 +1154,7 @@ The `origin` field shows which catalog and which packages the image came from. T
 
 ## 9. Operations and Maintenance
 
-### 9.1 Recollect (Force Re-sync)
+### 9.1 Recollect (Re-resolve Upstream)
 
 The `recollect` trigger forces the manager to re-resolve all upstream sources — regardless of the configured `pollInterval` and regardless of cached digests. All permanently failed images are reset to `Pending` and retried.
 
@@ -1172,7 +1173,27 @@ The annotation is automatically removed by the manager after completion (one-sho
 - After major spec changes (new packages, new channels)
 - After registry issues (e.g., temporary outage of the source registry)
 
-### 9.2 Cleanup (Delete Images)
+### 9.2 Force Resync (Re-transfer Everything)
+
+The `force-resync` trigger resets **every** image owned by the `ImageSet` back to `Pending` — including ones already in `Mirrored` state — so all of them are re-verified and re-transferred to the target registry on the next reconcile, regardless of their current state. This is different from `recollect`, which only forces re-resolution of the upstream content *list* and leaves already-`Mirrored` images untouched.
+
+```bash
+kubectl annotate imageset operators-4-14 \
+  mirror.openshift.io/force-resync=$(date +%s) \
+  --overwrite \
+  -n mein-mirror
+```
+
+The annotation is automatically removed by the manager after it applies the reset (one-shot trigger). Images currently in-flight in a worker batch at the moment the trigger is processed are left alone; everything else is queued for a fresh transfer.
+
+**When force-resync is useful:**
+- After target registry data loss or a restore from an older backup
+- When mirrored content is suspected to be corrupted or was manually deleted from the target registry
+- To force full re-verification of signatures (`requireSignedImages`) across an entire ImageSet
+
+The console plugin exposes this as the **Force Resync** button on the ImageSet detail page.
+
+### 9.3 Cleanup (Delete Images)
 
 **Remove a single ImageSet with cleanup:**
 
@@ -1197,7 +1218,7 @@ kubectl get mirrortarget quay-mirror -n mein-mirror \
   -o jsonpath='{.status.pendingCleanup}'
 ```
 
-### 9.3 ImageSet Changes
+### 9.4 ImageSet Changes
 
 When the spec of an `ImageSet` is modified (e.g., a new operator added, a package removed, version range adjusted), the following happens automatically:
 
@@ -1208,7 +1229,7 @@ When the spec of an `ImageSet` is modified (e.g., a new operator added, a packag
 
 **Important:** A spec change (signature change) also resets permanently failed images back to `Pending` so they receive a new attempt.
 
-### 9.4 Image Retries and Permanent Failures
+### 9.5 Image Retries and Permanent Failures
 
 #### Retry Mechanism
 

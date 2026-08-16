@@ -232,6 +232,18 @@ const (
 	// that it is a one-shot trigger.
 	RecollectAnnotation = "mirror.openshift.io/recollect"
 
+	// ForceResyncAnnotation forces the manager to reset every image owned by
+	// the ImageSet back to "Pending" — including ones already in "Mirrored"
+	// state — so all of them are re-verified and re-transferred to the target
+	// registry on the next reconcile. Unlike RecollectAnnotation (which only
+	// forces re-resolution of the upstream content list), this ignores each
+	// image's current state entirely, which is useful after a target registry
+	// data loss, manual deletion of mirrored content, or suspected corruption.
+	// The value is unused; presence is the trigger. The annotation is removed
+	// by the manager once the reset has been applied so that it is a one-shot
+	// trigger.
+	ForceResyncAnnotation = "mirror.openshift.io/force-resync"
+
 	// CatalogDigestAnnotationPrefix is prepended to a stable signature hash of
 	// a single operator-spec entry (catalog reference + sorted package list)
 	// to form the annotation key that stores the last resolved upstream
