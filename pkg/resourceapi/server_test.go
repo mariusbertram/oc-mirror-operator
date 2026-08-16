@@ -1046,6 +1046,24 @@ var _ = Describe("ResourceAPI Server", func() {
 			})
 		})
 
+		Context("handleTriggerForceResync", func() {
+			It("sets the force-resync annotation on an existing ImageSet", func() {
+				url := fmt.Sprintf("/api/v1/imagesets/%s/my-is/force-resync", ns)
+				req := httptest.NewRequest("PATCH", url, nil)
+				rr := httptest.NewRecorder()
+				withIsRouter.ServeHTTP(rr, req)
+				Expect(rr.Code).To(Equal(http.StatusNoContent))
+			})
+
+			It("returns 404 for a non-existent ImageSet", func() {
+				url := fmt.Sprintf("/api/v1/imagesets/%s/ghost-is/force-resync", ns)
+				req := httptest.NewRequest("PATCH", url, nil)
+				rr := httptest.NewRecorder()
+				emptyRouter.ServeHTTP(rr, req)
+				Expect(rr.Code).To(Equal(http.StatusNotFound))
+			})
+		})
+
 		Context("handleDeleteImageSet", func() {
 			It("deletes an existing ImageSet", func() {
 				url := fmt.Sprintf("/api/v1/imagesets/%s/my-is", ns)

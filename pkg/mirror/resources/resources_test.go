@@ -48,6 +48,12 @@ var _ = Describe("splitImageRef", func() {
 		Entry("deeply nested repo with port and tag",
 			"registry.io:8443/org/sub/image:latest",
 			"registry.io:8443/org/sub/image", ":latest"),
+		Entry("tag and digest combined",
+			"registry.example.com/repo:v1.0@sha256:abc123",
+			"registry.example.com/repo", "@sha256:abc123"),
+		Entry("tag and digest combined, with port",
+			"registry.example.com:5000/repo:v1.0@sha256:abc123",
+			"registry.example.com:5000/repo", "@sha256:abc123"),
 	)
 })
 
@@ -61,6 +67,7 @@ var _ = Describe("repoOnly", func() {
 		Entry("no tag or digest", "registry.example.com/repo", "registry.example.com/repo"),
 		Entry("port and tag", "registry.example.com:5000/repo:v1.0", "registry.example.com:5000/repo"),
 		Entry("port, no tag", "registry.example.com:5000/repo", "registry.example.com:5000/repo"),
+		Entry("tag and digest combined", "registry.example.com/repo:v1.0@sha256:abc123", "registry.example.com/repo"),
 	)
 })
 

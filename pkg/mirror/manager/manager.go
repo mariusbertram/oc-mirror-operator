@@ -945,6 +945,19 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 		if !containsString(mt.Spec.ImageSets, is.Name) {
 			continue
 		}
+		if _, forceResync := is.Annotations[mirrorv1alpha1.ForceResyncAnnotation]; forceResync {
+			if m.resetImageSetToPendingLocked(is.Name) {
+				m.stateDirty = true
+				m.statusDirty = true
+				oclog.Printf("Force resync requested for ImageSet %s: reset all owned images to Pending\n", is.Name)
+			}
+			isCopy := is.DeepCopy()
+			m.mu.Unlock()
+			if err := m.clearForceResyncAnnotation(ctx, isCopy); err != nil {
+				oclog.Printf("Warning: failed to clear force-resync annotation on ImageSet %s: %v\n", is.Name, err)
+			}
+			m.mu.Lock()
+		}
 		isView := filterByImageSet(m.imageState, m.owners, is.Name)
 		if shouldResolve(&is, mt, isView) {
 			isCopy := is.DeepCopy()

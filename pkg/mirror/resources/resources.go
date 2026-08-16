@@ -23,24 +23,36 @@ import (
 // --- Image reference parsing helpers ---
 
 // splitImageRef splits an image reference into (registry+repo, tag-or-digest).
-// It correctly handles registries with ports (e.g. registry.example.com:5000/repo).
+// It correctly handles registries with ports (e.g. registry.example.com:5000/repo)
+// and references that carry both a tag and a digest (e.g. repo:tag@sha256:...).
+// When both are present the digest is returned, since it is what uniquely
+// identifies the image; the repo portion always has the tag stripped
+// regardless, so callers that only need a bare repository (e.g. repoOnly)
+// never see a tag leak through.
 func splitImageRef(ref string) (repo, tagOrDigest string) {
-	// Digest-based: split at @
-	if idx := strings.Index(ref, "@"); idx != -1 {
-		return ref[:idx], ref[idx:]
+	repo = ref
+	var digest string
+	// Digest-based: split at @, then keep stripping a tag from what's left.
+	if idx := strings.Index(repo, "@"); idx != -1 {
+		digest = repo[idx:]
+		repo = repo[:idx]
 	}
 	// Tag-based: find last colon that is NOT part of a port number.
 	// A port is always followed by / in a registry hostname.
-	lastColon := strings.LastIndex(ref, ":")
-	if lastColon == -1 {
-		return ref, ""
+	var tag string
+	if lastColon := strings.LastIndex(repo, ":"); lastColon != -1 {
+		afterColon := repo[lastColon+1:]
+		// If there's a / after the colon, the colon is part of a port in the
+		// hostname, not a tag.
+		if !strings.Contains(afterColon, "/") {
+			tag = ":" + afterColon
+			repo = repo[:lastColon]
+		}
 	}
-	// If there's a / after the colon, the colon is part of a port in the hostname.
-	afterColon := ref[lastColon+1:]
-	if strings.Contains(afterColon, "/") {
-		return ref, ""
+	if digest != "" {
+		return repo, digest
 	}
-	return ref[:lastColon], ":" + afterColon
+	return repo, tag
 }
 
 // repoOnly extracts the registry+repository portion from an image reference,

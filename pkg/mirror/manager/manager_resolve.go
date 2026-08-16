@@ -989,6 +989,67 @@ func filterByImageSet(state imagestate.ImageState, owners map[string][]string, i
 	return result
 }
 
+// resetImageSetToPendingLocked resets every image owned by isName back to
+// "Pending", regardless of its current state — including already-"Mirrored"
+// entries — so Phase D/E of reconcile() re-dispatches all of them to worker
+// pods this tick. Used by the ForceResyncAnnotation trigger, which (unlike
+// RecollectAnnotation) forces a complete re-verification/re-transfer
+// independent of what state each image is currently in.
+//
+// PermanentlyFailed is intentionally left untouched: per ImageEntry's doc
+// comment it is a sticky marker that is never cleared once set, even across
+// a Pending retry, so catalog-build gating and failedImageDetails keep
+// surfacing the image's history through the resync.
+//
+// Entries currently being processed by an in-flight worker batch
+// (m.inProgress) are left untouched — the worker's eventual callback will
+// still mark them Mirrored/Failed as normal, and resetting them here would
+// just race that callback without accomplishing anything.
+//
+// Caller must hold m.mu. Returns true if any entry was changed.
+func (m *MirrorManager) resetImageSetToPendingLocked(isName string) bool {
+	changed := false
+	for dest, entry := range m.imageState {
+		if entry == nil || !hasOwner(m.owners, dest, isName) {
+			continue
+		}
+		if m.inProgress[dest] != "" {
+			continue
+		}
+		if entry.State == statePending && entry.RetryCount == 0 && entry.LastError == "" && !entry.SignatureVerified {
+			continue
+		}
+		entry.State = statePending
+		entry.RetryCount = 0
+		entry.LastError = ""
+		entry.SignatureVerified = false
+		m.mirrored[dest] = false
+		changed = true
+	}
+	return changed
+}
+
+// clearForceResyncAnnotation removes the one-shot ForceResyncAnnotation from
+// the ImageSet after resetImageSetToPendingLocked has applied its effect, so
+// it doesn't keep re-triggering on every subsequent reconcile. Runs outside
+// m.mu — it's a network call, matching patchImageSetAnnotations.
+func (m *MirrorManager) clearForceResyncAnnotation(ctx context.Context, is *mirrorv1alpha1.ImageSet) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		fresh := &mirrorv1alpha1.ImageSet{}
+		if err := m.Client.Get(ctx, client.ObjectKey{Namespace: is.Namespace, Name: is.Name}, fresh); err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil
+			}
+			return err
+		}
+		if _, ok := fresh.Annotations[mirrorv1alpha1.ForceResyncAnnotation]; !ok {
+			return nil
+		}
+		delete(fresh.Annotations, mirrorv1alpha1.ForceResyncAnnotation)
+		return m.Client.Update(ctx, fresh)
+	})
+}
+
 // hasOwner reports whether isName is among owners[dest].
 func hasOwner(owners map[string][]string, dest, isName string) bool {
 	for _, n := range owners[dest] {
