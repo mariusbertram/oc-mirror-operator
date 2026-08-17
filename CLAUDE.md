@@ -125,6 +125,10 @@ Pending → Mirrored (success)
 - Unit tests: table-driven with `t.Run`, co-located `_test.go` files
 - E2E: Ginkgo/Gomega with `By()` step annotations
 - When creating pods (manager/worker/catalog/cleanup), preserve the existing restricted `securityContext` pattern
+- Coverage target: **90%+ per package** for hand-written Go code. Two categories are intentionally excluded from that target:
+  - `cmd/*` — thin `main()`/subcommand wiring (flag parsing, manager construction, `os.Exit`); the logic it wires up is tested where it actually lives (`internal/controller`, `pkg/mirror/manager`, etc.)
+  - `api/v1alpha1/zz_generated.deepcopy.go` — controller-gen output; regenerate via `make generate`, never hand-edit or hand-test
+  - When a genuinely unreachable branch remains after reasonable effort (defensive error-wrapping around a call that can't fail with the inputs actually passed, e.g. `yaml.Marshal` on a plain `map[string]interface{}`), document it in the test file or commit message rather than forcing brittle fault-injection to hit it
 
 ## Unimplemented API Fields
 
