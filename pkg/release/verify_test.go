@@ -12,6 +12,25 @@ import (
 	. "github.com/onsi/gomega"
 )
 
+// nopWriteCloser adapts a bytes.Buffer to io.WriteCloser for
+// packet.SerializeLiteral, which needs to Close() the underlying stream.
+type nopWriteCloser struct{ *bytes.Buffer }
+
+func (nopWriteCloser) Close() error { return nil }
+
+// unsignedLiteralMessage builds a bare OpenPGP literal-data packet with no
+// surrounding signature — a well-formed message ReadMessage can parse, but
+// with IsSigned false.
+func unsignedLiteralMessage(content []byte) []byte {
+	var buf bytes.Buffer
+	pw, err := packet.SerializeLiteral(nopWriteCloser{&buf}, true, "", 0)
+	Expect(err).NotTo(HaveOccurred())
+	_, err = pw.Write(content)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(pw.Close()).To(Succeed())
+	return buf.Bytes()
+}
+
 // testSigningEntity generates a fresh, ephemeral OpenPGP key pair for tests.
 // Verifying against the real embedded Red Hat keys would require their
 // private key, which we obviously don't have — so tests exercise the same
@@ -121,5 +140,31 @@ var _ = Describe("VerifySignature", func() {
 		// github.com/openshift/cluster-update-keys) are well-formed and
 		// loaded at package init.
 		Expect(verificationKeyring).To(HaveLen(2))
+	})
+
+	It("rejects an unsigned OpenPGP message", func() {
+		msg := unsignedLiteralMessage(atomicSignaturePayload(digest))
+		keyring := openpgp.EntityList{entity}
+		err := verifySignatureAgainst(msg, digest, keyring)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("not a signed OpenPGP message"))
+	})
+
+	It("rejects a signature whose content has been tampered with after signing", func() {
+		sig := signPayload(entity, atomicSignaturePayload(digest), nil)
+		idx := bytes.Index(sig, []byte(digest[len(digest)-8:]))
+		Expect(idx).To(BeNumerically(">=", 0), "expected the signed digest to appear as raw (uncompressed) bytes")
+		tampered := append([]byte{}, sig...)
+		tampered[idx] ^= 0xFF
+		keyring := openpgp.EntityList{entity}
+		err := verifySignatureAgainst(tampered, digest, keyring)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("signature verification failed"))
+	})
+
+	It("uses the real VerifySignature entrypoint against the embedded Red Hat keyring", func() {
+		err := VerifySignature([]byte("not a pgp message"), digest)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("parse signature"))
 	})
 })

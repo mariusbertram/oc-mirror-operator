@@ -108,6 +108,31 @@ var _ = Describe("SignatureClient", func() {
 			Expect(capturedPath).To(Equal("/sha256=abc123def456/signature-1"))
 		})
 
+		It("returns error when the request cannot be built", func() {
+			signatureBaseURL = "http://\x7f"
+
+			c := NewSignatureClient(nil)
+			_, err := c.DownloadSignature(context.TODO(), "sha256:abc")
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("build signature request"))
+		})
+
+		It("returns error when the response body cannot be read", func() {
+			srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				// Go's transport auto-decompresses a gzip Content-Encoding;
+				// invalid gzip bytes surface as a body-read error.
+				w.Header().Set("Content-Encoding", "gzip")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("not actually gzip data"))
+			}))
+			signatureBaseURL = srv.URL
+
+			c := NewSignatureClient(nil)
+			_, err := c.DownloadSignature(context.TODO(), "sha256:abc")
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("read signature body"))
+		})
+
 		It("returns error on cancelled context", func() {
 			srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusOK)

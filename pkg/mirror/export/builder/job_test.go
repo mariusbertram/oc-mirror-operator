@@ -18,6 +18,7 @@ package builder
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -27,11 +28,12 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
 )
 
-func newFakeClient(objs ...client.Object) client.Client {
+func newFakeClient(objs ...client.Object) client.WithWatch {
 	scheme := runtime.NewScheme()
 	_ = batchv1.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
@@ -53,6 +55,34 @@ func defaultMirrorExport() *mirrorv1alpha1.MirrorExport {
 		Spec: mirrorv1alpha1.MirrorExportSpec{
 			Destination: mirrorv1alpha1.MirrorExportDestination{Registry: "registry.example.com/mirror"},
 		},
+	}
+}
+
+func TestNew_MissingEnvVar(t *testing.T) {
+	t.Setenv(OperatorImageEnvVar, "")
+	_, err := New()
+	if err == nil {
+		t.Fatal("expected an error when the operator image env var is unset")
+	}
+}
+
+func TestNew_Success(t *testing.T) {
+	t.Setenv(OperatorImageEnvVar, "registry.example.com/oc-mirror-operator:test")
+	mgr, err := New()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if mgr.operatorImage != "registry.example.com/oc-mirror-operator:test" {
+		t.Errorf("operatorImage = %q, want registry.example.com/oc-mirror-operator:test", mgr.operatorImage)
+	}
+}
+
+func TestHostOnly(t *testing.T) {
+	if got := hostOnly("registry.example.com/mirror"); got != "registry.example.com" {
+		t.Errorf("hostOnly(with path) = %q, want registry.example.com", got)
+	}
+	if got := hostOnly("registry.example.com"); got != "registry.example.com" {
+		t.Errorf("hostOnly(bare host) = %q, want registry.example.com", got)
 	}
 }
 
@@ -103,6 +133,21 @@ func TestSignature_ChangesWithSpec(t *testing.T) {
 	}
 }
 
+func TestSignature_ChangesWithSource(t *testing.T) {
+	me := defaultMirrorExport()
+	sigNoSource := Signature(me, `{}`)
+
+	me.Spec.Source = &mirrorv1alpha1.MirrorExportSource{
+		Registry:   "registry.local.example.com/mirror",
+		Insecure:   true,
+		AuthSecret: "my-pull-secret",
+	}
+	sigWithSource := Signature(me, `{}`)
+	if sigNoSource == sigWithSource {
+		t.Errorf("expected the signature to change once Source is set")
+	}
+}
+
 func TestEnsureExportJob_CreatesOnce(t *testing.T) {
 	me := defaultMirrorExport()
 	c := newFakeClient(me)
@@ -124,6 +169,38 @@ func TestEnsureExportJob_CreatesOnce(t *testing.T) {
 	// Calling again is a no-op: no error, no duplicate-create conflict.
 	if err := mgr.EnsureExportJob(context.Background(), c, me, "test-export-export", "test-export-artifacts", `{}`); err != nil {
 		t.Fatalf("EnsureExportJob() second call error = %v", err)
+	}
+}
+
+func TestEnsureExportJob_GetErrorNonNotFound(t *testing.T) {
+	me := defaultMirrorExport()
+	c := newFakeClient(me)
+	failing := interceptor.NewClient(c, interceptor.Funcs{
+		Get: func(_ context.Context, _ client.WithWatch, _ client.ObjectKey, _ client.Object, _ ...client.GetOption) error {
+			return fmt.Errorf("get failed")
+		},
+	})
+	mgr := &ExportBuildManager{operatorImage: "registry.example.com/oc-mirror-operator:test"}
+
+	err := mgr.EnsureExportJob(context.Background(), failing, me, "test-export-export", "test-export-artifacts", `{}`)
+	if err == nil || !strings.Contains(err.Error(), "get failed") {
+		t.Fatalf("expected the raw get error to propagate, got %v", err)
+	}
+}
+
+func TestEnsureExportJob_CreateError(t *testing.T) {
+	me := defaultMirrorExport()
+	c := newFakeClient(me)
+	failing := interceptor.NewClient(c, interceptor.Funcs{
+		Create: func(_ context.Context, _ client.WithWatch, _ client.Object, _ ...client.CreateOption) error {
+			return fmt.Errorf("create failed")
+		},
+	})
+	mgr := &ExportBuildManager{operatorImage: "registry.example.com/oc-mirror-operator:test"}
+
+	err := mgr.EnsureExportJob(context.Background(), failing, me, "test-export-export", "test-export-artifacts", `{}`)
+	if err == nil || !strings.Contains(err.Error(), "create failed") {
+		t.Fatalf("expected the raw create error to propagate, got %v", err)
 	}
 }
 
@@ -171,6 +248,46 @@ func TestGetExportJobStatus(t *testing.T) {
 			t.Errorf("phase = %q, want %q", phase, JobPhaseFailed)
 		}
 	})
+
+	t.Run("running", func(t *testing.T) {
+		job := &batchv1.Job{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: me.Namespace},
+			Status:     batchv1.JobStatus{Active: 1},
+		}
+		c := newFakeClient(me, job)
+		phase, err := GetExportJobStatus(context.Background(), c, name, me.Namespace)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if phase != JobPhaseRunning {
+			t.Errorf("phase = %q, want %q", phase, JobPhaseRunning)
+		}
+	})
+
+	t.Run("pending", func(t *testing.T) {
+		job := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: me.Namespace}}
+		c := newFakeClient(me, job)
+		phase, err := GetExportJobStatus(context.Background(), c, name, me.Namespace)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if phase != JobPhasePending {
+			t.Errorf("phase = %q, want %q", phase, JobPhasePending)
+		}
+	})
+
+	t.Run("get error non-NotFound", func(t *testing.T) {
+		c := newFakeClient(me)
+		failing := interceptor.NewClient(c, interceptor.Funcs{
+			Get: func(_ context.Context, _ client.WithWatch, _ client.ObjectKey, _ client.Object, _ ...client.GetOption) error {
+				return fmt.Errorf("get failed")
+			},
+		})
+		_, err := GetExportJobStatus(context.Background(), failing, name, me.Namespace)
+		if err == nil || !strings.Contains(err.Error(), "get failed") {
+			t.Fatalf("expected the raw get error to propagate, got %v", err)
+		}
+	})
 }
 
 func TestDeleteExportJob(t *testing.T) {
@@ -184,6 +301,21 @@ func TestDeleteExportJob(t *testing.T) {
 	}
 	if err := DeleteExportJob(context.Background(), c, name, me.Namespace); err != nil {
 		t.Fatalf("DeleteExportJob() on already-deleted Job should be a no-op, got error = %v", err)
+	}
+}
+
+func TestDeleteExportJob_GetErrorNonNotFound(t *testing.T) {
+	me := defaultMirrorExport()
+	name := JobName(me.Name)
+	c := newFakeClient(me)
+	failing := interceptor.NewClient(c, interceptor.Funcs{
+		Get: func(_ context.Context, _ client.WithWatch, _ client.ObjectKey, _ client.Object, _ ...client.GetOption) error {
+			return fmt.Errorf("get failed")
+		},
+	})
+	err := DeleteExportJob(context.Background(), failing, name, me.Namespace)
+	if err == nil || !strings.Contains(err.Error(), "get failed") {
+		t.Fatalf("expected the raw get error to propagate, got %v", err)
 	}
 }
 

@@ -77,6 +77,23 @@ func TestRenderResources_NoOperators(t *testing.T) {
 	}
 }
 
+func TestRenderResources_SkipsOperatorEntryWithEmptyCatalog(t *testing.T) {
+	spec := &mirrorv1alpha1.ImageSetSpec{
+		Mirror: mirrorv1alpha1.Mirror{
+			Operators: []mirrorv1alpha1.Operator{{Catalog: ""}},
+		},
+	}
+	manifest := Manifest{}
+
+	out, err := RenderResources("my-export", "my-namespace", spec, manifest, "registry.example.com/mirror")
+	if err != nil {
+		t.Fatalf("RenderResources() error = %v", err)
+	}
+	if len(out) != 2 {
+		t.Fatalf("expected only idms.yaml/itms.yaml when the only operator entry has an empty catalog, got keys %v", keysOf(out))
+	}
+}
+
 func keysOf(m Resources) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
