@@ -2,9 +2,13 @@ package mirror
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
 	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
+	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/release"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/state"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -155,6 +159,23 @@ var _ = Describe("Coverage Tests", func() {
 			Expect(results[0].Destination).To(Equal("mirror.io/custom/path:v2"))
 		})
 
+		It("applies TargetTag over a digest-referenced source", func() {
+			spec := &mirrorv1alpha1.ImageSetSpec{
+				Mirror: mirrorv1alpha1.Mirror{
+					AdditionalImages: []mirrorv1alpha1.AdditionalImage{
+						{Name: "quay.io/img@sha256:abc123", TargetTag: "custom-tag"},
+					},
+				},
+			}
+			target := &mirrorv1alpha1.MirrorTarget{
+				Spec: mirrorv1alpha1.MirrorTargetSpec{Registry: "mirror.io"},
+			}
+			results, err := col.CollectAdditional(context.TODO(), spec, target, nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(1))
+			Expect(results[0].Destination).To(Equal("mirror.io/quay.io/img:custom-tag"))
+		})
+
 		It("marks Mirrored when meta has the dest", func() {
 			spec := &mirrorv1alpha1.ImageSetSpec{
 				Mirror: mirrorv1alpha1.Mirror{
@@ -186,6 +207,29 @@ var _ = Describe("Coverage Tests", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(results).To(BeEmpty())
 		})
+
+		It("appends images from a successfully resolved catalog", func() {
+			catalogImage := pushOperatorCatalog(GinkgoTB(), "pkg-multi")
+			mc := mirrorclient.NewMirrorClient(nil, "")
+			col := NewCollector(mc)
+			spec := &mirrorv1alpha1.ImageSetSpec{
+				Mirror: mirrorv1alpha1.Mirror{
+					Operators: []mirrorv1alpha1.Operator{
+						{
+							Catalog: catalogImage,
+							IncludeConfig: mirrorv1alpha1.IncludeConfig{
+								Packages: []mirrorv1alpha1.IncludePackage{{Name: "pkg-multi"}},
+							},
+						},
+					},
+				},
+			}
+			target := &mirrorv1alpha1.MirrorTarget{Spec: mirrorv1alpha1.MirrorTargetSpec{Registry: "mirror.io"}}
+
+			results, err := col.CollectOperators(context.TODO(), spec, target, nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(2))
+		})
 	})
 
 	// ── CollectReleases ───────────────────────────────────────────────
@@ -198,6 +242,35 @@ var _ = Describe("Coverage Tests", func() {
 			results, err := col.CollectReleases(context.TODO(), spec, target, nil)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(results).To(BeEmpty())
+		})
+
+		It("appends images from a successfully resolved channel", func() {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(release.Graph{
+					Nodes: []release.Node{{Version: "4.15.1", Image: "quay.io/openshift-release-dev/ocp-release@sha256:ccc"}},
+				})
+			}))
+			defer server.Close()
+			origURL := release.OcpUpdateURL
+			release.OcpUpdateURL = server.URL
+			defer func() { release.OcpUpdateURL = origURL }()
+
+			mc := mirrorclient.NewMirrorClient(nil, "")
+			col := NewCollector(mc)
+			spec := &mirrorv1alpha1.ImageSetSpec{
+				Mirror: mirrorv1alpha1.Mirror{
+					Platform: mirrorv1alpha1.Platform{
+						Channels: []mirrorv1alpha1.ReleaseChannel{{Name: "stable-4.15"}},
+					},
+				},
+			}
+			target := &mirrorv1alpha1.MirrorTarget{Spec: mirrorv1alpha1.MirrorTargetSpec{Registry: "mirror.io"}}
+
+			results, err := col.CollectReleases(context.TODO(), spec, target, nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).NotTo(BeEmpty())
+			Expect(results[0].Destination).To(Equal("mirror.io/openshift/release-images:4.15.1-x86_64"))
 		})
 	})
 
@@ -225,6 +298,26 @@ var _ = Describe("Coverage Tests", func() {
 				[]string{"dst-a", "dst-b", "dst-c"})
 			Expect(src).To(HaveLen(3))
 			Expect(dst).To(HaveLen(3))
+		})
+
+		It("orders real images by actual shared-blob overlap via manifest inspection", func() {
+			t := GinkgoTB()
+			// img0 and img1 share layer "A"; img1 and img2 share layer "B"; all
+			// three exercise a real ManifestGet + blob-digest round trip, driving
+			// both the first-pick (frequency) and subsequent-pick (uploaded-count)
+			// scoring branches with non-empty blob sets.
+			img0 := pushSingleManifestImage(t, [][]byte{[]byte("layer-A"), []byte("layer-C")})
+			img1 := pushSingleManifestImage(t, [][]byte{[]byte("layer-A"), []byte("layer-B")})
+			img2 := pushSingleManifestImage(t, [][]byte{[]byte("layer-B"), []byte("layer-D")})
+
+			mc := mirrorclient.NewMirrorClient(nil, "")
+			src, dst := PlanMirrorOrder(context.Background(), mc,
+				[]string{img0, img1, img2}, []string{"dst-0", "dst-1", "dst-2"})
+
+			Expect(src).To(ConsistOf(img0, img1, img2))
+			Expect(dst).To(ConsistOf("dst-0", "dst-1", "dst-2"))
+			// img1 shares a blob with both other images, so it should be scheduled first.
+			Expect(src[0]).To(Equal(img1))
 		})
 	})
 
@@ -335,6 +428,38 @@ var _ = Describe("Coverage Tests", func() {
 			_, err := extractBlobDigests(context.Background(), mc, ":::invalid")
 			Expect(err).To(HaveOccurred())
 		})
+
+		It("returns error when the manifest cannot be fetched", func() {
+			mc := mirrorclient.NewMirrorClient(nil, "")
+			dir := GinkgoT().TempDir()
+			_, err := extractBlobDigests(context.Background(), mc, "ocidir://"+dir+":missing-tag")
+			Expect(err).To(HaveOccurred())
+		})
+
+		It("collects config and layer digests from a single-platform manifest", func() {
+			t := GinkgoTB()
+			image := pushSingleManifestImage(t, [][]byte{[]byte("layer-data")})
+			mc := mirrorclient.NewMirrorClient(nil, "")
+			blobs, err := extractBlobDigests(context.Background(), mc, image)
+			Expect(err).NotTo(HaveOccurred())
+			// 1 config blob + 1 layer blob.
+			Expect(blobs).To(HaveLen(2))
+		})
+
+		It("resolves each platform manifest in a manifest list, skipping ones that fail to fetch", func() {
+			t := GinkgoTB()
+			dir := t.TempDir()
+			image := pushManifestListImage(t, dir,
+				map[string][][]byte{"amd64": {[]byte("amd64-layer")}, "arm64": {[]byte("arm64-layer")}},
+				map[string]bool{"arm64": true},
+			)
+			mc := mirrorclient.NewMirrorClient(nil, "")
+			blobs, err := extractBlobDigests(context.Background(), mc, image)
+			Expect(err).NotTo(HaveOccurred())
+			// amd64 child: config + layer resolved successfully, plus both
+			// child manifest digests themselves recorded from the index.
+			Expect(len(blobs)).To(BeNumerically(">=", 3))
+		})
 	})
 
 	// ── CollectOperatorEntry error path ────────────────────────────────
@@ -352,6 +477,41 @@ var _ = Describe("Coverage Tests", func() {
 				Catalog: "localhost:1/catalog:v1",
 			}, target)
 			Expect(err).To(HaveOccurred())
+		})
+
+		It("resolves a real catalog, building destinations and BundleRef labels", func() {
+			catalogImage := pushOperatorCatalog(GinkgoTB(), "pkg-op")
+
+			mc := mirrorclient.NewMirrorClient(nil, "")
+			col := NewCollector(mc)
+			target := &mirrorv1alpha1.MirrorTarget{
+				Spec: mirrorv1alpha1.MirrorTargetSpec{Registry: "mirror.io"},
+			}
+			op := mirrorv1alpha1.Operator{
+				Catalog: catalogImage,
+				IncludeConfig: mirrorv1alpha1.IncludeConfig{
+					Packages: []mirrorv1alpha1.IncludePackage{{Name: "pkg-op"}},
+				},
+			}
+
+			results, err := col.CollectOperatorEntry(context.Background(), op, target)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(2))
+
+			bySource := make(map[string]TargetImage, len(results))
+			for _, r := range results {
+				bySource[r.Source] = r
+			}
+
+			bundle, ok := bySource["registry.example.com/pkg-op-bundle@sha256:0000000000000000000000000000000000000000000000000000000000000000"]
+			Expect(ok).To(BeTrue())
+			Expect(bundle.Destination).To(Equal("mirror.io/pkg-op-bundle:sha256-0000000000000000000000000000000000000000000000000000000000000000"))
+			Expect(bundle.BundleRef).To(Equal("pkg-op.v1.0.0"))
+			Expect(bundle.State).To(Equal("Pending"))
+
+			related, ok := bySource["registry.example.com/pkg-op-extra@sha256:1111111111111111111111111111111111111111111111111111111111111111"]
+			Expect(ok).To(BeTrue())
+			Expect(related.BundleRef).To(Equal("pkg-op.v1.0.0"))
 		})
 	})
 
