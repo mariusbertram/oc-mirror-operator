@@ -3,6 +3,7 @@ package client
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"time"
@@ -13,6 +14,14 @@ import (
 	"github.com/regclient/regclient/types/descriptor"
 	"github.com/regclient/regclient/types/ref"
 )
+
+// erroringReader always fails, simulating a source registry connection that
+// drops mid-stream while a blob is being buffered to disk.
+type erroringReader struct{}
+
+func (r *erroringReader) Read([]byte) (int, error) {
+	return 0, errors.New("simulated read failure")
+}
 
 func mustParseRef(s string) ref.Ref {
 	r, err := ref.New(s)
@@ -249,6 +258,19 @@ var _ = Describe("MirrorClient", func() {
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("create temp file"))
 		})
+
+		It("returns error when the source blob read fails mid-copy", func() {
+			Expect(os.MkdirAll(blobBufferDir, 0o755)).To(Succeed())
+
+			d := descriptor.Descriptor{Size: 0}
+			br := blob.NewReader(
+				blob.WithReader(io.NopCloser(&erroringReader{})),
+				blob.WithDesc(d),
+			)
+			_, err := bufferLargeBlobs(br)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("buffer blob to disk"))
+		})
 	})
 
 	Describe("DownloadToOCILayout error paths", func() {
@@ -266,6 +288,15 @@ var _ = Describe("MirrorClient", func() {
 			err := mc.DownloadToOCILayout(ctx, "localhost:1/nosuchimage:latest", os.TempDir())
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("failed to download"))
+		})
+
+		It("returns error for an ociDir that cannot form a valid ocidir reference", func() {
+			mc := NewMirrorClient(nil, "")
+			// A colon in ociDir breaks the "ocidir://<ociDir>:source" tag
+			// suffix the function appends, making the built reference unparsable.
+			err := mc.DownloadToOCILayout(context.Background(), "quay.io/img:v1", "/tmp/bad:ocidir")
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("failed to build ocidir reference"))
 		})
 	})
 })
