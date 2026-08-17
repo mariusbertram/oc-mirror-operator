@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -11,7 +13,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
 )
@@ -294,6 +298,32 @@ func TestSaveRaw_UpdatesExisting(t *testing.T) {
 	}
 }
 
+func TestSaveRaw_GetErrorNonNotFound(t *testing.T) {
+	c := newFakeClient().Build()
+	failing := interceptor.NewClient(c, interceptor.Funcs{
+		Get: func(_ context.Context, _ client.WithWatch, _ client.ObjectKey, _ client.Object, _ ...client.GetOption) error {
+			return fmt.Errorf("get failed")
+		},
+	})
+	err := SaveRaw(context.Background(), failing, "ns", "raw-cm", ImageState{}, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "get failed") {
+		t.Fatalf("expected the raw get error to propagate, got %v", err)
+	}
+}
+
+// --- LoadForTarget ---
+
+func TestLoadForTarget_MissingConfigMap(t *testing.T) {
+	c := newFakeClient().Build()
+	state, err := LoadForTarget(context.Background(), c, "ns", "my-mt")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if state == nil || len(state) != 0 {
+		t.Fatalf("expected empty non-nil state, got %v", state)
+	}
+}
+
 // --- SharedIndex ---
 
 func TestSharedIndex_AddSharedRef_Deduplicates(t *testing.T) {
@@ -386,6 +416,78 @@ func TestLoadIndex_MissingConfigMap(t *testing.T) {
 	}
 	if idx == nil || len(idx) != 0 {
 		t.Fatalf("expected empty non-nil index, got %v", idx)
+	}
+}
+
+func TestLoadIndex_GetErrorNonNotFound(t *testing.T) {
+	c := newFakeClient().Build()
+	failing := interceptor.NewClient(c, interceptor.Funcs{
+		Get: func(_ context.Context, _ client.WithWatch, _ client.ObjectKey, _ client.Object, _ ...client.GetOption) error {
+			return fmt.Errorf("get failed")
+		},
+	})
+	_, err := LoadIndex(context.Background(), failing, "ns", "my-mt")
+	if err == nil || !strings.Contains(err.Error(), "get failed") {
+		t.Fatalf("expected the raw get error to propagate, got %v", err)
+	}
+}
+
+func TestLoadIndex_CorruptData(t *testing.T) {
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-mt-images-index", Namespace: "ns"},
+		BinaryData: map[string][]byte{"index.json.gz": []byte("not gzip")},
+	}
+	c := newFakeClient().WithRuntimeObjects(cm).Build()
+	_, err := LoadIndex(context.Background(), c, "ns", "my-mt")
+	if err == nil {
+		t.Fatal("expected an error for corrupt index data")
+	}
+}
+
+func TestSaveIndex_UpdatesExisting(t *testing.T) {
+	c := newFakeClient().Build()
+	if err := SaveIndex(context.Background(), c, "ns", "my-mt", SharedIndex{"old": {"is-a"}}, nil, nil); err != nil {
+		t.Fatalf("SaveIndex (create) error: %v", err)
+	}
+	if err := SaveIndex(context.Background(), c, "ns", "my-mt", SharedIndex{"new": {"is-a", "is-b"}}, nil, nil); err != nil {
+		t.Fatalf("SaveIndex (update) error: %v", err)
+	}
+	loaded, err := LoadIndex(context.Background(), c, "ns", "my-mt")
+	if err != nil {
+		t.Fatalf("LoadIndex error: %v", err)
+	}
+	if _, stillPresent := loaded["old"]; stillPresent {
+		t.Fatalf("expected the old entry to be replaced, got %v", loaded)
+	}
+	if !loaded.IsShared("new") {
+		t.Fatalf("expected new to be shared, got %v", loaded)
+	}
+}
+
+func TestSaveIndex_DeleteErrorNonNotFound(t *testing.T) {
+	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "my-mt-images-index", Namespace: "ns"}}
+	c := newFakeClient().WithRuntimeObjects(cm).Build()
+	failing := interceptor.NewClient(c, interceptor.Funcs{
+		Delete: func(_ context.Context, _ client.WithWatch, _ client.Object, _ ...client.DeleteOption) error {
+			return fmt.Errorf("delete failed")
+		},
+	})
+	err := SaveIndex(context.Background(), failing, "ns", "my-mt", SharedIndex{}, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "delete failed") {
+		t.Fatalf("expected the delete error to propagate, got %v", err)
+	}
+}
+
+func TestSaveIndex_GetErrorNonNotFound(t *testing.T) {
+	c := newFakeClient().Build()
+	failing := interceptor.NewClient(c, interceptor.Funcs{
+		Get: func(_ context.Context, _ client.WithWatch, _ client.ObjectKey, _ client.Object, _ ...client.GetOption) error {
+			return fmt.Errorf("get failed")
+		},
+	})
+	err := SaveIndex(context.Background(), failing, "ns", "my-mt", SharedIndex{"dest": {"is-a"}}, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "get failed") {
+		t.Fatalf("expected the raw get error to propagate, got %v", err)
 	}
 }
 
@@ -511,5 +613,60 @@ func TestMigrate_SplitsExclusiveAndSharedEntries(t *testing.T) {
 	getErr := c.Get(context.Background(), types.NamespacedName{Namespace: "ns", Name: "my-mt-images"}, remaining)
 	if !errors.IsNotFound(getErr) {
 		t.Fatalf("expected legacy configmap to be deleted, got err=%v", getErr)
+	}
+}
+
+func TestMigrate_GetErrorNonNotFound(t *testing.T) {
+	c := newFakeClient().Build()
+	failing := interceptor.NewClient(c, interceptor.Funcs{
+		Get: func(_ context.Context, _ client.WithWatch, _ client.ObjectKey, _ client.Object, _ ...client.GetOption) error {
+			return fmt.Errorf("get failed")
+		},
+	})
+	err := MigrateConsolidatedToPerImageSet(context.Background(), failing, "ns", "my-mt", nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "get failed") {
+		t.Fatalf("expected the raw get error to propagate, got %v", err)
+	}
+}
+
+func TestMigrate_CorruptLegacyData(t *testing.T) {
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-mt-images", Namespace: "ns"},
+		BinaryData: map[string][]byte{"images.json.gz": []byte("not gzip")},
+	}
+	c := newFakeClient().WithRuntimeObjects(cm).Build()
+	err := MigrateConsolidatedToPerImageSet(context.Background(), c, "ns", "my-mt", nil, nil)
+	if err == nil {
+		t.Fatal("expected an error for corrupt legacy data")
+	}
+	if !strings.Contains(err.Error(), "decode legacy consolidated image state") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestMigrate_DeleteErrorNonNotFound(t *testing.T) {
+	legacy := map[string]*legacyImageEntry{
+		"dest-a": {
+			Source: "src-a", State: testStateMirrored,
+			Refs: []legacyImageRef{{ImageSet: "is-a"}},
+		},
+	}
+	data, err := encodeGzipJSON(legacy)
+	if err != nil {
+		t.Fatalf("encode legacy state: %v", err)
+	}
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-mt-images", Namespace: "ns"},
+		BinaryData: map[string][]byte{"images.json.gz": data},
+	}
+	c := newFakeClient().WithRuntimeObjects(cm).Build()
+	failing := interceptor.NewClient(c, interceptor.Funcs{
+		Delete: func(_ context.Context, _ client.WithWatch, _ client.Object, _ ...client.DeleteOption) error {
+			return fmt.Errorf("delete failed")
+		},
+	})
+	err = MigrateConsolidatedToPerImageSet(context.Background(), failing, "ns", "my-mt", nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "delete failed") {
+		t.Fatalf("expected the delete error to propagate, got %v", err)
 	}
 }

@@ -102,6 +102,22 @@ func TestBlockEntries(t *testing.T) {
 	}
 }
 
+func TestManifestToImageState_DeduplicatesByDestination(t *testing.T) {
+	m := Manifest{Images: []ManifestEntry{
+		{Source: "quay.io/foo/bar@sha256:abc", Destination: "registry.example.com/mirror/foo/bar", Origin: imagestate.OriginRelease},
+		{Source: "quay.io/foo/bar@sha256:def", Destination: "registry.example.com/mirror/foo/bar", Origin: imagestate.OriginOperator},
+	}}
+
+	state := m.ToImageState()
+	if len(state) != 1 {
+		t.Fatalf("state entries = %d, want 1 (duplicate destination must be skipped)", len(state))
+	}
+	entry := state["registry.example.com/mirror/foo/bar"]
+	if entry.Source != "quay.io/foo/bar@sha256:abc" {
+		t.Errorf("expected the first entry for a duplicate destination to win, got Source = %q", entry.Source)
+	}
+}
+
 func TestManifestToImageState(t *testing.T) {
 	m := Manifest{Images: []ManifestEntry{
 		{Source: "quay.io/foo/bar@sha256:abc", Destination: "registry.example.com/mirror/foo/bar", Origin: imagestate.OriginRelease},

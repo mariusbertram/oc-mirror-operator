@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto"
+	"crypto/ecdh"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -12,6 +13,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"math/big"
 	"net/http"
@@ -185,6 +187,117 @@ func fakeSignatureRegistry(t *testing.T, imageDigest string, layers []signatureL
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return strings.TrimPrefix(srv.URL, "http://")
+}
+
+// fakeManifestListSignatureRegistry serves an OCI manifest list (rather than
+// an image manifest) at the ".sig" tag — GetLayers() errors for this media
+// type, exercising the "get signature layers" failure branch.
+func fakeManifestListSignatureRegistry(t *testing.T, imageDigest string) string {
+	t.Helper()
+
+	manifestJSON, err := json.Marshal(map[string]interface{}{
+		"schemaVersion": 2,
+		"mediaType":     "application/vnd.oci.image.index.v1+json",
+		"manifests":     []interface{}{},
+	})
+	if err != nil {
+		t.Fatalf("marshal index: %v", err)
+	}
+	manifestDigest := fmt.Sprintf("sha256:%x", sha256.Sum256(manifestJSON))
+	sigTag := "sha256-" + strings.TrimPrefix(imageDigest, "sha256:") + ".sig"
+
+	mux := http.NewServeMux()
+	mux.HandleFunc(v2PingPath, func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		switch {
+		case path == v2PingPath || path == "/v2":
+			w.WriteHeader(http.StatusOK)
+		case strings.Contains(path, "/manifests/"+sigTag):
+			w.Header().Set("Content-Type", "application/vnd.oci.image.index.v1+json")
+			w.Header().Set("Docker-Content-Digest", manifestDigest)
+			_, _ = w.Write(manifestJSON)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return strings.TrimPrefix(srv.URL, "http://")
+}
+
+// generateUnsupportedKeyTypePEM returns a PEM-encoded public key of a type
+// (X25519) that crypto/x509 can marshal but sigstore's LoadVerifier does not
+// support (only RSA/ECDSA/Ed25519) — exercising the "unsupported public key
+// type" branch without needing a full DSA cert/key implementation.
+func generateUnsupportedKeyTypePEM(t *testing.T) []byte {
+	t.Helper()
+	priv, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate X25519 key: %v", err)
+	}
+	der, err := x509.MarshalPKIXPublicKey(priv.PublicKey())
+	if err != nil {
+		t.Fatalf("marshal public key: %v", err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})
+}
+
+func TestVerifyImageSignature_UnsupportedPublicKeyType(t *testing.T) {
+	pubPEM := generateUnsupportedKeyTypePEM(t)
+	client := mirrorclient.NewMirrorClient(nil, "")
+	err := VerifyImageSignature(context.Background(), client, "registry.example.com/example/repo:v1", testImageDigest, pubPEM)
+	if err == nil {
+		t.Fatal("expected error for a public key type LoadVerifier does not support")
+	}
+	if !strings.Contains(err.Error(), "load verifier") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestVerifyImageSignature_GetLayersError(t *testing.T) {
+	_, pubPEM := generateTestKeyPair(t)
+	host := fakeManifestListSignatureRegistry(t, testImageDigest)
+	client := mirrorclient.NewMirrorClient([]string{host}, "")
+
+	err := VerifyImageSignature(context.Background(), client, host+"/example/repo:v1", testImageDigest, pubPEM)
+	if err == nil {
+		t.Fatal("expected error when the signature manifest is not an image manifest")
+	}
+	if !strings.Contains(err.Error(), "get signature layers") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestVerifyImageSignature_InvalidBase64Signature(t *testing.T) {
+	_, pubPEM := generateTestKeyPair(t)
+	payload := buildPayload(t, testImageDigest)
+
+	host := fakeSignatureRegistry(t, testImageDigest, []signatureLayer{{payload: payload, sigB64: "not-valid-base64!!!"}})
+	client := mirrorclient.NewMirrorClient([]string{host}, "")
+
+	err := VerifyImageSignature(context.Background(), client, host+"/example/repo:v1", testImageDigest, pubPEM)
+	if err == nil {
+		t.Fatal("expected error for a signature annotation that isn't valid base64")
+	}
+	if !strings.Contains(err.Error(), "decode signature") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestVerifyImageSignature_InvalidJSONPayload(t *testing.T) {
+	_, pubPEM := generateTestKeyPair(t)
+	sigB64 := base64.StdEncoding.EncodeToString([]byte("irrelevant-bytes"))
+
+	host := fakeSignatureRegistry(t, testImageDigest, []signatureLayer{{payload: []byte("not valid json"), sigB64: sigB64}})
+	client := mirrorclient.NewMirrorClient([]string{host}, "")
+
+	err := VerifyImageSignature(context.Background(), client, host+"/example/repo:v1", testImageDigest, pubPEM)
+	if err == nil {
+		t.Fatal("expected error for a signature payload that isn't valid JSON")
+	}
+	if !strings.Contains(err.Error(), "parse signature payload") {
+		t.Errorf("unexpected error message: %v", err)
+	}
 }
 
 func TestVerifyImageSignature_Valid(t *testing.T) {
@@ -437,5 +550,59 @@ func TestHasValidSignature_InvalidImageDigest(t *testing.T) {
 	err := HasValidSignature(context.Background(), client, "registry.example.com/example/repo:v1", "not-a-digest")
 	if err == nil {
 		t.Fatal("expected error for a non-sha256 image digest")
+	}
+}
+
+func TestHasValidSignature_GetLayersError(t *testing.T) {
+	host := fakeManifestListSignatureRegistry(t, testImageDigest)
+	client := mirrorclient.NewMirrorClient([]string{host}, "")
+
+	err := HasValidSignature(context.Background(), client, host+"/example/repo:v1", testImageDigest)
+	if err == nil {
+		t.Fatal("expected error when the signature manifest is not an image manifest")
+	}
+	if !strings.Contains(err.Error(), "get signature layers") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestHasValidSignature_InvalidBase64Signature(t *testing.T) {
+	payload := buildPayload(t, testImageDigest)
+	host := fakeSignatureRegistry(t, testImageDigest, []signatureLayer{{payload: payload, sigB64: "not-valid-base64!!!"}})
+	client := mirrorclient.NewMirrorClient([]string{host}, "")
+
+	err := HasValidSignature(context.Background(), client, host+"/example/repo:v1", testImageDigest)
+	if err == nil {
+		t.Fatal("expected error for a signature annotation that isn't valid base64")
+	}
+}
+
+func TestHasValidSignature_InvalidJSONPayload(t *testing.T) {
+	sigB64 := base64.StdEncoding.EncodeToString([]byte("irrelevant-bytes"))
+	host := fakeSignatureRegistry(t, testImageDigest, []signatureLayer{{payload: []byte("not valid json"), sigB64: sigB64}})
+	client := mirrorclient.NewMirrorClient([]string{host}, "")
+
+	err := HasValidSignature(context.Background(), client, host+"/example/repo:v1", testImageDigest)
+	if err == nil {
+		t.Fatal("expected error for a signature payload that isn't valid JSON")
+	}
+}
+
+func TestHasValidSignature_InvalidEmbeddedCertPEM(t *testing.T) {
+	priv, _ := generateTestKeyPair(t)
+	payload := buildPayload(t, testImageDigest)
+	sigB64 := base64.StdEncoding.EncodeToString(signPayload(t, priv, payload))
+
+	host := fakeSignatureRegistry(t, testImageDigest, []signatureLayer{
+		{payload: payload, sigB64: sigB64, certPEM: "not a valid pem certificate"},
+	})
+	client := mirrorclient.NewMirrorClient([]string{host}, "")
+
+	err := HasValidSignature(context.Background(), client, host+"/example/repo:v1", testImageDigest)
+	if err == nil {
+		t.Fatal("expected error for a malformed embedded certificate")
+	}
+	if !strings.Contains(err.Error(), "parse embedded certificate") {
+		t.Errorf("unexpected error message: %v", err)
 	}
 }
