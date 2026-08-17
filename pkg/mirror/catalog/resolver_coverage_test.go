@@ -1347,6 +1347,32 @@ func TestExtractFBCLayer_CorruptedTar(t *testing.T) {
 	}
 }
 
+func TestExtractFBCLayer_TruncatedFileBody(t *testing.T) {
+	// The tar header itself is well-formed and passes tr.Next(), but the
+	// declared body is longer than what actually follows — io.ReadAll on the
+	// body must fail and the entry is skipped rather than partially stored.
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	_ = tw.WriteHeader(&tar.Header{
+		Typeflag: tar.TypeReg,
+		Name:     "configs/pkg/catalog.yaml",
+		Size:     1024,
+		Mode:     0o644,
+	})
+	_, _ = tw.Write([]byte("short"))
+	_ = gz.Close() // no tar trailer written
+
+	fsMap := make(fstest.MapFS)
+	count := extractFBCLayer(bytes.NewReader(buf.Bytes()), fsMap)
+	if count != 0 {
+		t.Errorf("expected 0 files extracted from a truncated body, got %d", count)
+	}
+	if _, ok := fsMap["configs/pkg/catalog.yaml"]; ok {
+		t.Error("truncated entry should not be stored in fsMap")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // classifyAndExtractFBC
 // ---------------------------------------------------------------------------
@@ -1423,6 +1449,48 @@ func TestClassifyAndExtractFBC_EmptyArchive(t *testing.T) {
 	}
 }
 
+func TestClassifyAndExtractFBC_TruncatedTarBody(t *testing.T) {
+	// A well-formed gzip stream wrapping a tar header that claims more body
+	// bytes than actually follow: tr.Next() succeeds once, then a second
+	// tr.Next() call hits the truncated stream and returns a non-EOF error.
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	_ = tw.WriteHeader(&tar.Header{
+		Typeflag: tar.TypeReg,
+		Name:     "configs/pkg/catalog.yaml",
+		Size:     1024,
+		Mode:     0o644,
+	})
+	_, _ = tw.Write([]byte("short"))
+	_ = gz.Close() // flush without closing tw: the tar trailer is never written
+
+	fs := make(fstest.MapFS)
+	_, _, _, err := classifyAndExtractFBC(bytes.NewReader(buf.Bytes()), fs)
+	if err == nil {
+		t.Fatal("expected a tar error for a truncated archive")
+	}
+}
+
+func TestClassifyAndExtractFBC_NonRegularConfigsEntry(t *testing.T) {
+	// A symlink under configs/ hits the "prefix matches but not a regular
+	// file" branch, distinct from the non-configs-prefix rejection path.
+	data := makeGzipTar(t, []tarEntry{
+		{name: "configs/link", typeflag: tar.TypeSymlink},
+	})
+	fs := make(fstest.MapFS)
+	skip, _, reject, err := classifyAndExtractFBC(bytes.NewReader(data), fs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if skip {
+		t.Error("a layer whose only configs/ entry is non-regular should not be skippable")
+	}
+	if reject != "configs/link (non-regular file)" {
+		t.Errorf("expected firstReject to flag the non-regular entry, got %q", reject)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // blobCopyWithRetry
 // ---------------------------------------------------------------------------
@@ -1453,6 +1521,26 @@ func TestBlobCopyWithRetry_RespectsParentCancel(t *testing.T) {
 	err := blobCopyWithRetry(ctx, mc, ref.Ref{}, ref.Ref{}, descriptor.Descriptor{}, 3, time.Minute)
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("expected context.Canceled, got %v", err)
+	}
+}
+
+func TestBlobCopyWithRetry_ContextExpiresDuringBackoff(t *testing.T) {
+	mc := mirrorclient.NewMirrorClient([]string{"localhost:1"}, "")
+	srcRef, _ := ref.New("localhost:1/src:latest")
+	dstRef, _ := ref.New("localhost:1/dst:latest")
+	d := descriptor.Descriptor{Digest: "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+
+	// Attempt 1 fails fast against the unreachable host (well under the
+	// context's 300ms budget), so the loop enters the inter-attempt backoff
+	// select for attempt 2. The parent context's own deadline (shorter than
+	// the fixed 5s backoff) then fires first, taking the ctx.Done() case
+	// inside that select rather than the time.After(backoff) case.
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+
+	err := blobCopyWithRetry(ctx, mc, srcRef, dstRef, d, 2, 100*time.Millisecond)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("expected context.DeadlineExceeded from the backoff select, got %v", err)
 	}
 }
 
