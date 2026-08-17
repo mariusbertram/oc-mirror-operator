@@ -11,11 +11,15 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -1089,6 +1093,427 @@ var _ = Describe("Coverage tests", func() {
 			}
 			Expect(foundDeferred).To(BeTrue(), "expected CatalogReady=WaitingForOperatorMirror while rebuild gated")
 		})
+
+		It("keeps the gate open when a build job already exists, even without recollect or mirrored images", func() {
+			localCtx := context.Background()
+			isName := "is-catgate-jobrace"
+			mtName := "mt-catgate-jobrace"
+
+			Expect(os.Setenv("OPERATOR_IMAGE", "test-operator:latest")).To(Succeed())
+			Expect(os.Setenv("MANAGER_IMAGE", "test-manager:latest")).To(Succeed())
+			Expect(os.Setenv("WORKER_IMAGE", "test-worker:latest")).To(Succeed())
+			bm, bmErr := builder.New()
+			Expect(bmErr).NotTo(HaveOccurred())
+
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: mtName, Namespace: ns},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com", ImageSets: []string{isName}},
+			}
+			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, mt) })
+
+			// An operator entry with an empty Catalog is skipped by every loop
+			// that walks is.Spec.Mirror.Operators — include one to exercise
+			// those "continue" branches alongside the real entry below.
+			is := &mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{Name: isName, Namespace: ns},
+				Spec: mirrorv1alpha1.ImageSetSpec{
+					Mirror: mirrorv1alpha1.Mirror{
+						Operators: []mirrorv1alpha1.Operator{
+							{},
+							{Catalog: "quay.io/redhat/jobrace:v1"},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(localCtx, is)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, is) })
+
+			// No recollect annotation and no imagestate ConfigMap — the gate
+			// would normally stay closed — but a CatalogBuildJob already
+			// exists (Pending by default), which must keep it open so a
+			// build already in flight is never abandoned mid-run.
+			jobName := builder.JobName(isName, "quay.io/redhat/jobrace:v1")
+			job := &batchv1.Job{
+				ObjectMeta: metav1.ObjectMeta{Name: jobName, Namespace: ns},
+				Spec: batchv1.JobSpec{
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers:    []corev1.Container{{Name: "build", Image: "busybox"}},
+							RestartPolicy: corev1.RestartPolicyNever,
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(localCtx, job)).To(Succeed())
+			DeferCleanup(func() {
+				prop := metav1.DeletePropagationBackground
+				_ = k8sClient.Delete(localCtx, job, &client.DeleteOptions{PropagationPolicy: &prop})
+			})
+
+			r := &ImageSetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), CatalogBuildMgr: bm}
+			Expect(r.reconcileCatalogBuildJobs(localCtx, is, mt, false)).To(Succeed())
+
+			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: isName, Namespace: ns}, is)).To(Succeed())
+			var foundRunning bool
+			for _, c := range is.Status.Conditions {
+				if c.Type == conditionCatalogReady && c.Reason == "CatalogBuildRunning" {
+					foundRunning = true
+				}
+			}
+			Expect(foundRunning).To(BeTrue(), "expected CatalogReady=CatalogBuildRunning once the existing job kept the gate open")
+		})
+
+		It("logs the mirroring-still-in-progress reason (not the no-imagestate reason) when state is known but incomplete", func() {
+			localCtx := context.Background()
+			isName := "is-catgate-knownstate"
+			mtName := "mt-catgate-knownstate"
+
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: mtName, Namespace: ns},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com", ImageSets: []string{isName}},
+			}
+			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, mt) })
+
+			is := &mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{Name: isName, Namespace: ns},
+				Spec: mirrorv1alpha1.ImageSetSpec{
+					Mirror: mirrorv1alpha1.Mirror{
+						Operators: []mirrorv1alpha1.Operator{{Catalog: "quay.io/redhat/knownstate:v1"}},
+					},
+				},
+			}
+			Expect(k8sClient.Create(localCtx, is)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, is) })
+
+			state := imagestate.ImageState{
+				"d1": {Source: "s1", State: "Pending", Origin: imagestate.OriginOperator},
+			}
+			cm := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: isName + "-images", Namespace: ns},
+				BinaryData: map[string][]byte{"images.json.gz": mustGzipJSON(state)},
+			}
+			Expect(k8sClient.Create(localCtx, cm)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, cm) })
+
+			r := &ImageSetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			Expect(r.reconcileCatalogBuildJobs(localCtx, is, mt, false)).To(Succeed())
+
+			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: isName, Namespace: ns}, is)).To(Succeed())
+			var foundDeferred bool
+			for _, c := range is.Status.Conditions {
+				if c.Type == conditionCatalogReady && c.Reason == reasonWaitingForOperatorMirror {
+					foundDeferred = true
+				}
+			}
+			Expect(foundDeferred).To(BeTrue(), "expected CatalogReady=WaitingForOperatorMirror")
+		})
+
+		It("only honors a recollect annotation once per distinct value", func() {
+			localCtx := context.Background()
+			isName := "is-catgate-recollect-once"
+			mtName := "mt-catgate-recollect-once"
+
+			Expect(os.Setenv("OPERATOR_IMAGE", "test-operator:latest")).To(Succeed())
+			Expect(os.Setenv("MANAGER_IMAGE", "test-manager:latest")).To(Succeed())
+			Expect(os.Setenv("WORKER_IMAGE", "test-worker:latest")).To(Succeed())
+			bm, bmErr := builder.New()
+			Expect(bmErr).NotTo(HaveOccurred())
+
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: mtName, Namespace: ns},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com", ImageSets: []string{isName}},
+			}
+			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, mt) })
+
+			is := &mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      isName,
+					Namespace: ns,
+					Annotations: map[string]string{
+						mirrorv1alpha1.RecollectAnnotation: "run-1",
+					},
+				},
+				Spec: mirrorv1alpha1.ImageSetSpec{
+					Mirror: mirrorv1alpha1.Mirror{
+						Operators: []mirrorv1alpha1.Operator{{Catalog: "quay.io/redhat/recollectonce:v1"}},
+					},
+				},
+			}
+			Expect(k8sClient.Create(localCtx, is)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, is) })
+
+			r := &ImageSetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), CatalogBuildMgr: bm}
+			Expect(r.reconcileCatalogBuildJobs(localCtx, is, mt, false)).To(Succeed())
+
+			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: isName, Namespace: ns}, is)).To(Succeed())
+			Expect(is.Annotations["mirror.openshift.io/catalog-build-recollect-sig"]).To(Equal("run-1"),
+				"a fresh recollect value must be recorded as honored so it is not re-applied every reconcile")
+
+			DeferCleanup(func() {
+				jobName := builder.JobName(isName, "quay.io/redhat/recollectonce:v1")
+				j := &batchv1.Job{}
+				if err := k8sClient.Get(localCtx, types.NamespacedName{Name: jobName, Namespace: ns}, j); err == nil {
+					prop := metav1.DeletePropagationBackground
+					_ = k8sClient.Delete(localCtx, j, &client.DeleteOptions{PropagationPolicy: &prop})
+				}
+			})
+		})
+
+		It("forces a rebuild via poll expiry even with nil annotations, initializing the annotation map", func() {
+			localCtx := context.Background()
+			isName := "is-catgate-pollnilanno"
+			mtName := "mt-catgate-pollnilanno"
+
+			Expect(os.Setenv("OPERATOR_IMAGE", "test-operator:latest")).To(Succeed())
+			Expect(os.Setenv("MANAGER_IMAGE", "test-manager:latest")).To(Succeed())
+			Expect(os.Setenv("WORKER_IMAGE", "test-worker:latest")).To(Succeed())
+			bm, bmErr := builder.New()
+			Expect(bmErr).NotTo(HaveOccurred())
+
+			op := mirrorv1alpha1.Operator{Catalog: "quay.io/redhat/pollnilanno:v1"}
+			sig := mirrorv1alpha1.OperatorEntrySignature(op)
+
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: mtName, Namespace: ns},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com", ImageSets: []string{isName}},
+			}
+			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, mt) })
+
+			// No annotations at all — gate must open via operatorMirroringComplete,
+			// not recollect, and the persisted-signature step must tolerate a nil
+			// Annotations map.
+			is := &mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{Name: isName, Namespace: ns},
+				Spec:       mirrorv1alpha1.ImageSetSpec{Mirror: mirrorv1alpha1.Mirror{Operators: []mirrorv1alpha1.Operator{op}}},
+			}
+			Expect(k8sClient.Create(localCtx, is)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, is) })
+
+			state := imagestate.ImageState{
+				"d1": {Source: "s1", State: "Mirrored", Origin: imagestate.OriginOperator, EntrySig: sig},
+			}
+			cm := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: isName + "-images", Namespace: ns},
+				BinaryData: map[string][]byte{"images.json.gz": mustGzipJSON(state)},
+			}
+			Expect(k8sClient.Create(localCtx, cm)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, cm) })
+
+			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: isName, Namespace: ns}, is)).To(Succeed())
+			is.Status.LastSuccessfulPollTime = &metav1.Time{Time: time.Now().Add(-48 * time.Hour)}
+			Expect(k8sClient.Status().Update(localCtx, is)).To(Succeed())
+
+			r := &ImageSetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), CatalogBuildMgr: bm}
+			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: isName, Namespace: ns}, is)).To(Succeed())
+			Expect(r.reconcileCatalogBuildJobs(localCtx, is, mt, true)).To(Succeed())
+
+			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: isName, Namespace: ns}, is)).To(Succeed())
+			Expect(is.Annotations["mirror.openshift.io/catalog-build-poll-sig"]).NotTo(BeEmpty(),
+				"poll-forced rebuild must record the poll marker it honored, even starting from a nil annotation map")
+
+			DeferCleanup(func() {
+				jobName := builder.JobName(isName, "quay.io/redhat/pollnilanno:v1")
+				j := &batchv1.Job{}
+				if err := k8sClient.Get(localCtx, types.NamespacedName{Name: jobName, Namespace: ns}, j); err == nil {
+					prop := metav1.DeletePropagationBackground
+					_ = k8sClient.Delete(localCtx, j, &client.DeleteOptions{PropagationPolicy: &prop})
+				}
+			})
+		})
+
+		It("does not force a poll-expiry rebuild while a build job is still Pending or Running", func() {
+			localCtx := context.Background()
+			isName := "is-catgate-pollbusy"
+			mtName := "mt-catgate-pollbusy"
+
+			Expect(os.Setenv("OPERATOR_IMAGE", "test-operator:latest")).To(Succeed())
+			Expect(os.Setenv("MANAGER_IMAGE", "test-manager:latest")).To(Succeed())
+			Expect(os.Setenv("WORKER_IMAGE", "test-worker:latest")).To(Succeed())
+			bm, bmErr := builder.New()
+			Expect(bmErr).NotTo(HaveOccurred())
+
+			op := mirrorv1alpha1.Operator{Catalog: "quay.io/redhat/pollbusy:v1"}
+			sig := mirrorv1alpha1.OperatorEntrySignature(op)
+			buildSig := bm.BuildSignature([]mirrorv1alpha1.Operator{op})
+
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: mtName, Namespace: ns},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com", ImageSets: []string{isName}},
+			}
+			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, mt) })
+
+			is := &mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      isName,
+					Namespace: ns,
+					Annotations: map[string]string{
+						"mirror.openshift.io/catalog-build-sig": buildSig,
+					},
+				},
+				Spec: mirrorv1alpha1.ImageSetSpec{
+					Mirror: mirrorv1alpha1.Mirror{
+						Operators: []mirrorv1alpha1.Operator{{}, op},
+					},
+				},
+			}
+			Expect(k8sClient.Create(localCtx, is)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, is) })
+
+			state := imagestate.ImageState{
+				"d1": {Source: "s1", State: "Mirrored", Origin: imagestate.OriginOperator, EntrySig: sig},
+			}
+			cm := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: isName + "-images", Namespace: ns},
+				BinaryData: map[string][]byte{"images.json.gz": mustGzipJSON(state)},
+			}
+			Expect(k8sClient.Create(localCtx, cm)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, cm) })
+
+			// A build job for this catalog is already active (default status,
+			// i.e. Pending) — the poll-expiry rebuild must not be forced while
+			// it is in flight.
+			jobName := builder.JobName(isName, "quay.io/redhat/pollbusy:v1")
+			job := &batchv1.Job{
+				ObjectMeta: metav1.ObjectMeta{Name: jobName, Namespace: ns},
+				Spec: batchv1.JobSpec{
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers:    []corev1.Container{{Name: "build", Image: "busybox"}},
+							RestartPolicy: corev1.RestartPolicyNever,
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(localCtx, job)).To(Succeed())
+			DeferCleanup(func() {
+				prop := metav1.DeletePropagationBackground
+				_ = k8sClient.Delete(localCtx, job, &client.DeleteOptions{PropagationPolicy: &prop})
+			})
+
+			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: isName, Namespace: ns}, is)).To(Succeed())
+			is.Status.LastSuccessfulPollTime = &metav1.Time{Time: time.Now().Add(-48 * time.Hour)}
+			Expect(k8sClient.Status().Update(localCtx, is)).To(Succeed())
+
+			r := &ImageSetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), CatalogBuildMgr: bm}
+			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: isName, Namespace: ns}, is)).To(Succeed())
+			Expect(r.reconcileCatalogBuildJobs(localCtx, is, mt, true)).To(Succeed())
+
+			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: isName, Namespace: ns}, is)).To(Succeed())
+			Expect(is.Annotations["mirror.openshift.io/catalog-build-poll-sig"]).To(BeEmpty(),
+				"poll-forced rebuild must not fire while the existing build job is still Pending/Running")
+		})
+	})
+
+	// ───────────────────── ImageSet Reconcile: poll interval handling ─────────────────────
+
+	Describe("ImageSet Reconcile poll interval handling", func() {
+		// Note: Reconcile's own clamp of a sub-1h PollInterval up to the 1h
+		// floor (mirrortarget_controller.go's PollInterval < 1h check) is not
+		// exercised here — the MirrorTarget CRD's validation schema already
+		// rejects any pollInterval between 0 (exclusive) and 1h (exclusive),
+		// so a real MirrorTarget with that shape cannot exist in envtest. The
+		// in-code clamp is defense-in-depth for objects that predate the CRD
+		// validation being added; it is not reachable through the validated API.
+
+		It("computes pollExpired and publishes the last-poll gauge when LastSuccessfulPollTime is set", func() {
+			localCtx := context.Background()
+			isName := "is-poll-expired"
+			mtName := "mt-poll-expired"
+
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: mtName, Namespace: ns},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com", ImageSets: []string{isName}},
+			}
+			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, mt) })
+
+			is := &mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{Name: isName, Namespace: ns},
+				Spec:       mirrorv1alpha1.ImageSetSpec{Mirror: mirrorv1alpha1.Mirror{}},
+			}
+			Expect(k8sClient.Create(localCtx, is)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, is) })
+
+			is.Status.LastSuccessfulPollTime = &metav1.Time{Time: time.Now().Add(-48 * time.Hour)}
+			Expect(k8sClient.Status().Update(localCtx, is)).To(Succeed())
+
+			r := newImageSetReconciler()
+			result, err := r.Reconcile(localCtx, reconcile.Request{NamespacedName: types.NamespacedName{Name: isName, Namespace: ns}})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(24 * time.Hour))
+		})
+
+		It("returns a bare empty result when polling is explicitly disabled", func() {
+			localCtx := context.Background()
+			isName := "is-poll-disabled"
+			mtName := "mt-poll-disabled"
+
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: mtName, Namespace: ns},
+				Spec: mirrorv1alpha1.MirrorTargetSpec{
+					Registry:     "reg.example.com",
+					ImageSets:    []string{isName},
+					PollInterval: &metav1.Duration{Duration: 0},
+				},
+			}
+			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, mt) })
+
+			is := &mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{Name: isName, Namespace: ns},
+				Spec:       mirrorv1alpha1.ImageSetSpec{Mirror: mirrorv1alpha1.Mirror{}},
+			}
+			Expect(k8sClient.Create(localCtx, is)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, is) })
+
+			r := newImageSetReconciler()
+			result, err := r.Reconcile(localCtx, reconcile.Request{NamespacedName: types.NamespacedName{Name: isName, Namespace: ns}})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(reconcile.Result{}))
+		})
+
+		It("returns the underlying error for a non-NotFound Get failure", func() {
+			localCtx := context.Background()
+			isName := "is-poll-getcancel"
+
+			is := &mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{Name: isName, Namespace: ns},
+				Spec:       mirrorv1alpha1.ImageSetSpec{Mirror: mirrorv1alpha1.Mirror{}},
+			}
+			Expect(k8sClient.Create(localCtx, is)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, is) })
+
+			cancelledCtx, cancel := context.WithCancel(context.Background())
+			cancel()
+
+			r := newImageSetReconciler()
+			_, err := r.Reconcile(cancelledCtx, reconcile.Request{NamespacedName: types.NamespacedName{Name: isName, Namespace: ns}})
+			Expect(err).To(HaveOccurred())
+		})
+	})
+
+	// ───────────────────── pinnedCatalogRef ─────────────────────
+
+	Describe("pinnedCatalogRef", func() {
+		It("returns ok=false when the catalog reference cannot be parsed for digest-pinning", func() {
+			op := mirrorv1alpha1.Operator{Catalog: "not a valid image reference!!"}
+			digestAnnoKey := mirrorv1alpha1.CatalogDigestAnnotationKey(mirrorv1alpha1.OperatorEntrySignature(op))
+			is := &mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "is-pin-invalid",
+					Annotations: map[string]string{
+						digestAnnoKey: mirrorv1alpha1.OperatorCacheValue("sha256:" + strings.Repeat("a", 64)),
+					},
+				},
+			}
+			_, ok := pinnedCatalogRef(is, op)
+			Expect(ok).To(BeFalse())
+		})
 	})
 
 	// ───────────────────── reconcileCleanup ─────────────────────
@@ -1781,6 +2206,545 @@ var _ = Describe("Coverage tests", func() {
 				Expect(controllerutil.ContainsFinalizer(fresh, mirrorTargetFinalizer)).To(BeFalse())
 			}
 		})
+
+		It("requeues without removing the finalizer while a pod still has a DeletionTimestamp", func() {
+			localCtx := context.Background()
+			mtName := "mt-del-podterminating"
+
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: mtName, Namespace: ns},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com"},
+			}
+			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
+			DeferCleanup(func() { cleanupMT(localCtx, mtName) })
+
+			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: mtName, Namespace: ns}, mt)).To(Succeed())
+			controllerutil.AddFinalizer(mt, mirrorTargetFinalizer)
+			Expect(k8sClient.Update(localCtx, mt)).To(Succeed())
+			Expect(k8sClient.Delete(localCtx, mt)).To(Succeed())
+			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: mtName, Namespace: ns}, mt)).To(Succeed())
+
+			// A pod carrying a finalizer of its own so Delete only stamps a
+			// DeletionTimestamp instead of removing it outright — simulating a
+			// worker pod still terminating.
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "worker-terminating-" + mtName,
+					Namespace:  ns,
+					Labels:     map[string]string{"mirrortarget": mtName},
+					Finalizers: []string{"mirror.openshift.io/test-block-deletion"},
+				},
+				Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "worker", Image: "busybox"}}},
+			}
+			Expect(k8sClient.Create(localCtx, pod)).To(Succeed())
+			Expect(k8sClient.Delete(localCtx, pod)).To(Succeed())
+			DeferCleanup(func() {
+				fresh := &corev1.Pod{}
+				if err := k8sClient.Get(localCtx, types.NamespacedName{Name: pod.Name, Namespace: ns}, fresh); err == nil {
+					controllerutil.RemoveFinalizer(fresh, "mirror.openshift.io/test-block-deletion")
+					_ = k8sClient.Update(localCtx, fresh)
+					_ = k8sClient.Delete(localCtx, fresh)
+				}
+			})
+
+			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			result, err := r.handleDeletion(localCtx, mt)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(reconcile.Result{RequeueAfter: 5 * time.Second}))
+
+			// Finalizer must still be present — cleanup is not yet complete.
+			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: mtName, Namespace: ns}, mt)).To(Succeed())
+			Expect(controllerutil.ContainsFinalizer(mt, mirrorTargetFinalizer)).To(BeTrue())
+		})
+
+		It("returns the underlying error when listing pods fails", func() {
+			localCtx := context.Background()
+			mtName := "mt-del-listcancel"
+
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: mtName, Namespace: ns},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com"},
+			}
+			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
+			DeferCleanup(func() { cleanupMT(localCtx, mtName) })
+
+			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: mtName, Namespace: ns}, mt)).To(Succeed())
+			controllerutil.AddFinalizer(mt, mirrorTargetFinalizer)
+			Expect(k8sClient.Update(localCtx, mt)).To(Succeed())
+			Expect(k8sClient.Delete(localCtx, mt)).To(Succeed())
+			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: mtName, Namespace: ns}, mt)).To(Succeed())
+
+			cancelledCtx, cancel := context.WithCancel(localCtx)
+			cancel()
+
+			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := r.handleDeletion(cancelledCtx, mt)
+			Expect(err).To(HaveOccurred())
+		})
+	})
+
+	// ───────────────────── Reconcile: error propagation from sub-reconcilers ─────────────────────
+
+	Describe("Reconcile error propagation from sub-reconcilers", func() {
+		It("surfaces a reconcileCleanup failure as Cleanup=False/CleanupError and returns the error", func() {
+			localCtx := context.Background()
+			mtName := "mt-reconcile-cleanuperr"
+			removedIS := "is-reconcile-cleanuperr"
+
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      mtName,
+					Namespace: ns,
+					Annotations: map[string]string{
+						mirrorv1alpha1.CleanupPolicyAnnotation: mirrorv1alpha1.CleanupPolicyDelete,
+					},
+				},
+				Spec: mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com"},
+			}
+			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
+			DeferCleanup(func() { cleanupMT(localCtx, mtName) })
+
+			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			key := types.NamespacedName{Name: mtName, Namespace: ns}
+
+			// First reconcile only adds the finalizer.
+			_, err := r.Reconcile(localCtx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Seed KnownImageSets with an ImageSet no longer in spec.imageSets
+			// (which is empty), and give it a corrupt state ConfigMap so
+			// reconcileCleanup's removed-ImageSet path fails to load it.
+			Expect(k8sClient.Get(localCtx, key, mt)).To(Succeed())
+			mt.Status.KnownImageSets = []string{removedIS}
+			Expect(k8sClient.Status().Update(localCtx, mt)).To(Succeed())
+
+			corruptCM := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: removedIS + "-images", Namespace: ns},
+				BinaryData: map[string][]byte{"images.json.gz": []byte("not-a-gzip-stream")},
+			}
+			Expect(k8sClient.Create(localCtx, corruptCM)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, corruptCM) })
+
+			_, err = r.Reconcile(localCtx, reconcile.Request{NamespacedName: key})
+			Expect(err).To(HaveOccurred())
+
+			Expect(k8sClient.Get(localCtx, key, mt)).To(Succeed())
+			var found bool
+			for _, c := range mt.Status.Conditions {
+				if c.Type == conditionTypeCleanup && c.Status == metav1.ConditionFalse && c.Reason == "CleanupError" {
+					found = true
+				}
+			}
+			Expect(found).To(BeTrue(), "expected Cleanup=False/CleanupError")
+		})
+
+		It("surfaces an ensureCoordinatorRBAC failure as Ready=False/ReconcileError and returns the error", func() {
+			localCtx := context.Background()
+			mtName := "mt-reconcile-rbacerr"
+
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: mtName, Namespace: ns},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com"},
+			}
+			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
+			DeferCleanup(func() { cleanupMT(localCtx, mtName) })
+
+			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			key := types.NamespacedName{Name: mtName, Namespace: ns}
+
+			_, err := r.Reconcile(localCtx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Pre-create the coordinator ServiceAccount owned by a different
+			// controller so SetControllerReference (inside ensureCoordinatorRBAC)
+			// refuses to adopt it.
+			otherOwner := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: mtName + "-other-owner", Namespace: ns},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com"},
+			}
+			Expect(k8sClient.Create(localCtx, otherOwner)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, otherOwner) })
+
+			conflictSA := &corev1.ServiceAccount{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      mtName + "-coordinator",
+					Namespace: ns,
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							APIVersion: "mirror.openshift.io/v1alpha1",
+							Kind:       "MirrorTarget",
+							Name:       otherOwner.Name,
+							UID:        otherOwner.UID,
+							Controller: pointerTo(true),
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(localCtx, conflictSA)).To(Succeed())
+
+			_, err = r.Reconcile(localCtx, reconcile.Request{NamespacedName: key})
+			Expect(err).To(HaveOccurred())
+
+			Expect(k8sClient.Get(localCtx, key, mt)).To(Succeed())
+			var found bool
+			for _, c := range mt.Status.Conditions {
+				if c.Type == conditionTypeReady && c.Status == metav1.ConditionFalse && c.Reason == reasonReconcileError {
+					found = true
+				}
+			}
+			Expect(found).To(BeTrue(), "expected Ready=False/ReconcileError")
+		})
+
+		It("wraps the error when the worker ServiceAccount is already owned by a different controller", func() {
+			localCtx := context.Background()
+			mtName := "mt-coordrbac-workersa-conflict"
+
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: mtName, Namespace: ns},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com"},
+			}
+			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
+			DeferCleanup(func() { cleanupMT(localCtx, mtName) })
+
+			otherOwner := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: mtName + "-workersa-other-owner", Namespace: ns},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com"},
+			}
+			Expect(k8sClient.Create(localCtx, otherOwner)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, otherOwner) })
+
+			conflictSA := &corev1.ServiceAccount{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      mtName + "-worker",
+					Namespace: ns,
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							APIVersion: "mirror.openshift.io/v1alpha1",
+							Kind:       "MirrorTarget",
+							Name:       otherOwner.Name,
+							UID:        otherOwner.UID,
+							Controller: pointerTo(true),
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(localCtx, conflictSA)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, conflictSA) })
+
+			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			err := r.ensureCoordinatorRBAC(localCtx, mt)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("failed to create worker ServiceAccount"))
+
+			DeferCleanup(func() {
+				_ = k8sClient.Delete(localCtx, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: mtName + "-coordinator", Namespace: ns}})
+			})
+		})
+
+		It("surfaces a manager Deployment CreateOrUpdate failure as Ready=False/ReconcileError and returns the error", func() {
+			localCtx := context.Background()
+			mtName := "mt-reconcile-deployerr"
+
+			Expect(os.Setenv("OPERATOR_IMAGE", "test-operator:latest")).To(Succeed())
+			Expect(os.Setenv("MANAGER_IMAGE", "test-manager:latest")).To(Succeed())
+			Expect(os.Setenv("WORKER_IMAGE", "test-worker:latest")).To(Succeed())
+
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: mtName, Namespace: ns},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com"},
+			}
+			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
+			DeferCleanup(func() { cleanupMT(localCtx, mtName) })
+
+			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			key := types.NamespacedName{Name: mtName, Namespace: ns}
+
+			_, err := r.Reconcile(localCtx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+
+			otherOwner := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: mtName + "-deploy-other-owner", Namespace: ns},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com"},
+			}
+			Expect(k8sClient.Create(localCtx, otherOwner)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, otherOwner) })
+
+			conflictDeployment := &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      mtName + "-manager",
+					Namespace: ns,
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							APIVersion: "mirror.openshift.io/v1alpha1",
+							Kind:       "MirrorTarget",
+							Name:       otherOwner.Name,
+							UID:        otherOwner.UID,
+							Controller: pointerTo(true),
+						},
+					},
+				},
+				Spec: appsv1.DeploymentSpec{
+					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "placeholder"}},
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "placeholder"}},
+						Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "placeholder", Image: "busybox"}}},
+					},
+				},
+			}
+			Expect(k8sClient.Create(localCtx, conflictDeployment)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, conflictDeployment) })
+
+			_, err = r.Reconcile(localCtx, reconcile.Request{NamespacedName: key})
+			Expect(err).To(HaveOccurred())
+
+			Expect(k8sClient.Get(localCtx, key, mt)).To(Succeed())
+			var found bool
+			for _, c := range mt.Status.Conditions {
+				if c.Type == conditionTypeReady && c.Status == metav1.ConditionFalse && c.Reason == reasonReconcileError {
+					found = true
+				}
+			}
+			Expect(found).To(BeTrue(), "expected Ready=False/ReconcileError")
+		})
+
+		It("surfaces a manager Service CreateOrUpdate failure as Ready=False/ReconcileError and returns the error", func() {
+			localCtx := context.Background()
+			mtName := "mt-reconcile-svcerr"
+
+			Expect(os.Setenv("OPERATOR_IMAGE", "test-operator:latest")).To(Succeed())
+			Expect(os.Setenv("MANAGER_IMAGE", "test-manager:latest")).To(Succeed())
+			Expect(os.Setenv("WORKER_IMAGE", "test-worker:latest")).To(Succeed())
+
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: mtName, Namespace: ns},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com"},
+			}
+			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
+			DeferCleanup(func() { cleanupMT(localCtx, mtName) })
+
+			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			key := types.NamespacedName{Name: mtName, Namespace: ns}
+
+			// First reconcile adds the finalizer; second creates the Deployment
+			// (succeeds normally) and then reaches the Service step.
+			_, err := r.Reconcile(localCtx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+
+			otherOwner := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: mtName + "-svc-other-owner", Namespace: ns},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com"},
+			}
+			Expect(k8sClient.Create(localCtx, otherOwner)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, otherOwner) })
+
+			conflictService := &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      mtName + "-manager",
+					Namespace: ns,
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							APIVersion: "mirror.openshift.io/v1alpha1",
+							Kind:       "MirrorTarget",
+							Name:       otherOwner.Name,
+							UID:        otherOwner.UID,
+							Controller: pointerTo(true),
+						},
+					},
+				},
+				Spec: corev1.ServiceSpec{Ports: []corev1.ServicePort{{Port: 8080}}},
+			}
+			Expect(k8sClient.Create(localCtx, conflictService)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, conflictService) })
+
+			_, err = r.Reconcile(localCtx, reconcile.Request{NamespacedName: key})
+			Expect(err).To(HaveOccurred())
+
+			Expect(k8sClient.Get(localCtx, key, mt)).To(Succeed())
+			var found bool
+			for _, c := range mt.Status.Conditions {
+				if c.Type == conditionTypeReady && c.Status == metav1.ConditionFalse && c.Reason == reasonReconcileError {
+					found = true
+				}
+			}
+			Expect(found).To(BeTrue(), "expected Ready=False/ReconcileError")
+
+			DeferCleanup(func() {
+				dep := &appsv1.Deployment{}
+				if err := k8sClient.Get(localCtx, types.NamespacedName{Name: mtName + "-manager", Namespace: ns}, dep); err == nil {
+					_ = k8sClient.Delete(localCtx, dep)
+				}
+			})
+		})
+
+		It("surfaces a resources Service CreateOrUpdate failure as Ready=False/ReconcileError and returns the error", func() {
+			localCtx := context.Background()
+			mtName := "mt-reconcile-ressvcerr"
+
+			Expect(os.Setenv("OPERATOR_IMAGE", "test-operator:latest")).To(Succeed())
+			Expect(os.Setenv("MANAGER_IMAGE", "test-manager:latest")).To(Succeed())
+			Expect(os.Setenv("WORKER_IMAGE", "test-worker:latest")).To(Succeed())
+
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: mtName, Namespace: ns},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com"},
+			}
+			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
+			DeferCleanup(func() { cleanupMT(localCtx, mtName) })
+
+			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			key := types.NamespacedName{Name: mtName, Namespace: ns}
+
+			_, err := r.Reconcile(localCtx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+
+			otherOwner := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: mtName + "-ressvc-other-owner", Namespace: ns},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com"},
+			}
+			Expect(k8sClient.Create(localCtx, otherOwner)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, otherOwner) })
+
+			conflictService := &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      mtName + "-resources",
+					Namespace: ns,
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							APIVersion: "mirror.openshift.io/v1alpha1",
+							Kind:       "MirrorTarget",
+							Name:       otherOwner.Name,
+							UID:        otherOwner.UID,
+							Controller: pointerTo(true),
+						},
+					},
+				},
+				Spec: corev1.ServiceSpec{Ports: []corev1.ServicePort{{Port: 8081}}},
+			}
+			Expect(k8sClient.Create(localCtx, conflictService)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, conflictService) })
+
+			_, err = r.Reconcile(localCtx, reconcile.Request{NamespacedName: key})
+			Expect(err).To(HaveOccurred())
+
+			Expect(k8sClient.Get(localCtx, key, mt)).To(Succeed())
+			var found bool
+			for _, c := range mt.Status.Conditions {
+				if c.Type == conditionTypeReady && c.Status == metav1.ConditionFalse && c.Reason == reasonReconcileError {
+					found = true
+				}
+			}
+			Expect(found).To(BeTrue(), "expected Ready=False/ReconcileError")
+
+			DeferCleanup(func() {
+				dep := &appsv1.Deployment{}
+				if err := k8sClient.Get(localCtx, types.NamespacedName{Name: mtName + "-manager", Namespace: ns}, dep); err == nil {
+					_ = k8sClient.Delete(localCtx, dep)
+				}
+				svc := &corev1.Service{}
+				if err := k8sClient.Get(localCtx, types.NamespacedName{Name: mtName + "-manager", Namespace: ns}, svc); err == nil {
+					_ = k8sClient.Delete(localCtx, svc)
+				}
+			})
+		})
+
+		It("sets Ready=False/ExposureError but still completes reconciliation when exposure fails", func() {
+			localCtx := context.Background()
+			mtName := "mt-reconcile-exposeerr"
+
+			Expect(os.Setenv("OPERATOR_IMAGE", "test-operator:latest")).To(Succeed())
+			Expect(os.Setenv("MANAGER_IMAGE", "test-manager:latest")).To(Succeed())
+			Expect(os.Setenv("WORKER_IMAGE", "test-worker:latest")).To(Succeed())
+
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: mtName, Namespace: ns},
+				Spec: mirrorv1alpha1.MirrorTargetSpec{
+					Registry: "reg.example.com",
+					// envtest has no Gateway API CRD installed, so this always fails —
+					// exercising the ExposureError branch which, unlike the other
+					// sub-reconciler errors above, must NOT abort the rest of Reconcile.
+					Expose: &mirrorv1alpha1.ExposeConfig{
+						Type:       mirrorv1alpha1.ExposeTypeGatewayAPI,
+						GatewayRef: &mirrorv1alpha1.GatewayReference{Name: "my-gateway"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
+			DeferCleanup(func() { cleanupMT(localCtx, mtName) })
+
+			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			key := types.NamespacedName{Name: mtName, Namespace: ns}
+
+			_, err := r.Reconcile(localCtx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = r.Reconcile(localCtx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(localCtx, key, mt)).To(Succeed())
+			var found bool
+			for _, c := range mt.Status.Conditions {
+				if c.Type == conditionTypeReady && c.Status == metav1.ConditionFalse && c.Reason == "ExposureError" {
+					found = true
+				}
+			}
+			Expect(found).To(BeTrue(), "expected Ready=False/ExposureError")
+			// KnownImageSets must still have been advanced despite the exposure failure.
+			Expect(mt.Status.KnownImageSets).To(BeEmpty())
+		})
+
+		It("requeues after 30s while a cleanup job is still pending", func() {
+			localCtx := context.Background()
+			mtName := "mt-reconcile-pendingcleanup"
+			removedIS := "is-reconcile-pendingcleanup"
+
+			Expect(os.Setenv("OPERATOR_IMAGE", "test-operator:latest")).To(Succeed())
+			Expect(os.Setenv("MANAGER_IMAGE", "test-manager:latest")).To(Succeed())
+			Expect(os.Setenv("WORKER_IMAGE", "test-worker:latest")).To(Succeed())
+
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      mtName,
+					Namespace: ns,
+					Annotations: map[string]string{
+						mirrorv1alpha1.CleanupPolicyAnnotation: mirrorv1alpha1.CleanupPolicyDelete,
+					},
+				},
+				Spec: mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com"},
+			}
+			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
+			DeferCleanup(func() { cleanupMT(localCtx, mtName) })
+
+			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			key := types.NamespacedName{Name: mtName, Namespace: ns}
+
+			_, err := r.Reconcile(localCtx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(localCtx, key, mt)).To(Succeed())
+			mt.Status.KnownImageSets = []string{removedIS}
+			Expect(k8sClient.Status().Update(localCtx, mt)).To(Succeed())
+
+			state := imagestate.ImageState{"d1": {Source: "s1", State: "Mirrored", Origin: imagestate.OriginAdditional}}
+			cm := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: removedIS + "-images", Namespace: ns},
+				BinaryData: map[string][]byte{"images.json.gz": mustGzipJSON(state)},
+			}
+			Expect(k8sClient.Create(localCtx, cm)).To(Succeed())
+
+			result, err := r.Reconcile(localCtx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(reconcile.Result{RequeueAfter: 30 * time.Second}))
+
+			DeferCleanup(func() {
+				snapshotName := cleanupSnapshotCMName(mtName, removedIS)
+				_ = k8sClient.Delete(localCtx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: snapshotName, Namespace: ns}})
+				jobName := cleanupJobName(mtName, removedIS)
+				j := &batchv1.Job{}
+				if err := k8sClient.Get(localCtx, types.NamespacedName{Name: jobName, Namespace: ns}, j); err == nil {
+					prop := metav1.DeletePropagationBackground
+					_ = k8sClient.Delete(localCtx, j, &client.DeleteOptions{PropagationPolicy: &prop})
+				}
+			})
+		})
 	})
 
 	// ───────────────────── MirrorTarget Reconcile with ImageSets ─────────────────────
@@ -1841,6 +2805,71 @@ var _ = Describe("Coverage tests", func() {
 		})
 	})
 
+	// ───────────────────── aggregateImageSetStatus extra edge cases ─────────────────────
+
+	Describe("aggregateImageSetStatus extra edge cases", func() {
+		It("derives totals from the deduplicated per-ImageSet imagestate once any state exists", func() {
+			localCtx := context.Background()
+			mtName := "mt-aggregate-merged"
+			isName := "is-aggregate-merged"
+
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: mtName, Namespace: ns},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com", ImageSets: []string{isName}},
+			}
+
+			state := imagestate.ImageState{
+				"d1": {Source: "s1", State: "Mirrored", Origin: imagestate.OriginAdditional},
+				"d2": {Source: "s2", State: "Pending", Origin: imagestate.OriginAdditional},
+			}
+			cm := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: isName + "-images", Namespace: ns},
+				BinaryData: map[string][]byte{"images.json.gz": mustGzipJSON(state)},
+			}
+			Expect(k8sClient.Create(localCtx, cm)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, cm) })
+
+			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			Expect(r.aggregateImageSetStatus(localCtx, mt)).To(Succeed())
+
+			Expect(mt.Status.TotalImages).To(Equal(2))
+			Expect(mt.Status.MirroredImages).To(Equal(1))
+			Expect(mt.Status.PendingImages).To(Equal(1))
+		})
+
+		It("returns the underlying error when listing ImageSets fails", func() {
+			localCtx, cancel := context.WithCancel(context.Background())
+			cancel()
+
+			mt := &mirrorv1alpha1.MirrorTarget{ObjectMeta: metav1.ObjectMeta{Name: "mt-aggregate-listcancel", Namespace: ns}}
+			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			err := r.aggregateImageSetStatus(localCtx, mt)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("list ImageSets"))
+		})
+	})
+
+	// ───────────────────── reconcileExposure: unrecognized expose type ─────────────────────
+
+	Describe("reconcileExposure with an unrecognized expose type", func() {
+		It("returns nil without creating any exposure object", func() {
+			// This shape can only be constructed in-memory: the MirrorTarget CRD's
+			// spec.expose.type enum rejects any value outside the known set at
+			// admission, so this default branch is unreachable through the
+			// validated API and is exercised directly here instead.
+			localCtx := context.Background()
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: "mt-expose-unrecognized", Namespace: ns},
+				Spec: mirrorv1alpha1.MirrorTargetSpec{
+					Registry: "reg.example.com",
+					Expose:   &mirrorv1alpha1.ExposeConfig{Type: "SomethingElse"},
+				},
+			}
+			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			Expect(r.reconcileExposure(localCtx, mt)).To(Succeed())
+		})
+	})
+
 	// ───────────────────── MirrorTarget Reconcile - not found ─────────────────────
 
 	Describe("MirrorTarget Reconcile not found", func() {
@@ -1851,6 +2880,549 @@ var _ = Describe("Coverage tests", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(Equal(reconcile.Result{}))
+		})
+
+		It("returns the underlying error for a non-NotFound Get failure", func() {
+			mtName := "mt-getcancel-cov"
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: mtName, Namespace: ns},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com"},
+			}
+			Expect(k8sClient.Create(context.Background(), mt)).To(Succeed())
+			DeferCleanup(func() { cleanupMT(context.Background(), mtName) })
+
+			cancelledCtx, cancel := context.WithCancel(context.Background())
+			cancel()
+
+			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := r.Reconcile(cancelledCtx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: mtName, Namespace: ns},
+			})
+			Expect(err).To(HaveOccurred())
+		})
+	})
+
+	// ───────────────────── isPendingCleanup ─────────────────────
+
+	Describe("isPendingCleanup", func() {
+		It("returns false when the job is gone and no snapshot ConfigMap remains", func() {
+			localCtx := context.Background()
+			mt := &mirrorv1alpha1.MirrorTarget{ObjectMeta: metav1.ObjectMeta{Name: "mt-pc-absent", Namespace: ns}}
+			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			Expect(r.isPendingCleanup(localCtx, mt, "is-pc-absent")).To(BeFalse())
+		})
+
+		It("re-creates the job and returns true when the job is gone but the snapshot ConfigMap remains", func() {
+			localCtx := context.Background()
+			mtName := "mt-pc-resnap"
+			isName := "is-pc-resnap"
+
+			Expect(os.Setenv("OPERATOR_IMAGE", "test-operator:latest")).To(Succeed())
+			Expect(os.Setenv("MANAGER_IMAGE", "test-manager:latest")).To(Succeed())
+			Expect(os.Setenv("WORKER_IMAGE", "test-worker:latest")).To(Succeed())
+
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: mtName, Namespace: ns},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com"},
+			}
+			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
+			DeferCleanup(func() { cleanupMT(localCtx, mtName) })
+
+			snapshotName := cleanupSnapshotCMName(mtName, isName)
+			snapshotCM := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: snapshotName, Namespace: ns}}
+			Expect(k8sClient.Create(localCtx, snapshotCM)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, snapshotCM) })
+
+			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			Expect(r.isPendingCleanup(localCtx, mt, isName)).To(BeTrue())
+
+			jobName := cleanupJobName(mtName, isName)
+			job := &batchv1.Job{}
+			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: jobName, Namespace: ns}, job)).To(Succeed())
+			DeferCleanup(func() {
+				prop := metav1.DeletePropagationBackground
+				_ = k8sClient.Delete(localCtx, job, &client.DeleteOptions{PropagationPolicy: &prop})
+			})
+		})
+	})
+
+	// ───────────────────── partitionAndCreateCleanupJob ─────────────────────
+
+	Describe("partitionAndCreateCleanupJob", func() {
+		It("returns an error when the ImageSet's own state ConfigMap is corrupt", func() {
+			localCtx := context.Background()
+			mtName := "mt-partition-loaderr"
+			isName := "is-partition-loaderr"
+
+			mt := &mirrorv1alpha1.MirrorTarget{ObjectMeta: metav1.ObjectMeta{Name: mtName, Namespace: ns}}
+			corruptCM := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: isName + "-images", Namespace: ns},
+				BinaryData: map[string][]byte{"images.json.gz": []byte("not-a-gzip-stream")},
+			}
+			Expect(k8sClient.Create(localCtx, corruptCM)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, corruptCM) })
+
+			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := r.partitionAndCreateCleanupJob(localCtx, mt, isName)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("failed to load state for removed imageset"))
+		})
+
+		It("returns an error when the shared image index ConfigMap is corrupt", func() {
+			localCtx := context.Background()
+			mtName := "mt-partition-indexerr"
+			isName := "is-partition-indexerr"
+
+			mt := &mirrorv1alpha1.MirrorTarget{ObjectMeta: metav1.ObjectMeta{Name: mtName, Namespace: ns}}
+
+			state := imagestate.ImageState{"d1": {Source: "s1", State: "Mirrored", Origin: imagestate.OriginAdditional}}
+			isCM := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: isName + "-images", Namespace: ns},
+				BinaryData: map[string][]byte{"images.json.gz": mustGzipJSON(state)},
+			}
+			Expect(k8sClient.Create(localCtx, isCM)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, isCM) })
+
+			indexCM := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: mtName + "-images-index", Namespace: ns},
+				BinaryData: map[string][]byte{"index.json.gz": []byte("not-a-gzip-stream")},
+			}
+			Expect(k8sClient.Create(localCtx, indexCM)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, indexCM) })
+
+			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := r.partitionAndCreateCleanupJob(localCtx, mt, isName)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("failed to load shared image index"))
+		})
+
+		It("skips job creation and only updates the shared index when every image is shared with another ImageSet", func() {
+			localCtx := context.Background()
+			mtName := "mt-partition-allshared"
+			isName := "is-partition-allshared"
+			otherIS := "is-partition-allshared-other"
+
+			mt := &mirrorv1alpha1.MirrorTarget{ObjectMeta: metav1.ObjectMeta{Name: mtName, Namespace: ns}}
+
+			state := imagestate.ImageState{"d-shared": {Source: "s-shared", State: "Mirrored", Origin: imagestate.OriginAdditional}}
+			isCM := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: isName + "-images", Namespace: ns},
+				BinaryData: map[string][]byte{"images.json.gz": mustGzipJSON(state)},
+			}
+			Expect(k8sClient.Create(localCtx, isCM)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, isCM) })
+
+			idx := imagestate.SharedIndex{"d-shared": {isName, otherIS}}
+			Expect(imagestate.SaveIndex(localCtx, k8sClient, ns, mtName, idx, nil, nil)).To(Succeed())
+			DeferCleanup(func() {
+				_ = k8sClient.Delete(localCtx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: mtName + "-images-index", Namespace: ns}})
+			})
+
+			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			created, err := r.partitionAndCreateCleanupJob(localCtx, mt, isName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(created).To(BeFalse())
+
+			jobName := cleanupJobName(mtName, isName)
+			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: jobName, Namespace: ns}, &batchv1.Job{})).To(HaveOccurred())
+
+			gotIdx, err := imagestate.LoadIndex(localCtx, k8sClient, ns, mtName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(gotIdx.Names("d-shared")).NotTo(ContainElement(isName))
+
+			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: isName + "-images", Namespace: ns}, &corev1.ConfigMap{})).To(HaveOccurred())
+		})
+
+		It("creates a cleanup job for exclusive images while updating the shared index for shared images", func() {
+			localCtx := context.Background()
+			mtName := "mt-partition-mixed"
+			isName := "is-partition-mixed"
+			otherIS := "is-partition-mixed-other"
+
+			mt := &mirrorv1alpha1.MirrorTarget{ObjectMeta: metav1.ObjectMeta{Name: mtName, Namespace: ns}}
+			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
+			DeferCleanup(func() { cleanupMT(localCtx, mtName) })
+
+			state := imagestate.ImageState{
+				"d-exclusive": {Source: "s-exclusive", State: "Mirrored", Origin: imagestate.OriginAdditional},
+				"d-shared":    {Source: "s-shared", State: "Mirrored", Origin: imagestate.OriginAdditional},
+			}
+			isCM := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: isName + "-images", Namespace: ns},
+				BinaryData: map[string][]byte{"images.json.gz": mustGzipJSON(state)},
+			}
+			Expect(k8sClient.Create(localCtx, isCM)).To(Succeed())
+
+			idx := imagestate.SharedIndex{"d-shared": {isName, otherIS}}
+			Expect(imagestate.SaveIndex(localCtx, k8sClient, ns, mtName, idx, nil, nil)).To(Succeed())
+
+			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			created, err := r.partitionAndCreateCleanupJob(localCtx, mt, isName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(created).To(BeTrue())
+
+			jobName := cleanupJobName(mtName, isName)
+			job := &batchv1.Job{}
+			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: jobName, Namespace: ns}, job)).To(Succeed())
+			DeferCleanup(func() {
+				prop := metav1.DeletePropagationBackground
+				_ = k8sClient.Delete(localCtx, job, &client.DeleteOptions{PropagationPolicy: &prop})
+			})
+
+			snapshotName := cleanupSnapshotCMName(mtName, isName)
+			snapshotCM := &corev1.ConfigMap{}
+			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: snapshotName, Namespace: ns}, snapshotCM)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, snapshotCM) })
+
+			gotIdx, err := imagestate.LoadIndex(localCtx, k8sClient, ns, mtName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(gotIdx.Names("d-shared")).NotTo(ContainElement(isName))
+			DeferCleanup(func() {
+				_ = k8sClient.Delete(localCtx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: mtName + "-images-index", Namespace: ns}})
+			})
+
+			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: isName + "-images", Namespace: ns}, &corev1.ConfigMap{})).To(HaveOccurred())
+		})
+	})
+
+	// ───────────────────── reconcileCleanup: CleanupComplete transition ─────────────────────
+
+	Describe("reconcileCleanup CleanupComplete transition", func() {
+		It("flips Cleanup to True/CleanupComplete once no removals or pending cleanups remain", func() {
+			localCtx := context.Background()
+			mtName := "mt-cleanup-complete"
+
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: mtName, Namespace: ns},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com", ImageSets: []string{"is-still-present"}},
+			}
+			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
+			DeferCleanup(func() { cleanupMT(localCtx, mtName) })
+
+			mt.Status.KnownImageSets = []string{"is-still-present"}
+			mt.Status.Conditions = []metav1.Condition{
+				{Type: conditionTypeCleanup, Status: metav1.ConditionFalse, Reason: "CleanupInProgress",
+					Message: "still cleaning up", LastTransitionTime: metav1.Now()},
+			}
+
+			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			Expect(r.reconcileCleanup(localCtx, mt)).To(Succeed())
+
+			var found bool
+			for _, c := range mt.Status.Conditions {
+				if c.Type == conditionTypeCleanup && c.Status == metav1.ConditionTrue && c.Reason == "CleanupComplete" {
+					found = true
+				}
+			}
+			Expect(found).To(BeTrue(), "expected Cleanup=True/CleanupComplete once removals/pending cleanups clear")
+		})
+	})
+
+	// ───────────────────── reconcileRemovedImageSets: already-pending dedupe ─────────────────────
+
+	Describe("reconcileRemovedImageSets already-pending dedupe", func() {
+		It("does not re-attempt a cleanup job for an ImageSet already in PendingCleanup", func() {
+			localCtx := context.Background()
+			mtName := "mt-removed-alreadypending"
+			isName := "is-removed-alreadypending"
+
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      mtName,
+					Namespace: ns,
+					Annotations: map[string]string{
+						mirrorv1alpha1.CleanupPolicyAnnotation: mirrorv1alpha1.CleanupPolicyDelete,
+					},
+				},
+			}
+			mt.Status.PendingCleanup = []string{isName}
+
+			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			Expect(r.reconcileRemovedImageSets(localCtx, mt, []string{isName})).To(Succeed())
+
+			Expect(mt.Status.PendingCleanup).To(Equal([]string{isName}))
+			jobName := cleanupJobName(mtName, isName)
+			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: jobName, Namespace: ns}, &batchv1.Job{})).To(HaveOccurred())
+		})
+	})
+
+	// ───────────────────── reconcileOrphans: extra edge cases ─────────────────────
+
+	Describe("reconcileOrphans extra edge cases", func() {
+		It("is a no-op when an orphans cleanup is already pending", func() {
+			localCtx := context.Background()
+			mtName := "mt-orphans-alreadypending"
+
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      mtName,
+					Namespace: ns,
+					Annotations: map[string]string{
+						mirrorv1alpha1.CleanupPolicyAnnotation: mirrorv1alpha1.CleanupPolicyDelete,
+					},
+				},
+			}
+			mt.Status.PendingCleanup = []string{"orphans"}
+
+			orphans := imagestate.ImageState{"d-orphan": {Source: "s-orphan", State: "Mirrored", Origin: imagestate.OriginOperator}}
+			orphansCM := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: imagestate.OrphansConfigMapName(mtName), Namespace: ns},
+				BinaryData: map[string][]byte{"images.json.gz": mustGzipJSON(orphans)},
+			}
+			Expect(k8sClient.Create(localCtx, orphansCM)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, orphansCM) })
+
+			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			Expect(r.reconcileOrphans(localCtx, mt)).To(Succeed())
+
+			Expect(mt.Status.PendingCleanup).To(Equal([]string{"orphans"}))
+			// Left untouched — nothing was newly queued.
+			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: imagestate.OrphansConfigMapName(mtName), Namespace: ns}, &corev1.ConfigMap{})).To(Succeed())
+		})
+
+		It("logs and leaves the orphans ConfigMap in place when createCleanupJob fails", func() {
+			localCtx := context.Background()
+			mtName := "mt-orphans-createfail"
+
+			Expect(os.Setenv("OPERATOR_IMAGE", "test-operator:latest")).To(Succeed())
+			Expect(os.Setenv("MANAGER_IMAGE", "test-manager:latest")).To(Succeed())
+			Expect(os.Setenv("WORKER_IMAGE", "test-worker:latest")).To(Succeed())
+
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      mtName,
+					Namespace: ns,
+					Annotations: map[string]string{
+						mirrorv1alpha1.CleanupPolicyAnnotation: mirrorv1alpha1.CleanupPolicyDelete,
+					},
+				},
+			}
+			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
+			DeferCleanup(func() { cleanupMT(localCtx, mtName) })
+
+			orphans := imagestate.ImageState{"d-orphan": {Source: "s-orphan", State: "Mirrored", Origin: imagestate.OriginOperator}}
+			orphansCM := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: imagestate.OrphansConfigMapName(mtName), Namespace: ns},
+				BinaryData: map[string][]byte{"images.json.gz": mustGzipJSON(orphans)},
+			}
+			Expect(k8sClient.Create(localCtx, orphansCM)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, orphansCM) })
+
+			// Pre-create a terminal (succeeded) cleanup job under the "orphans" name so
+			// createCleanupJob takes its "delete stale job, error out to retry" branch.
+			jobName := cleanupJobName(mtName, "orphans")
+			job := &batchv1.Job{
+				ObjectMeta: metav1.ObjectMeta{Name: jobName, Namespace: ns},
+				Spec: batchv1.JobSpec{
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers:    []corev1.Container{{Name: "cleanup", Image: "busybox"}},
+							RestartPolicy: corev1.RestartPolicyNever,
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(localCtx, job)).To(Succeed())
+			job.Status.Succeeded = 1
+			Expect(k8sClient.Status().Update(localCtx, job)).To(Succeed())
+
+			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			Expect(r.reconcileOrphans(localCtx, mt)).To(Succeed())
+
+			Expect(mt.Status.PendingCleanup).NotTo(ContainElement("orphans"))
+			snapshotName := cleanupSnapshotCMName(mtName, "orphans")
+			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: snapshotName, Namespace: ns}, &corev1.ConfigMap{})).To(HaveOccurred())
+			// The source orphans ConfigMap is left in place for a retry on the next reconcile.
+			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: imagestate.OrphansConfigMapName(mtName), Namespace: ns}, &corev1.ConfigMap{})).To(Succeed())
+		})
+	})
+
+	// ───────────────────── ensureRoute / hasRouteAPI / ensureHTTPRoute / hasGatewayAPI (fake RESTMapper) ─────────────────────
+	//
+	// envtest's API server does not have the OpenShift Route or Gateway API CRDs
+	// installed (see suite_test.go), so the CRD-discovery ("does this API exist?")
+	// branches of hasRouteAPI/hasGatewayAPI can only ever observe "unavailable"
+	// there — see the "false" tests earlier in this file. To exercise the actual
+	// happy paths (CRD present, object created/updated), these tests use a fake
+	// client seeded with a RESTMapper that knows about the Route/HTTPRoute GVK,
+	// mirroring the technique controller-runtime's own fake client is built for.
+	Describe("ensureRoute and ensureHTTPRoute happy paths (fake RESTMapper)", func() {
+		var fakeScheme *runtime.Scheme
+
+		BeforeEach(func() {
+			fakeScheme = runtime.NewScheme()
+			Expect(mirrorv1alpha1.AddToScheme(fakeScheme)).To(Succeed())
+			Expect(corev1.AddToScheme(fakeScheme)).To(Succeed())
+		})
+
+		It("hasRouteAPI reports true and ensureRoute creates a Route with the given host", func() {
+			routeGVK := schema.GroupVersionKind{Group: "route.openshift.io", Version: "v1", Kind: "Route"}
+			rm := apimeta.NewDefaultRESTMapper([]schema.GroupVersion{routeGVK.GroupVersion()})
+			rm.Add(routeGVK, apimeta.RESTScopeNamespace)
+			c := fake.NewClientBuilder().WithScheme(fakeScheme).WithRESTMapper(rm).Build()
+
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: "mt-fakeroute", Namespace: ns},
+				Spec: mirrorv1alpha1.MirrorTargetSpec{
+					Registry: "reg.example.com",
+					Expose:   &mirrorv1alpha1.ExposeConfig{Type: mirrorv1alpha1.ExposeTypeRoute, Host: "custom.example.com"},
+				},
+			}
+			Expect(c.Create(context.Background(), mt)).To(Succeed())
+
+			r := &MirrorTargetReconciler{Client: c, Scheme: fakeScheme}
+			bgCtx := context.Background()
+			Expect(r.hasRouteAPI(bgCtx)).To(BeTrue())
+
+			svcName := "mt-fakeroute-resources"
+			Expect(r.ensureRoute(bgCtx, mt, svcName)).To(Succeed())
+			// Idempotent update path.
+			Expect(r.ensureRoute(bgCtx, mt, svcName)).To(Succeed())
+
+			route := &unstructured.Unstructured{}
+			route.SetGroupVersionKind(routeGVK)
+			Expect(c.Get(bgCtx, client.ObjectKey{Name: svcName, Namespace: ns}, route)).To(Succeed())
+
+			to, found, err := unstructured.NestedString(route.Object, "spec", "to", "name")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(to).To(Equal(svcName))
+
+			host, found, err := unstructured.NestedString(route.Object, "spec", "host")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(host).To(Equal("custom.example.com"))
+
+			Expect(route.GetOwnerReferences()).To(HaveLen(1))
+		})
+
+		It("ensureRoute omits spec.host when no host is configured", func() {
+			routeGVK := schema.GroupVersionKind{Group: "route.openshift.io", Version: "v1", Kind: "Route"}
+			rm := apimeta.NewDefaultRESTMapper([]schema.GroupVersion{routeGVK.GroupVersion()})
+			rm.Add(routeGVK, apimeta.RESTScopeNamespace)
+			c := fake.NewClientBuilder().WithScheme(fakeScheme).WithRESTMapper(rm).Build()
+
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: "mt-fakeroute-nohost", Namespace: ns},
+				Spec: mirrorv1alpha1.MirrorTargetSpec{
+					Registry: "reg.example.com",
+					Expose:   &mirrorv1alpha1.ExposeConfig{Type: mirrorv1alpha1.ExposeTypeRoute},
+				},
+			}
+			Expect(c.Create(context.Background(), mt)).To(Succeed())
+
+			r := &MirrorTargetReconciler{Client: c, Scheme: fakeScheme}
+			bgCtx := context.Background()
+			svcName := "mt-fakeroute-nohost-resources"
+			Expect(r.ensureRoute(bgCtx, mt, svcName)).To(Succeed())
+
+			route := &unstructured.Unstructured{}
+			route.SetGroupVersionKind(routeGVK)
+			Expect(c.Get(bgCtx, client.ObjectKey{Name: svcName, Namespace: ns}, route)).To(Succeed())
+			_, found, err := unstructured.NestedString(route.Object, "spec", "host")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeFalse())
+		})
+
+		It("reconcileExposure auto-detects Route when no expose type is set and the Route API is available", func() {
+			routeGVK := schema.GroupVersionKind{Group: "route.openshift.io", Version: "v1", Kind: "Route"}
+			rm := apimeta.NewDefaultRESTMapper([]schema.GroupVersion{routeGVK.GroupVersion()})
+			rm.Add(routeGVK, apimeta.RESTScopeNamespace)
+			c := fake.NewClientBuilder().WithScheme(fakeScheme).WithRESTMapper(rm).Build()
+
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: "mt-fakeroute-auto", Namespace: ns},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com"},
+			}
+			Expect(c.Create(context.Background(), mt)).To(Succeed())
+
+			r := &MirrorTargetReconciler{Client: c, Scheme: fakeScheme}
+			bgCtx := context.Background()
+			Expect(r.reconcileExposure(bgCtx, mt)).To(Succeed())
+
+			route := &unstructured.Unstructured{}
+			route.SetGroupVersionKind(routeGVK)
+			Expect(c.Get(bgCtx, client.ObjectKey{Name: "mt-fakeroute-auto-resources", Namespace: ns}, route)).To(Succeed())
+		})
+
+		It("hasGatewayAPI reports true and ensureHTTPRoute creates an HTTPRoute attached to the referenced Gateway", func() {
+			httpRouteGVK := schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1", Kind: "HTTPRoute"}
+			rm := apimeta.NewDefaultRESTMapper([]schema.GroupVersion{httpRouteGVK.GroupVersion()})
+			rm.Add(httpRouteGVK, apimeta.RESTScopeNamespace)
+			c := fake.NewClientBuilder().WithScheme(fakeScheme).WithRESTMapper(rm).Build()
+
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: "mt-fakehttproute", Namespace: ns},
+				Spec: mirrorv1alpha1.MirrorTargetSpec{
+					Registry: "reg.example.com",
+					Expose: &mirrorv1alpha1.ExposeConfig{
+						Type:       mirrorv1alpha1.ExposeTypeGatewayAPI,
+						Host:       "resources.example.com",
+						GatewayRef: &mirrorv1alpha1.GatewayReference{Name: "my-gateway", Namespace: "gw-ns"},
+					},
+				},
+			}
+			Expect(c.Create(context.Background(), mt)).To(Succeed())
+
+			r := &MirrorTargetReconciler{Client: c, Scheme: fakeScheme}
+			bgCtx := context.Background()
+			Expect(r.hasGatewayAPI(bgCtx)).To(BeTrue())
+
+			svcName := "mt-fakehttproute-resources"
+			Expect(r.ensureHTTPRoute(bgCtx, mt, svcName)).To(Succeed())
+			// Idempotent update path.
+			Expect(r.ensureHTTPRoute(bgCtx, mt, svcName)).To(Succeed())
+
+			hr := &unstructured.Unstructured{}
+			hr.SetGroupVersionKind(httpRouteGVK)
+			Expect(c.Get(bgCtx, client.ObjectKey{Name: svcName, Namespace: ns}, hr)).To(Succeed())
+
+			parentRefs, found, err := unstructured.NestedSlice(hr.Object, "spec", "parentRefs")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(parentRefs).To(HaveLen(1))
+			parentRef, ok := parentRefs[0].(map[string]interface{})
+			Expect(ok).To(BeTrue())
+			Expect(parentRef["name"]).To(Equal("my-gateway"))
+			Expect(parentRef["namespace"]).To(Equal("gw-ns"))
+
+			hostnames, found, err := unstructured.NestedStringSlice(hr.Object, "spec", "hostnames")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(hostnames).To(ConsistOf("resources.example.com"))
+		})
+
+		It("ensureHTTPRoute omits the Gateway namespace field when gatewayRef.namespace is unset", func() {
+			httpRouteGVK := schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1", Kind: "HTTPRoute"}
+			rm := apimeta.NewDefaultRESTMapper([]schema.GroupVersion{httpRouteGVK.GroupVersion()})
+			rm.Add(httpRouteGVK, apimeta.RESTScopeNamespace)
+			c := fake.NewClientBuilder().WithScheme(fakeScheme).WithRESTMapper(rm).Build()
+
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: "mt-fakehttproute-samens", Namespace: ns},
+				Spec: mirrorv1alpha1.MirrorTargetSpec{
+					Registry: "reg.example.com",
+					Expose: &mirrorv1alpha1.ExposeConfig{
+						Type:       mirrorv1alpha1.ExposeTypeGatewayAPI,
+						GatewayRef: &mirrorv1alpha1.GatewayReference{Name: "same-ns-gateway"},
+					},
+				},
+			}
+			Expect(c.Create(context.Background(), mt)).To(Succeed())
+
+			r := &MirrorTargetReconciler{Client: c, Scheme: fakeScheme}
+			bgCtx := context.Background()
+			svcName := "mt-fakehttproute-samens-resources"
+			Expect(r.ensureHTTPRoute(bgCtx, mt, svcName)).To(Succeed())
+
+			hr := &unstructured.Unstructured{}
+			hr.SetGroupVersionKind(httpRouteGVK)
+			Expect(c.Get(bgCtx, client.ObjectKey{Name: svcName, Namespace: ns}, hr)).To(Succeed())
+
+			parentRefs, _, _ := unstructured.NestedSlice(hr.Object, "spec", "parentRefs")
+			parentRef, ok := parentRefs[0].(map[string]interface{})
+			Expect(ok).To(BeTrue())
+			Expect(parentRef).NotTo(HaveKey("namespace"))
 		})
 	})
 })

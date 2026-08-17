@@ -22,9 +22,13 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
@@ -126,6 +130,47 @@ var _ = Describe("Monitoring Controller", func() {
 				Name:      dashboardConfigMapName,
 				Namespace: dashboardConfigMapNamespace,
 			}, cm)).To(Succeed())
+		})
+	})
+
+	// envtest's real API server (used elsewhere in this package) has no
+	// prometheus-operator CRDs installed, and the fake client's default
+	// RESTMapper (used by the Context above) knows nothing about ServiceMonitor
+	// either — so Reconcile's CRD-gate always takes the "unavailable" branch in
+	// both. This uses a fake client seeded with a RESTMapper that knows about
+	// the ServiceMonitor GVK to exercise the actual happy path.
+	Context("Reconcile with the ServiceMonitor CRD available (fake RESTMapper)", func() {
+		It("creates both ServiceMonitors and the PrometheusRule", func() {
+			scheme := runtime.NewScheme()
+			_ = corev1.AddToScheme(scheme)
+
+			rm := apimeta.NewDefaultRESTMapper([]schema.GroupVersion{serviceMonitorGVK.GroupVersion()})
+			rm.Add(serviceMonitorGVK, apimeta.RESTScopeNamespace)
+			rm.Add(prometheusRuleGVK, apimeta.RESTScopeNamespace)
+
+			fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithRESTMapper(rm).Build()
+			fr := &MonitoringReconciler{Client: fakeClient, Scheme: scheme, Namespace: testNS}
+
+			req := reconcile.Request{NamespacedName: types.NamespacedName{Name: testNS}}
+			result, err := fr.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(monitoringReconcileInterval))
+
+			sm := &unstructured.Unstructured{}
+			sm.SetGroupVersionKind(serviceMonitorGVK)
+			Expect(fakeClient.Get(ctx, client.ObjectKey{Name: controllerServiceMonitorName, Namespace: testNS}, sm)).To(Succeed())
+
+			sm2 := &unstructured.Unstructured{}
+			sm2.SetGroupVersionKind(serviceMonitorGVK)
+			Expect(fakeClient.Get(ctx, client.ObjectKey{Name: managerServiceMonitorName, Namespace: testNS}, sm2)).To(Succeed())
+
+			pr := &unstructured.Unstructured{}
+			pr.SetGroupVersionKind(prometheusRuleGVK)
+			Expect(fakeClient.Get(ctx, client.ObjectKey{Name: prometheusRuleName, Namespace: testNS}, pr)).To(Succeed())
+
+			// Second reconcile is idempotent.
+			_, err = fr.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
 		})
 	})
 
