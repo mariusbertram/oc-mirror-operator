@@ -246,6 +246,18 @@ func fakeCosignSignatureServer(t *testing.T, imageDigest string) string {
 				}
 			}
 			http.NotFound(w, r)
+		case strings.Contains(path, "/manifests/"):
+			// Any other manifest tag (e.g. the image's own tag, as opposed to
+			// its .sig tag) is reported as present, letting callers that need
+			// both "the image exists" (CheckExist) and "its signature
+			// verifies" (HasValidSignature) share a single fake server.
+			// ManifestHead needs a media type and digest header to parse a
+			// HEAD response at all — without them regclient errors, and
+			// CheckExist's HTTP-then-HTTPS fallback masks that as a
+			// "server gave HTTP response to HTTPS client" TLS error instead.
+			w.Header().Set("Content-Type", "application/vnd.oci.image.manifest.v1+json")
+			w.Header().Set("Docker-Content-Digest", imageDigest)
+			w.WriteHeader(http.StatusOK)
 		default:
 			http.NotFound(w, r)
 		}
