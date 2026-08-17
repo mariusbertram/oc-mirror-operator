@@ -35,6 +35,15 @@ import (
 
 const mirrorTargetFinalizer = "mirror.openshift.io/cleanup"
 
+// conditionTypeCleanup is the condition type used to surface registry
+// cleanup progress (removed ImageSets, orphaned images) on the MirrorTarget.
+const conditionTypeCleanup = "Cleanup"
+
+// reasonReconcileError is the condition reason used whenever a sub-reconciler
+// (RBAC, network policies, resource API, or the manager Deployment/Service
+// CreateOrUpdate calls) fails during Reconcile.
+const reasonReconcileError = "ReconcileError"
+
 // MirrorTargetReconciler reconciles a MirrorTarget object
 type MirrorTargetReconciler struct {
 	client.Client
@@ -106,7 +115,7 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// Detect removed ImageSets and create cleanup Jobs if cleanup policy is set.
 	if err := r.reconcileCleanup(ctx, mt); err != nil {
 		l.Error(err, "Failed to reconcile cleanup")
-		setCondition(&mt.Status.Conditions, "Cleanup", metav1.ConditionFalse, "CleanupError", err.Error(), mt.Generation)
+		setCondition(&mt.Status.Conditions, conditionTypeCleanup, metav1.ConditionFalse, "CleanupError", err.Error(), mt.Generation)
 		_ = r.Status().Update(ctx, mt)
 		// Return error so we retry and don't advance KnownImageSets prematurely.
 		return ctrl.Result{}, err
@@ -116,7 +125,7 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// The manager deployment runs as coordinator and needs permissions to manage ImageSet status and worker pods.
 	if err := r.ensureCoordinatorRBAC(ctx, mt); err != nil {
 		l.Error(err, "Failed to ensure coordinator RBAC")
-		setCondition(&mt.Status.Conditions, conditionTypeReady, metav1.ConditionFalse, "ReconcileError", err.Error(), mt.Generation)
+		setCondition(&mt.Status.Conditions, conditionTypeReady, metav1.ConditionFalse, reasonReconcileError, err.Error(), mt.Generation)
 		_ = r.Status().Update(ctx, mt)
 		return ctrl.Result{}, err
 	}
@@ -127,7 +136,7 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// stricter policies if needed.
 	if err := r.ensureNetworkPolicies(ctx, mt); err != nil {
 		l.Error(err, "Failed to ensure network policies")
-		setCondition(&mt.Status.Conditions, conditionTypeReady, metav1.ConditionFalse, "ReconcileError", err.Error(), mt.Generation)
+		setCondition(&mt.Status.Conditions, conditionTypeReady, metav1.ConditionFalse, reasonReconcileError, err.Error(), mt.Generation)
 		_ = r.Status().Update(ctx, mt)
 		return ctrl.Result{}, err
 	}
@@ -135,7 +144,7 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// Ensure global Resource API Deployment and Service (Phase 7d)
 	if err := r.ensureResourceAPI(ctx, mt); err != nil {
 		l.Error(err, "Failed to ensure Resource API")
-		setCondition(&mt.Status.Conditions, conditionTypeReady, metav1.ConditionFalse, "ReconcileError", err.Error(), mt.Generation)
+		setCondition(&mt.Status.Conditions, conditionTypeReady, metav1.ConditionFalse, reasonReconcileError, err.Error(), mt.Generation)
 		_ = r.Status().Update(ctx, mt)
 		return ctrl.Result{}, err
 	}
@@ -216,7 +225,7 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	})
 	if err != nil {
 		l.Error(err, "Failed to create or update manager deployment")
-		setCondition(&mt.Status.Conditions, conditionTypeReady, metav1.ConditionFalse, "ReconcileError", err.Error(), mt.Generation)
+		setCondition(&mt.Status.Conditions, conditionTypeReady, metav1.ConditionFalse, reasonReconcileError, err.Error(), mt.Generation)
 		_ = r.Status().Update(ctx, mt)
 		return ctrl.Result{}, err
 	}
@@ -261,7 +270,7 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	})
 	if err != nil {
 		l.Error(err, "Failed to create or update manager service")
-		setCondition(&mt.Status.Conditions, conditionTypeReady, metav1.ConditionFalse, "ReconcileError", err.Error(), mt.Generation)
+		setCondition(&mt.Status.Conditions, conditionTypeReady, metav1.ConditionFalse, reasonReconcileError, err.Error(), mt.Generation)
 		_ = r.Status().Update(ctx, mt)
 		return ctrl.Result{}, err
 	}
@@ -297,7 +306,7 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	})
 	if err != nil {
 		l.Error(err, "Failed to create or update resources service")
-		setCondition(&mt.Status.Conditions, conditionTypeReady, metav1.ConditionFalse, "ReconcileError", err.Error(), mt.Generation)
+		setCondition(&mt.Status.Conditions, conditionTypeReady, metav1.ConditionFalse, reasonReconcileError, err.Error(), mt.Generation)
 		_ = r.Status().Update(ctx, mt)
 		return ctrl.Result{}, err
 	}
@@ -690,13 +699,13 @@ func (r *MirrorTargetReconciler) reconcileCleanup(ctx context.Context, mt *mirro
 	}
 
 	if len(mt.Status.PendingCleanup) > 0 {
-		setCondition(&mt.Status.Conditions, "Cleanup", metav1.ConditionFalse, "CleanupInProgress",
+		setCondition(&mt.Status.Conditions, conditionTypeCleanup, metav1.ConditionFalse, "CleanupInProgress",
 			fmt.Sprintf("Cleaning up images for: %s", strings.Join(mt.Status.PendingCleanup, ", ")), mt.Generation)
 	} else if len(removed) == 0 {
 		// No new removals and nothing pending — update condition if pending cleanups just finished.
 		for _, c := range mt.Status.Conditions {
-			if c.Type == "Cleanup" && c.Reason == "CleanupInProgress" {
-				setCondition(&mt.Status.Conditions, "Cleanup", metav1.ConditionTrue, "CleanupComplete", "No pending cleanups", mt.Generation)
+			if c.Type == conditionTypeCleanup && c.Reason == "CleanupInProgress" {
+				setCondition(&mt.Status.Conditions, conditionTypeCleanup, metav1.ConditionTrue, "CleanupComplete", "No pending cleanups", mt.Generation)
 				break
 			}
 		}

@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"time"
 
@@ -168,6 +169,278 @@ var _ = Describe("MirrorExport Controller", func() {
 			reconciler := newMirrorExportReconciler()
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: "does-not-exist", Namespace: "default"}})
 			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Context("When the Get fails with a non-NotFound error", func() {
+		const exportName = "me-getcancel"
+		ctx := context.Background()
+
+		BeforeEach(func() {
+			me := &mirrorv1alpha1.MirrorExport{
+				ObjectMeta: metav1.ObjectMeta{Name: exportName, Namespace: "default"},
+				Spec: mirrorv1alpha1.MirrorExportSpec{
+					Destination: mirrorv1alpha1.MirrorExportDestination{Registry: "registry.example.com/mirror"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, me)).To(Succeed())
+		})
+
+		AfterEach(func() {
+			deleteMirrorExportAndDerived(ctx, exportName)
+		})
+
+		It("returns the underlying error", func() {
+			reconciler := newMirrorExportReconciler()
+			cancelledCtx, cancel := context.WithCancel(ctx)
+			cancel()
+			_, err := reconciler.Reconcile(cancelledCtx, reconcile.Request{NamespacedName: types.NamespacedName{Name: exportName, Namespace: "default"}})
+			Expect(err).To(HaveOccurred())
+		})
+	})
+
+	Context("When the spec changes after a Job already exists", func() {
+		const exportName = "me-sigchange"
+		ctx := context.Background()
+		namespacedName := types.NamespacedName{Name: exportName, Namespace: "default"}
+
+		BeforeEach(func() {
+			me := &mirrorv1alpha1.MirrorExport{
+				ObjectMeta: metav1.ObjectMeta{Name: exportName, Namespace: "default"},
+				Spec: mirrorv1alpha1.MirrorExportSpec{
+					Mirror: mirrorv1alpha1.Mirror{
+						AdditionalImages: []mirrorv1alpha1.AdditionalImage{{Name: "quay.io/foo/bar:v1"}},
+					},
+					Destination: mirrorv1alpha1.MirrorExportDestination{Registry: "registry.example.com/mirror"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, me)).To(Succeed())
+		})
+
+		AfterEach(func() {
+			deleteMirrorExportAndDerived(ctx, exportName)
+		})
+
+		It("deletes the stale Job and recreates it under the new signature", func() {
+			reconciler := newMirrorExportReconciler()
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			me := &mirrorv1alpha1.MirrorExport{}
+			Expect(k8sClient.Get(ctx, namespacedName, me)).To(Succeed())
+			me.Status.LastRenderedSignature = "a-stale-signature-that-will-never-match"
+			Expect(k8sClient.Status().Update(ctx, me)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			// The Job still exists (recreated under the same deterministic name).
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: exportbuilder.JobName(exportName), Namespace: "default"}, &batchv1.Job{})).To(Succeed())
+		})
+	})
+
+	Context("When the Job was TTL-cleaned but the current spec was already rendered", func() {
+		const exportName = "me-ttlcleaned"
+		ctx := context.Background()
+		namespacedName := types.NamespacedName{Name: exportName, Namespace: "default"}
+
+		BeforeEach(func() {
+			me := &mirrorv1alpha1.MirrorExport{
+				ObjectMeta: metav1.ObjectMeta{Name: exportName, Namespace: "default"},
+				Spec: mirrorv1alpha1.MirrorExportSpec{
+					Destination: mirrorv1alpha1.MirrorExportDestination{Registry: "registry.example.com/mirror"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, me)).To(Succeed())
+		})
+
+		AfterEach(func() {
+			deleteMirrorExportAndDerived(ctx, exportName)
+		})
+
+		It("returns without recreating a Job", func() {
+			reconciler := newMirrorExportReconciler()
+
+			me := &mirrorv1alpha1.MirrorExport{}
+			Expect(k8sClient.Get(ctx, namespacedName, me)).To(Succeed())
+			mirrorSpecJSON, err := json.Marshal(me.Spec.Mirror)
+			Expect(err).NotTo(HaveOccurred())
+			sig := exportbuilder.Signature(me, string(mirrorSpecJSON))
+			me.Status.LastRenderedSignature = sig
+			me.Status.ArtifactsConfigMap = ArtifactsConfigMapName(exportName)
+			Expect(k8sClient.Status().Update(ctx, me)).To(Succeed())
+
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(reconcile.Result{}))
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: exportbuilder.JobName(exportName), Namespace: "default"}, &batchv1.Job{})).To(HaveOccurred())
+		})
+	})
+
+	Context("When the export build Job fails", func() {
+		const exportName = "me-jobfailed"
+		ctx := context.Background()
+		namespacedName := types.NamespacedName{Name: exportName, Namespace: "default"}
+
+		BeforeEach(func() {
+			me := &mirrorv1alpha1.MirrorExport{
+				ObjectMeta: metav1.ObjectMeta{Name: exportName, Namespace: "default"},
+				Spec: mirrorv1alpha1.MirrorExportSpec{
+					Destination: mirrorv1alpha1.MirrorExportDestination{Registry: "registry.example.com/mirror"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, me)).To(Succeed())
+		})
+
+		AfterEach(func() {
+			deleteMirrorExportAndDerived(ctx, exportName)
+		})
+
+		It("marks Ready=False with ExportBuildFailed", func() {
+			reconciler := newMirrorExportReconciler()
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			job := &batchv1.Job{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: exportbuilder.JobName(exportName), Namespace: "default"}, job)).To(Succeed())
+			job.Status.Failed = 1
+			Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			me := &mirrorv1alpha1.MirrorExport{}
+			Eventually(func() bool {
+				if err := k8sClient.Get(ctx, namespacedName, me); err != nil {
+					return false
+				}
+				for _, c := range me.Status.Conditions {
+					if c.Type == conditionTypeReady && c.Status == metav1.ConditionFalse && c.Reason == "ExportBuildFailed" {
+						return true
+					}
+				}
+				return false
+			}, meTimeout, meInterval).Should(BeTrue())
+		})
+	})
+
+	Context("recordSuccess", func() {
+		It("returns an error when the artifacts ConfigMap cannot be read", func() {
+			me := &mirrorv1alpha1.MirrorExport{
+				ObjectMeta: metav1.ObjectMeta{Name: "me-recordsuccess-noconfigmap", Namespace: "default"},
+			}
+			reconciler := newMirrorExportReconciler()
+			err := reconciler.recordSuccess(context.Background(), me, "nonexistent-artifacts-cm", "some-sig")
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("failed to read artifacts ConfigMap"))
+		})
+	})
+
+	Context("When ensureExportRBAC fails during Reconcile", func() {
+		const exportName = "me-reconcile-rbacerr"
+		ctx := context.Background()
+		namespacedName := types.NamespacedName{Name: exportName, Namespace: "default"}
+
+		BeforeEach(func() {
+			me := &mirrorv1alpha1.MirrorExport{
+				ObjectMeta: metav1.ObjectMeta{Name: exportName, Namespace: "default"},
+				Spec: mirrorv1alpha1.MirrorExportSpec{
+					Destination: mirrorv1alpha1.MirrorExportDestination{Registry: "registry.example.com/mirror"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, me)).To(Succeed())
+
+			saName := exportServiceAccountName(exportName)
+			conflictingOwner := &mirrorv1alpha1.MirrorExport{
+				ObjectMeta: metav1.ObjectMeta{Name: exportName + "-other-owner", Namespace: "default"},
+				Spec: mirrorv1alpha1.MirrorExportSpec{
+					Destination: mirrorv1alpha1.MirrorExportDestination{Registry: "registry.example.com/mirror"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, conflictingOwner)).To(Succeed())
+
+			sa := &corev1.ServiceAccount{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      saName,
+					Namespace: "default",
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							APIVersion: "mirror.openshift.io/v1alpha1",
+							Kind:       "MirrorExport",
+							Name:       conflictingOwner.Name,
+							UID:        conflictingOwner.UID,
+							Controller: pointerTo(true),
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, sa)).To(Succeed())
+		})
+
+		AfterEach(func() {
+			deleteMirrorExportAndDerived(ctx, exportName)
+			_ = k8sClient.Delete(ctx, &mirrorv1alpha1.MirrorExport{ObjectMeta: metav1.ObjectMeta{Name: exportName + "-other-owner", Namespace: "default"}})
+		})
+
+		It("marks Ready=False with RBACFailed and returns without error (status update reports the failure)", func() {
+			reconciler := newMirrorExportReconciler()
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			me := &mirrorv1alpha1.MirrorExport{}
+			Eventually(func() bool {
+				if err := k8sClient.Get(ctx, namespacedName, me); err != nil {
+					return false
+				}
+				for _, c := range me.Status.Conditions {
+					if c.Type == conditionTypeReady && c.Status == metav1.ConditionFalse && c.Reason == "RBACFailed" {
+						return true
+					}
+				}
+				return false
+			}, meTimeout, meInterval).Should(BeTrue())
+		})
+	})
+
+	Context("ensureExportRBAC", func() {
+		It("wraps the error when the ServiceAccount is already owned by a different controller", func() {
+			const exportName = "me-sa-conflict"
+			localCtx := context.Background()
+			me := &mirrorv1alpha1.MirrorExport{
+				ObjectMeta: metav1.ObjectMeta{Name: exportName, Namespace: "default"},
+			}
+			Expect(k8sClient.Create(localCtx, me)).To(Succeed())
+			DeferCleanup(func() { deleteMirrorExportAndDerived(localCtx, exportName) })
+
+			saName := exportServiceAccountName(exportName)
+			conflictingOwner := &mirrorv1alpha1.MirrorExport{
+				ObjectMeta: metav1.ObjectMeta{Name: "me-sa-conflict-other", Namespace: "default"},
+			}
+			Expect(k8sClient.Create(localCtx, conflictingOwner)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, conflictingOwner) })
+
+			sa := &corev1.ServiceAccount{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      saName,
+					Namespace: "default",
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							APIVersion: "mirror.openshift.io/v1alpha1",
+							Kind:       "MirrorExport",
+							Name:       conflictingOwner.Name,
+							UID:        conflictingOwner.UID,
+							Controller: pointerTo(true),
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(localCtx, sa)).To(Succeed())
+
+			reconciler := newMirrorExportReconciler()
+			err := reconciler.ensureExportRBAC(localCtx, me, saName, ArtifactsConfigMapName(exportName))
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("failed to create export ServiceAccount"))
 		})
 	})
 })
