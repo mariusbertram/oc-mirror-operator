@@ -331,6 +331,56 @@ entries:
 			Expect(results).NotTo(BeEmpty())
 			Expect(results[0].Destination).To(Equal("internal.registry.io/openshift/release-images:4.21.11-x86_64"))
 		})
+
+		It("extracts component images from a real payload manifest", func() {
+			image := pushReleasePayload(GinkgoTB(), false)
+			payloadNodes := []release.Node{{Version: "4.21.9", Image: image}}
+			rel := mirrorv1alpha1.ReleaseChannel{Name: "stable-4.21"}
+
+			results, err := col.CollectReleasesForChannel(context.TODO(), spec, target, rel, payloadNodes)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(2)) // payload + 1 component
+
+			var component *TargetImage
+			for i := range results {
+				if results[i].Source == "quay.io/openshift-release-dev/ocp-v4.0-art-dev@sha256:aaa" {
+					component = &results[i]
+				}
+			}
+			Expect(component).NotTo(BeNil())
+			Expect(component.Destination).To(Equal("internal.registry.io/openshift/release:4.21.9-x86_64-component-a"))
+		})
+
+		It("extracts KubeVirt container-disk images when enabled and present", func() {
+			image := pushReleasePayload(GinkgoTB(), true)
+			payloadNodes := []release.Node{{Version: "4.21.9", Image: image}}
+			rel := mirrorv1alpha1.ReleaseChannel{Name: "stable-4.21"}
+			spec.Mirror.Platform.KubeVirtContainer = true
+
+			results, err := col.CollectReleasesForChannel(context.TODO(), spec, target, rel, payloadNodes)
+			Expect(err).NotTo(HaveOccurred())
+
+			var kv *TargetImage
+			for i := range results {
+				if results[i].Source == "quay.io/example/coreos@sha256:abc123" {
+					kv = &results[i]
+				}
+			}
+			Expect(kv).NotTo(BeNil())
+			Expect(kv.Destination).To(Equal("internal.registry.io/openshift/release:4.21.9-x86_64-kube-virt-container"))
+		})
+
+		It("logs and continues when KubeVirt extraction fails but component extraction succeeds", func() {
+			image := pushReleasePayload(GinkgoTB(), false) // no kubevirt boot-images layer present
+			payloadNodes := []release.Node{{Version: "4.21.9", Image: image}}
+			rel := mirrorv1alpha1.ReleaseChannel{Name: "stable-4.21"}
+			spec.Mirror.Platform.KubeVirtContainer = true
+
+			results, err := col.CollectReleasesForChannel(context.TODO(), spec, target, rel, payloadNodes)
+			Expect(err).NotTo(HaveOccurred())
+			// payload + component-a only; no kubevirt image since extraction failed.
+			Expect(results).To(HaveLen(2))
+		})
 	})
 
 	Describe("ImageNamePath", func() {
