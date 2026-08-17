@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror"
+	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/catalog"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/imagestate"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/release"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/resources"
@@ -24,6 +26,7 @@ import (
 	k8sfake "k8s.io/client-go/kubernetes/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 var _ = Describe("Manager Coverage", func() {
@@ -2689,6 +2692,34 @@ var _ = Describe("Manager Coverage", func() {
 			}, cm)).To(Succeed())
 			Expect(cm.Labels).To(HaveKeyWithValue("oc-mirror.openshift.io/mirrortarget", "test"))
 		})
+
+		It("sets an owner reference on both create and update when the MirrorTarget has a UID", func() {
+			mt := &mirrorv1alpha1.MirrorTarget{ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default", UID: "test-uid"}}
+			Expect(m.Client.Create(context.TODO(), mt)).To(Succeed())
+
+			Expect(m.writeCatalogPackagesCM(context.TODO(), "owner-slug", info, cfg, false)).To(Succeed())
+			cm := &corev1.ConfigMap{}
+			Expect(m.Client.Get(context.TODO(), client.ObjectKey{Name: "oc-mirror-test-owner-slug-packages", Namespace: "default"}, cm)).To(Succeed())
+			Expect(cm.OwnerReferences).NotTo(BeEmpty())
+
+			Expect(m.writeCatalogPackagesCM(context.TODO(), "owner-slug", info, cfg, false)).To(Succeed())
+			Expect(m.Client.Get(context.TODO(), client.ObjectKey{Name: "oc-mirror-test-owner-slug-packages", Namespace: "default"}, cm)).To(Succeed())
+			Expect(cm.OwnerReferences).NotTo(BeEmpty())
+		})
+
+		It("returns an error when checking for the existing ConfigMap fails unexpectedly", func() {
+			m.Client = interceptor.NewClient(m.Client.(client.WithWatch), interceptor.Funcs{
+				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					if _, ok := obj.(*corev1.ConfigMap); ok {
+						return fmt.Errorf("get failed")
+					}
+					return c.Get(ctx, key, obj, opts...)
+				},
+			})
+
+			err := m.writeCatalogPackagesCM(context.TODO(), "err-slug", info, cfg, false)
+			Expect(err).To(HaveOccurred())
+		})
 	})
 
 	// ─── saveCatalogPackages ─────────────────────────────────────────
@@ -2714,6 +2745,39 @@ var _ = Describe("Manager Coverage", func() {
 				Namespace: "default",
 			}, upstreamCM)).To(Succeed())
 		})
+
+		It("wraps an error from the filtered packages write", func() {
+			m.Client = interceptor.NewClient(m.Client.(client.WithWatch), interceptor.Funcs{
+				Create: func(_ context.Context, _ client.WithWatch, _ client.Object, _ ...client.CreateOption) error {
+					return fmt.Errorf("create failed")
+				},
+			})
+			info := resources.CatalogInfo{SourceCatalog: "registry.example.com/catalog:v1"}
+			cfg := &declcfg.DeclarativeConfig{}
+
+			err := m.saveCatalogPackages(context.TODO(), "fail-filtered", info, cfg, cfg)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("filtered packages"))
+		})
+
+		It("wraps an error from the upstream packages write", func() {
+			calls := 0
+			m.Client = interceptor.NewClient(m.Client.(client.WithWatch), interceptor.Funcs{
+				Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+					calls++
+					if calls == 1 {
+						return c.Create(ctx, obj, opts...) // let the filtered write succeed
+					}
+					return fmt.Errorf("create failed")
+				},
+			})
+			info := resources.CatalogInfo{SourceCatalog: "registry.example.com/catalog:v1"}
+			cfg := &declcfg.DeclarativeConfig{}
+
+			err := m.saveCatalogPackages(context.TODO(), "fail-upstream", info, cfg, cfg)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("upstream packages"))
+		})
 	})
 
 	// ─── ensureUpstreamCatalogPackages ──────────────────────────────────
@@ -2730,6 +2794,27 @@ var _ = Describe("Manager Coverage", func() {
 			// resolver is nil — if LoadFBC were called it would panic.
 			err := m.ensureUpstreamCatalogPackages(context.TODO(), nil, "preexist-slug", info, "registry.example.com/catalog@sha256:abc")
 			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("returns an error when the upstream FBC pull fails", func() {
+			resolver := &catalog.CatalogResolver{} // zero-value: nil client, LoadFBC fails fast without any network call
+			info := resources.CatalogInfo{SourceCatalog: "registry.example.com/catalog:v1"}
+
+			err := m.ensureUpstreamCatalogPackages(context.TODO(), resolver, "fbc-fail-slug", info, "registry.example.com/catalog@sha256:abc")
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("load upstream FBC"))
+		})
+
+		It("returns an error when checking for the existing upstream ConfigMap fails unexpectedly", func() {
+			m.Client = interceptor.NewClient(m.Client.(client.WithWatch), interceptor.Funcs{
+				Get: func(_ context.Context, _ client.WithWatch, _ client.ObjectKey, _ client.Object, _ ...client.GetOption) error {
+					return fmt.Errorf("get failed")
+				},
+			})
+			info := resources.CatalogInfo{SourceCatalog: "registry.example.com/catalog:v1"}
+
+			err := m.ensureUpstreamCatalogPackages(context.TODO(), nil, "get-err-slug", info, "registry.example.com/catalog@sha256:abc")
+			Expect(err).To(HaveOccurred())
 		})
 	})
 
@@ -2788,6 +2873,108 @@ var _ = Describe("Manager Coverage", func() {
 		})
 	})
 
+	// ─── resolveOperatorSection: past-probe branches ────────────────────
+	//
+	// A digest-pinned catalog reference (op.Catalog already has "@sha256:...")
+	// makes GetCatalogDigest return that digest directly (see
+	// CatalogResolver.GetCatalogDigest: "if parsed.Digest != '' { return
+	// parsed.Digest, nil }") without any registry round-trip, letting these
+	// tests reach the post-probe branches deterministically. Where a
+	// registry pull is unavoidable past that point (ResolveCatalogFull /
+	// LoadFBC), the catalog host is pointed at 127.0.0.1:1 — nothing listens
+	// there, so the connection is refused immediately instead of hitting a
+	// real network.
+
+	Context("resolveOperatorSection past-probe branches", func() {
+		var mt *mirrorv1alpha1.MirrorTarget
+
+		BeforeEach(func() {
+			mt = &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com"},
+			}
+		})
+
+		It("reports hadError and carries over prior state when catalog signature verification fails", func() {
+			digest := "sha256:" + strings.Repeat("a", 64)
+			op := mirrorv1alpha1.Operator{
+				Catalog: "127.0.0.1:1/catalog@" + digest,
+				SignatureVerification: &mirrorv1alpha1.CosignVerification{
+					PublicKeySecretRef: corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: "missing-secret"},
+						Key:                  "cosign.pub",
+					},
+				},
+			}
+			is := &mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{Name: testImageSetName, Namespace: "default"},
+				Spec:       mirrorv1alpha1.ImageSetSpec{Mirror: mirrorv1alpha1.Mirror{Operators: []mirrorv1alpha1.Operator{op}}},
+			}
+			sig := mirrorv1alpha1.OperatorEntrySignature(op)
+			currentState := imagestate.ImageState{
+				"reg.io/catalog-img:v1": {Source: "quay.io/old:v1", State: stateMirrored, Origin: imagestate.OriginOperator, EntrySig: sig},
+			}
+			newState := imagestate.ImageState{}
+			_, resolver := m.buildCollector(mt)
+
+			annoChanged, hadError, err := m.resolveOperatorSection(
+				context.TODO(), nil, resolver, is, mt, currentState, newState, map[string]string{}, false)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(hadError).To(BeTrue())
+			Expect(annoChanged).To(BeFalse())
+			Expect(newState).To(HaveKey("reg.io/catalog-img:v1"))
+		})
+
+		It("reports hadError and carries over prior state when the catalog pull fails", func() {
+			digest := "sha256:" + strings.Repeat("b", 64)
+			op := mirrorv1alpha1.Operator{Catalog: "127.0.0.1:1/catalog@" + digest}
+			is := &mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{Name: testImageSetName, Namespace: "default"},
+				Spec:       mirrorv1alpha1.ImageSetSpec{Mirror: mirrorv1alpha1.Mirror{Operators: []mirrorv1alpha1.Operator{op}}},
+			}
+			sig := mirrorv1alpha1.OperatorEntrySignature(op)
+			currentState := imagestate.ImageState{
+				"reg.io/catalog-img:v1": {Source: "quay.io/old:v1", State: stateMirrored, Origin: imagestate.OriginOperator, EntrySig: sig},
+			}
+			newState := imagestate.ImageState{}
+			_, resolver := m.buildCollector(mt)
+
+			annoChanged, hadError, err := m.resolveOperatorSection(
+				context.TODO(), nil, resolver, is, mt, currentState, newState, map[string]string{}, false)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(hadError).To(BeTrue())
+			Expect(annoChanged).To(BeFalse())
+			Expect(newState).To(HaveKey("reg.io/catalog-img:v1"))
+		})
+
+		It("skips re-collection on a cache hit and still carries over prior state", func() {
+			digest := "sha256:" + strings.Repeat("c", 64)
+			op := mirrorv1alpha1.Operator{
+				Catalog:       "127.0.0.1:1/catalog@" + digest,
+				IncludeConfig: mirrorv1alpha1.IncludeConfig{Packages: []mirrorv1alpha1.IncludePackage{{Name: "pkg-a"}}}, // exercises the originRef pkgNames-join branch
+			}
+			is := &mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{Name: testImageSetName, Namespace: "default"},
+				Spec:       mirrorv1alpha1.ImageSetSpec{Mirror: mirrorv1alpha1.Mirror{Operators: []mirrorv1alpha1.Operator{op}}},
+			}
+			sig := mirrorv1alpha1.OperatorEntrySignature(op)
+			annoKey := mirrorv1alpha1.CatalogDigestAnnotationKey(sig)
+			annotations := map[string]string{annoKey: mirrorv1alpha1.OperatorCacheValue(digest)}
+			currentState := imagestate.ImageState{
+				"reg.io/catalog-img:v1": {Source: "quay.io/old:v1", State: stateMirrored, Origin: imagestate.OriginOperator, EntrySig: sig},
+			}
+			newState := imagestate.ImageState{}
+			_, resolver := m.buildCollector(mt)
+
+			annoChanged, hadError, err := m.resolveOperatorSection(
+				context.TODO(), nil, resolver, is, mt, currentState, newState, annotations, false)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(hadError).To(BeFalse())
+			Expect(annoChanged).To(BeFalse())
+			Expect(newState).To(HaveKey("reg.io/catalog-img:v1"))
+		})
+	})
+
 	Context("resolveImageSet hadError propagation", func() {
 		It("surfaces hadError from a failing operator catalog entry", func() {
 			mt := &mirrorv1alpha1.MirrorTarget{
@@ -2819,6 +3006,228 @@ var _ = Describe("Manager Coverage", func() {
 			_, _, hadError, err := m.resolveImageSet(context.TODO(), is, mt, imagestate.ImageState{})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(hadError).To(BeFalse())
+		})
+	})
+
+	Context("resolveImageSet additional branches", func() {
+		var mt *mirrorv1alpha1.MirrorTarget
+
+		BeforeEach(func() {
+			mt = &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.io"},
+			}
+		})
+
+		It("treats a nil currentState as empty", func() {
+			is := &mirrorv1alpha1.ImageSet{ObjectMeta: metav1.ObjectMeta{Name: testImageSetName, Namespace: "default"}}
+			Expect(m.Client.Create(context.TODO(), is)).To(Succeed())
+
+			newState, _, hadError, err := m.resolveImageSet(context.TODO(), is, mt, nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(hadError).To(BeFalse())
+			Expect(newState).NotTo(BeNil())
+		})
+
+		It("carries forward an entry with a legacy/unrecognized Origin and skips nil entries", func() {
+			is := &mirrorv1alpha1.ImageSet{ObjectMeta: metav1.ObjectMeta{Name: testImageSetName, Namespace: "default"}}
+			Expect(m.Client.Create(context.TODO(), is)).To(Succeed())
+
+			currentState := imagestate.ImageState{
+				"reg.io/legacy:v1":  {Source: "quay.io/legacy:v1", State: stateMirrored, Origin: imagestate.ImageOrigin("legacy")},
+				"reg.io/nil-entry:": nil,
+				// A recognized Origin is intentionally NOT pre-populated by this
+				// loop (left for the owning section below); with no matching
+				// spec entry to carry it over, it simply drops from newState.
+				"reg.io/owned:v1": {Source: "quay.io/owned:v1", State: stateMirrored, Origin: imagestate.OriginRelease},
+			}
+
+			newState, _, _, err := m.resolveImageSet(context.TODO(), is, mt, currentState)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(newState).To(HaveKey("reg.io/legacy:v1"))
+			Expect(newState["reg.io/legacy:v1"].Source).To(Equal("quay.io/legacy:v1"))
+			Expect(newState).NotTo(HaveKey("reg.io/nil-entry:"))
+		})
+
+		It("clears the recollect annotation after a resolve", func() {
+			is := &mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: testImageSetName, Namespace: "default",
+					Annotations: map[string]string{mirrorv1alpha1.RecollectAnnotation: "true"},
+				},
+			}
+			Expect(m.Client.Create(context.TODO(), is)).To(Succeed())
+
+			_, _, _, err := m.resolveImageSet(context.TODO(), is, mt, imagestate.ImageState{})
+			Expect(err).NotTo(HaveOccurred())
+
+			fresh := &mirrorv1alpha1.ImageSet{}
+			Expect(m.Client.Get(context.TODO(), client.ObjectKey{Name: testImageSetName, Namespace: "default"}, fresh)).To(Succeed())
+			Expect(fresh.Annotations).NotTo(HaveKey(mirrorv1alpha1.RecollectAnnotation))
+		})
+
+		It("drops a blocked additional image from the resolved state", func() {
+			is := &mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{Name: testImageSetName, Namespace: "default"},
+				Spec: mirrorv1alpha1.ImageSetSpec{
+					Mirror: mirrorv1alpha1.Mirror{
+						AdditionalImages: []mirrorv1alpha1.AdditionalImage{{Name: "quay.io/foo/blocked:v1"}},
+						BlockedImages:    []mirrorv1alpha1.BlockedImage{{Name: "foo/blocked"}},
+					},
+				},
+			}
+			Expect(m.Client.Create(context.TODO(), is)).To(Succeed())
+
+			newState, _, _, err := m.resolveImageSet(context.TODO(), is, mt, imagestate.ImageState{})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(newState).To(BeEmpty())
+		})
+	})
+
+	// ─── saveGlobalResources ─────────────────────────────────────────────
+
+	Context("saveGlobalResources", func() {
+		It("generates IDMS/ITMS/CatalogSource resources and creates the resources ConfigMap", func() {
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.io", ImageSets: []string{testImageSetName}},
+			}
+			is := mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{Name: testImageSetName, Namespace: "default"},
+				Spec: mirrorv1alpha1.ImageSetSpec{
+					Mirror: mirrorv1alpha1.Mirror{
+						Operators: []mirrorv1alpha1.Operator{{Catalog: "registry.example.com/catalog:v1"}},
+					},
+				},
+			}
+			imageSets := &mirrorv1alpha1.ImageSetList{Items: []mirrorv1alpha1.ImageSet{is}}
+			m.imageState = imagestate.ImageState{
+				"reg.io/bundle:v1": {
+					Source: "registry.example.com/bundle@sha256:abc", State: statePending,
+					Origin: imagestate.OriginOperator, OriginRef: "registry.example.com/catalog:v1 [pkg-a]",
+				},
+			}
+
+			Expect(m.saveGlobalResources(context.TODO(), mt, imageSets)).To(Succeed())
+
+			cm := &corev1.ConfigMap{}
+			Expect(m.Client.Get(context.TODO(), client.ObjectKey{Name: "oc-mirror-test-resources", Namespace: "default"}, cm)).To(Succeed())
+			Expect(cm.Data).To(HaveKey("idms.yaml"))
+			Expect(cm.Data).To(HaveKey("index.json"))
+			found := false
+			for k := range cm.Data {
+				if strings.HasPrefix(k, "catalogsource-") {
+					found = true
+				}
+			}
+			Expect(found).To(BeTrue())
+		})
+
+		It("updates an existing resources ConfigMap on a second call", func() {
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.io"},
+			}
+			imageSets := &mirrorv1alpha1.ImageSetList{}
+
+			Expect(m.saveGlobalResources(context.TODO(), mt, imageSets)).To(Succeed())
+			Expect(m.saveGlobalResources(context.TODO(), mt, imageSets)).To(Succeed())
+
+			cm := &corev1.ConfigMap{}
+			Expect(m.Client.Get(context.TODO(), client.ObjectKey{Name: "oc-mirror-test-resources", Namespace: "default"}, cm)).To(Succeed())
+		})
+	})
+
+	// ─── reconcile: additional branches ──────────────────────────────────
+
+	Context("reconcile additional branches", func() {
+		It("returns an error when listing ImageSets fails", func() {
+			mt := &mirrorv1alpha1.MirrorTarget{ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"}}
+			c := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(mt).Build()
+			failing := interceptor.NewClient(c, interceptor.Funcs{
+				List: func(_ context.Context, _ client.WithWatch, _ client.ObjectList, _ ...client.ListOption) error {
+					return fmt.Errorf("list failed")
+				},
+			})
+			m = NewWithClients(failing, m.Clientset, "test", "default", "test-image:latest", "", scheme)
+
+			err := m.reconcile(context.Background())
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("list failed"))
+		})
+
+		It("processes a force-resync annotation: resets state, clears the annotation, and updates status", func() {
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.io", ImageSets: []string{testImageSetName}},
+			}
+			is := &mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: testImageSetName, Namespace: "default", Generation: 1,
+					Annotations: map[string]string{mirrorv1alpha1.ForceResyncAnnotation: "true"},
+				},
+				Status: mirrorv1alpha1.ImageSetStatus{ObservedGeneration: 1},
+			}
+			c := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(mt, is).WithStatusSubresource(is).Build()
+			m = NewWithClients(c, m.Clientset, "test", "default", "test-image:latest", "", scheme)
+			m.imageState = imagestate.ImageState{
+				"reg.io/img:v1": {Source: "quay.io/img:v1", State: stateFailed, RetryCount: 3, LastError: "boom"},
+			}
+			m.owners = map[string][]string{"reg.io/img:v1": {testImageSetName}}
+
+			err := m.reconcile(context.Background())
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(m.imageState["reg.io/img:v1"].State).To(Equal(statePending))
+			Expect(m.imageState["reg.io/img:v1"].RetryCount).To(Equal(0))
+
+			fresh := &mirrorv1alpha1.ImageSet{}
+			Expect(m.Client.Get(context.Background(), client.ObjectKey{Name: testImageSetName, Namespace: "default"}, fresh)).To(Succeed())
+			Expect(fresh.Annotations).NotTo(HaveKey(mirrorv1alpha1.ForceResyncAnnotation))
+		})
+
+		It("moves an unowned image into the pending-orphans snapshot", func() {
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.io"},
+			}
+			c := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(mt).Build()
+			m = NewWithClients(c, m.Clientset, "test", "default", "test-image:latest", "", scheme)
+			m.imageState = imagestate.ImageState{
+				"reg.io/orphan:v1": {Source: "quay.io/orphan:v1", State: statePending},
+			}
+			m.owners = map[string][]string{}
+
+			err := m.reconcile(context.Background())
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(m.imageState).NotTo(HaveKey("reg.io/orphan:v1"))
+			loaded, loadErr := imagestate.LoadByConfigMapName(context.Background(), m.Client, "default", imagestate.OrphansConfigMapName("test"))
+			Expect(loadErr).NotTo(HaveOccurred())
+			Expect(loaded).To(HaveKey("reg.io/orphan:v1"))
+		})
+
+		It("keeps stateDirty set and logs a warning when flushing partitioned state fails", func() {
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.io", ImageSets: []string{testImageSetName}},
+			}
+			c := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(mt).Build()
+			failing := interceptor.NewClient(c, interceptor.Funcs{
+				Create: func(_ context.Context, _ client.WithWatch, _ client.Object, _ ...client.CreateOption) error {
+					return fmt.Errorf("create failed")
+				},
+			})
+			m = NewWithClients(failing, m.Clientset, "test", "default", "test-image:latest", "", scheme)
+			m.imageState = imagestate.ImageState{
+				"reg.io/img:v1": {Source: "quay.io/img:v1", State: stateMirrored},
+			}
+			m.owners = map[string][]string{"reg.io/img:v1": {testImageSetName}}
+			m.stateDirty = true
+
+			err := m.reconcile(context.Background())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(m.stateDirty).To(BeTrue())
 		})
 	})
 
@@ -2937,6 +3346,628 @@ var _ = Describe("Manager Coverage", func() {
 				defer m.mu.Unlock()
 				return m.driftSweepRunning
 			}, 10*time.Second, 50*time.Millisecond).Should(BeFalse(), "background sweep should finish on its own")
+		})
+	})
+
+	// ─── resolveReleaseSection ──────────────────────────────────────────
+	//
+	// release.OcpUpdateURL is an exported var (see pkg/mirror/release) meant
+	// for exactly this kind of override, matching the pattern already used in
+	// pkg/mirror/release's own tests. Nodes are given an empty Image so that
+	// ExtractComponentImages (ref.New("")) and downloadSignaturesForNodes
+	// (extractDigest("") == "") both fail fast/no-op without ever attempting a
+	// real network call for anything but the Cincinnati graph fetch itself,
+	// which is served by our local httptest server.
+
+	Context("resolveReleaseSection", func() {
+		var mt *mirrorv1alpha1.MirrorTarget
+
+		BeforeEach(func() {
+			mt = &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.io"},
+			}
+		})
+
+		It("carries over prior state and reports hadError when the graph probe fails", func() {
+			origURL := release.OcpUpdateURL
+			release.OcpUpdateURL = "http://127.0.0.1:1/unreachable" // nothing listens on port 1: connection refused, no real network needed
+			defer func() { release.OcpUpdateURL = origURL }()
+
+			ch := mirrorv1alpha1.ReleaseChannel{Name: "stable-4.18"}
+			is := &mirrorv1alpha1.ImageSet{
+				Spec: mirrorv1alpha1.ImageSetSpec{
+					Mirror: mirrorv1alpha1.Mirror{
+						Platform: mirrorv1alpha1.Platform{Channels: []mirrorv1alpha1.ReleaseChannel{ch}},
+					},
+				},
+			}
+			sig := mirrorv1alpha1.ReleaseChannelSignature(ch, []string{"amd64"}, false)
+			currentState := imagestate.ImageState{
+				"reg.io/release:old": {Source: "quay.io/old:v1", State: stateMirrored, Origin: imagestate.OriginRelease, EntrySig: sig},
+			}
+			newState := imagestate.ImageState{}
+			collector, _ := m.buildCollector(mt)
+
+			annoChanged, hadError, err := m.resolveReleaseSection(context.TODO(), collector, is, mt, currentState, newState, map[string]string{}, false)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(hadError).To(BeTrue())
+			Expect(annoChanged).To(BeFalse())
+			Expect(newState).To(HaveKey("reg.io/release:old"))
+		})
+
+		It("carries over prior state and reports hadError when no nodes pass signature verification", func() {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(release.Graph{
+					Nodes: []release.Node{{Version: "4.18.1", Image: ""}}, // no digest -> dropped by verifyReleaseNodes
+				})
+			}))
+			defer srv.Close()
+			origURL := release.OcpUpdateURL
+			release.OcpUpdateURL = srv.URL
+			defer func() { release.OcpUpdateURL = origURL }()
+
+			ch := mirrorv1alpha1.ReleaseChannel{Name: "stable-4.18"}
+			is := &mirrorv1alpha1.ImageSet{
+				Spec: mirrorv1alpha1.ImageSetSpec{
+					Mirror: mirrorv1alpha1.Mirror{
+						Platform: mirrorv1alpha1.Platform{Channels: []mirrorv1alpha1.ReleaseChannel{ch}},
+					},
+				},
+			}
+			collector, _ := m.buildCollector(mt)
+
+			annoChanged, hadError, err := m.resolveReleaseSection(
+				context.TODO(), collector, is, mt,
+				imagestate.ImageState{}, imagestate.ImageState{}, map[string]string{}, false)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(hadError).To(BeTrue())
+			Expect(annoChanged).To(BeFalse())
+		})
+
+		It("skips a cache-hit channel without changing the annotation", func() {
+			node := release.Node{Version: "4.18.1", Image: ""}
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(release.Graph{Nodes: []release.Node{node}})
+			}))
+			defer srv.Close()
+			origURL := release.OcpUpdateURL
+			release.OcpUpdateURL = srv.URL
+			defer func() { release.OcpUpdateURL = origURL }()
+
+			ch := mirrorv1alpha1.ReleaseChannel{Name: "stable-4.18", SkipSignatureVerification: true}
+			is := &mirrorv1alpha1.ImageSet{
+				Spec: mirrorv1alpha1.ImageSetSpec{
+					Mirror: mirrorv1alpha1.Mirror{
+						Platform: mirrorv1alpha1.Platform{Channels: []mirrorv1alpha1.ReleaseChannel{ch}},
+					},
+				},
+			}
+			sig := mirrorv1alpha1.ReleaseChannelSignature(ch, []string{"amd64"}, false)
+			freshSig := release.ResolvedSignature([]string{node.Image})
+			annotations := map[string]string{mirrorv1alpha1.ReleaseDigestAnnotationKey(sig): freshSig}
+			collector, _ := m.buildCollector(mt)
+
+			annoChanged, hadError, err := m.resolveReleaseSection(
+				context.TODO(), collector, is, mt,
+				imagestate.ImageState{}, imagestate.ImageState{}, annotations, false)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(hadError).To(BeFalse())
+			Expect(annoChanged).To(BeFalse())
+		})
+
+		It("resolves images and updates the digest annotation on a full success", func() {
+			node := release.Node{Version: "4.18.1", Image: ""}
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(release.Graph{Nodes: []release.Node{node}})
+			}))
+			defer srv.Close()
+			origURL := release.OcpUpdateURL
+			release.OcpUpdateURL = srv.URL
+			defer func() { release.OcpUpdateURL = origURL }()
+
+			ch := mirrorv1alpha1.ReleaseChannel{Name: "stable-4.18", SkipSignatureVerification: true}
+			is := &mirrorv1alpha1.ImageSet{
+				Spec: mirrorv1alpha1.ImageSetSpec{
+					Mirror: mirrorv1alpha1.Mirror{
+						Platform: mirrorv1alpha1.Platform{Channels: []mirrorv1alpha1.ReleaseChannel{ch}},
+					},
+				},
+			}
+			annotations := map[string]string{}
+			newState := imagestate.ImageState{}
+			collector, _ := m.buildCollector(mt)
+
+			annoChanged, hadError, err := m.resolveReleaseSection(
+				context.TODO(), collector, is, mt,
+				imagestate.ImageState{}, newState, annotations, false)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(hadError).To(BeFalse())
+			Expect(annoChanged).To(BeTrue())
+			Expect(newState).NotTo(BeEmpty())
+
+			sig := mirrorv1alpha1.ReleaseChannelSignature(ch, []string{"amd64"}, false)
+			Expect(annotations).To(HaveKey(mirrorv1alpha1.ReleaseDigestAnnotationKey(sig)))
+		})
+	})
+
+	// ─── downloadSignaturesForNodes ─────────────────────────────────────
+	//
+	// Only the network-free branches are exercised here: the actual GPG
+	// download hits pkg/release's unexported signatureBaseURL, which has no
+	// test seam reachable from this package (and pkg/release is out of scope
+	// for this package's coverage work).
+
+	Context("downloadSignaturesForNodes", func() {
+		It("returns immediately for an empty node list", func() {
+			m.downloadSignaturesForNodes(context.TODO(), nil)
+
+			err := m.Client.Get(context.TODO(), client.ObjectKey{Name: m.signatureConfigMapName(), Namespace: "default"}, &corev1.ConfigMap{})
+			Expect(err).To(HaveOccurred())
+		})
+
+		It("skips nodes without a digest and persists nothing", func() {
+			nodes := []release.Node{{Version: "4.18.1", Image: "quay.io/release:4.18.1"}}
+			m.downloadSignaturesForNodes(context.TODO(), nodes)
+
+			err := m.Client.Get(context.TODO(), client.ObjectKey{Name: m.signatureConfigMapName(), Namespace: "default"}, &corev1.ConfigMap{})
+			Expect(err).To(HaveOccurred())
+		})
+
+		It("skips a node whose signature was already downloaded", func() {
+			digest := "sha256:" + strings.Repeat("a", 64)
+			existing := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: m.signatureConfigMapName(), Namespace: "default"},
+				BinaryData: map[string][]byte{strings.ReplaceAll(digest, ":", "-"): []byte("sig-bytes")},
+			}
+			Expect(m.Client.Create(context.TODO(), existing)).To(Succeed())
+
+			nodes := []release.Node{{Version: "4.18.1", Image: "quay.io/release@" + digest}}
+			m.downloadSignaturesForNodes(context.TODO(), nodes)
+
+			cm := &corev1.ConfigMap{}
+			Expect(m.Client.Get(context.TODO(), client.ObjectKey{Name: m.signatureConfigMapName(), Namespace: "default"}, cm)).To(Succeed())
+			Expect(cm.BinaryData).To(HaveLen(1))
+		})
+	})
+
+	// ─── appendOrphans ───────────────────────────────────────────────────
+
+	Context("appendOrphans", func() {
+		It("creates the pending-orphans ConfigMap on first call", func() {
+			mt := &mirrorv1alpha1.MirrorTarget{ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"}}
+			newOrphans := imagestate.ImageState{
+				"reg.io/img:v1": &imagestate.ImageEntry{Source: "quay.io/img:v1", State: stateMirrored},
+			}
+			Expect(m.appendOrphans(context.TODO(), mt, newOrphans)).To(Succeed())
+
+			loaded, err := imagestate.LoadByConfigMapName(context.TODO(), m.Client, "default", imagestate.OrphansConfigMapName(m.TargetName))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded).To(HaveKey("reg.io/img:v1"))
+		})
+
+		It("merges new orphans into an existing snapshot without dropping prior entries", func() {
+			mt := &mirrorv1alpha1.MirrorTarget{ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"}}
+			Expect(m.appendOrphans(context.TODO(), mt, imagestate.ImageState{
+				"a": &imagestate.ImageEntry{Source: "s-a", State: stateMirrored},
+			})).To(Succeed())
+			Expect(m.appendOrphans(context.TODO(), mt, imagestate.ImageState{
+				"b": &imagestate.ImageEntry{Source: "s-b", State: statePending},
+			})).To(Succeed())
+
+			loaded, err := imagestate.LoadByConfigMapName(context.TODO(), m.Client, "default", imagestate.OrphansConfigMapName(m.TargetName))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded).To(HaveKey("a"))
+			Expect(loaded).To(HaveKey("b"))
+		})
+
+		It("returns an error when loading the existing orphans snapshot fails", func() {
+			mt := &mirrorv1alpha1.MirrorTarget{ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"}}
+			m.Client = interceptor.NewClient(m.Client.(client.WithWatch), interceptor.Funcs{
+				Get: func(_ context.Context, _ client.WithWatch, _ client.ObjectKey, _ client.Object, _ ...client.GetOption) error {
+					return fmt.Errorf("get failed")
+				},
+			})
+
+			err := m.appendOrphans(context.TODO(), mt, imagestate.ImageState{
+				"reg.io/img:v1": &imagestate.ImageEntry{Source: "quay.io/img:v1", State: statePending},
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("load pending orphans"))
+		})
+	})
+
+	// ─── flushPartitionedState ────────────────────────────────────────────
+
+	Context("flushPartitionedState", func() {
+		It("flushes a spec-orphaned owner's state and records the shared index for a multi-owner destination", func() {
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{ImageSets: []string{"is-a"}},
+			}
+			m.imageState = imagestate.ImageState{
+				"d1": {Source: "s1", State: statePending},
+				"d2": {Source: "s2", State: statePending},
+			}
+			m.owners = map[string][]string{
+				"d1": {"is-a", "is-b"}, // shared: exercises the index-write branch
+				"d2": {"is-c"},         // owned solely by an ImageSet no longer in spec
+			}
+
+			Expect(m.flushPartitionedState(context.TODO(), mt)).To(Succeed())
+
+			loadedC, err := imagestate.Load(context.TODO(), m.Client, "default", "is-c")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loadedC).To(HaveKey("d2"))
+
+			index, err := imagestate.LoadIndex(context.TODO(), m.Client, "default", "test")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(index).To(HaveKey("d1"))
+		})
+
+		It("wraps an error from saving the shared image index", func() {
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{ImageSets: []string{"is-a"}},
+			}
+			m.imageState = imagestate.ImageState{"d1": {Source: "s1", State: statePending}}
+			m.owners = map[string][]string{"d1": {"is-a", "is-b"}}
+			indexCMName := imagestate.IndexConfigMapName("test")
+			m.Client = interceptor.NewClient(m.Client.(client.WithWatch), interceptor.Funcs{
+				Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+					if cm, ok := obj.(*corev1.ConfigMap); ok && cm.Name == indexCMName {
+						return fmt.Errorf("create failed")
+					}
+					return c.Create(ctx, obj, opts...)
+				},
+			})
+
+			err := m.flushPartitionedState(context.TODO(), mt)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("save shared image index"))
+		})
+	})
+
+	// ─── mergeResolvedIntoConsolidated ──────────────────────────────────
+
+	Context("mergeResolvedIntoConsolidated", func() {
+		It("adds a new entry and records ownership", func() {
+			state := imagestate.ImageState{}
+			owners := map[string][]string{}
+			perIS := imagestate.ImageState{"d1": {Source: "s1", State: statePending}}
+
+			orphaned := mergeResolvedIntoConsolidated(state, owners, perIS, "is-a")
+			Expect(orphaned).To(BeEmpty())
+			Expect(state).To(HaveKey("d1"))
+			Expect(owners["d1"]).To(Equal([]string{"is-a"}))
+		})
+
+		It("updates Source for an existing entry while preserving State", func() {
+			state := imagestate.ImageState{"d1": {Source: "old", State: stateMirrored}}
+			owners := map[string][]string{"d1": {"is-a"}}
+			perIS := imagestate.ImageState{"d1": {Source: "new", State: statePending}}
+
+			mergeResolvedIntoConsolidated(state, owners, perIS, "is-a")
+			Expect(state["d1"].Source).To(Equal("new"))
+			Expect(state["d1"].State).To(Equal(stateMirrored))
+		})
+
+		It("reports a destination orphaned when it loses its last owner", func() {
+			state := imagestate.ImageState{"d1": {Source: "s1", State: statePending}}
+			owners := map[string][]string{"d1": {"is-a"}}
+
+			orphaned := mergeResolvedIntoConsolidated(state, owners, imagestate.ImageState{}, "is-a")
+			Expect(orphaned).To(ConsistOf("d1"))
+			Expect(owners).NotTo(HaveKey("d1"))
+		})
+
+		It("does not report orphaned when another ImageSet still owns the destination", func() {
+			state := imagestate.ImageState{"d1": {Source: "s1", State: statePending}}
+			owners := map[string][]string{"d1": {"is-a", "is-b"}}
+
+			orphaned := mergeResolvedIntoConsolidated(state, owners, imagestate.ImageState{}, "is-a")
+			Expect(orphaned).To(BeEmpty())
+			Expect(owners["d1"]).To(Equal([]string{"is-b"}))
+		})
+
+		It("skips nil entries in the incoming per-ImageSet state", func() {
+			state := imagestate.ImageState{}
+			owners := map[string][]string{}
+			perIS := imagestate.ImageState{"d1": nil}
+
+			Expect(func() { mergeResolvedIntoConsolidated(state, owners, perIS, "is-a") }).NotTo(Panic())
+			Expect(state).NotTo(HaveKey("d1"))
+		})
+
+		It("leaves ownership untouched for a stale destination isName never owned", func() {
+			state := imagestate.ImageState{"d1": {Source: "s1", State: statePending}}
+			owners := map[string][]string{"d1": {"is-b"}} // "is-a" never owned d1
+
+			orphaned := mergeResolvedIntoConsolidated(state, owners, imagestate.ImageState{}, "is-a")
+			Expect(orphaned).To(BeEmpty())
+			Expect(owners["d1"]).To(Equal([]string{"is-b"}))
+		})
+	})
+
+	// ─── addOwner / removeOwner ──────────────────────────────────────────
+
+	Context("addOwner", func() {
+		It("appends a new owner", func() {
+			owners := map[string][]string{}
+			addOwner(owners, "d1", "is-a")
+			Expect(owners["d1"]).To(Equal([]string{"is-a"}))
+		})
+
+		It("does not duplicate an existing owner", func() {
+			owners := map[string][]string{"d1": {"is-a"}}
+			addOwner(owners, "d1", "is-a")
+			Expect(owners["d1"]).To(Equal([]string{"is-a"}))
+		})
+	})
+
+	Context("removeOwner", func() {
+		It("removes the owner and deletes the map entry when it was the last one", func() {
+			owners := map[string][]string{"d1": {"is-a"}}
+			removed := removeOwner(owners, "d1", "is-a")
+			Expect(removed).To(BeTrue())
+			Expect(owners).NotTo(HaveKey("d1"))
+		})
+
+		It("keeps other owners intact", func() {
+			owners := map[string][]string{"d1": {"is-a", "is-b"}}
+			removed := removeOwner(owners, "d1", "is-a")
+			Expect(removed).To(BeTrue())
+			Expect(owners["d1"]).To(Equal([]string{"is-b"}))
+		})
+
+		It("returns false when isName is not an owner", func() {
+			owners := map[string][]string{"d1": {"is-b"}}
+			removed := removeOwner(owners, "d1", "is-a")
+			Expect(removed).To(BeFalse())
+			Expect(owners["d1"]).To(Equal([]string{"is-b"}))
+		})
+	})
+
+	// ─── mergeLoadedEntry ────────────────────────────────────────────────
+
+	Context("mergeLoadedEntry", func() {
+		It("returns incoming when existing is nil", func() {
+			incoming := &imagestate.ImageEntry{State: statePending}
+			Expect(mergeLoadedEntry(nil, incoming)).To(BeIdenticalTo(incoming))
+		})
+
+		It("prefers the Mirrored copy when only incoming is Mirrored", func() {
+			existing := &imagestate.ImageEntry{State: statePending}
+			incoming := &imagestate.ImageEntry{State: stateMirrored}
+			Expect(mergeLoadedEntry(existing, incoming)).To(BeIdenticalTo(incoming))
+		})
+
+		It("keeps existing when existing is Mirrored and incoming is not", func() {
+			existing := &imagestate.ImageEntry{State: stateMirrored}
+			incoming := &imagestate.ImageEntry{State: statePending}
+			Expect(mergeLoadedEntry(existing, incoming)).To(BeIdenticalTo(existing))
+		})
+
+		It("prefers incoming when both sides are Mirrored", func() {
+			existing := &imagestate.ImageEntry{State: stateMirrored, RetryCount: 5}
+			incoming := &imagestate.ImageEntry{State: stateMirrored, RetryCount: 1}
+			Expect(mergeLoadedEntry(existing, incoming)).To(BeIdenticalTo(incoming))
+		})
+
+		It("prefers higher RetryCount when neither side is Mirrored", func() {
+			existing := &imagestate.ImageEntry{State: stateFailed, RetryCount: 1}
+			incoming := &imagestate.ImageEntry{State: stateFailed, RetryCount: 3}
+			Expect(mergeLoadedEntry(existing, incoming)).To(BeIdenticalTo(incoming))
+		})
+
+		It("keeps existing when RetryCount is equal", func() {
+			existing := &imagestate.ImageEntry{State: stateFailed, RetryCount: 2}
+			incoming := &imagestate.ImageEntry{State: stateFailed, RetryCount: 2}
+			Expect(mergeLoadedEntry(existing, incoming)).To(BeIdenticalTo(existing))
+		})
+	})
+
+	// ─── loadPartitionedState ────────────────────────────────────────────
+
+	Context("loadPartitionedState", func() {
+		It("loads state only from ImageSets referenced by the MirrorTarget", func() {
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{ImageSets: []string{"is-a"}},
+			}
+			Expect(imagestate.Save(context.TODO(), m.Client, "default", "is-a", imagestate.ImageState{
+				"d1": {Source: "s1", State: statePending},
+			}, mt, scheme)).To(Succeed())
+			Expect(imagestate.Save(context.TODO(), m.Client, "default", "is-b", imagestate.ImageState{
+				"d2": {Source: "s2", State: statePending},
+			}, mt, scheme)).To(Succeed())
+
+			imageSets := &mirrorv1alpha1.ImageSetList{Items: []mirrorv1alpha1.ImageSet{
+				{ObjectMeta: metav1.ObjectMeta{Name: "is-a", Namespace: "default"}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "is-b", Namespace: "default"}}, // not in mt.Spec.ImageSets
+			}}
+
+			m.loadPartitionedState(context.TODO(), mt, imageSets)
+
+			Expect(m.imageState).To(HaveKey("d1"))
+			Expect(m.imageState).NotTo(HaveKey("d2"))
+			Expect(m.owners["d1"]).To(Equal([]string{"is-a"}))
+		})
+
+		It("merges a destination shared by two ImageSets via mergeLoadedEntry", func() {
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{ImageSets: []string{"is-a", "is-b"}},
+			}
+			Expect(imagestate.Save(context.TODO(), m.Client, "default", "is-a", imagestate.ImageState{
+				"shared": {Source: "s", State: statePending, RetryCount: 1},
+			}, mt, scheme)).To(Succeed())
+			Expect(imagestate.Save(context.TODO(), m.Client, "default", "is-b", imagestate.ImageState{
+				"shared": {Source: "s", State: stateMirrored},
+			}, mt, scheme)).To(Succeed())
+
+			imageSets := &mirrorv1alpha1.ImageSetList{Items: []mirrorv1alpha1.ImageSet{
+				{ObjectMeta: metav1.ObjectMeta{Name: "is-a", Namespace: "default"}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "is-b", Namespace: "default"}},
+			}}
+
+			m.loadPartitionedState(context.TODO(), mt, imageSets)
+
+			Expect(m.imageState["shared"].State).To(Equal(stateMirrored))
+			Expect(m.owners["shared"]).To(ConsistOf("is-a", "is-b"))
+		})
+
+		It("skips a nil entry within a loaded ImageSet's own state", func() {
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{ImageSets: []string{"is-a"}},
+			}
+			Expect(imagestate.Save(context.TODO(), m.Client, "default", "is-a", imagestate.ImageState{
+				"d1":         {Source: "s1", State: statePending},
+				"nil-entry:": nil,
+			}, mt, scheme)).To(Succeed())
+
+			imageSets := &mirrorv1alpha1.ImageSetList{Items: []mirrorv1alpha1.ImageSet{
+				{ObjectMeta: metav1.ObjectMeta{Name: "is-a", Namespace: "default"}},
+			}}
+
+			m.loadPartitionedState(context.TODO(), mt, imageSets)
+
+			Expect(m.imageState).To(HaveKey("d1"))
+			Expect(m.imageState).NotTo(HaveKey("nil-entry:"))
+		})
+
+		It("logs a warning and continues when the legacy consolidated migration fails", func() {
+			mt := &mirrorv1alpha1.MirrorTarget{ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"}}
+			m.Client = interceptor.NewClient(m.Client.(client.WithWatch), interceptor.Funcs{
+				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					if key.Name == "test-images" { // legacy consolidated ConfigMap name
+						return fmt.Errorf("get failed")
+					}
+					return c.Get(ctx, key, obj, opts...)
+				},
+			})
+
+			Expect(func() { m.loadPartitionedState(context.TODO(), mt, &mirrorv1alpha1.ImageSetList{}) }).NotTo(Panic())
+		})
+
+		It("logs a warning and skips an ImageSet whose own state fails to load", func() {
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{ImageSets: []string{"is-a"}},
+			}
+			m.Client = interceptor.NewClient(m.Client.(client.WithWatch), interceptor.Funcs{
+				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					if key.Name == "is-a-images" {
+						return fmt.Errorf("get failed")
+					}
+					return c.Get(ctx, key, obj, opts...)
+				},
+			})
+			imageSets := &mirrorv1alpha1.ImageSetList{Items: []mirrorv1alpha1.ImageSet{
+				{ObjectMeta: metav1.ObjectMeta{Name: "is-a", Namespace: "default"}},
+			}}
+
+			m.loadPartitionedState(context.TODO(), mt, imageSets)
+			Expect(m.imageState).To(BeEmpty())
+		})
+	})
+
+	// ─── clearForceResyncAnnotation ──────────────────────────────────────
+
+	Context("clearForceResyncAnnotation", func() {
+		It("returns nil when the ImageSet no longer exists", func() {
+			is := &mirrorv1alpha1.ImageSet{ObjectMeta: metav1.ObjectMeta{Name: "gone", Namespace: "default"}}
+			Expect(m.clearForceResyncAnnotation(context.TODO(), is)).To(Succeed())
+		})
+
+		It("is a no-op when the annotation is not set", func() {
+			is := &mirrorv1alpha1.ImageSet{ObjectMeta: metav1.ObjectMeta{Name: testImageSetName, Namespace: "default"}}
+			Expect(m.Client.Create(context.TODO(), is)).To(Succeed())
+			Expect(m.clearForceResyncAnnotation(context.TODO(), is)).To(Succeed())
+		})
+
+		It("removes the ForceResyncAnnotation", func() {
+			is := &mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: testImageSetName, Namespace: "default",
+					Annotations: map[string]string{mirrorv1alpha1.ForceResyncAnnotation: "true"},
+				},
+			}
+			Expect(m.Client.Create(context.TODO(), is)).To(Succeed())
+			Expect(m.clearForceResyncAnnotation(context.TODO(), is)).To(Succeed())
+
+			fresh := &mirrorv1alpha1.ImageSet{}
+			Expect(m.Client.Get(context.TODO(), client.ObjectKey{Name: testImageSetName, Namespace: "default"}, fresh)).To(Succeed())
+			Expect(fresh.Annotations).NotTo(HaveKey(mirrorv1alpha1.ForceResyncAnnotation))
+		})
+
+		It("returns an error when the Get fails for a reason other than NotFound", func() {
+			m.Client = interceptor.NewClient(m.Client.(client.WithWatch), interceptor.Funcs{
+				Get: func(_ context.Context, _ client.WithWatch, _ client.ObjectKey, _ client.Object, _ ...client.GetOption) error {
+					return fmt.Errorf("get failed")
+				},
+			})
+			is := &mirrorv1alpha1.ImageSet{ObjectMeta: metav1.ObjectMeta{Name: testImageSetName, Namespace: "default"}}
+
+			err := m.clearForceResyncAnnotation(context.TODO(), is)
+			Expect(err).To(HaveOccurred())
+		})
+	})
+
+	// ─── runStatusAPI / runMetricsServer ─────────────────────────────────
+	//
+	// Both start an http.Server bound to a fixed port, block on <-ctx.Done(),
+	// then shut down. handleStatusUpdate/handleShouldMirror routing is
+	// already covered elsewhere; these tests only assert the listen/shutdown
+	// lifecycle itself.
+
+	Context("runStatusAPI", func() {
+		It("serves on :8080 and returns once the context is cancelled", func() {
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan struct{})
+			go func() {
+				m.runStatusAPI(ctx)
+				close(done)
+			}()
+
+			Eventually(func() (int, error) {
+				resp, err := http.Get("http://127.0.0.1:8080/status")
+				if err != nil {
+					return 0, err
+				}
+				defer func() { _ = resp.Body.Close() }()
+				return resp.StatusCode, nil
+			}, 2*time.Second, 20*time.Millisecond).Should(Equal(http.StatusMethodNotAllowed))
+
+			cancel()
+			Eventually(done, 2*time.Second, 20*time.Millisecond).Should(BeClosed())
+		})
+	})
+
+	Context("runMetricsServer", func() {
+		It("serves on :9090 and returns once the context is cancelled", func() {
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan struct{})
+			go func() {
+				m.runMetricsServer(ctx)
+				close(done)
+			}()
+
+			Eventually(func() (int, error) {
+				resp, err := http.Get("http://127.0.0.1:9090/")
+				if err != nil {
+					return 0, err
+				}
+				defer func() { _ = resp.Body.Close() }()
+				return resp.StatusCode, nil
+			}, 2*time.Second, 20*time.Millisecond).Should(Equal(http.StatusOK))
+
+			cancel()
+			Eventually(done, 2*time.Second, 20*time.Millisecond).Should(BeClosed())
 		})
 	})
 })
