@@ -611,11 +611,12 @@ func (m *MirrorManager) resolveOperatorSection( //nolint:unparam
 		}
 
 		targetImages := make([]mirror.TargetImage, 0, len(images))
-		for img, label := range images {
+		for img, info := range images {
 			targetImages = append(targetImages, mirror.TargetImage{
-				Source:      img,
-				BundleRef:   label,
-				Destination: mirror.ComponentDestination(mt.Spec.Registry, img),
+				Source:        img,
+				BundleRef:     info.Label,
+				IsBundleImage: info.IsBundleImage,
+				Destination:   mirror.ComponentDestination(mt.Spec.Registry, img),
 			})
 		}
 		mergeIntoStateWithSig(newState, targetImages, imagestate.OriginOperator, sig, originRef, currentState)
@@ -669,11 +670,12 @@ func mergeIntoStateWithSig(dst imagestate.ImageState, images []mirror.TargetImag
 			ref = fmt.Sprintf("%s — %s", originRef, img.BundleRef)
 		}
 		entry := &imagestate.ImageEntry{
-			Source:    img.Source,
-			State:     "Pending",
-			Origin:    origin,
-			EntrySig:  sig,
-			OriginRef: ref,
+			Source:        img.Source,
+			State:         "Pending",
+			Origin:        origin,
+			EntrySig:      sig,
+			OriginRef:     ref,
+			IsBundleImage: img.IsBundleImage,
 		}
 		if existing, ok := prev[img.Destination]; ok && existing != nil && (existing.Origin == origin || existing.Origin == "") {
 			// Prefer the existing Source if it looks like a valid reference

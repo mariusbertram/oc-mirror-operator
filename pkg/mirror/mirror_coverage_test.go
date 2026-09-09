@@ -508,10 +508,12 @@ var _ = Describe("Coverage Tests", func() {
 			Expect(bundle.Destination).To(Equal("mirror.io/pkg-op-bundle:sha256-0000000000000000000000000000000000000000000000000000000000000000"))
 			Expect(bundle.BundleRef).To(Equal("pkg-op.v1.0.0"))
 			Expect(bundle.State).To(Equal("Pending"))
+			Expect(bundle.IsBundleImage).To(BeTrue())
 
 			related, ok := bySource["registry.example.com/pkg-op-extra@sha256:1111111111111111111111111111111111111111111111111111111111111111"]
 			Expect(ok).To(BeTrue())
 			Expect(related.BundleRef).To(Equal("pkg-op.v1.0.0"))
+			Expect(related.IsBundleImage).To(BeFalse())
 		})
 	})
 

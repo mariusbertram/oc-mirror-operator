@@ -58,6 +58,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the upstream content list and leaves already-mirrored images untouched,
   this is for recovering from target-registry data loss or suspected
   corruption of previously-mirrored content.
+- **Operator bundle images are mirrored ahead of their related images**: the
+  manager now tags each operator-origin imagestate entry with
+  `isBundleImage` (true for a bundle's own container image, false for the
+  operand/related images it references) and dispatches pending bundle
+  images to worker batches before anything else. OLM installs/upgrades to
+  the bundle image directly, so this both gets operators usable sooner and
+  reaches the `CatalogReady` mirroring gate (which waits on every
+  operator-origin image) faster overall.
 
 ### Security
 - **Go toolchain bumped 1.25.7 → 1.25.13**, resolving 26 reachable
@@ -73,6 +81,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already triaged as `not_affected` in `vex/oc-mirror-operator.openvex.json`.
 
 ### Fixed
+- **Catalog build gate could still open on a stale imagestate scan**: the
+  `CatalogReady` gate required every operator-origin imagestate entry to be
+  `Mirrored`/`PermanentlyFailed`, cross-checked against the current spec via
+  per-entry signatures — but that cross-check was itself skipped once any
+  legacy (pre-signature) entry was present, and only ever covered
+  signature-bearing entries otherwise. `operatorImagesMirrored` now also
+  requires `ImageSet.Status.ObservedGeneration == ImageSet.Generation`
+  before considering the scan authoritative: the manager only advances
+  `ObservedGeneration` once it has cleanly (re-)resolved the *whole* current
+  spec generation, so this closes the gap unconditionally instead of relying
+  on signature bookkeeping that could be bypassed.
 - **IDMS/ITMS entries kept a tag on the source repository for images
   resolved to both a tag and a digest** (e.g. `repo:v1.2@sha256:...`, as
   produced by Helm-templated and some catalog bundle image references):

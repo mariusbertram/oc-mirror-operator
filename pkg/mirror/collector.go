@@ -24,6 +24,12 @@ type TargetImage struct {
 	// reference this image (e.g. "myoperator.v1.2.0, myoperator.v1.1.0").
 	// Set only for images collected from operator catalogs; empty otherwise.
 	BundleRef string
+	// IsBundleImage is true when this image is itself an operator bundle's
+	// own container image (as opposed to one of its related/operand
+	// images). Only meaningful for images collected from operator
+	// catalogs; false otherwise. Used to mirror bundle images ahead of
+	// related images so OLM has something installable sooner.
+	IsBundleImage bool
 }
 
 // Collector gathers the list of target images from an ImageSet configuration
@@ -272,10 +278,11 @@ func (c *Collector) CollectOperatorEntry(ctx context.Context, op mirrorv1alpha1.
 		return nil, err
 	}
 	results := make([]TargetImage, 0, len(imagesWithBundles))
-	for img, bundleRef := range imagesWithBundles {
+	for img, info := range imagesWithBundles {
 		dest := ComponentDestination(target.Spec.Registry, img)
 		ti := c.toTargetImage(img, dest, nil)
-		ti.BundleRef = bundleRef
+		ti.BundleRef = info.Label
+		ti.IsBundleImage = info.IsBundleImage
 		results = append(results, ti)
 	}
 	return results, nil

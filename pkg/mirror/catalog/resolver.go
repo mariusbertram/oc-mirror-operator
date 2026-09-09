@@ -1149,12 +1149,28 @@ func (r *CatalogResolver) ExtractImages(cfg *declcfg.DeclarativeConfig) []string
 	return images
 }
 
+// BundleImageInfo describes how a single image is referenced within an FBC.
+type BundleImageInfo struct {
+	// Label is a human-readable string listing the bundle(s) that reference
+	// this image (e.g. "myoperator.v1.2.0, myoperator.v1.1.0").
+	Label string
+	// IsBundleImage is true when this image is itself an operator bundle's
+	// own container image (declcfg.Bundle.Image) for at least one bundle —
+	// as opposed to only ever appearing as one of a bundle's RelatedImages.
+	// Bundle images are what OLM installs/upgrades to directly, so mirroring
+	// them ahead of related (operand) images gets the operators the catalog
+	// advertises usable sooner.
+	IsBundleImage bool
+}
+
 // ExtractImagesWithBundles returns all image references found in the FBC mapped
 // to a human-readable string listing the bundle(s) that reference each image.
-func (r *CatalogResolver) ExtractImagesWithBundles(cfg *declcfg.DeclarativeConfig) map[string]string {
-	// Collect per-image bundle name sets (deduplicated).
+func (r *CatalogResolver) ExtractImagesWithBundles(cfg *declcfg.DeclarativeConfig) map[string]BundleImageInfo {
+	// Collect per-image bundle name sets (deduplicated) and whether the
+	// image is ever referenced as a bundle's own image.
 	bundleSets := make(map[string]map[string]struct{})
-	addRef := func(img, bundleName string) {
+	isBundleImage := make(map[string]bool)
+	addRef := func(img, bundleName string, asBundleImage bool) {
 		if img == "" {
 			return
 		}
@@ -1162,23 +1178,29 @@ func (r *CatalogResolver) ExtractImagesWithBundles(cfg *declcfg.DeclarativeConfi
 			bundleSets[img] = make(map[string]struct{})
 		}
 		bundleSets[img][bundleName] = struct{}{}
-	}
-
-	for _, b := range cfg.Bundles {
-		addRef(b.Image, b.Name)
-		for _, ri := range b.RelatedImages {
-			addRef(ri.Image, b.Name)
+		if asBundleImage {
+			isBundleImage[img] = true
 		}
 	}
 
-	result := make(map[string]string, len(bundleSets))
+	for _, b := range cfg.Bundles {
+		addRef(b.Image, b.Name, true)
+		for _, ri := range b.RelatedImages {
+			addRef(ri.Image, b.Name, false)
+		}
+	}
+
+	result := make(map[string]BundleImageInfo, len(bundleSets))
 	for img, names := range bundleSets {
 		sorted := make([]string, 0, len(names))
 		for n := range names {
 			sorted = append(sorted, n)
 		}
 		sort.Strings(sorted)
-		result[img] = renderBundleRefs(sorted)
+		result[img] = BundleImageInfo{
+			Label:         renderBundleRefs(sorted),
+			IsBundleImage: isBundleImage[img],
+		}
 	}
 	return result
 }
@@ -1198,8 +1220,8 @@ func renderBundleRefs(names []string) string {
 // ResolveCatalogFull loads the FBC, filters it, and returns the selected images,
 // the filtered FBC, and the full upstream FBC. Used by the manager to persist
 // package information in ConfigMaps.
-// The map returned contains destination image reference → bundle-name label.
-func (r *CatalogResolver) ResolveCatalogFull(ctx context.Context, catalogImage string, includes []mirrorv1alpha1.IncludePackage) (images map[string]string, filtered *declcfg.DeclarativeConfig, upstream *declcfg.DeclarativeConfig, err error) {
+// The map returned contains destination image reference → BundleImageInfo.
+func (r *CatalogResolver) ResolveCatalogFull(ctx context.Context, catalogImage string, includes []mirrorv1alpha1.IncludePackage) (images map[string]BundleImageInfo, filtered *declcfg.DeclarativeConfig, upstream *declcfg.DeclarativeConfig, err error) {
 	if _, err := ref.New(catalogImage); err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to parse catalog image reference: %w", err)
 	}
@@ -1218,8 +1240,8 @@ func (r *CatalogResolver) ResolveCatalogFull(ctx context.Context, catalogImage s
 }
 
 // ResolveCatalogWithBundles is like ResolveCatalog but returns a map of image
-// reference → bundle-name string for use as per-image origin labels.
-func (r *CatalogResolver) ResolveCatalogWithBundles(ctx context.Context, catalogImage string, includes []mirrorv1alpha1.IncludePackage) (map[string]string, error) {
+// reference → BundleImageInfo for use as per-image origin labels.
+func (r *CatalogResolver) ResolveCatalogWithBundles(ctx context.Context, catalogImage string, includes []mirrorv1alpha1.IncludePackage) (map[string]BundleImageInfo, error) {
 	images, _, _, err := r.ResolveCatalogFull(ctx, catalogImage, includes)
 	return images, err
 }

@@ -1015,7 +1015,15 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 	// trusted here and only reset to Pending once the sweep actually finds
 	// them missing, at which point a later tick's pass through this loop
 	// picks up the state change.
+	// pendingBundleImages holds operator bundle images (as opposed to their
+	// related/operand images) collected below; they're prepended to
+	// pendingImages before dispatch so worker batches drain them first. OLM
+	// installs/upgrades to the bundle image directly, so getting it mirrored
+	// unblocks operator installation before its related images even matter,
+	// and it lets the catalog-build gate (which waits on ALL operator-origin
+	// images) reach completion sooner overall.
 	pendingImages := make([]BatchItem, 0, len(m.imageState))
+	pendingBundleImages := make([]BatchItem, 0, len(m.imageState))
 	newOrphans := make(imagestate.ImageState)
 
 	for dest, entry := range m.imageState {
@@ -1071,13 +1079,23 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 		if m.inProgress[dest] != "" {
 			continue
 		}
-		pendingImages = append(pendingImages, BatchItem{Source: entry.Source, Dest: dest})
+		item := BatchItem{Source: entry.Source, Dest: dest}
+		if entry.IsBundleImage {
+			pendingBundleImages = append(pendingBundleImages, item)
+		} else {
+			pendingImages = append(pendingImages, item)
+		}
 	}
 
 	if len(newOrphans) > 0 {
 		if err := m.appendOrphans(ctx, mt, newOrphans); err != nil {
 			oclog.Printf("Warning: failed to persist orphaned images: %v\n", err)
 		}
+	}
+
+	// Bundle images first: see pendingBundleImages' doc comment above.
+	if len(pendingBundleImages) > 0 {
+		pendingImages = append(pendingBundleImages, pendingImages...)
 	}
 
 	// Phase E: Dispatch worker batches up to concurrency limit.
