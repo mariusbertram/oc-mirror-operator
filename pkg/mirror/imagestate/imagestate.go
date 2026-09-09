@@ -62,6 +62,12 @@ type ImageEntry struct {
 	// OriginRef is a human-readable label describing which spec entry produced
 	// this entry.
 	OriginRef string `json:"originRef,omitempty"`
+	// IsBundleImage is true when this entry's image is itself an operator
+	// bundle's own container image (as opposed to one of its related/operand
+	// images). Only set for Origin == OriginOperator entries. Consulted by
+	// the manager to dispatch bundle images ahead of related images, since
+	// bundle images are what OLM installs/upgrades to directly.
+	IsBundleImage bool `json:"isBundleImage,omitempty"`
 	// PermanentlyFailed is set to true when the image has exhausted its initial
 	// retry budget (RetryCount >= 10). Once set it is never cleared — even when
 	// the image is reset to Pending for a drift-check retry attempt. This flag

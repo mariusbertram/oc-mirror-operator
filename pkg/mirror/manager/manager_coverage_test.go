@@ -294,6 +294,18 @@ var _ = Describe("Manager Coverage", func() {
 			mergeIntoStateWithSig(dst, images, imagestate.OriginRelease, "sig1", "ref", prev)
 			Expect(dst["reg.io/img:v1"].State).To(Equal("Pending"))
 		})
+
+		It("propagates IsBundleImage from the TargetImage", func() {
+			dst := make(imagestate.ImageState)
+			prev := make(imagestate.ImageState)
+			images := []mirror.TargetImage{
+				{Source: "quay.io/bundle:v1", Destination: "reg.io/bundle:v1", IsBundleImage: true},
+				{Source: "quay.io/related:v1", Destination: "reg.io/related:v1", IsBundleImage: false},
+			}
+			mergeIntoStateWithSig(dst, images, imagestate.OriginOperator, "sig1", "catalog-ref", prev)
+			Expect(dst["reg.io/bundle:v1"].IsBundleImage).To(BeTrue())
+			Expect(dst["reg.io/related:v1"].IsBundleImage).To(BeFalse())
+		})
 	})
 
 	// ─── carryOverByOriginAndSig ─────────────────────────────────────

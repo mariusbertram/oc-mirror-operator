@@ -508,6 +508,23 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs( //nolint:gocyclo
 // imagestate ConfigMap is either "Mirrored" or has PermanentlyFailed=true.
 // knowState = false when no imagestate ConfigMap exists yet.
 func operatorImagesMirrored(ctx context.Context, c client.Client, is *mirrorv1alpha1.ImageSet) (bool, bool) {
+	// The manager only advances is.Status.ObservedGeneration to the current
+	// is.Generation once it has cleanly (re-)resolved the WHOLE spec for
+	// that generation — every release channel, operator catalog, and
+	// additional/helm entry, with no per-entry probe/collection error (see
+	// MirrorManager.updateImageSetStatusLocked's doc comment). Until that
+	// has happened, the entries scanned below may still be missing ones a
+	// just-applied spec change should have added (a newly added operator, a
+	// changed package list, ...) even though every entry currently on
+	// record happens to already be Mirrored/PermanentlyFailed — the
+	// per-entry-signature check further down only catches this for
+	// signature-bearing entries, and is skipped entirely once any legacy
+	// (pre-signature) entry is present. Requiring a clean resolve of the
+	// current generation first closes that gap unconditionally.
+	if is.Status.ObservedGeneration != is.Generation {
+		return false, true
+	}
+
 	state, err := imagestate.Load(ctx, c, is.Namespace, is.Name)
 	if err != nil || len(state) == 0 {
 		return false, false

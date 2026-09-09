@@ -338,6 +338,54 @@ var _ = Describe("Coverage tests", func() {
 			Expect(know).To(BeTrue())
 		})
 
+		It("returns (false, true) when ObservedGeneration lags the current spec Generation, even if every known entry is Mirrored", func() {
+			op := mirrorv1alpha1.Operator{Catalog: "quay.io/gen-lag/catalog:v1"}
+			sig := mirrorv1alpha1.OperatorEntrySignature(op)
+
+			state := imagestate.ImageState{
+				"d1": {Source: "s1", State: "Mirrored", Origin: imagestate.OriginOperator, EntrySig: sig},
+			}
+			cm := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: "gen-lag-images", Namespace: ns},
+				BinaryData: map[string][]byte{"images.json.gz": mustGzipJSON(state)},
+			}
+			c := fake.NewClientBuilder().WithScheme(fakeScheme).WithObjects(cm).Build()
+			is := &mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "gen-lag", Namespace: ns, Generation: 2},
+				Spec: mirrorv1alpha1.ImageSetSpec{Mirror: mirrorv1alpha1.Mirror{
+					Operators: []mirrorv1alpha1.Operator{op},
+				}},
+				Status: mirrorv1alpha1.ImageSetStatus{ObservedGeneration: 1},
+			}
+			complete, know := operatorImagesMirrored(bgCtx, c, is)
+			Expect(complete).To(BeFalse())
+			Expect(know).To(BeTrue())
+		})
+
+		It("returns (true, true) when ObservedGeneration matches the current spec Generation and every entry is Mirrored", func() {
+			op := mirrorv1alpha1.Operator{Catalog: "quay.io/gen-match/catalog:v1"}
+			sig := mirrorv1alpha1.OperatorEntrySignature(op)
+
+			state := imagestate.ImageState{
+				"d1": {Source: "s1", State: "Mirrored", Origin: imagestate.OriginOperator, EntrySig: sig},
+			}
+			cm := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: "gen-match-images", Namespace: ns},
+				BinaryData: map[string][]byte{"images.json.gz": mustGzipJSON(state)},
+			}
+			c := fake.NewClientBuilder().WithScheme(fakeScheme).WithObjects(cm).Build()
+			is := &mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "gen-match", Namespace: ns, Generation: 2},
+				Spec: mirrorv1alpha1.ImageSetSpec{Mirror: mirrorv1alpha1.Mirror{
+					Operators: []mirrorv1alpha1.Operator{op},
+				}},
+				Status: mirrorv1alpha1.ImageSetStatus{ObservedGeneration: 2},
+			}
+			complete, know := operatorImagesMirrored(bgCtx, c, is)
+			Expect(complete).To(BeTrue())
+			Expect(know).To(BeTrue())
+		})
+
 		It("skips signature enforcement when legacy entries without EntrySig exist", func() {
 			op := mirrorv1alpha1.Operator{Catalog: "quay.io/legacy/catalog:v1"}
 
@@ -1305,6 +1353,11 @@ var _ = Describe("Coverage tests", func() {
 
 			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: isName, Namespace: ns}, is)).To(Succeed())
 			is.Status.LastSuccessfulPollTime = &metav1.Time{Time: time.Now().Add(-48 * time.Hour)}
+			// Simulate the manager having already cleanly resolved this exact
+			// spec generation (see operatorImagesMirrored's ObservedGeneration
+			// guard) — otherwise the gate correctly stays closed regardless of
+			// what the imagestate ConfigMap says.
+			is.Status.ObservedGeneration = is.Generation
 			Expect(k8sClient.Status().Update(localCtx, is)).To(Succeed())
 
 			r := &ImageSetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), CatalogBuildMgr: bm}

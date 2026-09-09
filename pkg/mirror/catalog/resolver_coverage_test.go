@@ -1040,9 +1040,12 @@ func TestExtractImagesWithBundles_ManyBundlesForSameImage(t *testing.T) {
 	if len(result) != 1 {
 		t.Errorf("expected 1 unique image, got %d", len(result))
 	}
-	label := result["reg/shared@sha256:aaa"]
-	if !strings.Contains(label, "(+") {
-		t.Errorf("expected truncated label with (+N more), got %q", label)
+	info := result["reg/shared@sha256:aaa"]
+	if !strings.Contains(info.Label, "(+") {
+		t.Errorf("expected truncated label with (+N more), got %q", info.Label)
+	}
+	if !info.IsBundleImage {
+		t.Error("expected IsBundleImage to be true for a bundle's own Image field")
 	}
 }
 
