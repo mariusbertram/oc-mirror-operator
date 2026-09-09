@@ -1221,7 +1221,9 @@ func renderBundleRefs(names []string) string {
 // the filtered FBC, and the full upstream FBC. Used by the manager to persist
 // package information in ConfigMaps.
 // The map returned contains destination image reference → BundleImageInfo.
-func (r *CatalogResolver) ResolveCatalogFull(ctx context.Context, catalogImage string, includes []mirrorv1alpha1.IncludePackage) (images map[string]BundleImageInfo, filtered *declcfg.DeclarativeConfig, upstream *declcfg.DeclarativeConfig, err error) {
+func (r *CatalogResolver) ResolveCatalogFull(ctx context.Context, catalogImage string, includes []mirrorv1alpha1.IncludePackage) (
+	images map[string]BundleImageInfo, filtered *declcfg.DeclarativeConfig, upstream *declcfg.DeclarativeConfig, err error,
+) {
 	if _, err := ref.New(catalogImage); err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to parse catalog image reference: %w", err)
 	}
