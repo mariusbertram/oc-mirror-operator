@@ -81,6 +81,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already triaged as `not_affected` in `vex/oc-mirror-operator.openvex.json`.
 
 ### Fixed
+- **Operator catalogs could still offer bundles that were not mirrored yet**:
+  - *Digest/state race*: the manager writes a newly resolved catalog digest
+    onto the ImageSet as soon as it resolves it, but that digest's `Pending`
+    entries only reach the imagestate ConfigMap at the end of the tick. A
+    catalog build started in between (poll expiry, recollect, a job
+    re-creation) saw the old, fully `Mirrored` state and pinned the *new*
+    digest. The manager now records the resolved catalog digests on the
+    ImageSet's imagestate ConfigMap itself
+    (`mirror.openshift.io/resolved-catalog-digests`), written in the same
+    update as the entries, and the controller pins builds to that — so it
+    can never pair a digest with image entries from a different resolution.
+  - *Recollect bypassed the gate*: the `recollect` annotation opened the
+    catalog-build gate without any mirroring check. It now only requests a
+    rebuild, which waits like any other.
+  - *Gate scope*: a catalog build (or deleting an existing job to rebuild) now
+    requires that **no image of the ImageSet** is pending — release,
+    operator, additional and Helm images alike — not just operator-origin
+    ones. This applies to every job creation, including a second catalog's
+    job while another one is already running.
+  - *Missing rebuild triggers*: the build signature was never recorded on a
+    first build, so a later package change did not trigger a rebuild, and a
+    changed upstream catalog digest only did on poll expiry. The controller
+    now records the signature and resolved-digest fingerprint
+    (`mirror.openshift.io/catalog-build-digests`) of every build and rebuilds
+    — once nothing is pending — when either changes. Catalogs built by an
+    earlier version are rebuilt once.
+  - The controller now also watches the per-ImageSet imagestate ConfigMaps
+    (it only mapped the legacy per-MirrorTarget name), so the build starts as
+    soon as the last image is mirrored.
 - **Catalog build gate could still open on a stale imagestate scan**: the
   `CatalogReady` gate required every operator-origin imagestate entry to be
   `Mirrored`/`PermanentlyFailed`, cross-checked against the current spec via

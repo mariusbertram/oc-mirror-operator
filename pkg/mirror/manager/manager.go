@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"os"
 	"sort"
@@ -96,7 +97,15 @@ type MirrorManager struct {
 	// out-of-band rather than on ImageEntry so imageState can stay a single
 	// dest-keyed map for O(1) worker status/should-mirror lookups regardless
 	// of how many ImageSets reference a destination.
-	owners         map[string][]string
+	owners map[string][]string
+	// catalogDigests holds, per ImageSet, the catalog-digest cache
+	// annotations (mirrorv1alpha1.CatalogDigestAnnotationKey → token) that the
+	// ImageSet's entries in imageState were resolved from. Flushed into the
+	// same ConfigMap write as those entries (imagestate.CatalogDigestsAnnotation)
+	// so the controller always pins a catalog build to a digest whose images
+	// it can see — never to a digest resolved moments ago whose Pending
+	// entries haven't been flushed yet.
+	catalogDigests map[string]map[string]string
 	lastDriftCheck time.Time // last time a drift-check sweep was started
 	stateDirty     bool      // true when imageState/owners has unsaved changes
 	statusDirty    bool      // true when ImageSet.status needs a Kubernetes write
@@ -980,6 +989,12 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 					_ = mergeResolvedIntoConsolidated(m.imageState, m.owners, newPerISState, is.Name)
 					m.stateDirty = true
 				}
+				// Either merged just above, or equal to what's already in
+				// memory — so the digests this resolve used now describe
+				// is.Name's entries in m.imageState.
+				if m.setCatalogDigestsLocked(is.Name, catalogDigestsOf(isCopy.Annotations)) {
+					m.stateDirty = true
+				}
 			}
 		}
 	}
@@ -1222,7 +1237,7 @@ func (m *MirrorManager) flushPartitionedState(ctx context.Context, mt *mirrorv1a
 
 	var firstErr error
 	for isName, state := range perImageSet {
-		if err := imagestate.Save(ctx, m.Client, m.Namespace, isName, state, mt, m.Scheme); err != nil && firstErr == nil {
+		if err := imagestate.SaveWithCatalogDigests(ctx, m.Client, m.Namespace, isName, state, m.catalogDigests[isName], mt, m.Scheme); err != nil && firstErr == nil {
 			firstErr = fmt.Errorf("save state for imageset %s: %w", isName, err)
 		}
 	}
@@ -1230,6 +1245,20 @@ func (m *MirrorManager) flushPartitionedState(ctx context.Context, mt *mirrorv1a
 		firstErr = fmt.Errorf("save shared image index: %w", err)
 	}
 	return firstErr
+}
+
+// setCatalogDigestsLocked records the catalog digests isName's entries were
+// resolved from, reporting whether they changed (and so need a flush).
+// Caller must hold m.mu.
+func (m *MirrorManager) setCatalogDigestsLocked(isName string, digests map[string]string) bool {
+	if m.catalogDigests == nil {
+		m.catalogDigests = make(map[string]map[string]string)
+	}
+	if maps.Equal(m.catalogDigests[isName], digests) {
+		return false
+	}
+	m.catalogDigests[isName] = digests
+	return true
 }
 
 // appendOrphans merges newOrphans into the MirrorTarget's pending-orphans

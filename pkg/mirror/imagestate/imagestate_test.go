@@ -311,6 +311,75 @@ func TestSaveRaw_GetErrorNonNotFound(t *testing.T) {
 	}
 }
 
+// --- SaveWithCatalogDigests / LoadWithCatalogDigests ---
+
+func TestCatalogDigests_RoundtripInOneConfigMap(t *testing.T) {
+	c := newFakeClient().Build()
+	ctx := context.Background()
+	digests := map[string]string{"mirror.openshift.io/catalog-digest-abc": "v1:sha256:1"}
+	if err := SaveWithCatalogDigests(ctx, c, "ns", "is", ImageState{"d": {Source: "s", State: "Pending"}}, digests, nil, nil); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	// Update in place: the new digests replace the old ones in the same write.
+	digests2 := map[string]string{"mirror.openshift.io/catalog-digest-abc": "v1:sha256:2"}
+	if err := SaveWithCatalogDigests(ctx, c, "ns", "is", ImageState{"d": {Source: "s", State: testStateMirrored}}, digests2, nil, nil); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	state, loaded, err := LoadWithCatalogDigests(ctx, c, "ns", "is")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if state["d"].State != testStateMirrored || loaded["mirror.openshift.io/catalog-digest-abc"] != "v1:sha256:2" {
+		t.Fatalf("unexpected state/digests: %v %v", state, loaded)
+	}
+}
+
+func TestSaveWithCatalogDigests_NoDigestsWritesNoAnnotation(t *testing.T) {
+	c := newFakeClient().Build()
+	if err := SaveWithCatalogDigests(context.Background(), c, "ns", "is", ImageState{}, nil, nil, nil); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	cm := &corev1.ConfigMap{}
+	_ = c.Get(context.Background(), types.NamespacedName{Namespace: "ns", Name: ConfigMapName("is")}, cm)
+	if _, ok := cm.Annotations[CatalogDigestsAnnotation]; ok {
+		t.Fatal("no annotation expected without digests")
+	}
+}
+
+func TestLoadWithCatalogDigests_MissingConfigMap(t *testing.T) {
+	state, digests, err := LoadWithCatalogDigests(context.Background(), newFakeClient().Build(), "ns", "missing")
+	if err != nil || state == nil || digests == nil || len(state) != 0 || len(digests) != 0 {
+		t.Fatalf("expected empty non-nil results, got %v %v %v", state, digests, err)
+	}
+}
+
+func TestLoadWithCatalogDigests_Errors(t *testing.T) {
+	failing := interceptor.NewClient(newFakeClient().Build(), interceptor.Funcs{
+		Get: func(_ context.Context, _ client.WithWatch, _ client.ObjectKey, _ client.Object, _ ...client.GetOption) error {
+			return fmt.Errorf("get failed")
+		},
+	})
+	if _, _, err := LoadWithCatalogDigests(context.Background(), failing, "ns", "is"); err == nil {
+		t.Fatal("expected get error")
+	}
+
+	corrupt := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: ConfigMapName("corrupt"), Namespace: "ns"},
+		BinaryData: map[string][]byte{"images.json.gz": []byte("not gzip")},
+	}
+	badAnno := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: ConfigMapName("bad-anno"), Namespace: "ns",
+			Annotations: map[string]string{CatalogDigestsAnnotation: "{not json"}},
+	}
+	c := newFakeClient().WithRuntimeObjects(corrupt, badAnno).Build()
+	if _, _, err := LoadWithCatalogDigests(context.Background(), c, "ns", "corrupt"); err == nil {
+		t.Fatal("expected decode error for corrupt entries")
+	}
+	if _, _, err := LoadWithCatalogDigests(context.Background(), c, "ns", "bad-anno"); err == nil || !strings.Contains(err.Error(), CatalogDigestsAnnotation) {
+		t.Fatalf("expected annotation decode error, got %v", err)
+	}
+}
+
 // --- LoadForTarget ---
 
 func TestLoadForTarget_MissingConfigMap(t *testing.T) {

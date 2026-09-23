@@ -23,6 +23,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -37,6 +38,39 @@ func mustGzipJSON(v interface{}) []byte {
 	Expect(json.NewEncoder(gz).Encode(v)).To(Succeed())
 	Expect(gz.Close()).To(Succeed())
 	return buf.Bytes()
+}
+
+// seedResolvedState simulates the manager having cleanly resolved the
+// ImageSet's current spec: it writes the ImageSet's imagestate ConfigMap —
+// one operator entry per configured catalog in entryState, plus extra, and the
+// resolved catalog digests (sha256:aaaa… unless overridden) in the same
+// write — and advances ObservedGeneration. isName's object is re-read.
+func seedResolvedState(ctx context.Context, is *mirrorv1alpha1.ImageSet, entryState string, extra imagestate.ImageState, digests map[string]string) {
+	Expect(k8sClient.Get(ctx, types.NamespacedName{Name: is.Name, Namespace: is.Namespace}, is)).To(Succeed())
+	state := imagestate.ImageState{}
+	if digests == nil {
+		digests = map[string]string{}
+	}
+	for i, op := range is.Spec.Mirror.Operators {
+		sig := mirrorv1alpha1.OperatorEntrySignature(op)
+		state["reg.example.com/bundle-"+is.Name+"-"+string(rune('a'+i))] = &imagestate.ImageEntry{
+			Source: "src", State: entryState, Origin: imagestate.OriginOperator, EntrySig: sig, IsBundleImage: true,
+		}
+		key := mirrorv1alpha1.CatalogDigestAnnotationKey(sig)
+		if _, ok := digests[key]; !ok {
+			digests[key] = mirrorv1alpha1.OperatorCacheValue("sha256:" + strings.Repeat("a", 64))
+		}
+	}
+	for dest, e := range extra {
+		state[dest] = e
+	}
+	Expect(imagestate.SaveWithCatalogDigests(ctx, k8sClient, is.Namespace, is.Name, state, digests, nil, nil)).To(Succeed())
+	DeferCleanup(func() {
+		_ = k8sClient.Delete(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: imagestate.ConfigMapName(is.Name), Namespace: is.Namespace}})
+	})
+	is.Status.ObservedGeneration = is.Generation
+	Expect(k8sClient.Status().Update(ctx, is)).To(Succeed())
+	Expect(k8sClient.Get(ctx, types.NamespacedName{Name: is.Name, Namespace: is.Namespace}, is)).To(Succeed())
 }
 
 func cleanupMT(ctx context.Context, name string) {
@@ -202,9 +236,9 @@ var _ = Describe("Coverage tests", func() {
 		})
 	})
 
-	// ───────────────────── operatorImagesMirrored (fake client) ─────────────────────
+	// ───────────────────── loadMirrorSnapshot (fake client) ─────────────────────
 
-	Describe("operatorImagesMirrored", func() {
+	Describe("loadMirrorSnapshot", func() {
 		var (
 			fakeScheme *runtime.Scheme
 			bgCtx      context.Context
@@ -220,7 +254,8 @@ var _ = Describe("Coverage tests", func() {
 		It("returns (false, false) when no ConfigMap exists", func() {
 			c := fake.NewClientBuilder().WithScheme(fakeScheme).Build()
 			is := &mirrorv1alpha1.ImageSet{ObjectMeta: metav1.ObjectMeta{Name: "no-cm", Namespace: ns}}
-			complete, know := operatorImagesMirrored(bgCtx, c, is)
+			snap := loadMirrorSnapshot(bgCtx, c, is)
+			complete, know := snap.complete, snap.knowState
 			Expect(complete).To(BeFalse())
 			Expect(know).To(BeFalse())
 		})
@@ -236,7 +271,8 @@ var _ = Describe("Coverage tests", func() {
 			}
 			c := fake.NewClientBuilder().WithScheme(fakeScheme).WithObjects(cm).Build()
 			is := &mirrorv1alpha1.ImageSet{ObjectMeta: metav1.ObjectMeta{Name: "all-mirrored", Namespace: ns}}
-			complete, know := operatorImagesMirrored(bgCtx, c, is)
+			snap := loadMirrorSnapshot(bgCtx, c, is)
+			complete, know := snap.complete, snap.knowState
 			Expect(complete).To(BeTrue())
 			Expect(know).To(BeTrue())
 		})
@@ -252,7 +288,8 @@ var _ = Describe("Coverage tests", func() {
 			}
 			c := fake.NewClientBuilder().WithScheme(fakeScheme).WithObjects(cm).Build()
 			is := &mirrorv1alpha1.ImageSet{ObjectMeta: metav1.ObjectMeta{Name: "partial", Namespace: ns}}
-			complete, know := operatorImagesMirrored(bgCtx, c, is)
+			snap := loadMirrorSnapshot(bgCtx, c, is)
+			complete, know := snap.complete, snap.knowState
 			Expect(complete).To(BeFalse())
 			Expect(know).To(BeTrue())
 		})
@@ -267,7 +304,8 @@ var _ = Describe("Coverage tests", func() {
 			}
 			c := fake.NewClientBuilder().WithScheme(fakeScheme).WithObjects(cm).Build()
 			is := &mirrorv1alpha1.ImageSet{ObjectMeta: metav1.ObjectMeta{Name: "no-ops", Namespace: ns}}
-			complete, know := operatorImagesMirrored(bgCtx, c, is)
+			snap := loadMirrorSnapshot(bgCtx, c, is)
+			complete, know := snap.complete, snap.knowState
 			Expect(complete).To(BeFalse())
 			Expect(know).To(BeTrue())
 		})
@@ -282,7 +320,8 @@ var _ = Describe("Coverage tests", func() {
 			}
 			c := fake.NewClientBuilder().WithScheme(fakeScheme).WithObjects(cm).Build()
 			is := &mirrorv1alpha1.ImageSet{ObjectMeta: metav1.ObjectMeta{Name: "permfail", Namespace: ns}}
-			complete, know := operatorImagesMirrored(bgCtx, c, is)
+			snap := loadMirrorSnapshot(bgCtx, c, is)
+			complete, know := snap.complete, snap.knowState
 			Expect(complete).To(BeTrue())
 			Expect(know).To(BeTrue())
 		})
@@ -310,7 +349,8 @@ var _ = Describe("Coverage tests", func() {
 					Operators: []mirrorv1alpha1.Operator{oldOp, newOp},
 				}},
 			}
-			complete, know := operatorImagesMirrored(bgCtx, c, is)
+			snap := loadMirrorSnapshot(bgCtx, c, is)
+			complete, know := snap.complete, snap.knowState
 			Expect(complete).To(BeFalse())
 			Expect(know).To(BeTrue())
 		})
@@ -333,7 +373,8 @@ var _ = Describe("Coverage tests", func() {
 					Operators: []mirrorv1alpha1.Operator{op},
 				}},
 			}
-			complete, know := operatorImagesMirrored(bgCtx, c, is)
+			snap := loadMirrorSnapshot(bgCtx, c, is)
+			complete, know := snap.complete, snap.knowState
 			Expect(complete).To(BeTrue())
 			Expect(know).To(BeTrue())
 		})
@@ -357,7 +398,8 @@ var _ = Describe("Coverage tests", func() {
 				}},
 				Status: mirrorv1alpha1.ImageSetStatus{ObservedGeneration: 1},
 			}
-			complete, know := operatorImagesMirrored(bgCtx, c, is)
+			snap := loadMirrorSnapshot(bgCtx, c, is)
+			complete, know := snap.complete, snap.knowState
 			Expect(complete).To(BeFalse())
 			Expect(know).To(BeTrue())
 		})
@@ -381,7 +423,8 @@ var _ = Describe("Coverage tests", func() {
 				}},
 				Status: mirrorv1alpha1.ImageSetStatus{ObservedGeneration: 2},
 			}
-			complete, know := operatorImagesMirrored(bgCtx, c, is)
+			snap := loadMirrorSnapshot(bgCtx, c, is)
+			complete, know := snap.complete, snap.knowState
 			Expect(complete).To(BeTrue())
 			Expect(know).To(BeTrue())
 		})
@@ -403,9 +446,88 @@ var _ = Describe("Coverage tests", func() {
 					Operators: []mirrorv1alpha1.Operator{op},
 				}},
 			}
-			complete, know := operatorImagesMirrored(bgCtx, c, is)
+			snap := loadMirrorSnapshot(bgCtx, c, is)
+			complete, know := snap.complete, snap.knowState
 			Expect(complete).To(BeTrue())
 			Expect(know).To(BeTrue())
+		})
+
+		It("is incomplete while any image of the ImageSet is pending, whatever its origin", func() {
+			state := imagestate.ImageState{
+				"d1": {Source: "s1", State: "Mirrored", Origin: imagestate.OriginOperator},
+				"d2": {Source: "s2", State: "Pending", Origin: imagestate.OriginRelease},
+				"d3": {Source: "s3", State: "Failed", RetryCount: 3, Origin: imagestate.OriginAdditional},
+				"d4": {Source: "s4", State: "Failed", PermanentlyFailed: true, Origin: imagestate.OriginHelm},
+				"d5": nil,
+			}
+			cm := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: "mixed-pending-images", Namespace: ns},
+				BinaryData: map[string][]byte{"images.json.gz": mustGzipJSON(state)},
+			}
+			c := fake.NewClientBuilder().WithScheme(fakeScheme).WithObjects(cm).Build()
+			is := &mirrorv1alpha1.ImageSet{ObjectMeta: metav1.ObjectMeta{Name: "mixed-pending", Namespace: ns}}
+			snap := loadMirrorSnapshot(bgCtx, c, is)
+			Expect(snap.complete).To(BeFalse())
+			Expect(snap.knowState).To(BeTrue())
+			Expect(snap.pending).To(Equal(2), "Pending and retrying-Failed count as pending; PermanentlyFailed does not")
+		})
+
+		It("returns the catalog digests stored with the entries", func() {
+			op := mirrorv1alpha1.Operator{Catalog: "quay.io/digests/catalog:v1"}
+			sig := mirrorv1alpha1.OperatorEntrySignature(op)
+			key := mirrorv1alpha1.CatalogDigestAnnotationKey(sig)
+			digests := map[string]string{key: mirrorv1alpha1.OperatorCacheValue("sha256:" + strings.Repeat("c", 64))}
+			c := fake.NewClientBuilder().WithScheme(fakeScheme).Build()
+			Expect(imagestate.SaveWithCatalogDigests(bgCtx, c, ns, "with-digests", imagestate.ImageState{
+				"d1": {Source: "s1", State: "Mirrored", Origin: imagestate.OriginOperator, EntrySig: sig},
+			}, digests, nil, nil)).To(Succeed())
+			is := &mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "with-digests", Namespace: ns},
+				Spec:       mirrorv1alpha1.ImageSetSpec{Mirror: mirrorv1alpha1.Mirror{Operators: []mirrorv1alpha1.Operator{op}}},
+			}
+			snap := loadMirrorSnapshot(bgCtx, c, is)
+			Expect(snap.complete).To(BeTrue())
+			Expect(snap.digests).To(Equal(digests))
+		})
+	})
+
+	// ───────────────────── imageStateConfigMapToRequests ─────────────────────
+
+	Describe("imageStateConfigMapToRequests", func() {
+		var (
+			c client.Client
+			r *ImageSetReconciler
+		)
+		BeforeEach(func() {
+			s := runtime.NewScheme()
+			Expect(mirrorv1alpha1.AddToScheme(s)).To(Succeed())
+			Expect(corev1.AddToScheme(s)).To(Succeed())
+			c = fake.NewClientBuilder().WithScheme(s).WithObjects(
+				&mirrorv1alpha1.ImageSet{ObjectMeta: metav1.ObjectMeta{Name: "is-own", Namespace: ns}},
+				&mirrorv1alpha1.MirrorTarget{
+					ObjectMeta: metav1.ObjectMeta{Name: "mt-legacy", Namespace: ns},
+					Spec:       mirrorv1alpha1.MirrorTargetSpec{ImageSets: []string{"is-x", "is-y"}},
+				},
+			).Build()
+			r = &ImageSetReconciler{Client: c}
+		})
+		cmNamed := func(name string) *corev1.ConfigMap {
+			return &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns}}
+		}
+
+		It("maps an ImageSet's own state ConfigMap to that ImageSet", func() {
+			Expect(r.imageStateConfigMapToRequests(context.Background(), cmNamed("is-own-images"))).To(Equal([]reconcile.Request{
+				{NamespacedName: types.NamespacedName{Name: "is-own", Namespace: ns}},
+			}))
+		})
+
+		It("maps the legacy per-MirrorTarget ConfigMap to all of the target's ImageSets", func() {
+			Expect(r.imageStateConfigMapToRequests(context.Background(), cmNamed("mt-legacy-images"))).To(HaveLen(2))
+		})
+
+		It("ignores unrelated ConfigMaps", func() {
+			Expect(r.imageStateConfigMapToRequests(context.Background(), cmNamed("something-else"))).To(BeEmpty())
+			Expect(r.imageStateConfigMapToRequests(context.Background(), cmNamed("unknown-images"))).To(BeEmpty())
 		})
 	})
 
@@ -498,7 +620,7 @@ var _ = Describe("Coverage tests", func() {
 			Expect(found).To(BeTrue(), "expected CatalogReady=WaitingForOperatorMirror condition")
 		})
 
-		It("creates build jobs when gate is open via recollect annotation", func() {
+		It("creates build jobs only once the ImageSet has no pending images — recollect does not bypass this", func() {
 			localCtx := context.Background()
 			isName := "is-catgate-recollect"
 			mtName := "mt-catgate-recollect"
@@ -522,39 +644,38 @@ var _ = Describe("Coverage tests", func() {
 					Packages: []mirrorv1alpha1.IncludePackage{{Name: "web-terminal"}},
 				},
 			}
-			// pinnedCatalogRef requires a resolved-digest annotation (written
-			// by the manager once it has actually mirrored images for this
-			// entry) before a CatalogBuildJob will be created — this is the
-			// digest-pinning gate that stops a build from ever pulling
-			// content the manager hasn't mirrored yet.
-			digestAnnoKey := mirrorv1alpha1.CatalogDigestAnnotationKey(mirrorv1alpha1.OperatorEntrySignature(op))
-
 			is := &mirrorv1alpha1.ImageSet{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      isName,
-					Namespace: ns,
-					Annotations: map[string]string{
-						mirrorv1alpha1.RecollectAnnotation: "",
-						digestAnnoKey:                      mirrorv1alpha1.OperatorCacheValue("sha256:abc123"),
-					},
+					Name:        isName,
+					Namespace:   ns,
+					Annotations: map[string]string{mirrorv1alpha1.RecollectAnnotation: "1"},
 				},
 				Spec: mirrorv1alpha1.ImageSetSpec{
-					Mirror: mirrorv1alpha1.Mirror{
-						Operators: []mirrorv1alpha1.Operator{op},
-					},
+					Mirror: mirrorv1alpha1.Mirror{Operators: []mirrorv1alpha1.Operator{op}},
 				},
 			}
 			Expect(k8sClient.Create(localCtx, is)).To(Succeed())
 			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, is) })
 
-			r := &ImageSetReconciler{
-				Client:          k8sClient,
-				Scheme:          k8sClient.Scheme(),
-				CatalogBuildMgr: bm,
-			}
-			Expect(r.reconcileCatalogBuildJobs(localCtx, is, mt, false)).To(Succeed())
-
+			r := &ImageSetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), CatalogBuildMgr: bm}
 			jobName := builder.JobName(isName, "quay.io/redhat/catalog:v4.21")
+
+			// Bundle mirrored, but an additional image is still pending: no build.
+			seedResolvedState(localCtx, is, "Mirrored", imagestate.ImageState{
+				"reg.example.com/extra:v1": {Source: "quay.io/extra:v1", State: "Pending", Origin: imagestate.OriginAdditional},
+			}, nil)
+			Expect(r.reconcileCatalogBuildJobs(localCtx, is, mt, false)).To(Succeed())
+			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: jobName, Namespace: ns}, &batchv1.Job{})).NotTo(Succeed(),
+				"no catalog build while any image of the ImageSet is pending, even with recollect set")
+			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: isName, Namespace: ns}, is)).To(Succeed())
+			cond := apimeta.FindStatusCondition(is.Status.Conditions, conditionCatalogReady)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Reason).To(Equal(reasonWaitingForOperatorMirror))
+			Expect(cond.Message).To(ContainSubstring("1 pending"))
+
+			// Everything mirrored: the build starts.
+			seedResolvedState(localCtx, is, "Mirrored", nil, nil)
+			Expect(r.reconcileCatalogBuildJobs(localCtx, is, mt, false)).To(Succeed())
 			job := &batchv1.Job{}
 			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: jobName, Namespace: ns}, job)).To(Succeed())
 			DeferCleanup(func() {
@@ -563,13 +684,70 @@ var _ = Describe("Coverage tests", func() {
 			})
 
 			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: isName, Namespace: ns}, is)).To(Succeed())
-			var foundRunning bool
-			for _, c := range is.Status.Conditions {
-				if c.Type == conditionCatalogReady && c.Reason == "CatalogBuildRunning" {
-					foundRunning = true
+			cond = apimeta.FindStatusCondition(is.Status.Conditions, conditionCatalogReady)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Reason).To(Equal("CatalogBuildRunning"))
+			Expect(is.Annotations[catalogBuildDigestsAnnotation]).NotTo(BeEmpty(),
+				"the digests the build was started from must be recorded")
+		})
+
+		It("pins the build to the digest stored with the entries, not a newer one on the ImageSet (resolve/flush race)", func() {
+			// The manager writes a newly resolved catalog digest onto the
+			// ImageSet before that digest's Pending entries reach the
+			// imagestate ConfigMap. A build started in that window must not
+			// pull the new digest.
+			localCtx := context.Background()
+			isName := "is-catbuild-race"
+			mtName := "mt-catbuild-race"
+
+			Expect(os.Setenv("OPERATOR_IMAGE", "test-operator:latest")).To(Succeed())
+			Expect(os.Setenv("MANAGER_IMAGE", "test-manager:latest")).To(Succeed())
+			Expect(os.Setenv("WORKER_IMAGE", "test-worker:latest")).To(Succeed())
+			bm, bmErr := builder.New()
+			Expect(bmErr).NotTo(HaveOccurred())
+
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: mtName, Namespace: ns},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com", ImageSets: []string{isName}},
+			}
+			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, mt) })
+
+			op := mirrorv1alpha1.Operator{Catalog: "quay.io/redhat/racecat:v4.21"}
+			annoKey := mirrorv1alpha1.CatalogDigestAnnotationKey(mirrorv1alpha1.OperatorEntrySignature(op))
+			mirroredDigest := "sha256:" + strings.Repeat("a", 64)
+			newerDigest := "sha256:" + strings.Repeat("b", 64)
+
+			is := &mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        isName,
+					Namespace:   ns,
+					Annotations: map[string]string{annoKey: mirrorv1alpha1.OperatorCacheValue(newerDigest)},
+				},
+				Spec: mirrorv1alpha1.ImageSetSpec{
+					Mirror: mirrorv1alpha1.Mirror{Operators: []mirrorv1alpha1.Operator{op}},
+				},
+			}
+			Expect(k8sClient.Create(localCtx, is)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, is) })
+			seedResolvedState(localCtx, is, "Mirrored", nil, map[string]string{annoKey: mirrorv1alpha1.OperatorCacheValue(mirroredDigest)})
+
+			r := &ImageSetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), CatalogBuildMgr: bm}
+			Expect(r.reconcileCatalogBuildJobs(localCtx, is, mt, false)).To(Succeed())
+
+			job := &batchv1.Job{}
+			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: builder.JobName(isName, op.Catalog), Namespace: ns}, job)).To(Succeed())
+			DeferCleanup(func() {
+				prop := metav1.DeletePropagationBackground
+				_ = k8sClient.Delete(localCtx, job, &client.DeleteOptions{PropagationPolicy: &prop})
+			})
+			var sourceCatalog string
+			for _, e := range job.Spec.Template.Spec.Containers[0].Env {
+				if e.Name == builder.EnvSourceCatalog {
+					sourceCatalog = e.Value
 				}
 			}
-			Expect(foundRunning).To(BeTrue(), "expected CatalogReady=CatalogBuildRunning")
+			Expect(sourceCatalog).To(Equal("quay.io/redhat/racecat@" + mirroredDigest))
 		})
 
 		It("pins the CatalogBuildJob's pull target to the resolved digest, not the mutable tag", func() {
@@ -603,20 +781,14 @@ var _ = Describe("Coverage tests", func() {
 			resolvedDigest := "sha256:" + strings.Repeat("a", 64)
 
 			is := &mirrorv1alpha1.ImageSet{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      isName,
-					Namespace: ns,
-					Annotations: map[string]string{
-						mirrorv1alpha1.RecollectAnnotation: "",
-						digestAnnoKey:                      mirrorv1alpha1.OperatorCacheValue(resolvedDigest),
-					},
-				},
+				ObjectMeta: metav1.ObjectMeta{Name: isName, Namespace: ns},
 				Spec: mirrorv1alpha1.ImageSetSpec{
 					Mirror: mirrorv1alpha1.Mirror{Operators: []mirrorv1alpha1.Operator{op}},
 				},
 			}
 			Expect(k8sClient.Create(localCtx, is)).To(Succeed())
 			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, is) })
+			seedResolvedState(localCtx, is, "Mirrored", nil, map[string]string{digestAnnoKey: mirrorv1alpha1.OperatorCacheValue(resolvedDigest)})
 
 			r := &ImageSetReconciler{
 				Client:          k8sClient,
@@ -669,20 +841,19 @@ var _ = Describe("Coverage tests", func() {
 			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
 			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, mt) })
 
+			op := mirrorv1alpha1.Operator{Catalog: "quay.io/redhat/nodigest:v4.21"}
 			is := &mirrorv1alpha1.ImageSet{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:        isName,
-					Namespace:   ns,
-					Annotations: map[string]string{mirrorv1alpha1.RecollectAnnotation: ""},
-				},
+				ObjectMeta: metav1.ObjectMeta{Name: isName, Namespace: ns},
 				Spec: mirrorv1alpha1.ImageSetSpec{
-					Mirror: mirrorv1alpha1.Mirror{
-						Operators: []mirrorv1alpha1.Operator{{Catalog: "quay.io/redhat/nodigest:v4.21"}},
-					},
+					Mirror: mirrorv1alpha1.Mirror{Operators: []mirrorv1alpha1.Operator{op}},
 				},
 			}
 			Expect(k8sClient.Create(localCtx, is)).To(Succeed())
 			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, is) })
+			// Everything mirrored, but no digest recorded with the entries.
+			seedResolvedState(localCtx, is, "Mirrored", nil, map[string]string{
+				mirrorv1alpha1.CatalogDigestAnnotationKey(mirrorv1alpha1.OperatorEntrySignature(op)): "",
+			})
 
 			r := &ImageSetReconciler{
 				Client:          k8sClient,
@@ -917,14 +1088,16 @@ var _ = Describe("Coverage tests", func() {
 				Scheme:          k8sClient.Scheme(),
 				CatalogBuildMgr: bm,
 			}
-			// Re-read to get latest ResourceVersion after creation
-			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: isName, Namespace: ns}, is)).To(Succeed())
+			seedResolvedState(localCtx, is, "Mirrored", nil, nil)
 			Expect(r.reconcileCatalogBuildJobs(localCtx, is, mt, false)).To(Succeed())
 
 			// The old job should be deleted and a new one created (or job recreated).
 			// Verify the annotation was updated with the new build sig.
 			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: isName, Namespace: ns}, is)).To(Succeed())
 			Expect(is.Annotations["mirror.openshift.io/catalog-build-sig"]).NotTo(Equal("stale-sig"))
+			newJob := &batchv1.Job{}
+			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: jobName, Namespace: ns}, newJob)).To(Succeed())
+			Expect(newJob.UID).NotTo(Equal(oldJob.UID), "the stale job must have been replaced")
 
 			DeferCleanup(func() {
 				j := &batchv1.Job{}
@@ -1294,6 +1467,15 @@ var _ = Describe("Coverage tests", func() {
 			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, is) })
 
 			r := &ImageSetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), CatalogBuildMgr: bm}
+
+			// While images are pending the recollect value is not honored yet —
+			// it must still trigger the rebuild once mirroring finishes.
+			seedResolvedState(localCtx, is, "Pending", nil, nil)
+			Expect(r.reconcileCatalogBuildJobs(localCtx, is, mt, false)).To(Succeed())
+			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: isName, Namespace: ns}, is)).To(Succeed())
+			Expect(is.Annotations).NotTo(HaveKey("mirror.openshift.io/catalog-build-recollect-sig"))
+
+			seedResolvedState(localCtx, is, "Mirrored", nil, nil)
 			Expect(r.reconcileCatalogBuildJobs(localCtx, is, mt, false)).To(Succeed())
 
 			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: isName, Namespace: ns}, is)).To(Succeed())
@@ -1460,6 +1642,283 @@ var _ = Describe("Coverage tests", func() {
 			Expect(is.Annotations["mirror.openshift.io/catalog-build-poll-sig"]).To(BeEmpty(),
 				"poll-forced rebuild must not fire while the existing build job is still Pending/Running")
 		})
+
+		Context("rebuilds on changed catalog content", func() {
+			var (
+				localCtx context.Context
+				bm       *builder.CatalogBuildManager
+				mt       *mirrorv1alpha1.MirrorTarget
+				r        *ImageSetReconciler
+			)
+			digestA := "sha256:" + strings.Repeat("a", 64)
+			digestB := "sha256:" + strings.Repeat("b", 64)
+
+			BeforeEach(func() {
+				localCtx = context.Background()
+				Expect(os.Setenv("OPERATOR_IMAGE", "test-operator:latest")).To(Succeed())
+				Expect(os.Setenv("MANAGER_IMAGE", "test-manager:latest")).To(Succeed())
+				Expect(os.Setenv("WORKER_IMAGE", "test-worker:latest")).To(Succeed())
+				var err error
+				bm, err = builder.New()
+				Expect(err).NotTo(HaveOccurred())
+				r = &ImageSetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), CatalogBuildMgr: bm}
+			})
+
+			// setup creates a MirrorTarget + an ImageSet whose catalog was
+			// already built (CatalogReady=True, Succeeded job) from the given
+			// recorded digest fingerprint, and returns the ImageSet and job.
+			setup := func(name string, ops []mirrorv1alpha1.Operator, builtDigests string, jobFinished ...bool) (*mirrorv1alpha1.ImageSet, *batchv1.Job) {
+				mt = &mirrorv1alpha1.MirrorTarget{
+					ObjectMeta: metav1.ObjectMeta{Name: "mt-" + name, Namespace: ns},
+					Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com", ImageSets: []string{name}},
+				}
+				Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
+				DeferCleanup(func() { _ = k8sClient.Delete(localCtx, mt) })
+
+				annotations := map[string]string{catalogBuildSigAnnotation: bm.BuildSignature(ops)}
+				if builtDigests != "" {
+					annotations[catalogBuildDigestsAnnotation] = builtDigests
+				}
+				is := &mirrorv1alpha1.ImageSet{
+					ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Annotations: annotations},
+					Spec:       mirrorv1alpha1.ImageSetSpec{Mirror: mirrorv1alpha1.Mirror{Operators: ops}},
+				}
+				Expect(k8sClient.Create(localCtx, is)).To(Succeed())
+				DeferCleanup(func() { _ = k8sClient.Delete(localCtx, is) })
+				setCondition(&is.Status.Conditions, conditionCatalogReady, metav1.ConditionTrue, "CatalogBuildSucceeded", "built", is.Generation)
+				Expect(k8sClient.Status().Update(localCtx, is)).To(Succeed())
+
+				job := &batchv1.Job{
+					ObjectMeta: metav1.ObjectMeta{Name: builder.JobName(name, ops[0].Catalog), Namespace: ns},
+					Spec: batchv1.JobSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+						Containers:    []corev1.Container{{Name: "build", Image: "busybox"}},
+						RestartPolicy: corev1.RestartPolicyNever,
+					}}},
+				}
+				Expect(k8sClient.Create(localCtx, job)).To(Succeed())
+				if len(jobFinished) == 0 || jobFinished[0] {
+					job.Status.Succeeded = 1
+					Expect(k8sClient.Status().Update(localCtx, job)).To(Succeed())
+				}
+				DeferCleanup(func() {
+					j := &batchv1.Job{}
+					if err := k8sClient.Get(localCtx, types.NamespacedName{Name: job.Name, Namespace: ns}, j); err == nil {
+						prop := metav1.DeletePropagationBackground
+						_ = k8sClient.Delete(localCtx, j, &client.DeleteOptions{PropagationPolicy: &prop})
+					}
+				})
+				return is, job
+			}
+
+			sourceCatalogOf := func(name string) string {
+				j := &batchv1.Job{}
+				Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: name, Namespace: ns}, j)).To(Succeed())
+				for _, e := range j.Spec.Template.Spec.Containers[0].Env {
+					if e.Name == builder.EnvSourceCatalog {
+						return e.Value
+					}
+				}
+				return ""
+			}
+
+			It("waits while the new content is pending, then rebuilds from exactly that content", func() {
+				op := mirrorv1alpha1.Operator{Catalog: "quay.io/redhat/contentcat:v1"}
+				ops := []mirrorv1alpha1.Operator{op}
+				key := mirrorv1alpha1.CatalogDigestAnnotationKey(mirrorv1alpha1.OperatorEntrySignature(op))
+				fpA := catalogDigestsFingerprint(map[string]string{key: mirrorv1alpha1.OperatorCacheValue(digestA)}, ops)
+				is, oldJob := setup("is-content-changed", ops, fpA)
+
+				// The manager resolved a newer catalog digest; its bundles are still pending.
+				seedResolvedState(localCtx, is, "Pending", nil, map[string]string{key: mirrorv1alpha1.OperatorCacheValue(digestB)})
+				Expect(r.reconcileCatalogBuildJobs(localCtx, is, mt, false)).To(Succeed())
+				current := &batchv1.Job{}
+				Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: oldJob.Name, Namespace: ns}, current)).To(Succeed())
+				Expect(current.UID).To(Equal(oldJob.UID), "the existing catalog must be kept while the new content is pending")
+				Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: is.Name, Namespace: ns}, is)).To(Succeed())
+				Expect(is.Annotations[catalogBuildDigestsAnnotation]).To(Equal(fpA))
+				Expect(apimeta.FindStatusCondition(is.Status.Conditions, conditionCatalogReady).Reason).To(Equal(reasonWaitingForOperatorMirror))
+
+				// Mirroring finished: rebuild, pinned to the new digest.
+				seedResolvedState(localCtx, is, "Mirrored", nil, map[string]string{key: mirrorv1alpha1.OperatorCacheValue(digestB)})
+				Expect(r.reconcileCatalogBuildJobs(localCtx, is, mt, false)).To(Succeed())
+				Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: oldJob.Name, Namespace: ns}, current)).To(Succeed())
+				Expect(current.UID).NotTo(Equal(oldJob.UID))
+				Expect(sourceCatalogOf(oldJob.Name)).To(Equal("quay.io/redhat/contentcat@" + digestB))
+				Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: is.Name, Namespace: ns}, is)).To(Succeed())
+				Expect(is.Annotations[catalogBuildDigestsAnnotation]).NotTo(Equal(fpA))
+			})
+
+			It("rebuilds a catalog built before digests were recorded once everything is mirrored", func() {
+				op := mirrorv1alpha1.Operator{Catalog: "quay.io/redhat/legacybuilt:v1"}
+				is, oldJob := setup("is-legacy-built", []mirrorv1alpha1.Operator{op}, "")
+				seedResolvedState(localCtx, is, "Mirrored", nil, nil)
+				Expect(r.reconcileCatalogBuildJobs(localCtx, is, mt, false)).To(Succeed())
+				current := &batchv1.Job{}
+				Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: oldJob.Name, Namespace: ns}, current)).To(Succeed())
+				Expect(current.UID).NotTo(Equal(oldJob.UID))
+				Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: is.Name, Namespace: ns}, is)).To(Succeed())
+				Expect(is.Annotations[catalogBuildDigestsAnnotation]).NotTo(BeEmpty())
+			})
+
+			It("lets a running build finish before starting the rebuild for new content", func() {
+				op := mirrorv1alpha1.Operator{Catalog: "quay.io/redhat/busycat:v1"}
+				ops := []mirrorv1alpha1.Operator{op}
+				key := mirrorv1alpha1.CatalogDigestAnnotationKey(mirrorv1alpha1.OperatorEntrySignature(op))
+				fpA := catalogDigestsFingerprint(map[string]string{key: mirrorv1alpha1.OperatorCacheValue(digestA)}, ops)
+				is, running := setup("is-rebuild-busy", ops, fpA, false)
+				seedResolvedState(localCtx, is, "Mirrored", nil, map[string]string{key: mirrorv1alpha1.OperatorCacheValue(digestB)})
+
+				Expect(r.reconcileCatalogBuildJobs(localCtx, is, mt, false)).To(Succeed())
+				current := &batchv1.Job{}
+				Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: running.Name, Namespace: ns}, current)).To(Succeed())
+				Expect(current.UID).To(Equal(running.UID), "a running build is never killed")
+				Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: is.Name, Namespace: ns}, is)).To(Succeed())
+				Expect(is.Annotations[catalogBuildDigestsAnnotation]).To(Equal(fpA),
+					"the new content must not be recorded as built while the old build is still running")
+				Expect(apimeta.FindStatusCondition(is.Status.Conditions, conditionCatalogReady).Reason).To(Equal("CatalogBuildRunning"))
+
+				// The old build finished: now the rebuild starts from the new digest.
+				current.Status.Succeeded = 1
+				Expect(k8sClient.Status().Update(localCtx, current)).To(Succeed())
+				Expect(r.reconcileCatalogBuildJobs(localCtx, is, mt, false)).To(Succeed())
+				Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: running.Name, Namespace: ns}, current)).To(Succeed())
+				Expect(current.UID).NotTo(Equal(running.UID))
+				Expect(sourceCatalogOf(running.Name)).To(Equal("quay.io/redhat/busycat@" + digestB))
+			})
+
+			It("keeps the catalog as is when nothing changed", func() {
+				op := mirrorv1alpha1.Operator{Catalog: "quay.io/redhat/samecat:v1"}
+				ops := []mirrorv1alpha1.Operator{op}
+				key := mirrorv1alpha1.CatalogDigestAnnotationKey(mirrorv1alpha1.OperatorEntrySignature(op))
+				fpA := catalogDigestsFingerprint(map[string]string{key: mirrorv1alpha1.OperatorCacheValue(digestA)}, ops)
+				is, oldJob := setup("is-unchanged", ops, fpA)
+				seedResolvedState(localCtx, is, "Mirrored", nil, map[string]string{key: mirrorv1alpha1.OperatorCacheValue(digestA)})
+				Expect(r.reconcileCatalogBuildJobs(localCtx, is, mt, false)).To(Succeed())
+				current := &batchv1.Job{}
+				Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: oldJob.Name, Namespace: ns}, current)).To(Succeed())
+				Expect(current.UID).To(Equal(oldJob.UID))
+			})
+		})
+
+		It("does not start another catalog's build while images are pending, even with a build job in flight", func() {
+			localCtx := context.Background()
+			isName := "is-catgate-second"
+			Expect(os.Setenv("OPERATOR_IMAGE", "test-operator:latest")).To(Succeed())
+			Expect(os.Setenv("MANAGER_IMAGE", "test-manager:latest")).To(Succeed())
+			Expect(os.Setenv("WORKER_IMAGE", "test-worker:latest")).To(Succeed())
+			bm, bmErr := builder.New()
+			Expect(bmErr).NotTo(HaveOccurred())
+
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: "mt-catgate-second", Namespace: ns},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com", ImageSets: []string{isName}},
+			}
+			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, mt) })
+
+			opA := mirrorv1alpha1.Operator{Catalog: "quay.io/redhat/first:v1"}
+			opB := mirrorv1alpha1.Operator{Catalog: "quay.io/redhat/second:v1"}
+			is := &mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{Name: isName, Namespace: ns},
+				Spec:       mirrorv1alpha1.ImageSetSpec{Mirror: mirrorv1alpha1.Mirror{Operators: []mirrorv1alpha1.Operator{opA, opB}}},
+			}
+			Expect(k8sClient.Create(localCtx, is)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, is) })
+
+			running := &batchv1.Job{
+				ObjectMeta: metav1.ObjectMeta{Name: builder.JobName(isName, opA.Catalog), Namespace: ns},
+				Spec: batchv1.JobSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+					Containers:    []corev1.Container{{Name: "build", Image: "busybox"}},
+					RestartPolicy: corev1.RestartPolicyNever,
+				}}},
+			}
+			Expect(k8sClient.Create(localCtx, running)).To(Succeed())
+			DeferCleanup(func() {
+				prop := metav1.DeletePropagationBackground
+				_ = k8sClient.Delete(localCtx, running, &client.DeleteOptions{PropagationPolicy: &prop})
+			})
+
+			seedResolvedState(localCtx, is, "Pending", nil, nil)
+			r := &ImageSetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), CatalogBuildMgr: bm}
+			Expect(r.reconcileCatalogBuildJobs(localCtx, is, mt, false)).To(Succeed())
+
+			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: builder.JobName(isName, opB.Catalog), Namespace: ns}, &batchv1.Job{})).NotTo(Succeed())
+			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: isName, Namespace: ns}, is)).To(Succeed())
+			Expect(apimeta.FindStatusCondition(is.Status.Conditions, conditionCatalogReady).Reason).To(Equal(reasonWaitingForOperatorMirror))
+		})
+
+		It("does not rewrite the build annotations on every reconcile while a catalog digest is missing", func() {
+			fakeScheme := runtime.NewScheme()
+			Expect(mirrorv1alpha1.AddToScheme(fakeScheme)).To(Succeed())
+			Expect(corev1.AddToScheme(fakeScheme)).To(Succeed())
+			Expect(batchv1.AddToScheme(fakeScheme)).To(Succeed())
+			Expect(os.Setenv("OPERATOR_IMAGE", "test-operator:latest")).To(Succeed())
+			Expect(os.Setenv("MANAGER_IMAGE", "test-manager:latest")).To(Succeed())
+			Expect(os.Setenv("WORKER_IMAGE", "test-worker:latest")).To(Succeed())
+			bm, err := builder.New()
+			Expect(err).NotTo(HaveOccurred())
+
+			op := mirrorv1alpha1.Operator{Catalog: "quay.io/redhat/nodigest-loop:v1"}
+			is := &mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "is-nodigest-loop", Namespace: ns, Annotations: map[string]string{
+					catalogBuildSigAnnotation:     bm.BuildSignature([]mirrorv1alpha1.Operator{op}),
+					catalogBuildDigestsAnnotation: "built-earlier",
+				}},
+				Spec: mirrorv1alpha1.ImageSetSpec{Mirror: mirrorv1alpha1.Mirror{Operators: []mirrorv1alpha1.Operator{op}}},
+			}
+			updates := 0
+			c := interceptor.NewClient(
+				fake.NewClientBuilder().WithScheme(fakeScheme).WithObjects(is).WithStatusSubresource(is).Build(),
+				interceptor.Funcs{Update: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+					if _, ok := obj.(*mirrorv1alpha1.ImageSet); ok {
+						updates++
+					}
+					return cl.Update(ctx, obj, opts...)
+				}},
+			)
+			// Everything mirrored, but no digest recorded for the catalog.
+			Expect(imagestate.SaveWithCatalogDigests(context.Background(), c, ns, is.Name, imagestate.ImageState{
+				"d1": {Source: "s1", State: "Mirrored", Origin: imagestate.OriginOperator, EntrySig: mirrorv1alpha1.OperatorEntrySignature(op)},
+			}, nil, nil, nil)).To(Succeed())
+
+			r := &ImageSetReconciler{Client: c, Scheme: fakeScheme, CatalogBuildMgr: bm}
+			mt := &mirrorv1alpha1.MirrorTarget{Spec: mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com"}}
+			for range 2 {
+				Expect(c.Get(context.Background(), types.NamespacedName{Name: is.Name, Namespace: ns}, is)).To(Succeed())
+				Expect(r.reconcileCatalogBuildJobs(context.Background(), is, mt, false)).To(Succeed())
+			}
+			Expect(updates).To(BeZero())
+			Expect(apimeta.FindStatusCondition(is.Status.Conditions, conditionCatalogReady).Reason).To(Equal(reasonWaitingForOperatorMirror))
+		})
+
+		It("reports a spec that is not fully resolved yet while nothing is pending", func() {
+			localCtx := context.Background()
+			isName := "is-catgate-unresolved"
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: "mt-catgate-unresolved", Namespace: ns},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com", ImageSets: []string{isName}},
+			}
+			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, mt) })
+			is := &mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{Name: isName, Namespace: ns},
+				Spec: mirrorv1alpha1.ImageSetSpec{Mirror: mirrorv1alpha1.Mirror{Operators: []mirrorv1alpha1.Operator{
+					{Catalog: "quay.io/redhat/unresolved:v1"},
+				}}},
+			}
+			Expect(k8sClient.Create(localCtx, is)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(localCtx, is) })
+			seedResolvedState(localCtx, is, "Mirrored", nil, nil)
+			is.Status.ObservedGeneration = is.Generation - 1
+			Expect(k8sClient.Status().Update(localCtx, is)).To(Succeed())
+
+			r := &ImageSetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			Expect(r.reconcileCatalogBuildJobs(localCtx, is, mt, false)).To(Succeed())
+			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: isName, Namespace: ns}, is)).To(Succeed())
+			cond := apimeta.FindStatusCondition(is.Status.Conditions, conditionCatalogReady)
+			Expect(cond.Reason).To(Equal(reasonWaitingForOperatorMirror))
+			Expect(cond.Message).To(ContainSubstring("resolve the current spec"))
+		})
 	})
 
 	// ───────────────────── ImageSet Reconcile: poll interval handling ─────────────────────
@@ -1556,16 +2015,43 @@ var _ = Describe("Coverage tests", func() {
 		It("returns ok=false when the catalog reference cannot be parsed for digest-pinning", func() {
 			op := mirrorv1alpha1.Operator{Catalog: "not a valid image reference!!"}
 			digestAnnoKey := mirrorv1alpha1.CatalogDigestAnnotationKey(mirrorv1alpha1.OperatorEntrySignature(op))
-			is := &mirrorv1alpha1.ImageSet{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "is-pin-invalid",
-					Annotations: map[string]string{
-						digestAnnoKey: mirrorv1alpha1.OperatorCacheValue("sha256:" + strings.Repeat("a", 64)),
-					},
-				},
+			digests := map[string]string{
+				digestAnnoKey: mirrorv1alpha1.OperatorCacheValue("sha256:" + strings.Repeat("a", 64)),
 			}
-			_, ok := pinnedCatalogRef(is, op)
+			_, ok := pinnedCatalogRef(digests, op)
 			Expect(ok).To(BeFalse())
+		})
+
+		It("returns ok=false when no digest is recorded for the entry", func() {
+			op := mirrorv1alpha1.Operator{Catalog: "quay.io/ops/catalog:v1"}
+			_, ok := pinnedCatalogRef(map[string]string{}, op)
+			Expect(ok).To(BeFalse())
+		})
+	})
+
+	// ───────────────────── catalogDigestsFingerprint ─────────────────────
+
+	Describe("catalogDigestsFingerprint", func() {
+		opA := mirrorv1alpha1.Operator{Catalog: "quay.io/a/catalog:v1"}
+		opB := mirrorv1alpha1.Operator{Catalog: "quay.io/b/catalog:v1"}
+		keyA := mirrorv1alpha1.CatalogDigestAnnotationKey(mirrorv1alpha1.OperatorEntrySignature(opA))
+		keyB := mirrorv1alpha1.CatalogDigestAnnotationKey(mirrorv1alpha1.OperatorEntrySignature(opB))
+		d1 := mirrorv1alpha1.OperatorCacheValue("sha256:" + strings.Repeat("1", 64))
+		d2 := mirrorv1alpha1.OperatorCacheValue("sha256:" + strings.Repeat("2", 64))
+
+		It("is empty when any configured catalog has no recorded digest", func() {
+			Expect(catalogDigestsFingerprint(map[string]string{keyA: d1}, []mirrorv1alpha1.Operator{opA, opB})).To(BeEmpty())
+		})
+
+		It("is empty when no catalog is configured", func() {
+			Expect(catalogDigestsFingerprint(map[string]string{keyA: d1}, []mirrorv1alpha1.Operator{{}})).To(BeEmpty())
+		})
+
+		It("is order-independent and changes when a digest changes", func() {
+			fp := catalogDigestsFingerprint(map[string]string{keyA: d1, keyB: d2}, []mirrorv1alpha1.Operator{opA, opB})
+			Expect(fp).NotTo(BeEmpty())
+			Expect(catalogDigestsFingerprint(map[string]string{keyA: d1, keyB: d2}, []mirrorv1alpha1.Operator{opB, opA})).To(Equal(fp))
+			Expect(catalogDigestsFingerprint(map[string]string{keyA: d2, keyB: d2}, []mirrorv1alpha1.Operator{opA, opB})).NotTo(Equal(fp))
 		})
 	})
 

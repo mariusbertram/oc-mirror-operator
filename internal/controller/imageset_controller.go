@@ -2,7 +2,10 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -46,6 +49,12 @@ const reasonWaitingForOperatorMirror = "WaitingForOperatorMirror"
 // of the last catalog build, so a spec change can be detected without
 // recomputing it against a stale build.
 const catalogBuildSigAnnotation = "mirror.openshift.io/catalog-build-sig"
+
+// catalogBuildDigestsAnnotation records the fingerprint of the resolved
+// catalog digests (see catalogDigestsFingerprint) the current catalog images
+// were built from, so a change in resolved upstream content triggers a
+// rebuild once it is fully mirrored.
+const catalogBuildDigestsAnnotation = "mirror.openshift.io/catalog-build-digests"
 
 // catalogRecollectSigAnnotation records the mirrorv1alpha1.RecollectAnnotation
 // value that was last honored as a catalog rebuild trigger, so the one-shot
@@ -111,9 +120,8 @@ func (r *ImageSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (r
 	}
 
 	// 3. Ensure a CatalogBuildJob exists for each configured operator catalog.
-	// The job triggers when (a) all operator-origin imagestate entries are
-	// Mirrored, OR (b) the user sets the "mirror.openshift.io/recollect"
-	// annotation on the ImageSet (one-shot, cleared after recollection).
+	// A job is only ever created (or recreated) once the ImageSet has no
+	// pending images left at all — see mirrorSnapshot.
 	if err := r.reconcileCatalogBuildJobs(ctx, is, mt, pollExpired); err != nil {
 		l.Error(err, "Failed to reconcile catalog build jobs")
 		setCondition(&is.Status.Conditions, conditionCatalogReady, metav1.ConditionFalse, "CatalogBuildFailed", err.Error(), is.Generation)
@@ -189,6 +197,13 @@ func (r *ImageSetReconciler) findOwningMirrorTarget(ctx context.Context, is *mir
 // reconcileCatalogBuildJobs ensures a Kubernetes Job exists for each operator
 // catalog entry in the ImageSet spec and surfaces the aggregate status as a
 // CatalogReady condition.
+//
+// Invariant: a CatalogBuildJob is only ever created — and an existing one
+// only ever deleted to make way for a rebuild — while the ImageSet has no
+// pending images left (see loadMirrorSnapshot), and the Job pulls exactly the
+// catalog digest those images were resolved from. No trigger, the recollect
+// annotation included, bypasses this: a catalog must never advertise a bundle
+// that is not in the target registry yet.
 func (r *ImageSetReconciler) reconcileCatalogBuildJobs( //nolint:gocyclo
 	ctx context.Context,
 	is *mirrorv1alpha1.ImageSet,
@@ -202,11 +217,8 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs( //nolint:gocyclo
 		return nil
 	}
 
-	// Short-circuit: if the CatalogReady condition is already True, bypass the
-	// mirroring gate so subsequent reconciles do not overwrite the True condition
-	// after the one-shot recollect annotation has been cleared. A rebuild will
-	// still be triggered if the build signature changes or the poll interval expires
-	// (catalogNeedsRebuild logic below).
+	snap := loadMirrorSnapshot(ctx, r.Client, is)
+
 	alreadyBuilt := false
 	for _, c := range is.Status.Conditions {
 		if c.Type == conditionCatalogReady && c.Status == metav1.ConditionTrue {
@@ -215,145 +227,102 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs( //nolint:gocyclo
 		}
 	}
 
-	// Gate: only launch catalog build jobs when (a) the
-	// "mirror.openshift.io/recollect" annotation requests it as a one-shot,
-	// (b) all operator-origin entries in the per-ImageSet imagestate ConfigMap
-	// have reached the "Mirrored" state, or (c) the catalog was already built
-	// successfully in a prior reconcile. Building the filtered catalog before
-	// bundle images are present in the target registry would produce a catalog
-	// that references unresolved digests.
-	_, recollectRequested := is.Annotations[mirrorv1alpha1.RecollectAnnotation]
-	operatorMirroringComplete, knowState := operatorImagesMirrored(ctx, r.Client, is)
-	gateOpen := recollectRequested || operatorMirroringComplete || alreadyBuilt
-
-	// If the gate is otherwise closed, keep it open while a catalog build job
-	// already exists (Pending, Running, or Succeeded). This handles the race
-	// where the manager pod clears the one-shot recollect annotation (via
-	// manager_resolve.go) before the catalog build job finishes, which would
-	// otherwise cause the controller to ignore the running job and never set
-	// CatalogReady=True.
-	if !gateOpen {
-		for _, op := range operators {
-			if op.Catalog == "" {
-				continue
-			}
-			jobName := builder.JobName(is.Name, op.Catalog)
-			phase, _ := builder.GetBuildJobStatus(ctx, r.Client, jobName, is.Namespace)
-			if phase == builder.JobPhasePending || phase == builder.JobPhaseRunning || phase == builder.JobPhaseSucceeded {
-				gateOpen = true
-				break
-			}
+	phases := make(map[string]builder.JobPhase, len(operators))
+	anyActive := false // a job is Pending or Running
+	anyJob := false    // a job exists in any phase
+	for _, op := range operators {
+		if op.Catalog == "" {
+			continue
+		}
+		phase, err := builder.GetBuildJobStatus(ctx, r.Client, builder.JobName(is.Name, op.Catalog), is.Namespace)
+		if err != nil {
+			return err
+		}
+		phases[op.Catalog] = phase
+		if phase != builder.JobPhaseNotFound {
+			anyJob = true
+		}
+		if phase == builder.JobPhasePending || phase == builder.JobPhaseRunning {
+			anyActive = true
 		}
 	}
 
-	if !gateOpen {
-		if knowState {
-			l.Info("Catalog build deferred: operator images still mirroring",
-				"imageSet", is.Name)
-		} else {
-			l.Info("Catalog build deferred: imagestate not yet populated by manager",
-				"imageSet", is.Name)
-		}
-		setCondition(&is.Status.Conditions, conditionCatalogReady, metav1.ConditionFalse,
-			reasonWaitingForOperatorMirror,
-			"waiting for operator bundle images to be mirrored before building filtered catalog",
-			is.Generation)
-		return r.Status().Update(ctx, is)
+	// Nothing built yet, no job to report on, and images still pending: wait.
+	// Existing jobs keep being reported below — creating a new one, or
+	// deleting one for a rebuild, is what requires nothing to be pending.
+	if !snap.complete && !alreadyBuilt && !anyJob {
+		return r.deferCatalogBuild(ctx, is, snap, "building")
 	}
 
-	// Compute a build signature from operator image + packages so we detect
-	// when a rebuild is needed (operator image upgrade, package list change).
 	buildSig := r.CatalogBuildMgr.BuildSignature(operators)
-	lastSig := ""
-	lastHandledRecollect := ""
-	if is.Annotations != nil {
-		lastSig = is.Annotations[catalogBuildSigAnnotation]
-		lastHandledRecollect = is.Annotations[catalogRecollectSigAnnotation]
-	}
-
-	// recollectRequested already opens the gate above and bypasses the
-	// operator-mirroring wait below, but it must only force a REBUILD of an
-	// already-terminal CatalogBuildJob the first time a given recollect value
-	// is observed. The annotation stays set until the whole build succeeds, so
-	// without this dedup every reconcile while the rebuild is in flight (or
-	// the one that first observes it succeed) would see recollectRequested
-	// again and keep deleting+recreating the job, which could then never
-	// actually complete. Per the documented usage
-	// (mirror.openshift.io/recollect=$(date +%s)) a genuinely new request
-	// carries a distinct value from the one already handled.
+	digestsFP := catalogDigestsFingerprint(snap.digests, operators)
+	_, recollectRequested := is.Annotations[mirrorv1alpha1.RecollectAnnotation]
 	recollectValue := is.Annotations[mirrorv1alpha1.RecollectAnnotation]
-	recollectForcesRebuild := recollectRequested && recollectValue != lastHandledRecollect
+	lastSig := is.Annotations[catalogBuildSigAnnotation]
+	lastDigests := is.Annotations[catalogBuildDigestsAnnotation]
+	lastHandledRecollect := is.Annotations[catalogRecollectSigAnnotation]
+	lastHandledPoll := is.Annotations[catalogPollSigAnnotation]
 
-	catalogNeedsRebuild := recollectForcesRebuild || (lastSig != "" && lastSig != buildSig)
+	// A given recollect value forces at most one rebuild: the annotation can
+	// stay set for several reconciles, and re-honoring it each time would
+	// keep deleting+recreating the job.
+	recollectForcesRebuild := recollectRequested && recollectValue != lastHandledRecollect
+	sigChanged := lastSig != "" && lastSig != buildSig
+	// The catalog content the manager resolved (and mirrored) differs from
+	// what the current catalog image was built from — e.g. the upstream tag
+	// moved on a poll or recollect. A catalog built before digests were
+	// recorded (lastDigests == "") is rebuilt once as well.
+	contentChanged := digestsFP != "" && lastDigests != digestsFP && (lastDigests != "" || alreadyBuilt)
+
+	catalogNeedsRebuild := recollectForcesRebuild || sigChanged || contentChanged
 	switch {
 	case recollectForcesRebuild:
 		l.Info("Catalog rebuild requested via recollect annotation", "imageSet", is.Name)
-	case catalogNeedsRebuild:
+	case sigChanged:
 		l.Info("Catalog build signature changed, forcing rebuild", "old", lastSig, "new", buildSig)
+	case contentChanged:
+		l.Info("Resolved catalog content changed, forcing rebuild", "imageSet", is.Name)
 	}
-	// Force catalog rebuild when poll interval expired — upstream catalog images
-	// (e.g. redhat-operator-index:v4.21) may have been updated in-place.
-	// Only trigger when no job is already active; otherwise every reconcile
-	// while LastSuccessfulPollTime is stale would kill and recreate a running job.
-	// Also dedup against the specific LastSuccessfulPollTime value already
-	// honored: that timestamp only advances when the Manager pod completes a
-	// fresh resolve, so once a job finishes and goes idle again, pollExpired
-	// alone would otherwise force another rebuild indefinitely until the
-	// Manager gets around to updating it.
+
+	// Force a rebuild when the poll interval expired — upstream catalog images
+	// may have been updated in-place. Only when no job is active (so a running
+	// build is never killed), and once per LastSuccessfulPollTime value, which
+	// only advances when the manager completes a fresh resolve.
 	pollForcesRebuild := false
-	lastHandledPoll := ""
 	currentPollMarker := ""
-	if is.Annotations != nil {
-		lastHandledPoll = is.Annotations[catalogPollSigAnnotation]
-	}
 	if is.Status.LastSuccessfulPollTime != nil {
 		currentPollMarker = is.Status.LastSuccessfulPollTime.Time.UTC().Format(time.RFC3339)
 	}
-	if pollExpired && !catalogNeedsRebuild && currentPollMarker != lastHandledPoll {
-		allJobsIdle := true
-		for _, op := range operators {
-			if op.Catalog == "" {
-				continue
-			}
-			jobName := builder.JobName(is.Name, op.Catalog)
-			phase, _ := builder.GetBuildJobStatus(ctx, r.Client, jobName, is.Namespace)
-			if phase == builder.JobPhasePending || phase == builder.JobPhaseRunning {
-				allJobsIdle = false
-				break
-			}
-		}
-		if allJobsIdle {
-			l.Info("Poll interval expired, forcing catalog rebuild")
-			catalogNeedsRebuild = true
-			pollForcesRebuild = true
-		}
+	if pollExpired && !catalogNeedsRebuild && currentPollMarker != lastHandledPoll && !anyActive {
+		l.Info("Poll interval expired, forcing catalog rebuild")
+		catalogNeedsRebuild = true
+		pollForcesRebuild = true
 	}
 
-	// Rebuild gate: when the catalog signature changed or poll expired, images
-	// that were added/changed since the last build are still in Pending/Failed
-	// state. Do not launch the rebuild until they are all Mirrored or
-	// PermanentlyFailed — otherwise clusters see new operator versions in the
-	// catalog but the bundle images are not yet in the registry.
-	if catalogNeedsRebuild && !operatorMirroringComplete && !recollectRequested {
-		if knowState {
-			l.Info("Catalog rebuild deferred: operator images still mirroring after signature change",
-				"imageSet", is.Name)
-		}
-		setCondition(&is.Status.Conditions, conditionCatalogReady, metav1.ConditionFalse,
-			reasonWaitingForOperatorMirror,
-			"waiting for operator bundle images to be mirrored before rebuilding filtered catalog",
-			is.Generation)
+	if catalogNeedsRebuild && !snap.complete {
+		return r.deferCatalogBuild(ctx, is, snap, "rebuilding")
+	}
+
+	// A build is still running from the previous inputs: let it finish before
+	// recording the new ones, otherwise its result would be taken for the
+	// rebuild. The rebuild follows once the job is terminal.
+	if catalogNeedsRebuild && anyActive {
+		l.Info("Catalog rebuild waits for the running build job to finish", "imageSet", is.Name)
+		setCondition(&is.Status.Conditions, conditionCatalogReady, metav1.ConditionFalse, "CatalogBuildRunning",
+			"a catalog build job is still running; the rebuild starts once it has finished", is.Generation)
 		return r.Status().Update(ctx, is)
 	}
 
-	// Persist the new build signature (and, if applicable, the recollect value
-	// just honored) IMMEDIATELY so that concurrent/subsequent reconcile loops
-	// do not keep seeing a mismatch and endlessly delete+recreate jobs.
-	if catalogNeedsRebuild {
+	// Record what is about to be built IMMEDIATELY, so subsequent reconciles
+	// don't see the same mismatch again and endlessly delete+recreate jobs.
+	if snap.complete && (catalogNeedsRebuild || lastSig != buildSig || (digestsFP != "" && lastDigests != digestsFP)) {
 		if is.Annotations == nil {
 			is.Annotations = make(map[string]string)
 		}
 		is.Annotations[catalogBuildSigAnnotation] = buildSig
+		if digestsFP != "" {
+			is.Annotations[catalogBuildDigestsAnnotation] = digestsFP
+		}
 		if recollectForcesRebuild {
 			is.Annotations[catalogRecollectSigAnnotation] = recollectValue
 		}
@@ -365,17 +334,9 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs( //nolint:gocyclo
 		}
 	}
 
-	// If the CatalogReady condition is already True AND the signature hasn't
-	// changed, don't recreate jobs that were cleaned up by TTL.
-	catalogAlreadyReady := false
-	if !catalogNeedsRebuild {
-		for _, c := range is.Status.Conditions {
-			if c.Type == conditionCatalogReady && c.Status == metav1.ConditionTrue {
-				catalogAlreadyReady = true
-				break
-			}
-		}
-	}
+	// If the catalog is already built from the current inputs, don't recreate
+	// jobs that were cleaned up by TTL.
+	catalogAlreadyReady := alreadyBuilt && !catalogNeedsRebuild
 
 	allSucceeded := true
 	anyFailed := false
@@ -392,21 +353,12 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs( //nolint:gocyclo
 			packages = op.Packages
 		}
 
-		// Derive the target catalog image reference.
 		targetRef := resources.CatalogTargetImage(mt.Spec.Registry, op)
-
 		jobName := builder.JobName(is.Name, op.Catalog)
-		phase, err := builder.GetBuildJobStatus(ctx, r.Client, jobName, is.Namespace)
-		if err != nil {
-			return err
-		}
+		phase := phases[op.Catalog]
 
-		// If a rebuild is needed, delete the old Job first. Only ever delete a
-		// terminal (Succeeded/Failed) job — never one that is Pending/Running,
-		// so a rebuild trigger that stays "true" across several reconciles
-		// (e.g. recollect, before its one-shot dedup marker above is visible,
-		// or a signature check racing a fresh Update) cannot kill a build that
-		// is already in flight.
+		// Only ever delete a terminal (Succeeded/Failed) job for a rebuild —
+		// never one that is Pending/Running.
 		if catalogNeedsRebuild && (phase == builder.JobPhaseSucceeded || phase == builder.JobPhaseFailed) {
 			l.Info("Deleting stale CatalogBuildJob for rebuild", "job", jobName)
 			if delErr := builder.DeleteBuildJob(ctx, r.Client, jobName, is.Namespace); delErr != nil {
@@ -421,14 +373,11 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs( //nolint:gocyclo
 			continue
 		}
 
-		// Ensure the Job exists (no-op if it already does).
 		if phase == builder.JobPhaseNotFound {
-			// Pin the Job's actual pull target to the exact digest the
-			// manager already resolved and mirrored images against (rather
-			// than the raw, possibly-tag-based op.Catalog): see
-			// pinnedCatalogRef's doc comment for why an unpinned pull here
-			// is unsafe.
-			pullCatalog, pinOK := pinnedCatalogRef(is, op)
+			if !snap.complete {
+				return r.deferCatalogBuild(ctx, is, snap, "building")
+			}
+			pullCatalog, pinOK := pinnedCatalogRef(snap.digests, op)
 			if !pinOK {
 				l.Info("Catalog build deferred: no resolved digest recorded yet for catalog entry",
 					"imageSet", is.Name, "catalog", op.Catalog)
@@ -441,6 +390,7 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs( //nolint:gocyclo
 			if err := r.CatalogBuildMgr.EnsureCatalogBuildJob(ctx, r.Client, is, mt, op.Catalog, pullCatalog, targetRef, packages); err != nil {
 				return fmt.Errorf("failed to ensure CatalogBuildJob for %s: %w", op.Catalog, err)
 			}
+			var err error
 			phase, err = builder.GetBuildJobStatus(ctx, r.Client, jobName, is.Namespace)
 			if err != nil {
 				return err
@@ -469,7 +419,6 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs( //nolint:gocyclo
 		// etc.). Without retry, the status.Update for CatalogReady=True would
 		// fail silently whenever the manager writes in the same instant.
 		err := utilretry.RetryOnConflict(utilretry.DefaultRetry, func() error {
-			// Re-read the ImageSet on each retry to get the latest ResourceVersion.
 			fresh := &mirrorv1alpha1.ImageSet{}
 			if rerr := r.Get(ctx, types.NamespacedName{Name: is.Name, Namespace: is.Namespace}, fresh); rerr != nil {
 				return rerr
@@ -482,17 +431,12 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs( //nolint:gocyclo
 			return err
 		}
 		// Honoring the recollect annotation is one-shot: clear it after a
-		// successful catalog build so subsequent reconciles use the
-		// signature-based gating again.
-		// The annotation clear MUST happen after the successful status update
-		// so that any reconcile triggered by the annotation change will see
-		// alreadyBuilt=true and keep CatalogReady=True.
+		// successful catalog build. This MUST happen after the status update
+		// so the reconcile it triggers sees alreadyBuilt=true.
 		if recollectRequested {
-			if is.Annotations != nil {
-				delete(is.Annotations, mirrorv1alpha1.RecollectAnnotation)
-				if err := r.Update(ctx, is); err != nil {
-					l.Error(err, "Failed to clear recollect annotation")
-				}
+			delete(is.Annotations, mirrorv1alpha1.RecollectAnnotation)
+			if err := r.Update(ctx, is); err != nil {
+				l.Error(err, "Failed to clear recollect annotation")
 			}
 		}
 		return nil
@@ -503,40 +447,55 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs( //nolint:gocyclo
 	return r.Status().Update(ctx, is)
 }
 
-// operatorImagesMirrored returns (complete, knowState).
-// complete = true when every operator-origin entry in the ImageSet's own
-// imagestate ConfigMap is either "Mirrored" or has PermanentlyFailed=true.
-// knowState = false when no imagestate ConfigMap exists yet.
-func operatorImagesMirrored(ctx context.Context, c client.Client, is *mirrorv1alpha1.ImageSet) (bool, bool) {
-	// The manager only advances is.Status.ObservedGeneration to the current
-	// is.Generation once it has cleanly (re-)resolved the WHOLE spec for
-	// that generation — every release channel, operator catalog, and
-	// additional/helm entry, with no per-entry probe/collection error (see
-	// MirrorManager.updateImageSetStatusLocked's doc comment). Until that
-	// has happened, the entries scanned below may still be missing ones a
-	// just-applied spec change should have added (a newly added operator, a
-	// changed package list, ...) even though every entry currently on
-	// record happens to already be Mirrored/PermanentlyFailed — the
-	// per-entry-signature check further down only catches this for
-	// signature-bearing entries, and is skipped entirely once any legacy
-	// (pre-signature) entry is present. Requiring a clean resolve of the
-	// current generation first closes that gap unconditionally.
-	if is.Status.ObservedGeneration != is.Generation {
-		return false, true
+// deferCatalogBuild records that a catalog (re)build is waiting for the
+// ImageSet's mirroring to finish.
+func (r *ImageSetReconciler) deferCatalogBuild(ctx context.Context, is *mirrorv1alpha1.ImageSet, snap mirrorSnapshot, verb string) error {
+	l := log.FromContext(ctx)
+	var msg string
+	switch {
+	case !snap.knowState:
+		l.Info("Catalog build deferred: imagestate not yet populated by manager", "imageSet", is.Name)
+		msg = fmt.Sprintf("waiting for the manager to resolve and mirror the ImageSet before %s the filtered catalog", verb)
+	case snap.pending > 0:
+		l.Info("Catalog build deferred: images still mirroring", "imageSet", is.Name, "pending", snap.pending)
+		msg = fmt.Sprintf("waiting for all images of the ImageSet to be mirrored (%d pending) before %s the filtered catalog", snap.pending, verb)
+	default:
+		l.Info("Catalog build deferred: current spec not fully resolved yet", "imageSet", is.Name)
+		msg = fmt.Sprintf("waiting for the manager to resolve the current spec before %s the filtered catalog", verb)
 	}
+	setCondition(&is.Status.Conditions, conditionCatalogReady, metav1.ConditionFalse,
+		reasonWaitingForOperatorMirror, msg, is.Generation)
+	return r.Status().Update(ctx, is)
+}
 
-	state, err := imagestate.Load(ctx, c, is.Namespace, is.Name)
+// mirrorSnapshot is one consistent read of an ImageSet's imagestate ConfigMap.
+type mirrorSnapshot struct {
+	// complete is true when the ImageSet has no pending images at all: every
+	// entry, of any origin, is Mirrored or PermanentlyFailed — and the state
+	// reflects the current spec (see loadMirrorSnapshot).
+	complete bool
+	// knowState is false when the manager has not written any state yet.
+	knowState bool
+	// pending counts entries that are neither Mirrored nor PermanentlyFailed.
+	pending int
+	// digests are the catalog-digest annotations the entries were resolved
+	// from (imagestate.CatalogDigestsAnnotation), written in the same
+	// ConfigMap update as the entries themselves.
+	digests map[string]string
+}
+
+// loadMirrorSnapshot reads the ImageSet's imagestate ConfigMap and reports
+// whether a catalog may be built from it.
+func loadMirrorSnapshot(ctx context.Context, c client.Client, is *mirrorv1alpha1.ImageSet) mirrorSnapshot {
+	state, digests, err := imagestate.LoadWithCatalogDigests(ctx, c, is.Namespace, is.Name)
 	if err != nil || len(state) == 0 {
-		return false, false
+		return mirrorSnapshot{}
 	}
+	snap := mirrorSnapshot{knowState: true, digests: digests}
 
-	// Expected per-entry signatures of the CURRENT spec. The imagestate
-	// ConfigMap only reflects the spec the manager last resolved — after an
-	// operator is added or changed, the state still shows the OLD content
-	// (typically all Mirrored). Without checking that every current spec
-	// entry has actually been resolved into the state, the catalog build
-	// would launch immediately on spec change, producing a catalog that
-	// references bundle images not yet present in the target registry.
+	// Expected per-entry signatures of the CURRENT spec: after an operator is
+	// added or changed, the state still shows the previously resolved
+	// content until the manager has resolved the new entry.
 	expectedSigs := make(map[string]bool, len(is.Spec.Mirror.Operators))
 	for _, op := range is.Spec.Mirror.Operators {
 		if op.Catalog != "" {
@@ -547,61 +506,84 @@ func operatorImagesMirrored(ctx context.Context, c client.Client, is *mirrorv1al
 	hasOperator := false
 	legacySigSeen := false
 	for _, e := range state {
-		if e == nil || e.Origin != imagestate.OriginOperator {
+		if e == nil {
 			continue
 		}
-
-		hasOperator = true
-		sig := e.EntrySig
-		if sig == "" {
-			// Entry written by an operator version that predates per-entry
-			// signatures — cannot be attributed to a specific spec entry.
-			legacySigSeen = true
-		} else if _, ok := expectedSigs[sig]; ok {
-			expectedSigs[sig] = true
-		}
 		if e.State != "Mirrored" && !e.PermanentlyFailed {
-			return false, true
+			snap.pending++
+		}
+		if e.Origin != imagestate.OriginOperator {
+			continue
+		}
+		hasOperator = true
+		if e.EntrySig == "" {
+			// Written before per-entry signatures existed — cannot be
+			// attributed to a specific spec entry.
+			legacySigSeen = true
+		} else if _, ok := expectedSigs[e.EntrySig]; ok {
+			expectedSigs[e.EntrySig] = true
 		}
 	}
 
-	// Every operator entry of the current spec must have contributed at least
-	// one tracked image before mirroring can be considered complete. Skipped
-	// when legacy (pre-signature) entries exist, since those cannot be
-	// attributed — the next manager resolve adopts signatures and enforcement
-	// kicks in from then on.
+	if snap.pending > 0 || !hasOperator {
+		return snap
+	}
+	// The manager only advances ObservedGeneration once it has cleanly
+	// resolved the whole current spec; until then the state may be missing
+	// entries a spec change should have added.
+	if is.Status.ObservedGeneration != is.Generation {
+		return snap
+	}
 	if !legacySigSeen {
 		for _, seen := range expectedSigs {
 			if !seen {
-				return false, true
+				return snap
 			}
 		}
 	}
+	snap.complete = true
+	return snap
+}
 
-	return hasOperator, true
+// catalogDigestsFingerprint identifies the resolved content of every
+// configured catalog, or "" when any catalog has no recorded digest yet.
+func catalogDigestsFingerprint(digests map[string]string, operators []mirrorv1alpha1.Operator) string {
+	parts := make([]string, 0, len(operators))
+	for _, op := range operators {
+		if op.Catalog == "" {
+			continue
+		}
+		key := mirrorv1alpha1.CatalogDigestAnnotationKey(mirrorv1alpha1.OperatorEntrySignature(op))
+		digest, ok := mirrorv1alpha1.ParseOperatorCacheDigest(digests[key])
+		if !ok {
+			return ""
+		}
+		parts = append(parts, key+"="+digest)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	sort.Strings(parts)
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\n")))
+	return hex.EncodeToString(sum[:])
 }
 
 // pinnedCatalogRef returns op.Catalog rewritten to reference the exact
-// digest the manager last successfully resolved and mirrored images
-// against, read from the mirrorv1alpha1.CatalogDigestAnnotationKey
-// annotation the manager writes in resolveOperatorSection. Returns
-// ok=false if that annotation is absent or unparseable, i.e. there is no
-// known-good digest to pin to.
+// catalog digest the ImageSet's imagestate entries were resolved from
+// (imagestate.CatalogDigestsAnnotation, see mirrorSnapshot.digests). Returns
+// ok=false if no parseable digest is recorded for op.
 //
-// This exists because op.Catalog is normally a mutable tag (e.g.
-// "…redhat-operator-index:v4.18"). Without pinning, a CatalogBuildJob
-// launched here would re-resolve that tag independently, at whatever
-// moment the Job pod actually runs — which can be long after (and thus
-// resolve to a NEWER digest than) the manager's last resolve. The result is
-// a pushed catalog image that advertises operator bundle versions the
-// manager has not mirrored yet (and may not even know about), which shows
-// up to cluster admins as ImagePullBackOff for operators the catalog claims
-// to have. Pinning to the manager's own last-resolved digest guarantees the
-// build only ever references content that is already known to be mirrored.
-func pinnedCatalogRef(is *mirrorv1alpha1.ImageSet, op mirrorv1alpha1.Operator) (string, bool) {
-	sig := mirrorv1alpha1.OperatorEntrySignature(op)
-	annoKey := mirrorv1alpha1.CatalogDigestAnnotationKey(sig)
-	digest, ok := mirrorv1alpha1.ParseOperatorCacheDigest(is.Annotations[annoKey])
+// op.Catalog is normally a mutable tag. Pulling it unpinned would let the Job
+// land on newer upstream content than the manager resolved — and pinning to
+// the ImageSet's own cache annotation is not enough either: the manager
+// updates that annotation as soon as it resolves a new digest, before the new
+// digest's Pending entries are written to the imagestate ConfigMap, so a
+// build started in between would see "everything Mirrored" for content that
+// has not been mirrored at all. The digest stored with the entries has no
+// such window.
+func pinnedCatalogRef(digests map[string]string, op mirrorv1alpha1.Operator) (string, bool) {
+	annoKey := mirrorv1alpha1.CatalogDigestAnnotationKey(mirrorv1alpha1.OperatorEntrySignature(op))
+	digest, ok := mirrorv1alpha1.ParseOperatorCacheDigest(digests[annoKey])
 	if !ok {
 		return "", false
 	}
@@ -643,35 +625,43 @@ func (r *ImageSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				return requests
 			}),
 		).
-		// Watch the per-MirrorTarget imagestate ConfigMap (suffixed "-images")
-		// owned by the manager pod. When the manager flips the last
-		// operator-origin entry to Mirrored we want to immediately re-evaluate
-		// the catalog-build gate instead of waiting for the next pollInterval.
+		// Watch the imagestate ConfigMaps ("<imageset>-images", plus the
+		// legacy per-MirrorTarget "<mirrortarget>-images") written by the
+		// manager pod, so the catalog-build gate is re-evaluated as soon as the
+		// last pending image is mirrored instead of at the next pollInterval.
 		Watches(
 			&corev1.ConfigMap{},
-			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
-				name := obj.GetName()
-				const suffix = "-images"
-				if !strings.HasSuffix(name, suffix) {
-					return nil
-				}
-				mtName := strings.TrimSuffix(name, suffix)
-				// Find MirrorTarget to get associated ImageSets
-				mt := &mirrorv1alpha1.MirrorTarget{}
-				if err := r.Get(ctx, client.ObjectKey{Namespace: obj.GetNamespace(), Name: mtName}, mt); err != nil {
-					return nil
-				}
-				var requests []reconcile.Request
-				for _, isName := range mt.Spec.ImageSets {
-					requests = append(requests, reconcile.Request{
-						NamespacedName: types.NamespacedName{
-							Name:      isName,
-							Namespace: obj.GetNamespace(),
-						},
-					})
-				}
-				return requests
-			}),
+			handler.EnqueueRequestsFromMapFunc(r.imageStateConfigMapToRequests),
 		).
 		Complete(r)
+}
+
+// imageStateConfigMapToRequests maps an imagestate ConfigMap to the
+// ImageSet(s) whose catalog-build gate it feeds: "<imageset>-images" to that
+// ImageSet, the legacy "<mirrortarget>-images" to every ImageSet of the target.
+func (r *ImageSetReconciler) imageStateConfigMapToRequests(ctx context.Context, obj client.Object) []reconcile.Request {
+	name := obj.GetName()
+	const suffix = "-images"
+	if !strings.HasSuffix(name, suffix) {
+		return nil
+	}
+	owner := strings.TrimSuffix(name, suffix)
+	is := &mirrorv1alpha1.ImageSet{}
+	if err := r.Get(ctx, client.ObjectKey{Namespace: obj.GetNamespace(), Name: owner}, is); err == nil {
+		return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: owner, Namespace: obj.GetNamespace()}}}
+	}
+	mt := &mirrorv1alpha1.MirrorTarget{}
+	if err := r.Get(ctx, client.ObjectKey{Namespace: obj.GetNamespace(), Name: owner}, mt); err != nil {
+		return nil
+	}
+	var requests []reconcile.Request
+	for _, isName := range mt.Spec.ImageSets {
+		requests = append(requests, reconcile.Request{
+			NamespacedName: types.NamespacedName{
+				Name:      isName,
+				Namespace: obj.GetNamespace(),
+			},
+		})
+	}
+	return requests
 }
