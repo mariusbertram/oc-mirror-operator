@@ -349,7 +349,7 @@ kubectl get imagesets -n <namespace>
 | `CatalogReady` | `True` | `CatalogBuildSucceeded` | All catalog build jobs completed successfully. |
 | `CatalogReady` | `False` | `CatalogBuildFailed` | One or more catalog build jobs failed. |
 | `CatalogReady` | `False` | `CatalogBuildRunning` | Catalog build jobs are still running. |
-| `CatalogReady` | `False` | `WaitingForOperatorMirror` | Waiting for operator images to finish mirroring before building the filtered catalog. |
+| `CatalogReady` | `False` | `WaitingForOperatorMirror` | Waiting until no image of the ImageSet is pending (all `Mirrored` or `PermanentlyFailed`) before building or rebuilding the filtered catalog. |
 
 ---
 

@@ -203,6 +203,54 @@ func Save(ctx context.Context, c client.Client, namespace, imageSetName string, 
 	return SaveRaw(ctx, c, namespace, ConfigMapName(imageSetName), state, owner, scheme)
 }
 
+// CatalogDigestsAnnotation is set on an ImageSet's own state ConfigMap and
+// holds (as JSON) the operator-catalog cache annotations — key
+// mirrorv1alpha1.CatalogDigestAnnotationKey(sig), value the resolved catalog
+// digest token — that the entries in the same ConfigMap were resolved from.
+// Because both are written in a single ConfigMap update, a reader can never
+// observe a catalog digest together with image entries that belong to a
+// different (older or newer) resolution of that catalog.
+const CatalogDigestsAnnotation = "mirror.openshift.io/resolved-catalog-digests"
+
+// SaveWithCatalogDigests is Save plus CatalogDigestsAnnotation, written in
+// the same ConfigMap update as the entries.
+func SaveWithCatalogDigests(ctx context.Context, c client.Client, namespace, imageSetName string, state ImageState, digests map[string]string, owner metav1.Object, scheme *runtime.Scheme) error {
+	var annotations map[string]string
+	if len(digests) > 0 {
+		raw, err := json.Marshal(digests)
+		if err != nil {
+			return fmt.Errorf("encode catalog digests: %w", err)
+		}
+		annotations = map[string]string{CatalogDigestsAnnotation: string(raw)}
+	}
+	return saveRaw(ctx, c, namespace, ConfigMapName(imageSetName), state, annotations, owner, scheme)
+}
+
+// LoadWithCatalogDigests is Load plus the CatalogDigestsAnnotation read from
+// the same ConfigMap object, so entries and digests always come from one
+// consistent write. Both are empty (not nil) when the ConfigMap is missing.
+func LoadWithCatalogDigests(ctx context.Context, c client.Client, namespace, imageSetName string) (ImageState, map[string]string, error) {
+	cm := &corev1.ConfigMap{}
+	err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: ConfigMapName(imageSetName)}, cm)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return make(ImageState), map[string]string{}, nil
+		}
+		return nil, nil, fmt.Errorf("get image state configmap: %w", err)
+	}
+	state, err := decode(cm)
+	if err != nil {
+		return nil, nil, err
+	}
+	digests := map[string]string{}
+	if raw := cm.Annotations[CatalogDigestsAnnotation]; raw != "" {
+		if err := json.Unmarshal([]byte(raw), &digests); err != nil {
+			return nil, nil, fmt.Errorf("decode %s: %w", CatalogDigestsAnnotation, err)
+		}
+	}
+	return state, digests, nil
+}
+
 // LoadByConfigMapName reads the ImageState from a ConfigMap with the given name.
 // Returns an empty ImageState (not nil) if the ConfigMap does not exist.
 func LoadByConfigMapName(ctx context.Context, c client.Client, namespace, cmName string) (ImageState, error) {
@@ -227,6 +275,10 @@ func LoadForTarget(ctx context.Context, c client.Client, namespace, mtName strin
 // Used for cleanup/orphan snapshot state that is not owned by an ImageSet.
 // If owner and scheme are provided, a ControllerReference is set on the ConfigMap.
 func SaveRaw(ctx context.Context, c client.Client, namespace, cmName string, state ImageState, owner metav1.Object, scheme *runtime.Scheme) error {
+	return saveRaw(ctx, c, namespace, cmName, state, nil, owner, scheme)
+}
+
+func saveRaw(ctx context.Context, c client.Client, namespace, cmName string, state ImageState, annotations map[string]string, owner metav1.Object, scheme *runtime.Scheme) error {
 	data, err := encode(state)
 	if err != nil {
 		return fmt.Errorf("encode image state: %w", err)
@@ -237,8 +289,9 @@ func SaveRaw(ctx context.Context, c client.Client, namespace, cmName string, sta
 
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      cmName,
-			Namespace: namespace,
+			Name:        cmName,
+			Namespace:   namespace,
+			Annotations: annotations,
 		},
 		BinaryData: map[string][]byte{
 			"images.json.gz": data,

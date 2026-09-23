@@ -1140,7 +1140,7 @@ kubectl get imageset operators-4-14 -n mein-mirror -o json | jq '.status'
 | `Ready` | `True` | `Collected` | All images resolved, mirroring is running or complete |
 | `Ready` | `False` | `Empty` | No images resolved yet (initial startup) |
 | `CatalogReady` | `True` | `CatalogBuildSucceeded` | Filtered operator catalog successfully built and pushed |
-| `CatalogReady` | `False` | `WaitingForOperatorMirror` | Waiting for operator mirroring to complete |
+| `CatalogReady` | `False` | `WaitingForOperatorMirror` | Waiting until no image of the ImageSet is pending before (re)building the catalog |
 | `CatalogReady` | `False` | `CatalogBuildRunning` | Catalog build Job is currently running |
 | `CatalogReady` | `False` | `CatalogBuildFailed` | Catalog build Job failed |
 
@@ -1183,6 +1183,11 @@ kubectl annotate imageset operators-4-14 \
 ```
 
 The annotation is automatically removed by the manager after completion (one-shot trigger).
+
+Recollect also requests a rebuild of the ImageSet's filtered operator catalogs, but — like
+every catalog build — only once no image of the ImageSet is pending any more. If the
+re-resolution picked up new upstream catalog content, the rebuild happens automatically
+once that content is mirrored, even if the annotation was already removed.
 
 **When recollect is useful:**
 - After correcting invalid registry credentials
@@ -1821,14 +1826,18 @@ kubectl logs job/<catalog-builder-job-name> -n <namespace>
 ```
 
 If `CatalogReady=False` with reason `WaitingForOperatorMirror`:
-- There are still pending or failed operator images. This is expected behaviour —
-  the controller deliberately defers the catalog build (and any catalog rebuild
-  triggered by an upstream digest change or poll expiry) until all operator bundle
-  images are either `Mirrored` or `PermanentlyFailed`. This prevents clusters from
-  seeing new operator versions in the catalog before the bundle images are available
-  in the target registry.
+- The ImageSet still has pending images (`status.pendingImages > 0`), or the manager
+  has not finished resolving its current spec yet. This is expected behaviour — the
+  controller deliberately defers every catalog build and rebuild (spec change,
+  upstream digest change, poll expiry, `recollect`) until **no image of the ImageSet**
+  is pending any more, i.e. every image — release, operator, additional and Helm — is
+  either `Mirrored` or `PermanentlyFailed`. The build then pulls exactly the catalog
+  digest those images were resolved from, so a catalog never offers an operator
+  version whose bundle is not yet in the target registry. While a rebuild waits, the
+  previously built catalog image keeps being served.
+- The condition message shows how many images are still pending
 - Check and resolve failed images in `failedImageDetails`
-- Once all images reach a terminal state the catalog build starts automatically; no
+- Once nothing is pending any more the catalog build starts automatically; no
   manual intervention is needed
 
 ### Quay-Specific Issues

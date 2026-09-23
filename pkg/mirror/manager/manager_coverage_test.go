@@ -3886,6 +3886,96 @@ var _ = Describe("Manager Coverage", func() {
 			m.loadPartitionedState(context.TODO(), mt, imageSets)
 			Expect(m.imageState).To(BeEmpty())
 		})
+
+		It("loads the catalog digests stored with each ImageSet's entries", func() {
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{ImageSets: []string{"is-a"}},
+			}
+			stored := map[string]string{mirrorv1alpha1.CatalogDigestAnnotationPrefix + "x": "stored"}
+			Expect(imagestate.SaveWithCatalogDigests(context.TODO(), m.Client, "default", "is-a", imagestate.ImageState{
+				"d1": {Source: "s1", State: statePending},
+			}, stored, mt, scheme)).To(Succeed())
+			imageSets := &mirrorv1alpha1.ImageSetList{Items: []mirrorv1alpha1.ImageSet{{
+				ObjectMeta: metav1.ObjectMeta{Name: "is-a", Namespace: "default", Annotations: map[string]string{
+					mirrorv1alpha1.CatalogDigestAnnotationPrefix + "x": "on-imageset",
+				}},
+			}}}
+
+			m.loadPartitionedState(context.TODO(), mt, imageSets)
+			Expect(m.catalogDigests["is-a"]).To(Equal(stored), "the ConfigMap's own record wins over the ImageSet annotation")
+		})
+
+		It("adopts the ImageSet's catalog digests once for state written before they were recorded", func() {
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{ImageSets: []string{"is-a"}},
+			}
+			Expect(imagestate.Save(context.TODO(), m.Client, "default", "is-a", imagestate.ImageState{
+				"d1": {Source: "s1", State: statePending},
+			}, mt, scheme)).To(Succeed())
+			imageSets := &mirrorv1alpha1.ImageSetList{Items: []mirrorv1alpha1.ImageSet{{
+				ObjectMeta: metav1.ObjectMeta{Name: "is-a", Namespace: "default", Annotations: map[string]string{
+					mirrorv1alpha1.CatalogDigestAnnotationPrefix + "x": "on-imageset",
+					"unrelated": "ignored",
+				}},
+			}}}
+
+			m.loadPartitionedState(context.TODO(), mt, imageSets)
+			Expect(m.catalogDigests["is-a"]).To(Equal(map[string]string{mirrorv1alpha1.CatalogDigestAnnotationPrefix + "x": "on-imageset"}))
+		})
+	})
+
+	// ─── catalog digests recorded with the state ─────────────────────────
+
+	Context("catalog digests recorded with the state", func() {
+		It("setCatalogDigestsLocked reports only actual changes", func() {
+			m.catalogDigests = nil
+			Expect(m.setCatalogDigestsLocked("is-a", map[string]string{"k": "v1"})).To(BeTrue())
+			Expect(m.setCatalogDigestsLocked("is-a", map[string]string{"k": "v1"})).To(BeFalse())
+			Expect(m.setCatalogDigestsLocked("is-a", map[string]string{"k": "v2"})).To(BeTrue())
+			Expect(m.setCatalogDigestsLocked("is-b", map[string]string{})).To(BeFalse(), "empty equals absent")
+		})
+
+		It("flushPartitionedState writes each ImageSet's digests in the same ConfigMap as its entries", func() {
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{ImageSets: []string{"is-a"}},
+			}
+			m.imageState = imagestate.ImageState{"d1": {Source: "s1", State: statePending}}
+			m.owners = map[string][]string{"d1": {"is-a"}}
+			digests := map[string]string{mirrorv1alpha1.CatalogDigestAnnotationPrefix + "x": "d"}
+			m.catalogDigests = map[string]map[string]string{"is-a": digests}
+
+			Expect(m.flushPartitionedState(context.TODO(), mt)).To(Succeed())
+
+			state, loaded, err := imagestate.LoadWithCatalogDigests(context.TODO(), m.Client, "default", "is-a")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(state).To(HaveKey("d1"))
+			Expect(loaded).To(Equal(digests))
+		})
+
+		It("resolveImageSet reflects the annotations it resolved against onto the ImageSet copy", func() {
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com"},
+			}
+			is := &mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "is-anno", Namespace: "default", Annotations: map[string]string{
+					mirrorv1alpha1.RecollectAnnotation: "1",
+				}},
+			}
+			_, _, _, err := m.resolveImageSet(context.TODO(), is, mt, imagestate.ImageState{})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(is.Annotations).NotTo(HaveKey(mirrorv1alpha1.RecollectAnnotation))
+		})
+
+		It("catalogDigestsOf keeps only catalog-digest annotations", func() {
+			Expect(catalogDigestsOf(map[string]string{
+				mirrorv1alpha1.CatalogDigestAnnotationPrefix + "x": "c",
+				mirrorv1alpha1.ReleaseDigestAnnotationPrefix + "y": "r",
+			})).To(Equal(map[string]string{mirrorv1alpha1.CatalogDigestAnnotationPrefix + "x": "c"}))
+		})
 	})
 
 	// ─── clearForceResyncAnnotation ──────────────────────────────────────

@@ -96,19 +96,13 @@ spec:
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create MirrorTarget")
 
-			By("creating the ImageSet with an operator catalog entry and recollect annotation")
-			// The recollect annotation bypasses the "wait for operator images mirrored"
-			// gate in imageset_controller, so the CatalogBuildJob is created immediately.
-			// This keeps the test focused on catalog image resolution, not image mirroring
-			// (mirroring is already covered by the alpine e2e test).
+			By("creating the ImageSet with an operator catalog entry")
 			isYAML := fmt.Sprintf(`
 apiVersion: mirror.openshift.io/v1alpha1
 kind: ImageSet
 metadata:
   name: %s
   namespace: %s
-  annotations:
-    mirror.openshift.io/recollect: "true"
 spec:
   mirror:
     operators:
@@ -121,7 +115,10 @@ spec:
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create ImageSet")
 
-			By("verifying a CatalogBuildJob is created within 2 minutes")
+			// The controller only creates the CatalogBuildJob once the manager has
+			// resolved the catalog and mirrored every image of the ImageSet, so
+			// this also covers bundle + related image mirroring.
+			By("verifying a CatalogBuildJob is created once all images are mirrored")
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "jobs",
 					"-l", "mirror.openshift.io/imageset="+imageSetName,
@@ -131,7 +128,17 @@ spec:
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).NotTo(BeEmpty(),
 					"no CatalogBuildJob found for ImageSet %s", imageSetName)
-			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+			}, 12*time.Minute, 10*time.Second).Should(Succeed())
+
+			By("verifying no image of the ImageSet was pending when the build started")
+			cmd = exec.Command("kubectl", "get", "imageset", imageSetName, "-n", ns,
+				"-o", "jsonpath={.status.totalImages}/{.status.pendingImages}")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			parts := strings.SplitN(output, "/", 2)
+			Expect(parts).To(HaveLen(2))
+			Expect(parts[0]).NotTo(BeEmpty(), "the manager must have resolved the ImageSet's images")
+			Expect(parts[1]).To(Or(BeEmpty(), Equal("0")), "no image may be pending once the catalog build started")
 		})
 
 		It("should complete the CatalogBuildJob successfully", func() {

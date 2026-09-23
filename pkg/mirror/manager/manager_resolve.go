@@ -268,6 +268,10 @@ func (m *MirrorManager) resolveImageSet(ctx context.Context, is *mirrorv1alpha1.
 			oclog.Printf("Warning: failed to patch annotations on ImageSet %s: %v\n", is.Name, err)
 		}
 	}
+	// Reflect what newState was resolved against onto the caller's copy, so
+	// the caller can record the matching catalog digests alongside newState
+	// (see MirrorManager.catalogDigests) even if the patch above failed.
+	is.Annotations = newAnnotations
 
 	stateChanged = !equalState(currentState, newState)
 	return newState, stateChanged, hadError, nil
@@ -756,6 +760,17 @@ func filterBlockedImages(state imagestate.ImageState, blocked []mirrorv1alpha1.B
 	}
 }
 
+// catalogDigestsOf returns only the catalog-digest cache annotations.
+func catalogDigestsOf(annotations map[string]string) map[string]string {
+	out := make(map[string]string)
+	for k, v := range annotations {
+		if strings.HasPrefix(k, mirrorv1alpha1.CatalogDigestAnnotationPrefix) {
+			out[k] = v
+		}
+	}
+	return out
+}
+
 func pruneObsoleteCacheAnnotations(annotations map[string]string, is *mirrorv1alpha1.ImageSet) bool {
 	desired := map[string]bool{}
 	arch := is.Spec.Mirror.Platform.Architectures
@@ -1152,16 +1167,24 @@ func (m *MirrorManager) loadPartitionedState(ctx context.Context, mt *mirrorv1al
 
 	imageState := make(imagestate.ImageState)
 	owners := make(map[string][]string)
+	catalogDigests := make(map[string]map[string]string)
 	loaded := 0
 	for _, is := range imageSets.Items {
 		if !containsString(mt.Spec.ImageSets, is.Name) {
 			continue
 		}
-		isState, loadErr := imagestate.Load(ctx, m.Client, m.Namespace, is.Name)
+		isState, digests, loadErr := imagestate.LoadWithCatalogDigests(ctx, m.Client, m.Namespace, is.Name)
 		if loadErr != nil {
 			oclog.Printf("Warning: failed to load state for ImageSet %s: %v\n", is.Name, loadErr)
 			continue
 		}
+		if len(digests) == 0 && len(isState) > 0 {
+			// State written before digests were recorded alongside it: adopt
+			// the ImageSet's own cache annotations once, which were written by
+			// the same resolve that produced this state.
+			digests = catalogDigestsOf(is.Annotations)
+		}
+		catalogDigests[is.Name] = digests
 		for dest, entry := range isState {
 			if entry == nil {
 				continue
@@ -1173,6 +1196,7 @@ func (m *MirrorManager) loadPartitionedState(ctx context.Context, mt *mirrorv1al
 	}
 	m.imageState = imageState
 	m.owners = owners
+	m.catalogDigests = catalogDigests
 	if loaded > 0 {
 		oclog.Printf("Loaded %d image entries across %d ImageSets\n", len(imageState), len(imageSets.Items))
 	}
