@@ -212,6 +212,16 @@ func Save(ctx context.Context, c client.Client, namespace, imageSetName string, 
 // different (older or newer) resolution of that catalog.
 const CatalogDigestsAnnotation = "mirror.openshift.io/resolved-catalog-digests"
 
+// FormatAnnotation marks every image-state ConfigMap written by this package
+// with its storage format, so MigrateConsolidatedToPerImageSet can tell a
+// current per-ImageSet ConfigMap apart from the legacy consolidated one —
+// both are named "<name>-images", and a MirrorTarget may share its name with
+// one of its ImageSets.
+const FormatAnnotation = "mirror.openshift.io/imagestate-format"
+
+// FormatPerImageSet is the FormatAnnotation value of the current format.
+const FormatPerImageSet = "v2"
+
 // SaveWithCatalogDigests is Save plus CatalogDigestsAnnotation, written in
 // the same ConfigMap update as the entries.
 func SaveWithCatalogDigests(ctx context.Context, c client.Client, namespace, imageSetName string, state ImageState, digests map[string]string, owner metav1.Object, scheme *runtime.Scheme) error {
@@ -287,11 +297,15 @@ func saveRaw(ctx context.Context, c client.Client, namespace, cmName string, sta
 	existing := &corev1.ConfigMap{}
 	getErr := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: cmName}, existing)
 
+	allAnnotations := map[string]string{FormatAnnotation: FormatPerImageSet}
+	for k, v := range annotations {
+		allAnnotations[k] = v
+	}
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        cmName,
 			Namespace:   namespace,
-			Annotations: annotations,
+			Annotations: allAnnotations,
 		},
 		BinaryData: map[string][]byte{
 			"images.json.gz": data,
@@ -470,6 +484,13 @@ type legacyImageEntry struct {
 // pre-partitioning model) are dropped rather than migrated — they carry no
 // image an ImageSet still needs and would otherwise never be cleaned up under
 // the new model, which has no consolidated map left to scan for them.
+//
+// "<mt>-images" is also the name of the per-ImageSet ConfigMap of an ImageSet
+// named like its MirrorTarget, so the ConfigMap is only treated as legacy if
+// it carries no FormatAnnotation and does not look like the current format
+// (entries without Refs but with a flat Origin, as written before the
+// annotation existed). Otherwise it is left alone: deleting it would wipe
+// that ImageSet's state on every manager start.
 func MigrateConsolidatedToPerImageSet(ctx context.Context, c client.Client, namespace, mtName string, owner metav1.Object, scheme *runtime.Scheme) error {
 	cm := &corev1.ConfigMap{}
 	err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: ConfigMapNameForTarget(mtName)}, cm)
@@ -480,9 +501,16 @@ func MigrateConsolidatedToPerImageSet(ctx context.Context, c client.Client, name
 		return fmt.Errorf("get legacy consolidated image state configmap: %w", err)
 	}
 
+	if cm.Annotations[FormatAnnotation] != "" {
+		return nil
+	}
+
 	consolidated := make(map[string]*legacyImageEntry)
 	if decErr := decodeGzipJSON(cm, "images.json.gz", "images.json", &consolidated); decErr != nil {
 		return fmt.Errorf("decode legacy consolidated image state: %w", decErr)
+	}
+	if !looksLegacy(consolidated) {
+		return nil
 	}
 
 	perImageSet := make(map[string]ImageState)
@@ -528,8 +556,34 @@ func MigrateConsolidatedToPerImageSet(ctx context.Context, c client.Client, name
 		}
 	}
 
+	// An ImageSet named like the MirrorTarget was just migrated into this
+	// very ConfigMap — it now holds that ImageSet's state and must stay.
+	if _, reused := perImageSet[mtName]; reused {
+		return nil
+	}
 	if delErr := c.Delete(ctx, cm); delErr != nil && !errors.IsNotFound(delErr) {
 		return fmt.Errorf("delete legacy consolidated image state configmap: %w", delErr)
 	}
 	return nil
+}
+
+// looksLegacy reports whether a decoded, unannotated "<name>-images" map is
+// the legacy consolidated format: any entry with Refs is legacy; entries
+// without Refs but with a flat Origin are the current per-ImageSet format; a
+// map of only Ref-less, Origin-less entries (legacy orphans) or an empty map
+// is legacy.
+func looksLegacy(entries map[string]*legacyImageEntry) bool {
+	current := false
+	for _, entry := range entries {
+		if entry == nil {
+			continue
+		}
+		if len(entry.Refs) > 0 {
+			return true
+		}
+		if entry.Origin != "" {
+			current = true
+		}
+	}
+	return !current
 }
