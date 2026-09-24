@@ -50,6 +50,17 @@ var (
 		[]string{"target"},
 	)
 
+	ManagerStatusCallbackDurationSeconds = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: "oc_mirror",
+			Subsystem: "manager",
+			Name:      "status_callback_duration_seconds",
+			Help:      "Time the manager takes to acknowledge a worker status report.",
+			Buckets:   prometheus.ExponentialBuckets(0.001, 4, 8), // 1ms…16s
+		},
+		[]string{"target"},
+	)
+
 	ManagerActiveWorkers = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Namespace: "oc_mirror",
@@ -84,6 +95,7 @@ func init() {
 		ManagerImagesMirroredTotal,
 		ManagerImagesFailedTotal,
 		ManagerBatchDurationSeconds,
+		ManagerStatusCallbackDurationSeconds,
 		ManagerActiveWorkers,
 		ManagerWorkerRetriesTotal,
 	)

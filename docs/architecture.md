@@ -98,6 +98,11 @@ can report right after a restart.
 
 The status API on port 8080 (`/status`, `/should-mirror`) is protected by a bearer token
 generated once and stored in `<target>-worker-token`; comparison is constant-time.
+A `/status` report is queued and acknowledged at once, without waiting for a reconcile
+tick that may be blocked on the Kubernetes API; the queue is applied as soon as the
+manager's state lock is free, and always before a finished worker pod is processed.
+`/should-mirror` answers from the queue for an already reported image and fails open
+(`200`) if the state lock stays busy for 2 s.
 
 ## Workers
 
