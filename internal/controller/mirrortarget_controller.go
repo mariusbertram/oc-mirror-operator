@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -22,10 +23,13 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
@@ -1388,8 +1392,39 @@ func (r *MirrorTargetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(
 			&mirrorv1alpha1.ImageSet{},
 			handler.EnqueueRequestsFromMapFunc(r.mirrorTargetsForImageSet),
+			builder.WithPredicates(imageSetCountsChanged),
+		).
+		// The manager's summary ConfigMap carries the deduplicated totals;
+		// its own event covers the case where the ImageSet status event
+		// arrived before the cache had the new summary.
+		Watches(
+			&corev1.ConfigMap{},
+			handler.EnqueueRequestForOwner(mgr.GetScheme(), mgr.GetRESTMapper(), &mirrorv1alpha1.MirrorTarget{}, handler.OnlyControllerOwner()),
+			builder.WithPredicates(predicate.NewPredicateFuncs(func(obj client.Object) bool {
+				return strings.HasSuffix(obj.GetName(), imagestate.SummaryConfigMapName(""))
+			})),
 		).
 		Complete(r)
+}
+
+// imageSetCountsChanged filters ImageSet events down to the ones that change
+// what the MirrorTarget reconcile reads from an ImageSet: its existence
+// (create/delete) and its status image counters. Annotation and condition
+// churn — the manager's per-tick status writes, recollect and catalog-digest
+// annotations — no longer re-reconciles every referencing MirrorTarget.
+var imageSetCountsChanged = predicate.Funcs{
+	UpdateFunc: func(e event.UpdateEvent) bool {
+		oldIS, okOld := e.ObjectOld.(*mirrorv1alpha1.ImageSet)
+		newIS, okNew := e.ObjectNew.(*mirrorv1alpha1.ImageSet)
+		if !okOld || !okNew {
+			return true
+		}
+		o, n := oldIS.Status, newIS.Status
+		return o.TotalImages != n.TotalImages ||
+			o.MirroredImages != n.MirroredImages ||
+			o.PendingImages != n.PendingImages ||
+			o.FailedImages != n.FailedImages
+	},
 }
 
 // mirrorTargetsForImageSet returns reconcile requests for every MirrorTarget
@@ -1421,9 +1456,12 @@ func (r *MirrorTargetReconciler) mirrorTargetsForImageSet(ctx context.Context, o
 
 // aggregateImageSetStatus walks spec.imageSets and builds per-ImageSet summaries
 // for MirrorTarget.Status.ImageSetStatuses. The MirrorTarget-level totals
-// (TotalImages, MirroredImages, PendingImages, FailedImages) are derived from
-// the consolidated per-MirrorTarget imagestate ConfigMap so that destination
-// images shared across multiple ImageSets are counted only once.
+// (TotalImages, MirroredImages, PendingImages, FailedImages) count destination
+// images shared across multiple ImageSets only once. They come from the
+// summary ConfigMap the manager writes on every state flush (see
+// imagestate.Summary); only when it is missing or covers a different set of
+// ImageSets (manager not yet upgraded, spec.imageSets just edited) are they
+// derived by decoding every ImageSet's state ConfigMap.
 // Per-ImageSet summaries still reflect per-ImageSet counts for the breakdown view.
 // ImageSets that don't exist (yet) appear with Found=false.
 // The per-ImageSet breakdown is sorted alphabetically for deterministic diffs.
@@ -1465,6 +1503,14 @@ func (r *MirrorTargetReconciler) aggregateImageSetStatus(ctx context.Context, mt
 	}
 
 	mt.Status.ImageSetStatuses = summaries
+
+	if summary, ok, err := imagestate.LoadSummary(ctx, r.Client, mt.Namespace, mt.Name); err == nil && ok && slices.Equal(summary.ImageSets, names) {
+		mt.Status.TotalImages = summary.Total
+		mt.Status.MirroredImages = summary.Mirrored
+		mt.Status.PendingImages = summary.Pending
+		mt.Status.FailedImages = summary.Failed
+		return nil
+	}
 
 	// Derive MirrorTarget-level totals across all ImageSets' own imagestate,
 	// deduplicating by destination so images shared across multiple ImageSets

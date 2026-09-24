@@ -180,6 +180,7 @@ type MirrorManager struct {
 	catalogDigests map[string]map[string]string
 	lastDriftCheck time.Time // last time a drift-check sweep was started
 	stateDirty     bool      // true when imageState/owners has unsaved changes
+	summaryWritten bool      // true once the MirrorTarget summary ConfigMap was written
 	statusDirty    bool      // true when ImageSet.status needs a Kubernetes write
 
 	// driftSweepRunning is true while a background drift-check sweep (see
@@ -1475,6 +1476,14 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 		} else {
 			m.stateDirty = false
 		}
+	} else if !m.summaryWritten {
+		// Nothing to flush, but no summary has been written since this
+		// manager started (e.g. first run after an upgrade on a target
+		// whose state is settled): write it once so the controller stops
+		// decoding every state ConfigMap for its totals.
+		if err := m.saveSummary(ctx, mt, m.countedLocked(mt)); err != nil {
+			oclog.Printf("Warning: %v\n", err)
+		}
 	}
 
 	// Phase G: Update per-IS status from the live in-memory state (filtered
@@ -1647,7 +1656,41 @@ func (m *MirrorManager) flushPartitionedState(ctx context.Context, mt *mirrorv1a
 	if err := imagestate.SaveIndex(ctx, m.Client, m.Namespace, m.TargetName, index, mt, m.Scheme); err != nil && firstErr == nil {
 		firstErr = fmt.Errorf("save shared image index: %w", err)
 	}
+	// Written last, so the controller never publishes counts ahead of the
+	// per-ImageSet state they summarise.
+	if err := m.saveSummary(ctx, mt, m.countedLocked(mt)); err != nil && firstErr == nil {
+		firstErr = err
+	}
 	return firstErr
+}
+
+// countedLocked returns every destination with at least one owner in
+// mt.Spec.ImageSets, once. Caller must hold m.mu.
+func (m *MirrorManager) countedLocked(mt *mirrorv1alpha1.MirrorTarget) imagestate.ImageState {
+	counted := make(imagestate.ImageState, len(m.imageState))
+	for dest, entry := range m.imageState {
+		for _, isName := range m.owners[dest] {
+			if containsString(mt.Spec.ImageSets, isName) {
+				counted[dest] = entry
+				break
+			}
+		}
+	}
+	return counted
+}
+
+// saveSummary writes the MirrorTarget-level summary (deduplicated counts over
+// counted, which must hold each destination with an owner in
+// mt.Spec.ImageSets once) for the MirrorTarget controller.
+func (m *MirrorManager) saveSummary(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget, counted imagestate.ImageState) error {
+	summary := imagestate.Summary{ImageSets: append([]string(nil), mt.Spec.ImageSets...)}
+	sort.Strings(summary.ImageSets)
+	summary.Total, summary.Mirrored, summary.Pending, summary.Failed = imagestate.Counts(counted)
+	if err := imagestate.SaveSummary(ctx, m.Client, m.Namespace, m.TargetName, summary, mt, m.Scheme); err != nil {
+		return fmt.Errorf("save image summary: %w", err)
+	}
+	m.summaryWritten = true
+	return nil
 }
 
 // setCatalogDigestsLocked records the catalog digests isName's entries were
