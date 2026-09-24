@@ -45,10 +45,10 @@ The operator uses a modular 3-component architecture with separate binaries and 
 |-----------|--------|----------------|
 | **Controller** | `cmd/controller/main.go` | Two reconcilers: `MirrorTargetReconciler` (manages Manager Deployment, RBAC, cleanup jobs) and `ImageSetReconciler` (manages catalog build Jobs, poll-based re-collection) |
 | **Manager Pod** | `cmd/manager/main.go` | One per MirrorTarget. Coordinates worker pods, owns imagestate ConfigMap, writes IDMS/ITMS resources |
-| **Worker Pods** | `cmd/worker/main.go` | Ephemeral. Mirror image batches and report status back to Manager |
+| **Worker Pods** | `cmd/worker/main.go` (logic in `pkg/mirror/worker/`) | Ephemeral. Mirror image batches and report status back to Manager |
 | **Console Plugin** | `cmd/dashboard/main.go` | Serves React UI as OpenShift Console Plugin; reads resource ConfigMaps via Resource API |
 
-Additional entrypoints: `cmd/worker/main.go cleanup` subcommand (deletes orphaned images from registry), `cmd/catalog-builder/main.go` (OLM FBC filtering, runs in Jobs).
+Additional entrypoints: `cmd/worker/main.go cleanup` subcommand (deletes orphaned images from registry; logic in `pkg/mirror/cleanup/`), `cmd/catalog-builder/main.go` (OLM FBC filtering, runs in Jobs).
 
 > **Note**: `cmd/main.go` is the deprecated v0.0.x single-binary entrypoint — it is no longer used in production deployments. See `docs/upgrades.md`.
 
@@ -67,6 +67,8 @@ Additional entrypoints: `cmd/worker/main.go cleanup` subcommand (deletes orphane
 | `pkg/mirror/catalog/` | OLM FBC parsing, package filtering, transitive dependency resolution |
 | `pkg/mirror/imagestate/` | Gzip-compressed ConfigMap state (`<imageset>-images`): source, dest, state, retryCount, origin |
 | `pkg/mirror/resources/` | IDMS/ITMS generation |
+| `pkg/mirror/worker/` | Worker batch loop, per-image copy/verify, status client; its timeouts (`worker.ImageBudget`) set the worker pod deadline |
+| `pkg/mirror/cleanup/` | Registry cleanup of an image-state ConfigMap's mirrored images |
 
 ### Image State Machine
 
