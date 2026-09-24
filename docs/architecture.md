@@ -131,7 +131,9 @@ reported per image.
 On a cache hit the previous entries carrying the same `(origin, entrySig)` are carried
 over unchanged, so a 24 h poll against an unchanged catalog costs one `HEAD` request.
 Every `ImageEntry` records its origin, signature and a human-readable `originRef`, which
-is what `failedImageDetails.origin` shows.
+is what `failedImageDetails.origin` shows. Operator entries also record their source
+`catalog` image explicitly; the CatalogSource/ClusterCatalog generation reads it from
+there rather than parsing `originRef`.
 
 ## Operator catalog pipeline
 

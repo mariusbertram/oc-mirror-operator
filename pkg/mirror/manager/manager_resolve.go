@@ -642,6 +642,11 @@ func (m *MirrorManager) resolveOperatorSection( //nolint:unparam
 			})
 		}
 		mergeIntoStateWithSig(newState, targetImages, imagestate.OriginOperator, sig, originRef, currentState)
+		for _, ti := range targetImages {
+			if entry := newState[ti.Destination]; entry != nil && entry.Origin == imagestate.OriginOperator {
+				entry.Catalog = op.Catalog
+			}
+		}
 
 		if err := m.saveCatalogPackages(ctx, catSlug, catInfo, filtered, upstream); err != nil {
 			oclog.Printf("Warning: failed to save catalog packages for %s: %v\n", catSlug, err)
@@ -753,6 +758,10 @@ func carryOverByOriginAndSig(src, dst imagestate.ImageState, origin imagestate.I
 		// were introduced so that failedImageDetails.origin is never empty.
 		if cp.OriginRef == "" && originRef != "" {
 			cp.OriginRef = originRef
+		}
+		// Back-fill Catalog for operator entries written before it existed.
+		if cp.Origin == imagestate.OriginOperator && cp.Catalog == "" {
+			cp.Catalog = imagestate.CatalogFromOriginRef(cp.OriginRef)
 		}
 		dst[dest] = &cp
 	}
@@ -1209,6 +1218,7 @@ func mergeResolvedIntoConsolidated(state imagestate.ImageState, owners map[strin
 				existing.Origin = newEntry.Origin
 				existing.EntrySig = newEntry.EntrySig
 				existing.OriginRef = newEntry.OriginRef
+				existing.Catalog = newEntry.Catalog
 				existing.IsBundleImage = newEntry.IsBundleImage
 			}
 		} else {
