@@ -20,6 +20,7 @@ import (
 	. "github.com/onsi/gomega"
 	"github.com/operator-framework/operator-registry/alpha/declcfg"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -3595,7 +3596,7 @@ var _ = Describe("Manager Coverage", func() {
 	// ─── flushPartitionedState ────────────────────────────────────────────
 
 	Context("flushPartitionedState", func() {
-		It("flushes a spec-orphaned owner's state and records the shared index for a multi-owner destination", func() {
+		It("does not re-create a removed ImageSet's state and records the shared index for a multi-owner destination", func() {
 			mt := &mirrorv1alpha1.MirrorTarget{
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
 				Spec:       mirrorv1alpha1.MirrorTargetSpec{ImageSets: []string{"is-a"}},
@@ -3611,9 +3612,11 @@ var _ = Describe("Manager Coverage", func() {
 
 			Expect(m.flushPartitionedState(context.TODO(), mt)).To(Succeed())
 
-			loadedC, err := imagestate.Load(context.TODO(), m.Client, "default", "is-c")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(loadedC).To(HaveKey("d2"))
+			// is-c was removed from spec.imageSets: its ConfigMap belongs to
+			// the MirrorTarget controller's removal cleanup now (#131).
+			cm := &corev1.ConfigMap{}
+			err := m.Client.Get(context.TODO(), client.ObjectKey{Namespace: "default", Name: imagestate.ConfigMapName("is-c")}, cm)
+			Expect(apierrors.IsNotFound(err)).To(BeTrue(), "expected no state ConfigMap for removed ImageSet, got err=%v", err)
 
 			index, err := imagestate.LoadIndex(context.TODO(), m.Client, "default", "test")
 			Expect(err).NotTo(HaveOccurred())

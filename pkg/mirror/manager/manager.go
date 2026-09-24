@@ -1060,6 +1060,15 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 		m.loadPartitionedState(ctx, mt, imageSets)
 	}
 
+	// Forget ImageSets that were removed from spec.imageSets since the state
+	// was loaded, so their images stop being dispatched, drift-checked and
+	// flushed. Cleanup of a removed ImageSet is the MirrorTarget
+	// controller's job (reconcileRemovedImageSets), so entries losing their
+	// last owner here are dropped, not staged as orphans.
+	if m.dropRemovedImageSetsLocked(mt) {
+		m.stateDirty = true
+	}
+
 	// Phase B: Per-IS resolution (may unlock mutex for network I/O).
 	// The resolver does cheap network probes (manifest digest + Cincinnati
 	// graph) and is gated via shouldResolve() so we don't hammer upstream
@@ -1303,6 +1312,40 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 	return nil
 }
 
+// dropRemovedImageSetsLocked removes every owner that is no longer in
+// mt.Spec.ImageSets from m.owners, drops entries left without any owner and
+// forgets the removed ImageSets' catalog digests. Returns true if anything
+// changed. Caller must hold m.mu.
+func (m *MirrorManager) dropRemovedImageSetsLocked(mt *mirrorv1alpha1.MirrorTarget) bool {
+	changed := false
+	for dest, names := range m.owners {
+		kept := names[:0:0]
+		for _, n := range names {
+			if containsString(mt.Spec.ImageSets, n) {
+				kept = append(kept, n)
+			}
+		}
+		if len(kept) == len(names) {
+			continue
+		}
+		changed = true
+		if len(kept) > 0 {
+			m.owners[dest] = kept
+			continue
+		}
+		oclog.Printf("Dropping %s: its ImageSet was removed from MirrorTarget %s\n", dest, m.TargetName)
+		delete(m.owners, dest)
+		delete(m.imageState, dest)
+		delete(m.mirrored, dest)
+	}
+	for isName := range m.catalogDigests {
+		if !containsString(mt.Spec.ImageSets, isName) {
+			delete(m.catalogDigests, isName)
+		}
+	}
+	return changed
+}
+
 // setImageStateLocked updates the in-memory state for a single destination
 // and marks the consolidated state dirty so the next reconcile tick flushes
 // the change to the ConfigMap. Caller must hold m.mu.
@@ -1355,11 +1398,11 @@ func (m *MirrorManager) flushPartitionedState(ctx context.Context, mt *mirrorv1a
 		for _, isName := range names {
 			state, ok := perImageSet[isName]
 			if !ok {
-				// isName owns this dest but is no longer in mt.Spec.ImageSets
-				// (removal cleanup hasn't run yet) — still flush it so the
-				// controller sees accurate state for the partition decision.
-				state = make(imagestate.ImageState)
-				perImageSet[isName] = state
+				// isName was removed from mt.Spec.ImageSets: never re-create
+				// its ConfigMap — the MirrorTarget controller consumes and
+				// deletes it (dropRemovedImageSetsLocked normally already
+				// removed such owners).
+				continue
 			}
 			state[dest] = entry
 		}
