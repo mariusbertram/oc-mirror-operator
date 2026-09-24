@@ -91,6 +91,18 @@ spec:
 `pollInterval: 0s` freezes the content at what is currently resolved; spec edits and the
 `recollect` annotation still work.
 
+## Retries
+
+```yaml
+spec:
+  maxRetries: 10     # failed attempts per image before it is permanently failed (min 1)
+```
+
+A failed image is retried after a backoff of 1 minute, doubling with each failure up to
+1 hour (±10 % jitter), so the default budget of 10 attempts spans several hours. While
+an image waits for its next attempt it does not occupy a worker slot. Raise
+`maxRetries` for flaky source registries; lower it to surface broken images sooner.
+
 ## Cleanup policy
 
 ```yaml
@@ -227,6 +239,7 @@ spec:
   batchSize: 50
   pollInterval: 12h
   checkExistInterval: 6h
+  maxRetries: 10
   expose:
     type: Route
   proxy:

@@ -78,7 +78,10 @@ kubectl get cm ocp-4-16-operators-images -n mirror -o jsonpath='{.binaryData.ima
 
 ## Failed images
 
-A copy that fails is retried immediately, up to 10 times. After that the image is
+A copy that fails is retried with an exponential backoff (1 minute, doubling, capped at
+1 hour), up to `spec.maxRetries` times (default 10); the failed-images view of the
+console plugin and the `image-failures` REST endpoint show when the next attempt is due.
+After that the image is
 **permanently failed**: it is listed in `status.failedImageDetails` (first 20 by
 destination; `failedImages` has the true count) and only retried by the drift check when
 it is still missing from the target, by a [recollect](#recollect) or
@@ -236,5 +239,5 @@ Built-in alerts: `OCMirrorHighFailedImages`, `OCMirrorAllImagesFailed`,
 
 Behaviour that differs from what this documentation describes is tracked in the
 [issue tracker](https://github.com/mariusbertram/oc-mirror-operator/issues?q=is%3Aissue+is%3Aopen+label%3Abug).
-Planned improvements (retry backoff, callback latency under load)
+Planned improvements (callback latency under load)
 carry the `enhancement` label.

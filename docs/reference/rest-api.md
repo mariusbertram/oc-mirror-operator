@@ -16,7 +16,7 @@ All paths are relative to the base URL, e.g.
 |---|---|---|
 | GET | `/api/v1/targets` | All MirrorTargets in the namespace with counters and ImageSets |
 | GET | `/api/v1/targets/{mt}` | One MirrorTarget: counters, conditions, ImageSets with resource links, catalogs with slugs |
-| GET | `/api/v1/targets/{mt}/image-failures` | Failed and pending images across the target's ImageSets, with error, retry count and owning ImageSet |
+| GET | `/api/v1/targets/{mt}/image-failures` | Failed and pending images across the target's ImageSets, with error, retry count, owning ImageSet and, for images waiting on their backoff, `nextRetryAt` |
 | GET | `/api/v1/targets/{mt}/imagesets/{is}/idms.yaml` | `ImageDigestMirrorSet` for the target (the `{is}` segment is kept for compatibility; the document covers the whole target) |
 | GET | `/api/v1/targets/{mt}/imagesets/{is}/itms.yaml` | `ImageTagMirrorSet` for the target |
 | GET | `/api/v1/targets/{mt}/imagesets/{is}/catalogs/{slug}/catalogsource.yaml` | OLM v0 `CatalogSource` for the filtered catalog |

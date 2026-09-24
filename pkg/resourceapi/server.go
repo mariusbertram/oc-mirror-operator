@@ -286,7 +286,10 @@ type FailedImageDetail struct {
 	LastError         string `json:"lastError,omitempty"`
 	RetryCount        int    `json:"retryCount,omitempty"`
 	PermanentlyFailed bool   `json:"permanentlyFailed,omitempty"`
-	ImageSet          string `json:"imageSet"`
+	// NextRetryAt is when a failed image is retried next (RFC 3339), while
+	// it waits out its retry backoff.
+	NextRetryAt string `json:"nextRetryAt,omitempty"`
+	ImageSet    string `json:"imageSet"`
 }
 
 // ImageFailuresResponse is the JSON response for the image failures endpoint.
@@ -680,6 +683,9 @@ func (s *Server) handleImageFailures(w http.ResponseWriter, r *http.Request) {
 				RetryCount:        entry.RetryCount,
 				PermanentlyFailed: entry.PermanentlyFailed,
 				ImageSet:          isName,
+			}
+			if entry.State == "Failed" && entry.NextRetryAt != nil {
+				detail.NextRetryAt = entry.NextRetryAt.UTC().Format(time.RFC3339)
 			}
 
 			if entry.PermanentlyFailed {

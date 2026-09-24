@@ -98,8 +98,8 @@ See [Architecture](architecture.md) for the internals of each.
   ImageSet spec ──resolve──▶ Pending ──dispatch──▶ (worker copies) ──▶ Mirrored
                                 ▲                        │                 │
                                 │        failure         ▼                 │ drift check every
-                                │◀──── retry (≤10×) ── Failed              │ checkExistInterval
-                                │                        │ 10th failure    │
+                                │◀─ retry w/ backoff ─ Failed              │ checkExistInterval
+                                │                        │ maxRetries      │
                                 │                        ▼                 ▼
                                 └──── registry check ── PermanentlyFailed  missing → Pending
 ```
@@ -116,7 +116,8 @@ See [Architecture](architecture.md) for the internals of each.
 3. **Copy.** A worker copies each image with regclient, including cosign `.sig` tags and
    OCI referrers, buffering layers larger than 100 MiB on local disk first. It verifies
    the pushed digest and reports `Mirrored` or `Failed` with the error to the manager.
-4. **Retry.** A failed image is re-queued immediately; after 10 failures it becomes
+4. **Retry.** A failed image is re-queued after a backoff (1 min, doubling, capped at
+   1 h); after `spec.maxRetries` failures (default 10) it becomes
    `PermanentlyFailed`, is listed in `status.failedImageDetails`, and is only retried by
    the drift check, a `recollect`, a `force-resync`, or a spec change.
 5. **Verify.** Every `checkExistInterval` the manager checks each `Mirrored` image with a

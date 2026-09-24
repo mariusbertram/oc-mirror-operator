@@ -56,6 +56,8 @@ export interface FailedImageDetail {
   lastError?: string;
   retryCount?: number;
   permanentlyFailed?: boolean;
+  /** RFC 3339 time of the next retry while a failed image waits out its backoff. */
+  nextRetryAt?: string;
   imageSet: string;
 }
 
