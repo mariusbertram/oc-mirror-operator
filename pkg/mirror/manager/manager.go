@@ -496,7 +496,13 @@ func (m *MirrorManager) handleStatusUpdate(w http.ResponseWriter, r *http.Reques
 		m.setImageStateLocked(req.Destination, stateFailed, req.Error)
 		ocmetrics.ManagerImagesFailedTotal.WithLabelValues(m.TargetName, imageset).Inc()
 	} else {
-		m.mirrored[req.Destination] = true
+		// Only for destinations still in the working set: a late report for
+		// an entry dropped meanwhile (e.g. its ImageSet was removed) must not
+		// leave a stale fast-path flag that would flip the entry to Mirrored
+		// unchecked if it is ever added back.
+		if _, known := m.imageState[req.Destination]; known {
+			m.mirrored[req.Destination] = true
+		}
 		m.setImageStateLocked(req.Destination, stateMirrored, "")
 		// Record the digest the worker actually mirrored as the drift-check
 		// baseline for tag-referenced additional images (see
