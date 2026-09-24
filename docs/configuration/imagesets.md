@@ -78,12 +78,14 @@ Several channels can be listed; each is resolved independently.
 
 ```yaml
 platform:
-  architectures: [amd64]        # amd64 | arm64 | s390x | ppc64le
+  architectures: [amd64, arm64]        # amd64 | arm64 | s390x | ppc64le
 ```
 
-> Currently only the **first** listed architecture is resolved
-> ([#136](https://github.com/mariusbertram/oc-mirror-operator/issues/136)). List one
-> architecture per `ImageSet` until that is fixed.
+Every listed architecture is resolved separately: the Cincinnati graph is queried per
+architecture, each release gets its own payload and component images tagged
+`<version>-<arch name>` (`x86_64`, `aarch64`, `s390x`, `ppc64le`), and the version
+selection above applies per architecture. KubeVirt container disks are extracted for all
+listed architectures where the release provides them.
 
 ### OKD
 
@@ -203,10 +205,8 @@ operators:
     targetTag: "4.16"
 ```
 
-> Changing `targetCatalog`/`targetTag`, `previousVersions` or `defaultChannel` on an
-> existing entry currently does not trigger a catalog rebuild on its own
-> ([#134](https://github.com/mariusbertram/oc-mirror-operator/issues/134)). Trigger a
-> [recollect](../operations.md#recollect) after such an edit.
+Changing `targetCatalog` or `targetTag` rebuilds and pushes the catalog to the new
+reference; the old image stays in the registry.
 
 ### Catalog versions side by side
 

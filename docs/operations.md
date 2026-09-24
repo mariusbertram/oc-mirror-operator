@@ -122,7 +122,15 @@ The manager re-resolves every entry of the `ImageSet` **ignoring the resolution 
 including permanently failed ones — a fresh retry cycle, rebuilds the OSUS graph image if
 enabled, and asks for a rebuild of the filtered catalog once all images are mirrored.
 Already mirrored images are left alone. The annotation is removed once the recollect has
-been honoured; the value is irrelevant, it just has to change to trigger again.
+been honoured; the value is irrelevant, it just has to change to trigger again. A
+recollect requested while a resolution is already running is not lost — the manager only
+removes the value it actually honoured.
+
+A permanently failed image keeps its `permanentlyFailed` marker while it is retried, so
+it still counts as failed (not pending) in the status and does not hold back the catalog
+build. When the manager honours a recollect it records the
+`mirror.openshift.io/recollect-honored` annotation; the ImageSet controller turns each
+new value into exactly one catalog rebuild once mirroring has finished.
 
 Use it after fixing credentials or network problems, after an upstream image reappeared,
 and after spec edits that the cache does not detect (see
@@ -183,17 +191,16 @@ Things to know before enabling it:
 
 - **`kubectl delete imageset` triggers no cleanup.** Remove the name from the
   `MirrorTarget` first, wait for `pendingCleanup` to empty, then delete the object.
-- Deleting a manifest removes **every tag pointing at that digest** in the repository.
-  Release component images of neighbouring z-stream versions often share digests in the
-  single `openshift/release` repository; narrowing a release range can therefore remove
-  tags a remaining version still needs, which the drift check has to repair
-  ([#132](https://github.com/mariusbertram/oc-mirror-operator/issues/132)).
+- Tag references are removed as **tags** (OCI tag delete, or re-pointing the tag before
+  deleting), so component images of a remaining release version that share a digest in
+  `openshift/release` are not affected. Digest references delete the manifest.
+- Before a cleanup Job is created, its snapshot is filtered against the live state of
+  every ImageSet of the target: an image that was orphaned earlier but is needed again
+  (package re-added, version range widened) is never deleted.
 - Registry garbage collection is the registry's job. Quay and Distribution keep blobs
   until their own GC runs.
-- Without the annotation the orphans ConfigMap is not consumed; if you enable the policy
-  later, everything that accumulated in it is deleted
-  ([#133](https://github.com/mariusbertram/oc-mirror-operator/issues/133)). Delete
-  `<target>-images-orphans` first if that is not what you want.
+- Enabling the policy later only affects orphans produced from then on; without the
+  policy the orphans ConfigMap is cleared instead of accumulating.
 
 To remove content **without** deleting it from the registry, simply do not set the
 annotation.
@@ -226,15 +233,7 @@ Built-in alerts: `OCMirrorHighFailedImages`, `OCMirrorAllImagesFailed`,
 
 ## Known issues
 
-Behaviour that differs from what this documentation describes is tracked as GitHub
-issues. At the time of writing the notable ones are:
-
-| Issue | Effect |
-|---|---|
-| [#129](https://github.com/mariusbertram/oc-mirror-operator/issues/129) | Images the drift check finds missing may be flipped back to `Mirrored` instead of being re-mirrored. |
-| [#130](https://github.com/mariusbertram/oc-mirror-operator/issues/130) | After editing an operator entry, existing images can be orphaned on the next poll and the catalog gate may not complete. |
-| [#131](https://github.com/mariusbertram/oc-mirror-operator/issues/131) | Images of an ImageSet removed from `spec.imageSets` keep being mirrored until the manager restarts. |
-| [#135](https://github.com/mariusbertram/oc-mirror-operator/issues/135) | Recollect does not retry permanently failed images and the catalog rebuild it requests is unreliable. |
-| [#136](https://github.com/mariusbertram/oc-mirror-operator/issues/136) | Only the first entry of `platform.architectures` is used. |
-
-Fixes for the first four are in progress; check the issue tracker for the current state.
+Behaviour that differs from what this documentation describes is tracked in the
+[issue tracker](https://github.com/mariusbertram/oc-mirror-operator/issues?q=is%3Aissue+is%3Aopen+label%3Abug).
+Planned improvements (retry backoff, readiness probe, callback latency under load)
+carry the `enhancement` label.

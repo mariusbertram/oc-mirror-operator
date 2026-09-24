@@ -117,8 +117,6 @@ on that channel.
   selection advanced to a newer bundle; the old bundle became an orphan. With
   `cleanup-policy: Delete` it was deleted. This is expected for heads-only; use
   `previousVersions` or explicit channels to keep older bundles.
-- **Images vanish right after editing an operator entry** — see
-  [#130](https://github.com/mariusbertram/oc-mirror-operator/issues/130).
 
 ## Resource API / console plugin problems
 

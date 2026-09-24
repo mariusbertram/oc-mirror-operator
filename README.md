@@ -45,7 +45,7 @@ spec:
 - **Declarative** — `ImageSet` describes content, `MirrorTarget` describes the target
   registry. Edit the spec, the mirror follows.
 - **Complete OpenShift support** — Cincinnati channel resolution with version ranges and
-  shortest upgrade paths, all ~190 release component images, KubeVirt container disks,
+  shortest upgrade paths, all ~190 release component images per architecture, KubeVirt container disks,
   OSUS graph-data image, GPG-verified release payloads.
 - **Smart operator catalogs** — FBC filtering per package/channel/version with transitive
   dependency resolution, heads-only default like oc-mirror v2, and a filtered catalog

@@ -63,7 +63,7 @@ operator is namespace-scoped: informers are restricted to the operator namespace
 
 | Reconciler | Watches | Creates / maintains |
 |---|---|---|
-| `MirrorTargetReconciler` | MirrorTarget, ImageSet status (for aggregation), owned objects | Coordinator/worker ServiceAccounts, Roles, RoleBindings; NetworkPolicies; the manager Deployment and Service; the Resource API Deployment/Service/RBAC (shared per namespace); Route/Ingress/HTTPRoute; cleanup Jobs; `status` aggregation; finalizer that deletes the manager and waits for its pods on deletion. |
+| `MirrorTargetReconciler` | MirrorTarget, ImageSet status (for aggregation), owned objects | Coordinator/worker ServiceAccounts, Roles, RoleBindings; NetworkPolicies; the manager Deployment (`Recreate` strategy, so two managers never run at once) and Service; the Resource API Deployment/Service/RBAC (shared per namespace); Route/Ingress/HTTPRoute; cleanup Jobs; `status` aggregation; finalizer that deletes the manager and waits for its pods on deletion. |
 | `ImageSetReconciler` | ImageSet, MirrorTarget (to requeue its ImageSets), `*-images` ConfigMaps | Catalog-build Jobs, gated on the ImageSet being fully mirrored and pinned to the catalog digest stored with the state; the `CatalogReady` condition; `catalog-build-*` bookkeeping annotations. |
 | `MirrorExportReconciler` | MirrorExport, owned Job/ConfigMap/RBAC | Export ServiceAccount/Role scoped to one ConfigMap, the artifacts ConfigMap, the export-build Job; `Ready` condition and `status.totalImages`. |
 | `ConsolePluginReconciler` | The `ConsolePlugin` CR (cluster-scoped, OpenShift only) | Plugin Deployment, Service, RBAC, the `ConsolePlugin` CR with a cleanup finalizer. Skipped when the CRD or `PLUGIN_IMAGE` is absent. |
@@ -173,6 +173,12 @@ objects. Design notes:
   the next flush. The ImageSet's resolved catalog digests are stored **in the same
   ConfigMap update** as its entries so the catalog gate never pairs a new digest with
   old entries.
+- A destination shared by several ImageSets has one lifecycle (`state`, retries) but
+  per-owner spec metadata (`entrySig`, `originRef`, …), kept in memory per owner and
+  written into each owner's ConfigMap, so every ImageSet's view matches its own spec.
+- State ConfigMaps carry a format annotation; the one-time migration from the legacy
+  consolidated `<target>-images` map only touches ConfigMaps that look like the old
+  format.
 - `permanentlyFailed` is a sticky marker: it survives a reset to `Pending` so the catalog
   gate stays open and the image keeps appearing in `failedImageDetails` until it is
   mirrored.
