@@ -24,14 +24,15 @@ func newReconcileTestManager(t *testing.T, specImageSets []string, imageSets ...
 	_ = mirrorv1alpha1.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
 
-	objs := []runtime.Object{&mirrorv1alpha1.MirrorTarget{
+	objs := make([]runtime.Object, 0, 1+len(imageSets))
+	objs = append(objs, &mirrorv1alpha1.MirrorTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
 		Spec: mirrorv1alpha1.MirrorTargetSpec{
 			Registry:     "reg.io",
 			ImageSets:    specImageSets,
 			PollInterval: &metav1.Duration{Duration: -1},
 		},
-	}}
+	})
 	b := fake.NewClientBuilder().WithScheme(scheme)
 	for _, name := range imageSets {
 		is := &mirrorv1alpha1.ImageSet{
