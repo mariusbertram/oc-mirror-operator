@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	mathrand "math/rand/v2"
 	"net"
 	"net/http"
 	"os"
@@ -48,6 +49,15 @@ const (
 	stateFailed   = "Failed"
 
 	conditionReady = "Ready"
+
+	// defaultMaxRetries is the retry budget of an image before it is marked
+	// permanently failed, unless MirrorTarget.spec.maxRetries overrides it.
+	defaultMaxRetries = 10
+
+	// retryBackoffBase and retryBackoffMax bound the exponential backoff
+	// between retries of a failed image (see retryBackoff).
+	retryBackoffBase = time.Minute
+	retryBackoffMax  = time.Hour
 
 	// maxFailedImageDetails caps the number of FailedImageDetail entries
 	// written to ImageSet.status to bound the overall status object size.
@@ -175,6 +185,11 @@ type MirrorManager struct {
 	// liveness endpoint, which must keep answering while reconcile() holds
 	// m.mu.
 	heartbeat atomic.Int64
+
+	// maxRetries is the effective MirrorTarget.spec.maxRetries (default
+	// defaultMaxRetries), refreshed at the start of every reconcile.
+	// Protected by mu.
+	maxRetries int
 
 	// statusAPIReady is true while the worker status API (/status,
 	// /should-mirror) is listening — set by runStatusAPI once the listener
@@ -911,7 +926,8 @@ func (m *MirrorManager) checkDriftOne(ctx context.Context, dest string, requireS
 		} else {
 			oclog.Printf("Permanently-failed image %s not in target; resetting for retry\n", dest)
 			entry.State = statePending
-			entry.RetryCount = 0 // fresh 10-attempt window; PermanentlyFailed stays true
+			entry.RetryCount = 0 // fresh retry window; PermanentlyFailed stays true
+			entry.NextRetryAt = nil
 			m.resetMirroredLocked(dest)
 		}
 		return
@@ -927,6 +943,7 @@ func (m *MirrorManager) checkDriftOne(ctx context.Context, dest string, requireS
 		entry.State = statePending
 		entry.LastError = ""
 		entry.RetryCount = 0
+		entry.NextRetryAt = nil
 		m.resetMirroredLocked(dest)
 		return
 	}
@@ -935,6 +952,7 @@ func (m *MirrorManager) checkDriftOne(ctx context.Context, dest string, requireS
 		entry.State = statePending
 		entry.LastError = ""
 		entry.RetryCount = 0
+		entry.NextRetryAt = nil
 		m.resetMirroredLocked(dest)
 		return
 	}
@@ -1073,11 +1091,7 @@ func (m *MirrorManager) applySignatureResultLocked(dest string, entry *imagestat
 	entry.State = stateFailed
 	entry.LastError = fmt.Sprintf("signature check failed: %v", sigErr)
 	entry.SignatureVerified = false
-	entry.RetryCount++
-	ocmetrics.ManagerWorkerRetriesTotal.WithLabelValues(m.TargetName).Inc()
-	if entry.RetryCount >= 10 && !entry.PermanentlyFailed {
-		entry.PermanentlyFailed = true
-	}
+	m.recordFailureLocked(entry)
 	m.mirrored[dest] = false
 	m.stateDirty = true
 	m.statusDirty = true
@@ -1116,6 +1130,7 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 	if batchSize <= 0 {
 		batchSize = 50
 	}
+	m.maxRetries = mt.Spec.MaxRetries
 
 	// Phase A: Load partitioned state (per-ImageSet ConfigMaps + shared index)
 	// once on first run or after restart. Worker callbacks update m.imageState
@@ -1243,6 +1258,7 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 	// unblocks operator installation before its related images even matter,
 	// and it lets the catalog-build gate (which waits on ALL operator-origin
 	// images) reach completion sooner overall.
+	now := time.Now()
 	pendingImages := make([]BatchItem, 0, len(m.imageState))
 	pendingBundleImages := make([]BatchItem, 0, len(m.imageState))
 	newOrphans := make(imagestate.ImageState)
@@ -1278,9 +1294,15 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 		}
 
 		if entry.State == stateFailed {
-			if entry.RetryCount < 10 {
-				// Transient failure: schedule immediate retry.
+			if entry.RetryCount < m.effectiveMaxRetries() {
+				// Transient failure: retry once its backoff has passed
+				// (see recordFailureLocked); until then it stays Failed
+				// and does not occupy a worker slot.
+				if entry.NextRetryAt != nil && now.Before(entry.NextRetryAt.Time) {
+					continue
+				}
 				entry.State = statePending
+				entry.NextRetryAt = nil
 				m.stateDirty = true
 			} else if !entry.PermanentlyFailed {
 				// Permanently failed. Ensure the flag is persisted: it may
@@ -1438,11 +1460,45 @@ func (m *MirrorManager) setImageStateLocked(dest, st, lastError string) {
 		m.statusDirty = true
 	}
 	if st == stateFailed {
-		entry.RetryCount++
-		ocmetrics.ManagerWorkerRetriesTotal.WithLabelValues(m.TargetName).Inc()
-		if entry.RetryCount >= 10 && !entry.PermanentlyFailed {
-			entry.PermanentlyFailed = true
-		}
+		m.recordFailureLocked(entry)
+	} else {
+		entry.NextRetryAt = nil
+	}
+}
+
+// retryBackoff returns how long a failed image waits before its next
+// attempt after retryCount failures: retryBackoffBase doubled per failure,
+// capped at retryBackoffMax, with up to ±10% jitter so that images that
+// failed together (e.g. one upstream outage) don't all retry in lockstep.
+func retryBackoff(retryCount int) time.Duration {
+	d := retryBackoffMax
+	if retryCount >= 1 && retryCount <= 7 { // 1m << 6 = 64m already exceeds the cap
+		d = min(retryBackoffBase<<(retryCount-1), retryBackoffMax)
+	}
+	jitter := time.Duration(mathrand.Int64N(int64(d/5))) - d/10 //nolint:gosec // jitter, not security
+	return d + jitter
+}
+
+// effectiveMaxRetries returns m.maxRetries, or defaultMaxRetries when unset.
+// Caller must hold m.mu.
+func (m *MirrorManager) effectiveMaxRetries() int {
+	if m.maxRetries > 0 {
+		return m.maxRetries
+	}
+	return defaultMaxRetries
+}
+
+// recordFailureLocked counts one failed attempt of entry: it bumps
+// RetryCount, schedules the next attempt after retryBackoff and marks the
+// entry permanently failed once the retry budget is used up. Caller must
+// hold m.mu.
+func (m *MirrorManager) recordFailureLocked(entry *imagestate.ImageEntry) {
+	entry.RetryCount++
+	ocmetrics.ManagerWorkerRetriesTotal.WithLabelValues(m.TargetName).Inc()
+	next := metav1.NewTime(time.Now().Add(retryBackoff(entry.RetryCount)))
+	entry.NextRetryAt = &next
+	if entry.RetryCount >= m.effectiveMaxRetries() && !entry.PermanentlyFailed {
+		entry.PermanentlyFailed = true
 	}
 }
 

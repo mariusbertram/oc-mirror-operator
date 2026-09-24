@@ -75,11 +75,15 @@ type ImageEntry struct {
 	// bundle images are what OLM installs/upgrades to directly.
 	IsBundleImage bool `json:"isBundleImage,omitempty"`
 	// PermanentlyFailed is set to true when the image has exhausted its initial
-	// retry budget (RetryCount >= 10). Once set it is never cleared — even when
+	// retry budget (RetryCount >= MirrorTarget.spec.maxRetries, default 10). Once set it is never cleared — even when
 	// the image is reset to Pending for a drift-check retry attempt. This flag
 	// is used to keep the catalog-build gate open and to surface the image in
 	// failedImageDetails regardless of the current retry state.
 	PermanentlyFailed bool `json:"permanentlyFailed,omitempty"`
+	// NextRetryAt is the earliest time a Failed entry is retried (exponential
+	// backoff by RetryCount, see the manager's retryBackoff). Nil means
+	// "retry right away"; cleared whenever the entry leaves the Failed state.
+	NextRetryAt *metav1.Time `json:"nextRetryAt,omitempty"`
 	// SignatureVerified is set once the manager's drift check has confirmed a
 	// cosign signature exists for this entry's destination, for ImageSets
 	// with Mirror.RequireSignedImages set. Not implied by State == Mirrored:

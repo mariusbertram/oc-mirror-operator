@@ -1078,6 +1078,7 @@ func (m *MirrorManager) resetImageSetToPendingLocked(isName string) bool {
 		}
 		entry.State = statePending
 		entry.RetryCount = 0
+		entry.NextRetryAt = nil
 		entry.LastError = ""
 		entry.SignatureVerified = false
 		m.mirrored[dest] = false
@@ -1107,6 +1108,7 @@ func (m *MirrorManager) resetFailedForRecollectLocked(isName string) bool {
 		}
 		entry.State = statePending
 		entry.RetryCount = 0
+		entry.NextRetryAt = nil
 		entry.LastError = ""
 		changed = true
 	}

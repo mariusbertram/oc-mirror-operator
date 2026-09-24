@@ -84,7 +84,7 @@ immediately after a worker callback (`urgentFlush`). Each tick (`reconcile()`):
 | **A load** | On first tick, load every referenced ImageSet's `*-images` ConfigMap (and migrate a legacy consolidated map) into the in-memory `imageState`/`owners`. |
 | **B resolve** | For each ImageSet in `spec.imageSets`: honour `force-resync`; if `shouldResolve()` (empty state, `recollect`, generation change, stale cache version, poll interval elapsed), run `resolveImageSet` outside the mutex with a 1 h timeout and merge the result. |
 | **C drift** | Every `checkExistInterval`, start a background sweep (20 parallel `HEAD`s, 2 min timeout each) over mirrored and permanently failed images. |
-| **D classify** | Orphan entries → `<target>-images-orphans`; `Failed` with < 10 retries → `Pending`; collect pending images, bundle images first. |
+| **D classify** | Orphan entries → `<target>-images-orphans`; `Failed` with < `maxRetries` retries whose backoff (`nextRetryAt`) has passed → `Pending`; collect pending images, bundle images first. |
 | **E dispatch** | Create worker pods in batches of `batchSize` up to `concurrency`. |
 | **F flush** | Write each ImageSet's ConfigMap (entries + resolved catalog digests in one update) and the shared index. |
 | **G status** | Update `ImageSet.status` counts, `Ready`, `failedImageDetails` (max 20), `observedGeneration`/`lastSuccessfulPollTime` on a clean resolve. |

@@ -27,6 +27,7 @@ for guidance.
 | `batchSize` | int | `50` | Images per worker pod. 1–100. |
 | `pollInterval` | duration | `24h` | Upstream re-resolution interval. `0s` disables polling; otherwise ≥ `1h` (CEL-validated). |
 | `checkExistInterval` | duration | `6h` | Drift-check interval against the target registry. ≥ `1h`. |
+| `maxRetries` | int | `10` | Failed attempts per image before it is marked permanently failed. Retries back off exponentially (1 min, doubling, capped at 1 h, ±10 % jitter). ≥ `1`. |
 | `expose` | [ExposeConfig](#exposeconfig) | auto | How the Resource API is exposed for this target. |
 | `manager` | [PodConfig](#podconfig) | — | Resources, node selector, tolerations for the manager pod. |
 | `worker` | [PodConfig](#podconfig) | — | Same for worker pods and cleanup Jobs. |

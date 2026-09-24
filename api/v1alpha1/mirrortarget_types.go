@@ -185,6 +185,16 @@ type MirrorTargetSpec struct {
 	// +kubebuilder:validation:XValidation:rule="duration(self) >= duration('1h')",message="checkExistInterval must be at least 1h"
 	CheckExistInterval *metav1.Duration `json:"checkExistInterval,omitempty"`
 
+	// MaxRetries is how many failed mirror attempts an image gets before it
+	// is marked permanently failed. Retries back off exponentially (1m, 2m,
+	// 4m, … capped at 1h), so the default of 10 spans several hours and
+	// rides out typical upstream outages. Permanently failed images are
+	// still retried by the drift check (checkExistInterval) or on recollect.
+	// Default: 10.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	MaxRetries int `json:"maxRetries,omitempty"`
+
 	// Proxy configures HTTP/HTTPS proxy settings for worker, manager, and
 	// catalog-builder pods.  Cluster-internal FQDN suffixes
 	// (localhost, 127.0.0.1, .svc, .svc.cluster.local) are automatically

@@ -202,7 +202,12 @@ export const FailedImages: React.FC<FailedImagesProps> = ({ crossTarget }) => {
                 <Td dataLabel="Error" className="mirror-error-cell">
                   {f.lastError || '—'}
                 </Td>
-                <Td dataLabel="Retries" className="mirror-toolbar-count">{f.retryCount ?? 0}</Td>
+                <Td dataLabel="Retries" className="mirror-toolbar-count">
+                  {f.retryCount ?? 0}
+                  {f.nextRetryAt && (
+                    <div className="mirror-sub-text">next {new Date(f.nextRetryAt).toLocaleTimeString()}</div>
+                  )}
+                </Td>
               </Tr>
             ))}
           </Tbody>
