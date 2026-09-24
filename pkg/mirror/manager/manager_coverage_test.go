@@ -920,6 +920,19 @@ var _ = Describe("Manager Coverage", func() {
 			Expect(m.inProgress).NotTo(HaveKey("reg.io/mirror/img:v1"))
 		})
 
+		It("does not set the mirrored flag for a destination no longer in the working set", func() {
+			const dropped = "reg.io/mirror/dropped:v1"
+			m.inProgress[dropped] = testWorkerPodName
+			body, _ := json.Marshal(WorkerStatusRequest{PodName: testWorkerPodName, Destination: dropped})
+			req := httptest.NewRequest(http.MethodPost, "/status", bytes.NewReader(body))
+			req.Header.Set("Authorization", "Bearer test-token")
+			rr := httptest.NewRecorder()
+			m.handleStatusUpdate(rr, req)
+			Expect(rr.Code).To(Equal(http.StatusOK))
+			Expect(m.mirrored).NotTo(HaveKey(dropped))
+			Expect(m.inProgress).NotTo(HaveKey(dropped))
+		})
+
 		It("marks image as Failed on error", func() {
 			m.inProgress["reg.io/mirror/img:v1"] = testWorkerPodName
 			body, _ := json.Marshal(WorkerStatusRequest{
