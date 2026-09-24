@@ -132,6 +132,11 @@ func safeJobName(prefix string, parts ...string) string {
 	return body + "-" + suffix
 }
 
+// SignatureAnnotation records on an export build Job the Signature of the
+// MirrorExport spec it was created for, so the controller can tell whether an
+// existing Job (running, failed or succeeded) still matches the current spec.
+const SignatureAnnotation = "mirror.openshift.io/export-signature"
+
 // EnsureExportJob creates a Job that resolves me's content and writes the
 // rendered artifacts into artifactsConfigMap. If a Job with the same name
 // already exists the call is a no-op.
@@ -157,6 +162,19 @@ func (m *ExportBuildManager) EnsureExportJob(
 		return fmt.Errorf("failed to create export build Job %s: %w", name, createErr)
 	}
 	return nil
+}
+
+// ExportJobSignature returns the SignatureAnnotation of the named export
+// build Job: "" if the Job does not exist or predates the annotation.
+func ExportJobSignature(ctx context.Context, c client.Client, name, namespace string) (string, error) {
+	job := &batchv1.Job{}
+	if err := c.Get(ctx, client.ObjectKey{Name: name, Namespace: namespace}, job); err != nil {
+		if errors.IsNotFound(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("failed to get export build Job %s: %w", name, err)
+	}
+	return job.Annotations[SignatureAnnotation], nil
 }
 
 // GetExportJobStatus returns the current phase of the named export build Job.
@@ -318,9 +336,10 @@ func (m *ExportBuildManager) buildJobSpec(
 
 	return &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: me.Namespace,
-			Labels:    commonLabels,
+			Name:        name,
+			Namespace:   me.Namespace,
+			Labels:      commonLabels,
+			Annotations: map[string]string{SignatureAnnotation: Signature(me, mirrorSpecJSON)},
 			OwnerReferences: []metav1.OwnerReference{
 				*metav1.NewControllerRef(me, mirrorv1alpha1.GroupVersion.WithKind("MirrorExport")),
 			},
