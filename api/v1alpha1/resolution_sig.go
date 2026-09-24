@@ -24,8 +24,12 @@ import (
 //
 // Two entries that resolve to the same upstream image set MUST produce the
 // same signature, regardless of slice ordering inside the spec. The hash
-// covers: catalog ref, full-mode flag, skip-dependencies flag, and the sorted
-// package list including their channel/bundle filters.
+// covers: catalog ref, target catalog/tag, full-mode flag, skip-dependencies
+// flag, and the sorted package list including their default channel,
+// channel/bundle filters and PreviousVersions (heads-only depth).
+//
+// PreviousVersions is omitted from the hash when zero, so signatures of
+// entries not using it are unchanged from before it was covered.
 //
 // The result is the hex SHA-256 digest, suitable for use as the suffix in
 // CatalogDigestAnnotationPrefix annotation keys (annotations have a
@@ -34,20 +38,22 @@ import (
 // using the full hex hash is still safe and well below limits).
 func OperatorEntrySignature(op Operator) string {
 	type pkgSig struct {
-		Name           string           `json:"n"`
-		DefaultChannel string           `json:"d,omitempty"`
-		Channels       []IncludeChannel `json:"c,omitempty"`
-		IncludeBundle  IncludeBundle    `json:"b,omitempty"`
+		Name             string           `json:"n"`
+		DefaultChannel   string           `json:"d,omitempty"`
+		Channels         []IncludeChannel `json:"c,omitempty"`
+		IncludeBundle    IncludeBundle    `json:"b,omitempty"`
+		PreviousVersions int              `json:"pv,omitempty"`
 	}
 	pkgs := make([]pkgSig, 0, len(op.Packages))
 	for _, p := range op.Packages {
 		ch := append([]IncludeChannel(nil), p.Channels...)
 		sort.Slice(ch, func(i, j int) bool { return ch[i].Name < ch[j].Name })
 		pkgs = append(pkgs, pkgSig{
-			Name:           p.Name,
-			DefaultChannel: p.DefaultChannel,
-			Channels:       ch,
-			IncludeBundle:  p.IncludeBundle,
+			Name:             p.Name,
+			DefaultChannel:   p.DefaultChannel,
+			Channels:         ch,
+			IncludeBundle:    p.IncludeBundle,
+			PreviousVersions: p.PreviousVersions,
 		})
 	}
 	sort.Slice(pkgs, func(i, j int) bool { return pkgs[i].Name < pkgs[j].Name })
