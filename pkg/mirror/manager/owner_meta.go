@@ -14,17 +14,19 @@ type specMeta struct {
 	Origin        imagestate.ImageOrigin
 	EntrySig      string
 	OriginRef     string
+	Catalog       string
 	IsBundleImage bool
 }
 
 func specMetaOf(e *imagestate.ImageEntry) specMeta {
-	return specMeta{Origin: e.Origin, EntrySig: e.EntrySig, OriginRef: e.OriginRef, IsBundleImage: e.IsBundleImage}
+	return specMeta{Origin: e.Origin, EntrySig: e.EntrySig, OriginRef: e.OriginRef, Catalog: e.Catalog, IsBundleImage: e.IsBundleImage}
 }
 
 func (s specMeta) applyTo(e *imagestate.ImageEntry) {
 	e.Origin = s.Origin
 	e.EntrySig = s.EntrySig
 	e.OriginRef = s.OriginRef
+	e.Catalog = s.Catalog
 	e.IsBundleImage = s.IsBundleImage
 }
 

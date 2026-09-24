@@ -1563,25 +1563,30 @@ func (m *MirrorManager) saveGlobalResources(ctx context.Context, mt *mirrorv1alp
 		}
 	}
 
-	// Generate CatalogSources for all unique catalogs in the state. Origin/
-	// OriginRef are single flat values per entry (ownership lives in
-	// m.owners, not on the entry) — for a destination shared by ImageSets
-	// resolved from differently-labeled catalog entries, whichever ImageSet
-	// first wrote the entry wins the displayed OriginRef; harmless here since
-	// it only drives catalog/slug extraction, which is the same catalog
-	// either way in the common case.
+	// Generate CatalogSources for all unique source catalogs in the state —
+	// from each entry and from each owner's own metadata, since a shared
+	// destination may have been resolved from different catalogs by its
+	// owners (see specMeta).
+	sourceCatalogs := make(map[string]struct{})
+	addCatalog := func(origin imagestate.ImageOrigin, catalog, originRef string) {
+		if origin != imagestate.OriginOperator {
+			return
+		}
+		if catalog == "" {
+			catalog = imagestate.CatalogFromOriginRef(originRef)
+		}
+		if catalog != "" {
+			sourceCatalogs[catalog] = struct{}{}
+		}
+	}
+	for dest, entry := range m.imageState {
+		addCatalog(entry.Origin, entry.Catalog, entry.OriginRef)
+		for _, meta := range m.ownerMeta[dest] {
+			addCatalog(meta.Origin, meta.Catalog, meta.OriginRef)
+		}
+	}
 	catalogs := make(map[string]resources.CatalogInfo)
-	for _, entry := range m.imageState {
-		if entry.Origin != imagestate.OriginOperator || entry.OriginRef == "" {
-			continue
-		}
-		// Extract catalog from OriginRef (hacky, but we don't store it explicitly
-		// in entry). OriginRef format: "catalog [pkg1, pkg2]" or "catalog — bundle"
-		parts := strings.Split(entry.OriginRef, " ")
-		catSource := parts[0]
-		if catSource == "" {
-			continue
-		}
+	for catSource := range sourceCatalogs {
 		slug := resources.CatalogSlug(catSource)
 		if _, ok := catalogs[slug]; ok {
 			continue

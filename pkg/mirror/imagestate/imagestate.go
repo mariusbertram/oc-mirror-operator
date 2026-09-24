@@ -16,6 +16,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -60,8 +61,13 @@ type ImageEntry struct {
 	// EntrySig is the per-spec-entry signature that produced this entry.
 	EntrySig string `json:"entrySig,omitempty"`
 	// OriginRef is a human-readable label describing which spec entry produced
-	// this entry.
+	// this entry. Display only — never parse data out of it (see Catalog).
 	OriginRef string `json:"originRef,omitempty"`
+	// Catalog is the source operator catalog reference this entry was
+	// resolved from. Only set for Origin == OriginOperator entries; entries
+	// written before the field existed get it back-filled from OriginRef
+	// (see CatalogFromOriginRef).
+	Catalog string `json:"catalog,omitempty"`
 	// IsBundleImage is true when this entry's image is itself an operator
 	// bundle's own container image (as opposed to one of its related/operand
 	// images). Only set for Origin == OriginOperator entries. Consulted by
@@ -88,6 +94,14 @@ type ImageEntry struct {
 	// moved upstream so the entry can be reset to Pending instead of staying
 	// Mirrored against stale content forever.
 	SourceDigest string `json:"sourceDigest,omitempty"`
+}
+
+// CatalogFromOriginRef recovers the source catalog from an operator entry's
+// OriginRef label ("<catalog> [pkg1, pkg2]" or "<catalog> [..] — <bundle>"),
+// for entries written before ImageEntry.Catalog existed.
+func CatalogFromOriginRef(originRef string) string {
+	catalog, _, _ := strings.Cut(originRef, " ")
+	return catalog
 }
 
 // ImageState maps destination image reference → ImageEntry, scoped to a
