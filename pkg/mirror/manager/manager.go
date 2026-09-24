@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net"
 	"net/http"
 	"os"
 	"sort"
@@ -174,6 +175,12 @@ type MirrorManager struct {
 	// liveness endpoint, which must keep answering while reconcile() holds
 	// m.mu.
 	heartbeat atomic.Int64
+
+	// statusAPIReady is true while the worker status API (/status,
+	// /should-mirror) is listening — set by runStatusAPI once the listener
+	// is bound, which in Run() happens only after the worker token bootstrap
+	// and the in-progress recovery. Read by the /readyz readiness endpoint.
+	statusAPIReady atomic.Bool
 }
 
 func New(targetName, namespace string, scheme *runtime.Scheme) (*MirrorManager, error) {
@@ -384,6 +391,7 @@ func (m *MirrorManager) runMetricsServer(ctx context.Context) {
 	mux := http.NewServeMux()
 	mux.Handle("/", ocmetrics.NewManagerMetricsHandler())
 	mux.HandleFunc("/healthz", m.handleHealthz)
+	mux.HandleFunc("/readyz", m.handleReadyz)
 
 	server := &http.Server{
 		Addr:              ":9090",
@@ -429,6 +437,30 @@ func (m *MirrorManager) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte("ok"))
 }
 
+// handleReadyz is the manager's readiness endpoint. It reports 503 until the
+// worker status API is listening (so the <mt>-manager Service never routes
+// worker callbacks to a manager that is still bootstrapping), and again once
+// the reconcile loop has stalled (see handleHealthz), so a stuck manager is
+// taken out of the Service before the liveness probe restarts it.
+//
+// Readiness deliberately does not wait for the first reconcile: that can
+// include a long initial resolve, during which workers that survived a
+// manager restart must still be able to report their results.
+func (m *MirrorManager) handleReadyz(w http.ResponseWriter, _ *http.Request) {
+	if !m.statusAPIReady.Load() {
+		http.Error(w, "worker status API not listening yet", http.StatusServiceUnavailable)
+		return
+	}
+	if last := m.heartbeat.Load(); last != 0 {
+		if since := time.Since(time.Unix(0, last)); since > livenessStaleAfter {
+			http.Error(w, fmt.Sprintf("reconcile loop stalled: no heartbeat for %s", since.Round(time.Second)), http.StatusServiceUnavailable)
+			return
+		}
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("ok"))
+}
+
 func (m *MirrorManager) runStatusAPI(ctx context.Context) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/status", m.handleStatusUpdate)
@@ -443,8 +475,15 @@ func (m *MirrorManager) runStatusAPI(ctx context.Context) {
 		IdleTimeout:       120 * time.Second,
 	}
 
+	ln, err := net.Listen("tcp", server.Addr)
+	if err != nil {
+		oclog.Printf("Status API server failed: %v\n", err)
+		return
+	}
+	m.statusAPIReady.Store(true)
+	defer m.statusAPIReady.Store(false)
 	go func() {
-		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := server.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			oclog.Printf("Status API server failed: %v\n", err)
 		}
 	}()

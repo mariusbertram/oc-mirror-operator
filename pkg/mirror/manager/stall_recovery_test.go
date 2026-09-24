@@ -192,3 +192,31 @@ func TestRunDriftSweep_HangingRegistryDoesNotWedgeSweep(t *testing.T) {
 		t.Error("expected driftSweepRunning to be reset after the sweep")
 	}
 }
+
+func TestHandleReadyz(t *testing.T) {
+	tests := []struct {
+		name      string
+		listening bool
+		heartbeat time.Time
+		want      int
+	}{
+		{"status API not listening yet", false, time.Time{}, http.StatusServiceUnavailable},
+		{"listening, before first heartbeat", true, time.Time{}, http.StatusOK},
+		{"listening, recent heartbeat", true, time.Now(), http.StatusOK},
+		{"listening, stalled reconcile loop", true, time.Now().Add(-livenessStaleAfter - time.Minute), http.StatusServiceUnavailable},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewWithClients(nil, nil, "t", "default", "img", "", runtime.NewScheme())
+			m.statusAPIReady.Store(tt.listening)
+			if !tt.heartbeat.IsZero() {
+				m.heartbeat.Store(tt.heartbeat.UnixNano())
+			}
+			rec := httptest.NewRecorder()
+			m.handleReadyz(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+			if rec.Code != tt.want {
+				t.Errorf("status = %d, want %d", rec.Code, tt.want)
+			}
+		})
+	}
+}

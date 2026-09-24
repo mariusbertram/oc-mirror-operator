@@ -4102,9 +4102,11 @@ var _ = Describe("Manager Coverage", func() {
 				defer func() { _ = resp.Body.Close() }()
 				return resp.StatusCode, nil
 			}, 2*time.Second, 20*time.Millisecond).Should(Equal(http.StatusMethodNotAllowed))
+			Expect(m.statusAPIReady.Load()).To(BeTrue(), "ready while listening")
 
 			cancel()
 			Eventually(done, 2*time.Second, 20*time.Millisecond).Should(BeClosed())
+			Expect(m.statusAPIReady.Load()).To(BeFalse(), "not ready once shut down")
 		})
 	})
 

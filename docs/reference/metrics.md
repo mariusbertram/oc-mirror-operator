@@ -5,7 +5,7 @@
 | Component | Endpoint | Scraped by |
 |---|---|---|
 | Controller | metrics port of the controller Deployment (`:8443`, HTTPS, via `--metrics-bind-address`) | `ServiceMonitor` `oc-mirror-controller` |
-| Manager | `:9090/metrics` (plain HTTP; also `/healthz`) | `ServiceMonitor` `oc-mirror-manager` (selects `app=oc-mirror-manager`) |
+| Manager | `:9090/metrics` (plain HTTP; also `/healthz` for liveness and `/readyz` for readiness) | `ServiceMonitor` `oc-mirror-manager` (selects `app=oc-mirror-manager`) |
 
 The `MonitoringReconciler` creates both ServiceMonitors, the PrometheusRule below and
 the dashboard ConfigMap `oc-mirror-dashboard` in `openshift-config-managed` (visible
