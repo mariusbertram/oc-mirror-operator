@@ -56,11 +56,12 @@ const catalogBuildSigAnnotation = "mirror.openshift.io/catalog-build-sig"
 // rebuild once it is fully mirrored.
 const catalogBuildDigestsAnnotation = "mirror.openshift.io/catalog-build-digests"
 
-// catalogRecollectSigAnnotation records the mirrorv1alpha1.RecollectAnnotation
-// value that was last honored as a catalog rebuild trigger, so the one-shot
-// recollect annotation (which stays set until the whole build succeeds) only
-// forces a rebuild once per distinct value instead of on every reconcile
-// while that value remains in place.
+// catalogRecollectSigAnnotation records the
+// mirrorv1alpha1.RecollectHonoredAnnotation value that was last honored as a
+// catalog rebuild trigger. The manager writes a new, unique value each time
+// it honors a recollect and never removes it, so comparing against this
+// record turns each recollect into exactly one rebuild — also when the build
+// has to wait until the re-resolved images are mirrored.
 const catalogRecollectSigAnnotation = "mirror.openshift.io/catalog-build-recollect-sig"
 
 // catalogPollSigAnnotation records the is.Status.LastSuccessfulPollTime value
@@ -256,17 +257,16 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs( //nolint:gocyclo
 
 	buildSig := r.CatalogBuildMgr.BuildSignature(operators)
 	digestsFP := catalogDigestsFingerprint(snap.digests, operators)
-	_, recollectRequested := is.Annotations[mirrorv1alpha1.RecollectAnnotation]
-	recollectValue := is.Annotations[mirrorv1alpha1.RecollectAnnotation]
+	recollectValue := is.Annotations[mirrorv1alpha1.RecollectHonoredAnnotation]
 	lastSig := is.Annotations[catalogBuildSigAnnotation]
 	lastDigests := is.Annotations[catalogBuildDigestsAnnotation]
 	lastHandledRecollect := is.Annotations[catalogRecollectSigAnnotation]
 	lastHandledPoll := is.Annotations[catalogPollSigAnnotation]
 
-	// A given recollect value forces at most one rebuild: the annotation can
-	// stay set for several reconciles, and re-honoring it each time would
-	// keep deleting+recreating the job.
-	recollectForcesRebuild := recollectRequested && recollectValue != lastHandledRecollect
+	// Each recollect the manager honored forces exactly one rebuild: the
+	// marker stays set, and re-honoring it each time would keep
+	// deleting+recreating the job.
+	recollectForcesRebuild := recollectValue != "" && recollectValue != lastHandledRecollect
 	sigChanged := lastSig != "" && lastSig != buildSig
 	// The catalog content the manager resolved (and mirrored) differs from
 	// what the current catalog image was built from — e.g. the upstream tag
@@ -427,19 +427,7 @@ func (r *ImageSetReconciler) reconcileCatalogBuildJobs( //nolint:gocyclo
 				"CatalogBuildSucceeded", "all catalog images built successfully", fresh.Generation)
 			return r.Status().Update(ctx, fresh)
 		})
-		if err != nil {
-			return err
-		}
-		// Honoring the recollect annotation is one-shot: clear it after a
-		// successful catalog build. This MUST happen after the status update
-		// so the reconcile it triggers sees alreadyBuilt=true.
-		if recollectRequested {
-			delete(is.Annotations, mirrorv1alpha1.RecollectAnnotation)
-			if err := r.Update(ctx, is); err != nil {
-				l.Error(err, "Failed to clear recollect annotation")
-			}
-		}
-		return nil
+		return err
 	default:
 		setCondition(&is.Status.Conditions, conditionCatalogReady, metav1.ConditionFalse, "CatalogBuildRunning", "catalog build jobs are still running", is.Generation)
 	}

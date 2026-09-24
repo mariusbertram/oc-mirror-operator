@@ -108,7 +108,7 @@ Pending → Mirrored (success)
 ## Conventions
 
 ### Annotation-Driven Flows
-- `mirror.openshift.io/recollect`: one-shot trigger on ImageSet — clears after processing, forces upstream re-resolution
+- `mirror.openshift.io/recollect`: one-shot trigger on ImageSet — clears after processing, forces upstream re-resolution and a fresh retry cycle for failed images; the manager then sets `mirror.openshift.io/recollect-honored` (unique value), which the ImageSet controller turns into exactly one catalog rebuild
 - `mirror.openshift.io/cleanup-policy=Delete`: enables image deletion from registry on ImageSet removal or spec narrowing
 - Catalog/release digest annotations on ImageSet status serve as cache-invalidation keys
 

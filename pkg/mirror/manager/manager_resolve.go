@@ -257,9 +257,11 @@ func (m *MirrorManager) resolveImageSet(ctx context.Context, is *mirrorv1alpha1.
 		annotationsChanged = true
 	}
 
-	// Clear the recollect annotation if it was honored.
+	// Clear the recollect annotation if it was honored, and leave a durable
+	// marker the ImageSet controller turns into one catalog rebuild.
 	if recollect {
 		delete(newAnnotations, mirrorv1alpha1.RecollectAnnotation)
+		newAnnotations[mirrorv1alpha1.RecollectHonoredAnnotation] = time.Now().UTC().Format(time.RFC3339Nano)
 		annotationsChanged = true
 	}
 
@@ -799,7 +801,13 @@ func pruneObsoleteCacheAnnotations(annotations map[string]string, is *mirrorv1al
 
 // patchImageSetAnnotations re-applies the manager-owned cache annotations to
 // the ImageSet using retry-on-conflict.
+//
+// is.Annotations must still hold the annotations the resolve started from:
+// the recollect annotation is only removed if it still has the value that
+// was honored, so a recollect requested while the resolve was running is
+// kept for the next one instead of being silently dropped.
 func (m *MirrorManager) patchImageSetAnnotations(ctx context.Context, is *mirrorv1alpha1.ImageSet, desired map[string]string) error {
+	honoredRecollect, recollectHonored := is.Annotations[mirrorv1alpha1.RecollectAnnotation]
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		fresh := &mirrorv1alpha1.ImageSet{}
 		if err := m.Client.Get(ctx, client.ObjectKey{Namespace: is.Namespace, Name: is.Name}, fresh); err != nil {
@@ -811,18 +819,23 @@ func (m *MirrorManager) patchImageSetAnnotations(ctx context.Context, is *mirror
 		if fresh.Annotations == nil {
 			fresh.Annotations = map[string]string{}
 		}
-		for k := range fresh.Annotations {
+		for k, v := range fresh.Annotations {
 			if strings.HasPrefix(k, mirrorv1alpha1.CatalogDigestAnnotationPrefix) ||
 				strings.HasPrefix(k, mirrorv1alpha1.ReleaseDigestAnnotationPrefix) ||
-				k == mirrorv1alpha1.GraphImageBuiltAnnotation ||
-				k == mirrorv1alpha1.RecollectAnnotation {
+				k == mirrorv1alpha1.GraphImageBuiltAnnotation {
 				delete(fresh.Annotations, k)
+			}
+			if k == mirrorv1alpha1.RecollectAnnotation && recollectHonored && v == honoredRecollect {
+				if _, keep := desired[k]; !keep {
+					delete(fresh.Annotations, k)
+				}
 			}
 		}
 		for k, v := range desired {
 			if strings.HasPrefix(k, mirrorv1alpha1.CatalogDigestAnnotationPrefix) ||
 				strings.HasPrefix(k, mirrorv1alpha1.ReleaseDigestAnnotationPrefix) ||
-				k == mirrorv1alpha1.GraphImageBuiltAnnotation {
+				k == mirrorv1alpha1.GraphImageBuiltAnnotation ||
+				k == mirrorv1alpha1.RecollectHonoredAnnotation {
 				fresh.Annotations[k] = v
 			}
 		}
@@ -1041,6 +1054,33 @@ func (m *MirrorManager) resetImageSetToPendingLocked(isName string) bool {
 		entry.LastError = ""
 		entry.SignatureVerified = false
 		m.mirrored[dest] = false
+		changed = true
+	}
+	return changed
+}
+
+// resetFailedForRecollectLocked gives every Failed image owned by isName —
+// including permanently failed ones — a fresh retry cycle after a recollect
+// was honored: State Pending, RetryCount 0, LastError cleared. Without this,
+// mergeWorkerUpdates and mergeResolvedIntoConsolidated keep the live Failed
+// state, so a permanently failed image would never be retried by recollect
+// (e.g. after fixing registry credentials). PermanentlyFailed stays set as
+// the sticky history marker (see resetImageSetToPendingLocked); already
+// Mirrored images are left alone, unlike force-resync.
+//
+// Caller must hold m.mu. Returns true if any entry was changed.
+func (m *MirrorManager) resetFailedForRecollectLocked(isName string) bool {
+	changed := false
+	for dest, entry := range m.imageState {
+		if entry == nil || entry.State != stateFailed || !hasOwner(m.owners, dest, isName) {
+			continue
+		}
+		if m.inProgress[dest] != "" {
+			continue
+		}
+		entry.State = statePending
+		entry.RetryCount = 0
+		entry.LastError = ""
 		changed = true
 	}
 	return changed

@@ -1183,11 +1183,17 @@ kubectl annotate imageset operators-4-14 \
 ```
 
 The annotation is automatically removed by the manager after completion (one-shot trigger).
+A recollect requested while a resolution is already running is not lost: the manager only
+removes the annotation value it actually honored.
 
-Recollect also requests a rebuild of the ImageSet's filtered operator catalogs, but — like
-every catalog build — only once no image of the ImageSet is pending any more. If the
-re-resolution picked up new upstream catalog content, the rebuild happens automatically
-once that content is mirrored, even if the annotation was already removed.
+Failed images (including permanently failed ones) get a fresh retry cycle; already
+`Mirrored` images are left untouched (use [force-resync](#92-force-resync-re-transfer-everything)
+to re-transfer those).
+
+Recollect also requests exactly one rebuild of the ImageSet's filtered operator catalogs, but —
+like every catalog build — only once no image of the ImageSet is pending any more. When the
+manager honors a recollect it records this in the `mirror.openshift.io/recollect-honored`
+annotation, which the controller turns into the rebuild whenever mirroring has finished.
 
 **When recollect is useful:**
 - After correcting invalid registry credentials
