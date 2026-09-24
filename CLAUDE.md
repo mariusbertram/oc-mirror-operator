@@ -61,9 +61,9 @@ The operator uses a three-tier runtime — all tiers share the same binary (`cmd
 |------|------|----------------|
 | **Operator Controller** | `internal/controller/` | Two reconcilers: `MirrorTargetReconciler` (manages Manager Deployment, RBAC, cleanup jobs) and `ImageSetReconciler` (manages catalog build Jobs, poll-based re-collection) |
 | **Manager Pod** | `pkg/mirror/manager/` | One per MirrorTarget. Coordinates worker pods, owns imagestate ConfigMap, serves IDMS/ITMS via HTTP resource server |
-| **Worker Pods** | `cmd/main.go` worker subcommand | Ephemeral. Mirror image batches and report status back to Manager |
+| **Worker Pods** | `pkg/mirror/worker/` (wrapped by `cmd/worker` and the `cmd/main.go` worker subcommand) | Ephemeral. Mirror image batches and report status back to Manager |
 
-Additional entrypoints: `cmd/main.go cleanup` (deletes orphaned images from registry), `cmd/catalog-builder/main.go` (separate binary for OLM FBC filtering, runs in Jobs).
+Additional entrypoints: `cleanup` subcommand of `cmd/main.go` and `cmd/worker` (deletes orphaned images from registry; logic in `pkg/mirror/cleanup/`), `cmd/catalog-builder/main.go` (separate binary for OLM FBC filtering, runs in Jobs).
 
 ### CRDs (`api/v1alpha1/`)
 
@@ -80,6 +80,8 @@ Additional entrypoints: `cmd/main.go cleanup` (deletes orphaned images from regi
 | `pkg/mirror/catalog/` | OLM FBC parsing, package filtering, transitive dependency resolution |
 | `pkg/mirror/imagestate/` | Gzip-compressed ConfigMap state (`<imageset>-images`): source, dest, state, retryCount, origin |
 | `pkg/mirror/resources/` | IDMS/ITMS generation |
+| `pkg/mirror/worker/` | Worker batch loop, per-image copy/verify, status client; its timeouts (`worker.ImageBudget`) set the worker pod deadline |
+| `pkg/mirror/cleanup/` | Registry cleanup of an image-state ConfigMap's mirrored images |
 
 ### Image State Machine
 

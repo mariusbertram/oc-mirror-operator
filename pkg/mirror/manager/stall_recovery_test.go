@@ -15,6 +15,7 @@ import (
 	k8sfake "k8s.io/client-go/kubernetes/fake"
 
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/imagestate"
+	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/worker"
 )
 
 func TestWorkerPodStuckPending(t *testing.T) {
@@ -218,5 +219,16 @@ func TestHandleReadyz(t *testing.T) {
 				t.Errorf("status = %d, want %d", rec.Code, tt.want)
 			}
 		})
+	}
+}
+
+// The worker pod deadline is derived from the worker's own timeouts, rounded
+// up to whole 5 minutes.
+func TestWorkerImageBudget_DerivedFromWorkerTimeouts(t *testing.T) {
+	if workerImageBudget < worker.ImageBudget {
+		t.Fatalf("workerImageBudget %s below worker.ImageBudget %s", workerImageBudget, worker.ImageBudget)
+	}
+	if workerImageBudget != 45*time.Minute {
+		t.Fatalf("workerImageBudget = %s, want 45m for the current worker timeouts", workerImageBudget)
 	}
 }

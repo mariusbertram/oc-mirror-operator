@@ -39,6 +39,7 @@ import (
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/cosign"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/imagestate"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/resources"
+	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/worker"
 	"github.com/regclient/regclient/types/errs"
 )
 
@@ -102,31 +103,25 @@ const (
 	workerPendingTimeout = 15 * time.Minute
 
 	// shouldMirrorLockWait bounds how long /should-mirror waits for m.mu
-	// before answering 200 (fail open) — well below the worker's 5 s
-	// request timeout.
+	// before answering 200 (fail open) — well below the worker's request
+	// timeout (worker.ShouldMirrorTimeout).
 	shouldMirrorLockWait = 2 * time.Second
 
-	// workerImageBudget is the worst-case time a worker needs per image:
-	// two copy attempts of up to 20 minutes each, a 15 s back-off between
-	// them, and up to 2 minutes of digest verification (see
-	// mirrorOneImage in cmd/main.go) — rounded up. Multiplied by the batch
-	// size it becomes the worker pod's activeDeadlineSeconds, so a hung
-	// worker is eventually failed by the kubelet and its images re-queued.
-	workerImageBudget = 45 * time.Minute
+	// workerImageBudget is the worst-case time a worker needs per image
+	// (worker.ImageBudget: every copy attempt timing out, the back-off
+	// between them and the digest verification), rounded up to whole
+	// 5 minutes. Multiplied by the batch size it becomes the worker pod's
+	// activeDeadlineSeconds, so a hung worker is eventually failed by the
+	// kubelet and its images re-queued.
+	workerImageBudget    = (worker.ImageBudget + workerBudgetRounding - 1) / workerBudgetRounding * workerBudgetRounding
+	workerBudgetRounding = 5 * time.Minute
 )
 
-type WorkerStatusRequest struct {
-	PodName     string `json:"podName"`
-	Destination string `json:"destination"`
-	Digest      string `json:"digest"`
-	Error       string `json:"error,omitempty"`
-}
+// WorkerStatusRequest is the body of a worker's POST /status report.
+type WorkerStatusRequest = worker.StatusRequest
 
 // BatchItem describes a single image to be mirrored within a worker batch.
-type BatchItem struct {
-	Source string `json:"source"`
-	Dest   string `json:"dest"`
-}
+type BatchItem = worker.BatchItem
 
 type MirrorManager struct {
 	Client         client.Client

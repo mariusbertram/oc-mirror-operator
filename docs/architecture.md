@@ -106,7 +106,8 @@ manager's state lock is free, and always before a finished worker pod is process
 
 ## Workers
 
-`cmd/worker`. A worker receives its batch as JSON in `MIRROR_BATCH`, computes the copy
+`cmd/worker` (a thin wrapper around `pkg/mirror/worker`; the `cleanup` subcommand wraps
+`pkg/mirror/cleanup`). A worker receives its batch as JSON in `MIRROR_BATCH`, computes the copy
 order (see [Blob replication planning](#blob-replication-planning)), and for each image:
 
 1. `GET /should-mirror?dest=…` — skip if the manager answers `410 Gone` (image removed
