@@ -189,10 +189,10 @@ objects. Design notes:
 |---|---|
 | Scope | Namespace-scoped operator; `Role`s, no `ClusterRole` (except what the console plugin needs). |
 | Per-target RBAC | `<target>-coordinator` (manager: ImageSets status, pods, ConfigMaps, worker-token secret, PVCs) and `<target>-worker` (no API access) ServiceAccounts, owned by the MirrorTarget. |
-| Resource API | Runs as `oc-mirror-resource-api` with read-only access. Write endpoints act with the **caller's** bearer token (from the console), so cluster RBAC decides. |
+| Resource API | Runs as `oc-mirror-resource-api` with read-only access. Write endpoints require the **caller's** bearer token (from the console) and act with it, so cluster RBAC decides; without a token they answer `401` and never fall back to the service account. |
 | Pod security | All pods: `runAsNonRoot`, `allowPrivilegeEscalation: false`, drop `ALL`, seccomp `RuntimeDefault`. |
 | Worker → manager | Bearer token in a Secret, injected via `secretKeyRef`, constant-time comparison. |
-| NetworkPolicies | `<target>-manager-ingress`: 8080 only from that target's workers, 8081/9090 open in-cluster. `<target>-worker-ingress-deny`: no ingress to workers. Egress is not restricted (registry and DNS topologies vary too much); add your own policy on the worker selector if needed. |
+| NetworkPolicies | `<target>-manager-ingress`: 8080 only from that target's workers, 9090 (metrics, probes) open in-cluster; the manager serves nothing on 8081. `<target>-worker-ingress-deny`: no ingress to workers. Egress is not restricted (registry and DNS topologies vary too much); add your own policy on the worker selector if needed. |
 | Credentials | `authSecret` mounted as a volume (`config.json` key only), never in env or logs. |
 | Content trust | Release payloads GPG-verified against embedded Red Hat keys; optional cosign key pinning per catalog; optional signature presence check per ImageSet; cosign signatures and referrers copied along. |
 | Supply chain | Pinned base images, VEX statements under `vex/`, `grype` and CodeQL in CI. |

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 
@@ -94,7 +95,7 @@ var _ = Describe("ResourceAPI Server", func() {
 		}
 
 		c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(mt, cm, packagesCm, sigCM).Build()
-		s := resourceapi.NewServer(c, ns)
+		s := resourceapi.NewServerForTest(c, ns)
 
 		router = mux.NewRouter()
 		s.RegisterRoutes(router)
@@ -173,7 +174,7 @@ var _ = Describe("ResourceAPI Server", func() {
 		It("updates the editable spec fields", func() {
 			url := fmt.Sprintf("/api/v1/targets/%s/%s/spec", ns, mtName)
 			body := `{"registry":"registry.example.com/mirror2","concurrency":5,"batchSize":20,"pollInterval":"12h"}`
-			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(body))
+			req := writeRequest("PATCH", url, bytes.NewBufferString(body))
 			rr := httptest.NewRecorder()
 			router.ServeHTTP(rr, req)
 			Expect(rr.Code).To(Equal(http.StatusNoContent))
@@ -189,7 +190,7 @@ var _ = Describe("ResourceAPI Server", func() {
 
 		It("returns 400 when registry is empty on PATCH", func() {
 			url := fmt.Sprintf("/api/v1/targets/%s/%s/spec", ns, mtName)
-			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(`{"registry":""}`))
+			req := writeRequest("PATCH", url, bytes.NewBufferString(`{"registry":""}`))
 			rr := httptest.NewRecorder()
 			router.ServeHTTP(rr, req)
 			Expect(rr.Code).To(Equal(http.StatusBadRequest))
@@ -198,7 +199,7 @@ var _ = Describe("ResourceAPI Server", func() {
 		It("returns 400 for an invalid pollInterval on PATCH", func() {
 			url := fmt.Sprintf("/api/v1/targets/%s/%s/spec", ns, mtName)
 			body := `{"registry":"registry.example.com/mirror","pollInterval":"not-a-duration"}`
-			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(body))
+			req := writeRequest("PATCH", url, bytes.NewBufferString(body))
 			rr := httptest.NewRecorder()
 			router.ServeHTTP(rr, req)
 			Expect(rr.Code).To(Equal(http.StatusBadRequest))
@@ -206,7 +207,7 @@ var _ = Describe("ResourceAPI Server", func() {
 
 		It("returns 404 for a non-existent MirrorTarget on PATCH", func() {
 			url := fmt.Sprintf("/api/v1/targets/%s/ghost-mt/spec", ns)
-			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(`{"registry":"r"}`))
+			req := writeRequest("PATCH", url, bytes.NewBufferString(`{"registry":"r"}`))
 			rr := httptest.NewRecorder()
 			router.ServeHTTP(rr, req)
 			Expect(rr.Code).To(Equal(http.StatusNotFound))
@@ -391,7 +392,7 @@ var _ = Describe("ResourceAPI Server", func() {
 				isTwoCM,
 			).Build()
 
-			s := resourceapi.NewServer(c, ns)
+			s := resourceapi.NewServerForTest(c, ns)
 			router := mux.NewRouter()
 			s.RegisterRoutes(router)
 
@@ -453,7 +454,7 @@ var _ = Describe("ResourceAPI Server", func() {
 			}
 
 			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(mt).Build()
-			server := resourceapi.NewServer(c, ns)
+			server := resourceapi.NewServerForTest(c, ns)
 
 			ctx := context.Background()
 			found, err := server.LookupMirrorTarget(ctx, c, mtName)
@@ -469,7 +470,7 @@ var _ = Describe("ResourceAPI Server", func() {
 			_ = mirrorv1alpha1.AddToScheme(scheme)
 
 			c := fake.NewClientBuilder().WithScheme(scheme).Build()
-			server := resourceapi.NewServer(c, ns)
+			server := resourceapi.NewServerForTest(c, ns)
 
 			ctx := context.Background()
 			found, err := server.LookupMirrorTarget(ctx, c, "nonexistent")
@@ -621,7 +622,7 @@ var _ = Describe("ResourceAPI Server", func() {
 			}
 
 			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(mt, cm).Build()
-			s := resourceapi.NewServer(c, ns)
+			s := resourceapi.NewServerForTest(c, ns)
 			r := mux.NewRouter()
 			s.RegisterAPIRoutes(r)
 
@@ -647,7 +648,7 @@ var _ = Describe("ResourceAPI Server", func() {
 			}
 
 			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(mt).Build()
-			s := resourceapi.NewServer(c, ns)
+			s := resourceapi.NewServerForTest(c, ns)
 			r := mux.NewRouter()
 			s.RegisterAPIRoutes(r)
 
@@ -758,7 +759,7 @@ var _ = Describe("ResourceAPI Server", func() {
 			}
 
 			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(mt, upstreamCM).Build()
-			s := resourceapi.NewServer(c, ns)
+			s := resourceapi.NewServerForTest(c, ns)
 			r := mux.NewRouter()
 			s.RegisterAPIRoutes(r)
 
@@ -806,7 +807,7 @@ var _ = Describe("ResourceAPI Server", func() {
 			}
 
 			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(is).Build()
-			s := resourceapi.NewServer(c, ns)
+			s := resourceapi.NewServerForTest(c, ns)
 			r := mux.NewRouter()
 			s.RegisterAPIRoutes(r)
 
@@ -829,7 +830,7 @@ var _ = Describe("ResourceAPI Server", func() {
 			}
 
 			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(is).Build()
-			s := resourceapi.NewServer(c, ns)
+			s := resourceapi.NewServerForTest(c, ns)
 			r := mux.NewRouter()
 			s.RegisterAPIRoutes(r)
 
@@ -870,7 +871,7 @@ var _ = Describe("ResourceAPI Server", func() {
 				},
 			}
 			c := fake.NewClientBuilder().WithScheme(sc).WithObjects(is).Build()
-			s := resourceapi.NewServer(c, ns)
+			s := resourceapi.NewServerForTest(c, ns)
 			r := mux.NewRouter()
 			s.RegisterAPIRoutes(r)
 			patchRouter = r
@@ -879,7 +880,7 @@ var _ = Describe("ResourceAPI Server", func() {
 		It("updates package filter with include list format", func() {
 			body := `{"include":["pkg-a","pkg-b"],"exclude":[]}`
 			url := fmt.Sprintf("/api/v1/imagesets/%s/patch-is/catalogs/redhat-operator-index-v4.12/packages", ns)
-			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(body))
+			req := writeRequest("PATCH", url, bytes.NewBufferString(body))
 			rr := httptest.NewRecorder()
 			patchRouter.ServeHTTP(rr, req)
 			Expect(rr.Code).To(Equal(http.StatusNoContent))
@@ -888,7 +889,7 @@ var _ = Describe("ResourceAPI Server", func() {
 		It("updates package filter with extended packages format", func() {
 			body := `{"packages":[{"name":"my-pkg","minVersion":"1.0.0","channels":[{"name":"stable","minVersion":"1.0.0"}]}],"exclude":[]}`
 			url := fmt.Sprintf("/api/v1/imagesets/%s/patch-is/catalogs/redhat-operator-index-v4.12/packages", ns)
-			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(body))
+			req := writeRequest("PATCH", url, bytes.NewBufferString(body))
 			rr := httptest.NewRecorder()
 			patchRouter.ServeHTTP(rr, req)
 			Expect(rr.Code).To(Equal(http.StatusNoContent))
@@ -896,7 +897,7 @@ var _ = Describe("ResourceAPI Server", func() {
 
 		It("returns 400 for invalid JSON body", func() {
 			url := fmt.Sprintf("/api/v1/imagesets/%s/patch-is/catalogs/redhat-operator-index-v4.12/packages", ns)
-			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString("{invalid json"))
+			req := writeRequest("PATCH", url, bytes.NewBufferString("{invalid json"))
 			rr := httptest.NewRecorder()
 			patchRouter.ServeHTTP(rr, req)
 			Expect(rr.Code).To(Equal(http.StatusBadRequest))
@@ -904,7 +905,7 @@ var _ = Describe("ResourceAPI Server", func() {
 
 		It("returns 404 for a non-existent ImageSet", func() {
 			url := fmt.Sprintf("/api/v1/imagesets/%s/ghost-is/catalogs/any/packages", ns)
-			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(`{"exclude":[]}`))
+			req := writeRequest("PATCH", url, bytes.NewBufferString(`{"exclude":[]}`))
 			rr := httptest.NewRecorder()
 			router.ServeHTTP(rr, req)
 			Expect(rr.Code).To(Equal(http.StatusNotFound))
@@ -912,7 +913,7 @@ var _ = Describe("ResourceAPI Server", func() {
 
 		It("returns 404 when catalog slug not found in existing ImageSet", func() {
 			url := fmt.Sprintf("/api/v1/imagesets/%s/patch-is/catalogs/wrong-slug/packages", ns)
-			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(`{"exclude":[]}`))
+			req := writeRequest("PATCH", url, bytes.NewBufferString(`{"exclude":[]}`))
 			rr := httptest.NewRecorder()
 			patchRouter.ServeHTTP(rr, req)
 			Expect(rr.Code).To(Equal(http.StatusNotFound))
@@ -941,7 +942,7 @@ var _ = Describe("ResourceAPI Server", func() {
 				},
 			}
 			c := fake.NewClientBuilder().WithScheme(sc).WithObjects(is).Build()
-			s := resourceapi.NewServer(c, ns)
+			s := resourceapi.NewServerForTest(c, ns)
 			r := mux.NewRouter()
 			s.RegisterAPIRoutes(r)
 			releasesRouter = r
@@ -968,7 +969,7 @@ var _ = Describe("ResourceAPI Server", func() {
 		It("replaces the platform/release configuration", func() {
 			url := fmt.Sprintf("/api/v1/imagesets/%s/releases-is/releases", ns)
 			body := `{"graph":false,"architectures":["amd64","arm64"],"channels":[{"name":"fast-4.15","minVersion":"4.15.0"}]}`
-			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(body))
+			req := writeRequest("PATCH", url, bytes.NewBufferString(body))
 			rr := httptest.NewRecorder()
 			releasesRouter.ServeHTTP(rr, req)
 			Expect(rr.Code).To(Equal(http.StatusNoContent))
@@ -985,7 +986,7 @@ var _ = Describe("ResourceAPI Server", func() {
 		It("defaults an empty channel type to ocp", func() {
 			url := fmt.Sprintf("/api/v1/imagesets/%s/releases-is/releases", ns)
 			body := `{"graph":false,"channels":[{"name":"stable-4.16"}]}`
-			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(body))
+			req := writeRequest("PATCH", url, bytes.NewBufferString(body))
 			rr := httptest.NewRecorder()
 			releasesRouter.ServeHTTP(rr, req)
 			Expect(rr.Code).To(Equal(http.StatusNoContent))
@@ -999,7 +1000,7 @@ var _ = Describe("ResourceAPI Server", func() {
 		It("preserves architectures when the patch omits them", func() {
 			url := fmt.Sprintf("/api/v1/imagesets/%s/releases-is/releases", ns)
 			body := `{"graph":true,"channels":[]}`
-			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(body))
+			req := writeRequest("PATCH", url, bytes.NewBufferString(body))
 			rr := httptest.NewRecorder()
 			releasesRouter.ServeHTTP(rr, req)
 			Expect(rr.Code).To(Equal(http.StatusNoContent))
@@ -1012,7 +1013,7 @@ var _ = Describe("ResourceAPI Server", func() {
 
 		It("returns 400 for invalid JSON body on PATCH", func() {
 			url := fmt.Sprintf("/api/v1/imagesets/%s/releases-is/releases", ns)
-			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString("{invalid json"))
+			req := writeRequest("PATCH", url, bytes.NewBufferString("{invalid json"))
 			rr := httptest.NewRecorder()
 			releasesRouter.ServeHTTP(rr, req)
 			Expect(rr.Code).To(Equal(http.StatusBadRequest))
@@ -1020,7 +1021,7 @@ var _ = Describe("ResourceAPI Server", func() {
 
 		It("returns 404 for a non-existent ImageSet on PATCH", func() {
 			url := fmt.Sprintf("/api/v1/imagesets/%s/ghost-is/releases", ns)
-			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(`{"channels":[]}`))
+			req := writeRequest("PATCH", url, bytes.NewBufferString(`{"channels":[]}`))
 			rr := httptest.NewRecorder()
 			releasesRouter.ServeHTTP(rr, req)
 			Expect(rr.Code).To(Equal(http.StatusNotFound))
@@ -1053,7 +1054,7 @@ var _ = Describe("ResourceAPI Server", func() {
 				},
 			}
 			c := fake.NewClientBuilder().WithScheme(sc).WithObjects(is).Build()
-			s := resourceapi.NewServer(c, ns)
+			s := resourceapi.NewServerForTest(c, ns)
 			r := mux.NewRouter()
 			s.RegisterAPIRoutes(r)
 			helmRouter = r
@@ -1080,7 +1081,7 @@ var _ = Describe("ResourceAPI Server", func() {
 		It("replaces the helm repositories", func() {
 			url := fmt.Sprintf("/api/v1/imagesets/%s/helm-is/helm", ns)
 			body := `{"repositories":[{"name":"newrepo","url":"https://example.com/charts","charts":[{"name":"mychart","version":"2.0.0"}]}]}`
-			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(body))
+			req := writeRequest("PATCH", url, bytes.NewBufferString(body))
 			rr := httptest.NewRecorder()
 			helmRouter.ServeHTTP(rr, req)
 			Expect(rr.Code).To(Equal(http.StatusNoContent))
@@ -1095,7 +1096,7 @@ var _ = Describe("ResourceAPI Server", func() {
 
 		It("returns 400 for invalid JSON body on PATCH", func() {
 			url := fmt.Sprintf("/api/v1/imagesets/%s/helm-is/helm", ns)
-			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString("{invalid json"))
+			req := writeRequest("PATCH", url, bytes.NewBufferString("{invalid json"))
 			rr := httptest.NewRecorder()
 			helmRouter.ServeHTTP(rr, req)
 			Expect(rr.Code).To(Equal(http.StatusBadRequest))
@@ -1103,7 +1104,7 @@ var _ = Describe("ResourceAPI Server", func() {
 
 		It("returns 404 for a non-existent ImageSet on PATCH", func() {
 			url := fmt.Sprintf("/api/v1/imagesets/%s/ghost-is/helm", ns)
-			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(`{"repositories":[]}`))
+			req := writeRequest("PATCH", url, bytes.NewBufferString(`{"repositories":[]}`))
 			rr := httptest.NewRecorder()
 			helmRouter.ServeHTTP(rr, req)
 			Expect(rr.Code).To(Equal(http.StatusNotFound))
@@ -1128,7 +1129,7 @@ var _ = Describe("ResourceAPI Server", func() {
 				},
 			}
 			c := fake.NewClientBuilder().WithScheme(sc).WithObjects(is).Build()
-			s := resourceapi.NewServer(c, ns)
+			s := resourceapi.NewServerForTest(c, ns)
 			r := mux.NewRouter()
 			s.RegisterAPIRoutes(r)
 			blockedRouter = r
@@ -1154,7 +1155,7 @@ var _ = Describe("ResourceAPI Server", func() {
 		It("replaces the blocked images list", func() {
 			url := fmt.Sprintf("/api/v1/imagesets/%s/blocked-is/blocked-images", ns)
 			body := `{"blockedImages":["quay.io/new/one","quay.io/new/two"]}`
-			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(body))
+			req := writeRequest("PATCH", url, bytes.NewBufferString(body))
 			rr := httptest.NewRecorder()
 			blockedRouter.ServeHTTP(rr, req)
 			Expect(rr.Code).To(Equal(http.StatusNoContent))
@@ -1169,7 +1170,7 @@ var _ = Describe("ResourceAPI Server", func() {
 
 		It("returns 400 for invalid JSON body on PATCH", func() {
 			url := fmt.Sprintf("/api/v1/imagesets/%s/blocked-is/blocked-images", ns)
-			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString("{invalid json"))
+			req := writeRequest("PATCH", url, bytes.NewBufferString("{invalid json"))
 			rr := httptest.NewRecorder()
 			blockedRouter.ServeHTTP(rr, req)
 			Expect(rr.Code).To(Equal(http.StatusBadRequest))
@@ -1177,7 +1178,7 @@ var _ = Describe("ResourceAPI Server", func() {
 
 		It("returns 404 for a non-existent ImageSet on PATCH", func() {
 			url := fmt.Sprintf("/api/v1/imagesets/%s/ghost-is/blocked-images", ns)
-			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(`{"blockedImages":[]}`))
+			req := writeRequest("PATCH", url, bytes.NewBufferString(`{"blockedImages":[]}`))
 			rr := httptest.NewRecorder()
 			blockedRouter.ServeHTTP(rr, req)
 			Expect(rr.Code).To(Equal(http.StatusNotFound))
@@ -1202,7 +1203,7 @@ var _ = Describe("ResourceAPI Server", func() {
 				},
 			}
 			c := fake.NewClientBuilder().WithScheme(sc).WithObjects(is).Build()
-			s := resourceapi.NewServer(c, ns)
+			s := resourceapi.NewServerForTest(c, ns)
 			r := mux.NewRouter()
 			s.RegisterAPIRoutes(r)
 			additionalRouter = r
@@ -1229,7 +1230,7 @@ var _ = Describe("ResourceAPI Server", func() {
 		It("replaces the additional images list", func() {
 			url := fmt.Sprintf("/api/v1/imagesets/%s/additional-is/additional-images", ns)
 			body := `{"additionalImages":[{"name":"quay.io/new/one:latest"},{"name":"quay.io/new/two","targetTag":"custom"}]}`
-			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(body))
+			req := writeRequest("PATCH", url, bytes.NewBufferString(body))
 			rr := httptest.NewRecorder()
 			additionalRouter.ServeHTTP(rr, req)
 			Expect(rr.Code).To(Equal(http.StatusNoContent))
@@ -1246,7 +1247,7 @@ var _ = Describe("ResourceAPI Server", func() {
 		It("drops entries with an empty name on PATCH", func() {
 			url := fmt.Sprintf("/api/v1/imagesets/%s/additional-is/additional-images", ns)
 			body := `{"additionalImages":[{"name":""},{"name":"quay.io/kept:v1"}]}`
-			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(body))
+			req := writeRequest("PATCH", url, bytes.NewBufferString(body))
 			rr := httptest.NewRecorder()
 			additionalRouter.ServeHTTP(rr, req)
 			Expect(rr.Code).To(Equal(http.StatusNoContent))
@@ -1259,7 +1260,7 @@ var _ = Describe("ResourceAPI Server", func() {
 
 		It("returns 400 for invalid JSON body on PATCH", func() {
 			url := fmt.Sprintf("/api/v1/imagesets/%s/additional-is/additional-images", ns)
-			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString("{invalid json"))
+			req := writeRequest("PATCH", url, bytes.NewBufferString("{invalid json"))
 			rr := httptest.NewRecorder()
 			additionalRouter.ServeHTTP(rr, req)
 			Expect(rr.Code).To(Equal(http.StatusBadRequest))
@@ -1267,7 +1268,7 @@ var _ = Describe("ResourceAPI Server", func() {
 
 		It("returns 404 for a non-existent ImageSet on PATCH", func() {
 			url := fmt.Sprintf("/api/v1/imagesets/%s/ghost-is/additional-images", ns)
-			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(`{"additionalImages":[]}`))
+			req := writeRequest("PATCH", url, bytes.NewBufferString(`{"additionalImages":[]}`))
 			rr := httptest.NewRecorder()
 			additionalRouter.ServeHTTP(rr, req)
 			Expect(rr.Code).To(Equal(http.StatusNotFound))
@@ -1298,7 +1299,7 @@ var _ = Describe("ResourceAPI Server", func() {
 				},
 			}
 			c := fake.NewClientBuilder().WithScheme(sc).WithObjects(is).Build()
-			s := resourceapi.NewServer(c, ns)
+			s := resourceapi.NewServerForTest(c, ns)
 			r := mux.NewRouter()
 			s.RegisterAPIRoutes(r)
 			operatorsRouter = r
@@ -1328,7 +1329,7 @@ var _ = Describe("ResourceAPI Server", func() {
 				{"catalog":"registry.redhat.io/redhat/redhat-operator-index:v4.21"},
 				{"catalog":"registry.redhat.io/redhat/certified-operator-index:v4.21","full":true}
 			]}`
-			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(body))
+			req := writeRequest("PATCH", url, bytes.NewBufferString(body))
 			rr := httptest.NewRecorder()
 			operatorsRouter.ServeHTTP(rr, req)
 			Expect(rr.Code).To(Equal(http.StatusNoContent))
@@ -1354,7 +1355,7 @@ var _ = Describe("ResourceAPI Server", func() {
 
 		It("removes a catalog omitted from the PATCH body", func() {
 			url := fmt.Sprintf("/api/v1/imagesets/%s/operators-is/operators", ns)
-			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(`{"operators":[]}`))
+			req := writeRequest("PATCH", url, bytes.NewBufferString(`{"operators":[]}`))
 			rr := httptest.NewRecorder()
 			operatorsRouter.ServeHTTP(rr, req)
 			Expect(rr.Code).To(Equal(http.StatusNoContent))
@@ -1367,7 +1368,7 @@ var _ = Describe("ResourceAPI Server", func() {
 
 		It("returns 400 for invalid JSON body on PATCH", func() {
 			url := fmt.Sprintf("/api/v1/imagesets/%s/operators-is/operators", ns)
-			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString("{invalid json"))
+			req := writeRequest("PATCH", url, bytes.NewBufferString("{invalid json"))
 			rr := httptest.NewRecorder()
 			operatorsRouter.ServeHTTP(rr, req)
 			Expect(rr.Code).To(Equal(http.StatusBadRequest))
@@ -1375,7 +1376,7 @@ var _ = Describe("ResourceAPI Server", func() {
 
 		It("returns 404 for a non-existent ImageSet on PATCH", func() {
 			url := fmt.Sprintf("/api/v1/imagesets/%s/ghost-is/operators", ns)
-			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(`{"operators":[]}`))
+			req := writeRequest("PATCH", url, bytes.NewBufferString(`{"operators":[]}`))
 			rr := httptest.NewRecorder()
 			operatorsRouter.ServeHTTP(rr, req)
 			Expect(rr.Code).To(Equal(http.StatusNotFound))
@@ -1396,7 +1397,7 @@ var _ = Describe("ResourceAPI Server", func() {
 				},
 			}
 			c := fake.NewClientBuilder().WithScheme(sc).WithObjects(is).Build()
-			s := resourceapi.NewServer(c, ns)
+			s := resourceapi.NewServerForTest(c, ns)
 			r := mux.NewRouter()
 			s.RegisterAPIRoutes(r)
 			settingsRouter = r
@@ -1421,7 +1422,7 @@ var _ = Describe("ResourceAPI Server", func() {
 
 		It("updates requireSignedImages", func() {
 			url := fmt.Sprintf("/api/v1/imagesets/%s/settings-is/settings", ns)
-			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(`{"requireSignedImages":true}`))
+			req := writeRequest("PATCH", url, bytes.NewBufferString(`{"requireSignedImages":true}`))
 			rr := httptest.NewRecorder()
 			settingsRouter.ServeHTTP(rr, req)
 			Expect(rr.Code).To(Equal(http.StatusNoContent))
@@ -1434,7 +1435,7 @@ var _ = Describe("ResourceAPI Server", func() {
 
 		It("returns 404 for a non-existent ImageSet on PATCH", func() {
 			url := fmt.Sprintf("/api/v1/imagesets/%s/ghost-is/settings", ns)
-			req := httptest.NewRequest("PATCH", url, bytes.NewBufferString(`{"requireSignedImages":true}`))
+			req := writeRequest("PATCH", url, bytes.NewBufferString(`{"requireSignedImages":true}`))
 			rr := httptest.NewRecorder()
 			settingsRouter.ServeHTTP(rr, req)
 			Expect(rr.Code).To(Equal(http.StatusNotFound))
@@ -1457,7 +1458,7 @@ var _ = Describe("ResourceAPI Server", func() {
 		Context("handleTriggerRecollect", func() {
 			It("sets the recollect annotation on an existing ImageSet", func() {
 				url := fmt.Sprintf("/api/v1/imagesets/%s/my-is/recollect", ns)
-				req := httptest.NewRequest("PATCH", url, nil)
+				req := writeRequest("PATCH", url, nil)
 				rr := httptest.NewRecorder()
 				withIsRouter.ServeHTTP(rr, req)
 				Expect(rr.Code).To(Equal(http.StatusNoContent))
@@ -1465,7 +1466,7 @@ var _ = Describe("ResourceAPI Server", func() {
 
 			It("returns 404 for a non-existent ImageSet", func() {
 				url := fmt.Sprintf("/api/v1/imagesets/%s/ghost-is/recollect", ns)
-				req := httptest.NewRequest("PATCH", url, nil)
+				req := writeRequest("PATCH", url, nil)
 				rr := httptest.NewRecorder()
 				emptyRouter.ServeHTTP(rr, req)
 				Expect(rr.Code).To(Equal(http.StatusNotFound))
@@ -1475,7 +1476,7 @@ var _ = Describe("ResourceAPI Server", func() {
 		Context("handleTriggerForceResync", func() {
 			It("sets the force-resync annotation on an existing ImageSet", func() {
 				url := fmt.Sprintf("/api/v1/imagesets/%s/my-is/force-resync", ns)
-				req := httptest.NewRequest("PATCH", url, nil)
+				req := writeRequest("PATCH", url, nil)
 				rr := httptest.NewRecorder()
 				withIsRouter.ServeHTTP(rr, req)
 				Expect(rr.Code).To(Equal(http.StatusNoContent))
@@ -1483,7 +1484,7 @@ var _ = Describe("ResourceAPI Server", func() {
 
 			It("returns 404 for a non-existent ImageSet", func() {
 				url := fmt.Sprintf("/api/v1/imagesets/%s/ghost-is/force-resync", ns)
-				req := httptest.NewRequest("PATCH", url, nil)
+				req := writeRequest("PATCH", url, nil)
 				rr := httptest.NewRecorder()
 				emptyRouter.ServeHTTP(rr, req)
 				Expect(rr.Code).To(Equal(http.StatusNotFound))
@@ -1493,7 +1494,7 @@ var _ = Describe("ResourceAPI Server", func() {
 		Context("handleDeleteImageSet", func() {
 			It("deletes an existing ImageSet", func() {
 				url := fmt.Sprintf("/api/v1/imagesets/%s/my-is", ns)
-				req := httptest.NewRequest("DELETE", url, nil)
+				req := writeRequest("DELETE", url, nil)
 				rr := httptest.NewRecorder()
 				withIsRouter.ServeHTTP(rr, req)
 				Expect(rr.Code).To(Equal(http.StatusNoContent))
@@ -1501,7 +1502,7 @@ var _ = Describe("ResourceAPI Server", func() {
 
 			It("returns 404 when ImageSet does not exist", func() {
 				url := fmt.Sprintf("/api/v1/imagesets/%s/nonexistent", ns)
-				req := httptest.NewRequest("DELETE", url, nil)
+				req := writeRequest("DELETE", url, nil)
 				rr := httptest.NewRecorder()
 				emptyRouter.ServeHTTP(rr, req)
 				Expect(rr.Code).To(Equal(http.StatusNotFound))
@@ -1520,4 +1521,12 @@ func buildServerRouter(namespace string, objs ...client.Object) http.Handler {
 	r := mux.NewRouter()
 	s.RegisterAPIRoutes(r)
 	return r
+}
+
+// writeRequest builds a mutating test request carrying a Bearer token, which
+// the API requires for writes (see requireTokenForWrites).
+func writeRequest(method, target string, body io.Reader) *http.Request {
+	req := httptest.NewRequest(method, target, body)
+	req.Header.Set("Authorization", "Bearer test-token")
+	return req
 }

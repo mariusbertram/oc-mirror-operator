@@ -154,11 +154,7 @@ func (s *Server) LookupMirrorTarget(ctx context.Context, c client.Client, name s
 // Clients are cached by token hash for 5 minutes to avoid creating a new HTTP
 // connection pool on every request (the UI polls every 30 seconds).
 func (s *Server) clientForRequest(r *http.Request) client.Client {
-	token := r.Header.Get("X-Forwarded-Access-Token")
-	if token == "" {
-		auth := r.Header.Get("Authorization")
-		token = strings.TrimPrefix(auth, "Bearer ")
-	}
+	token := requestToken(r)
 	if token == "" || s.baseCfg == nil {
 		return s.client
 	}
@@ -187,6 +183,35 @@ func (s *Server) clientForRequest(r *http.Request) client.Client {
 
 	s.tokenClients.Store(key, &tokenClientEntry{c: c, expiresAt: now.Add(5 * time.Minute)})
 	return c
+}
+
+// requestToken returns the caller's Bearer token from X-Forwarded-Access-Token
+// (oauth-proxy) or the Authorization header (Console Plugin SDK), or "".
+func requestToken(r *http.Request) string {
+	if token := r.Header.Get("X-Forwarded-Access-Token"); token != "" {
+		return token
+	}
+	return strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+}
+
+// requireTokenForWrites rejects mutating requests that carry no Bearer token
+// with 401. Without it such a request would fall back to the server's own
+// service-account client (see clientForRequest) and act with the server's
+// permissions instead of the caller's — harmless for a read-only service
+// account, but a privilege escalation wherever the server runs with write
+// access. Read requests keep the service-account fallback.
+func requireTokenForWrites(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet, http.MethodHead, http.MethodOptions:
+		default:
+			if requestToken(r) == "" {
+				http.Error(w, "a Bearer token is required for write requests", http.StatusUnauthorized)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // TargetSummary is the JSON response for the targets list endpoint.
@@ -278,6 +303,7 @@ func (s *Server) RegisterAPIRoutes(r *mux.Router) {
 
 	// API endpoints – JSON metadata
 	api := r.PathPrefix("/api/v1").Subrouter()
+	api.Use(requireTokenForWrites)
 	api.HandleFunc("/targets", s.handleTargetsList).Methods("GET")
 	api.HandleFunc("/targets/{mt}", s.handleTargetDetail).Methods("GET")
 	api.HandleFunc("/targets/{mt}/image-failures", s.handleImageFailures).Methods("GET")

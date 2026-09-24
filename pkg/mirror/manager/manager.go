@@ -37,7 +37,6 @@ import (
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/cosign"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/imagestate"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/resources"
-	"github.com/mariusbertram/oc-mirror-operator/pkg/resourceapi"
 	"github.com/regclient/regclient/types/errs"
 )
 
@@ -310,14 +309,6 @@ func (m *MirrorManager) Run(ctx context.Context) error {
 
 	// Start Prometheus metrics endpoint (port 9090)
 	go m.runMetricsServer(ctx)
-
-	// Start Resource API Server (external, port 8000)
-	// UI/CLI queries target status, catalogs, resources (IDMS/ITMS)
-	go func() {
-		srv := resourceapi.NewServer(m.Client, m.Namespace)
-		oclog.Println("Starting Resource API Server on :8000")
-		srv.Run(ctx)
-	}()
 
 	// Run reconcile once immediately on startup, then every 30s.
 	if err := m.reconcile(ctx); err != nil {

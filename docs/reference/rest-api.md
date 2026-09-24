@@ -4,7 +4,7 @@ Two HTTP servers expose the same code (`pkg/resourceapi`):
 
 | Server | Where | Port | Auth | Serves |
 |---|---|---|---|---|
-| **Resource API** | Deployment `oc-mirror-resource-api`, one per namespace; reached through the `<target>-resources` Service and `spec.expose` | 8081 | Read endpoints anonymous; write endpoints use the caller's bearer token (`Authorization: Bearer …` or `X-Forwarded-Access-Token`) and are subject to that user's RBAC | JSON + YAML endpoints below |
+| **Resource API** | Deployment `oc-mirror-resource-api`, one per namespace; reached through the `<target>-resources` Service and `spec.expose` | 8081 | Read endpoints anonymous (served with the Resource API's read-only service account); write endpoints **require** the caller's bearer token (`Authorization: Bearer …` or `X-Forwarded-Access-Token`), act with that user's RBAC, and answer `401` without one | JSON + YAML endpoints below |
 | **Console plugin backend** | Deployment `oc-mirror-plugin` (OpenShift) | 9443 (HTTPS, service serving cert) | Console forwards the logged-in user's token | Same endpoints plus the plugin's static assets |
 
 All paths are relative to the base URL, e.g.
@@ -58,7 +58,7 @@ resource. Bodies are JSON; a successful call returns `204 No Content`.
 | PATCH | `/api/v1/imagesets/{namespace}/{name}/force-resync` | none — sets the `force-resync` annotation |
 | DELETE | `/api/v1/imagesets/{namespace}/{name}` | none — deletes the ImageSet object (no registry cleanup) |
 
-Responses: `400` invalid body, `403` the token lacks permission, `404` object not
+Responses: `400` invalid body, `401` no bearer token, `403` the token lacks permission, `404` object not
 found, `500` other API errors.
 
 ## Examples

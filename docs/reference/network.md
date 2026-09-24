@@ -56,7 +56,7 @@ graph endpoint by setting `OcpUpdateURL` in the manager Deployment
 
 | Policy | Selector | Rule |
 |---|---|---|
-| `<target>-manager-ingress` | `app=oc-mirror-manager, mirrortarget=<target>` | Ingress on 8080 only from that target's workers; 8081 and 9090 from anywhere in-cluster |
+| `<target>-manager-ingress` | `app=oc-mirror-manager, mirrortarget=<target>` | Ingress on 8080 only from that target's workers; 9090 (metrics, probes) from anywhere in-cluster |
 | `<target>-worker-ingress-deny` | `app=oc-mirror-worker, mirrortarget=<target>` | No ingress |
 
 Egress is deliberately unrestricted because DNS and registry topologies differ too much

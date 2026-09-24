@@ -532,18 +532,17 @@ func (r *MirrorTargetReconciler) ensureNetworkPolicies(ctx context.Context, mt *
 
 	tcp := corev1.ProtocolTCP
 	statusPort := intstr.FromInt32(8080)
-	resourcesPort := intstr.FromInt32(8081)
 	metricsPort := intstr.FromInt32(9090)
 
 	policies := []*networkingv1.NetworkPolicy{
-		// 1. Manager ingress policy. Three rules:
+		// 1. Manager ingress policy. Two rules:
 		//    a) Status endpoint (8080): only worker pods of the same
 		//       MirrorTarget may report status.
-		//    b) Resource API (8081): open to all sources so that users,
-		//       Ingress controllers, and Routes can reach it.
-		//    c) Metrics endpoint (9090): open to all in-cluster sources so
+		//    b) Metrics endpoint (9090): open to all in-cluster sources so
 		//       that Prometheus (OpenShift UWM or standalone) can scrape.
 		//       The endpoint is read-only; no authentication is required.
+		// The Resource API is served by the separate oc-mirror-resource-api
+		// Deployment, not by the manager, so no other port is opened here.
 		// Egress is left unrestricted because the manager talks to the
 		// kube-apiserver and remote registries.
 		{
@@ -564,12 +563,6 @@ func (r *MirrorTargetReconciler) ensureNetworkPolicies(ctx context.Context, mt *
 						},
 						Ports: []networkingv1.NetworkPolicyPort{
 							{Protocol: &tcp, Port: &statusPort},
-						},
-					},
-					// Resource API — open to all (Ingress/Route/port-forward)
-					{
-						Ports: []networkingv1.NetworkPolicyPort{
-							{Protocol: &tcp, Port: &resourcesPort},
 						},
 					},
 					// Metrics — open to all in-cluster so any Prometheus
