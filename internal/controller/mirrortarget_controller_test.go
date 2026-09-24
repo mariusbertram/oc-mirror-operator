@@ -25,6 +25,7 @@ import (
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -106,6 +107,17 @@ var _ = Describe("MirrorTarget Controller", func() {
 			}, timeout, interval).Should(Succeed())
 			Expect(deployment.Labels).To(HaveKeyWithValue("app", "oc-mirror-manager"))
 			Expect(deployment.Labels).To(HaveKeyWithValue("mirrortarget", resourceName))
+
+			By("verifying the manager ingress policy only opens the status and metrics ports (#141)")
+			policy := &networkingv1.NetworkPolicy{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: resourceName + "-manager-ingress", Namespace: "default"}, policy)).To(Succeed())
+			var openPorts []int32
+			for _, rule := range policy.Spec.Ingress {
+				for _, p := range rule.Ports {
+					openPorts = append(openPorts, p.Port.IntVal)
+				}
+			}
+			Expect(openPorts).To(ConsistOf(int32(8080), int32(9090)))
 
 			By("verifying the manager is never run twice during a rollout (#137)")
 			Expect(deployment.Spec.Strategy.Type).To(Equal(appsv1.RecreateDeploymentStrategyType))
