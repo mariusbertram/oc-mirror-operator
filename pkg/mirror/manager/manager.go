@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mariusbertram/oc-mirror-operator/pkg/oclog"
@@ -53,6 +54,50 @@ const (
 	// When more images are permanently failed, a summary is appended to the
 	// Ready condition message.
 	maxFailedImageDetails = 20
+)
+
+// Timeouts bounding the manager's own network calls. None of the regclient,
+// Cincinnati or cosign calls made by the manager carry a deadline of their
+// own, so a single stalled TCP connection to a registry (half-open
+// connection, proxy swallowing the response, …) would otherwise block
+// forever. For the drift sweep that meant driftSweepRunning never went back
+// to false and no further sweep ever started, so images that disappeared
+// from the target registry were never re-mirrored; for a resolve it meant
+// the whole reconcile loop stopped (no dispatching, no flushing, no
+// recollect/force-resync handling).
+// driftCheckTimeout bounds the network calls (CheckExist, upstream digest
+// resolution, cosign signature lookup) made for one destination during a
+// drift sweep. A variable only so tests can shorten it.
+var driftCheckTimeout = 2 * time.Minute
+
+const (
+	// resolveTimeout bounds one ImageSet's resolution in reconcile() Phase B
+	// (Cincinnati graph, catalog download/filtering, graph image build). A
+	// timed-out resolve is treated like any other resolve error and retried
+	// on the next tick.
+	resolveTimeout = time.Hour
+
+	// livenessStaleAfter is how long the reconcile loop may go without a
+	// heartbeat before /healthz reports the manager as unhealthy so the
+	// kubelet restarts it. Must comfortably exceed resolveTimeout, the
+	// longest single step between two heartbeats.
+	livenessStaleAfter = resolveTimeout + 30*time.Minute
+
+	// workerPendingTimeout is how long a worker pod may stay in the Pending
+	// phase (unschedulable, image pull back-off, missing Secret, …) before
+	// the manager gives up on it, deletes it and returns its images to the
+	// Pending state for a fresh dispatch. Without this, a stuck pod keeps its
+	// images (and, at the default concurrency of 1, the only worker slot)
+	// reserved in inProgress forever.
+	workerPendingTimeout = 15 * time.Minute
+
+	// workerImageBudget is the worst-case time a worker needs per image:
+	// two copy attempts of up to 20 minutes each, a 15 s back-off between
+	// them, and up to 2 minutes of digest verification (see
+	// mirrorOneImage in cmd/main.go) — rounded up. Multiplied by the batch
+	// size it becomes the worker pod's activeDeadlineSeconds, so a hung
+	// worker is eventually failed by the kubelet and its images re-queued.
+	workerImageBudget = 45 * time.Minute
 )
 
 type WorkerStatusRequest struct {
@@ -119,6 +164,12 @@ type MirrorManager struct {
 	// (dispatching new worker batches, handling status callbacks) for the
 	// entire, potentially hours-long, duration of a large sweep.
 	driftSweepRunning bool
+
+	// heartbeat holds the UnixNano timestamp of the reconcile loop's last
+	// sign of life (see touchHeartbeat). Read lock-free by the /healthz
+	// liveness endpoint, which must keep answering while reconcile() holds
+	// m.mu.
+	heartbeat atomic.Int64
 }
 
 func New(targetName, namespace string, scheme *runtime.Scheme) (*MirrorManager, error) {
@@ -334,9 +385,13 @@ func (m *MirrorManager) syncInProgressFromPods(ctx context.Context) error {
 }
 
 func (m *MirrorManager) runMetricsServer(ctx context.Context) {
+	mux := http.NewServeMux()
+	mux.Handle("/", ocmetrics.NewManagerMetricsHandler())
+	mux.HandleFunc("/healthz", m.handleHealthz)
+
 	server := &http.Server{
 		Addr:              ":9090",
-		Handler:           ocmetrics.NewManagerMetricsHandler(),
+		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -354,6 +409,28 @@ func (m *MirrorManager) runMetricsServer(ctx context.Context) {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = server.Shutdown(shutdownCtx)
+}
+
+// touchHeartbeat records that the reconcile loop is alive.
+func (m *MirrorManager) touchHeartbeat() {
+	m.heartbeat.Store(time.Now().UnixNano())
+}
+
+// handleHealthz is the manager's liveness endpoint. It reports 503 once the
+// reconcile loop has not produced a heartbeat for livenessStaleAfter, i.e.
+// it is stuck somewhere no timeout covers, so the kubelet restarts the pod
+// instead of it silently never mirroring (or re-mirroring) anything again.
+// Before the first heartbeat (startup) it reports healthy.
+func (m *MirrorManager) handleHealthz(w http.ResponseWriter, _ *http.Request) {
+	last := m.heartbeat.Load()
+	if last != 0 {
+		if since := time.Since(time.Unix(0, last)); since > livenessStaleAfter {
+			http.Error(w, fmt.Sprintf("reconcile loop stalled: no heartbeat for %s", since.Round(time.Second)), http.StatusServiceUnavailable)
+			return
+		}
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("ok"))
 }
 
 func (m *MirrorManager) runStatusAPI(ctx context.Context) {
@@ -549,6 +626,12 @@ func (m *MirrorManager) cleanupFinishedWorkers(ctx context.Context) {
 			done[len(done)-1].phase = "" // signal "missing"
 			continue
 		}
+		if workerPodStuckPending(pod, time.Now()) {
+			// Treat like a failed pod: its images go back to Pending and the
+			// pod is deleted below.
+			done = append(done, finished{dest: dest, podName: podName, phase: corev1.PodFailed})
+			continue
+		}
 		if pod.Status.Phase != corev1.PodSucceeded && pod.Status.Phase != corev1.PodFailed {
 			continue
 		}
@@ -564,7 +647,7 @@ func (m *MirrorManager) cleanupFinishedWorkers(ctx context.Context) {
 			if cur, ok := m.inProgress[f.dest]; ok && cur == f.podName {
 				delete(m.inProgress, f.dest)
 				if f.phase == corev1.PodFailed {
-					oclog.Printf("Worker pod %s for %s failed without reporting; resetting to Pending\n", f.podName, f.dest)
+					oclog.Printf("Worker pod %s for %s failed or got stuck without reporting; resetting to Pending\n", f.podName, f.dest)
 					m.setImageStateLocked(f.dest, statePending, "")
 				}
 			}
@@ -581,6 +664,9 @@ func (m *MirrorManager) cleanupFinishedWorkers(ctx context.Context) {
 		if _, already := deletedPods[f.podName]; already {
 			continue
 		}
+		if pod := podsByName[f.podName]; pod != nil && workerPodStuckPending(pod, time.Now()) {
+			oclog.Printf("Deleting worker pod %s: stuck in Pending for more than %s\n", f.podName, workerPendingTimeout)
+		}
 		_ = m.Clientset.CoreV1().Pods(m.Namespace).Delete(ctx, f.podName, metav1.DeleteOptions{})
 		deletedPods[f.podName] = struct{}{}
 	}
@@ -596,6 +682,24 @@ func (m *MirrorManager) cleanupFinishedWorkers(ctx context.Context) {
 		oclog.Printf("Cleaning up orphaned worker pod %s (%s)\n", pod.Name, pod.Status.Phase)
 		_ = m.Clientset.CoreV1().Pods(m.Namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{})
 	}
+}
+
+// workerPodStuckPending reports whether pod has been in the Pending phase
+// (never started running) for longer than workerPendingTimeout.
+func workerPodStuckPending(pod *corev1.Pod, now time.Time) bool {
+	if pod.Status.Phase != corev1.PodPending || pod.CreationTimestamp.IsZero() {
+		return false
+	}
+	return now.Sub(pod.CreationTimestamp.Time) > workerPendingTimeout
+}
+
+// workerActiveDeadlineSeconds returns the activeDeadlineSeconds for a worker
+// pod mirroring batchLen images (see workerImageBudget).
+func workerActiveDeadlineSeconds(batchLen int) int64 {
+	if batchLen < 1 {
+		batchLen = 1
+	}
+	return int64(batchLen) * int64(workerImageBudget/time.Second)
 }
 
 // checkExistNoLock calls CheckExist for dest using the cached client. If the
@@ -700,6 +804,9 @@ func (m *MirrorManager) runDriftSweep(ctx context.Context, destinations []string
 // m.mu only for the brief snapshot-read and result-apply steps around the
 // (lock-free) network call.
 func (m *MirrorManager) checkDriftOne(ctx context.Context, dest string, requireSignedByIS map[string]bool) {
+	ctx, cancel := context.WithTimeout(ctx, driftCheckTimeout)
+	defer cancel()
+
 	m.mu.Lock()
 	entry, ok := m.imageState[dest]
 	if !ok || entry == nil || len(m.owners[dest]) == 0 {
@@ -900,6 +1007,9 @@ func (m *MirrorManager) verifySignedImageLocked(ctx context.Context, dest string
 }
 
 func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
+	m.touchHeartbeat()
+	defer m.touchHeartbeat()
+
 	m.cleanupFinishedWorkers(ctx)
 
 	m.mu.Lock()
@@ -972,7 +1082,10 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 			isCopy := is.DeepCopy()
 			isViewSnap := cloneImageState(isView)
 			m.mu.Unlock()
-			newPerISState, resolved, hadError, resolveErr := m.resolveImageSet(ctx, isCopy, mt, isViewSnap)
+			resolveCtx, cancelResolve := context.WithTimeout(ctx, resolveTimeout)
+			newPerISState, resolved, hadError, resolveErr := m.resolveImageSet(resolveCtx, isCopy, mt, isViewSnap)
+			cancelResolve()
+			m.touchHeartbeat()
 			m.mu.Lock()
 			if resolveErr != nil {
 				oclog.Printf("Warning: failed to resolve ImageSet %s: %v\n", is.Name, resolveErr)
@@ -1683,9 +1796,10 @@ func (m *MirrorManager) startWorkerBatch(ctx context.Context, mt *mirrorv1alpha1
 			},
 		},
 		Spec: corev1.PodSpec{
-			RestartPolicy:      corev1.RestartPolicyNever,
-			ServiceAccountName: m.TargetName + "-worker",
-			ImagePullSecrets:   []corev1.LocalObjectReference{{Name: mt.Spec.AuthSecret}},
+			RestartPolicy:         corev1.RestartPolicyNever,
+			ActiveDeadlineSeconds: pointerTo(workerActiveDeadlineSeconds(len(items))),
+			ServiceAccountName:    m.TargetName + "-worker",
+			ImagePullSecrets:      []corev1.LocalObjectReference{{Name: mt.Spec.AuthSecret}},
 			SecurityContext: &corev1.PodSecurityContext{
 				RunAsNonRoot: pointerTo(true),
 				SeccompProfile: &corev1.SeccompProfile{

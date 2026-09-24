@@ -213,6 +213,23 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 								{Name: "status", ContainerPort: 8080, Protocol: corev1.ProtocolTCP},
 								{Name: "metrics", ContainerPort: 9090, Protocol: corev1.ProtocolTCP},
 							},
+							// The manager's /healthz turns unhealthy once its
+							// reconcile loop has stalled (see
+							// pkg/mirror/manager handleHealthz), so a hung
+							// manager gets restarted instead of silently never
+							// mirroring or re-mirroring images again.
+							LivenessProbe: &corev1.Probe{
+								ProbeHandler: corev1.ProbeHandler{
+									HTTPGet: &corev1.HTTPGetAction{
+										Path: "/healthz",
+										Port: intstr.FromString("metrics"),
+									},
+								},
+								InitialDelaySeconds: 30,
+								PeriodSeconds:       60,
+								TimeoutSeconds:      5,
+								FailureThreshold:    3,
+							},
 						},
 					},
 					Volumes:      managerPodVolumes(mt),
