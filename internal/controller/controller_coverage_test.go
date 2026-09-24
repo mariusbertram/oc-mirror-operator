@@ -3572,6 +3572,44 @@ var _ = Describe("Coverage tests", func() {
 			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: isName + "-images", Namespace: ns}, &corev1.ConfigMap{})).To(HaveOccurred())
 		})
 
+		It("never deletes an image a remaining ImageSet still uses, even if the index no longer lists it as shared", func() {
+			// The manager rewrites the shared index without a removed
+			// ImageSet as soon as it notices the removal, which can happen
+			// before this partition runs (#131).
+			localCtx := context.Background()
+			mtName := "mt-partition-live"
+			isName := "is-partition-live"
+			keptIS := "is-partition-live-kept"
+
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: mtName, Namespace: ns},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com", ImageSets: []string{keptIS}},
+			}
+			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
+			DeferCleanup(func() { cleanupMT(localCtx, mtName) })
+
+			removedState := imagestate.ImageState{
+				"d-exclusive": {Source: "s-exclusive", State: "Mirrored", Origin: imagestate.OriginAdditional},
+				"d-live":      {Source: "s-live", State: "Mirrored", Origin: imagestate.OriginAdditional},
+			}
+			Expect(imagestate.Save(localCtx, k8sClient, ns, isName, removedState, nil, nil)).To(Succeed())
+			keptState := imagestate.ImageState{"d-live": {Source: "s-live", State: "Mirrored", Origin: imagestate.OriginAdditional}}
+			Expect(imagestate.Save(localCtx, k8sClient, ns, keptIS, keptState, nil, nil)).To(Succeed())
+			DeferCleanup(func() {
+				_ = k8sClient.Delete(localCtx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: keptIS + "-images", Namespace: ns}})
+			})
+
+			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			created, err := r.partitionAndCreateCleanupJob(localCtx, mt, isName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(created).To(BeTrue())
+
+			snapshot, err := imagestate.LoadByConfigMapName(localCtx, k8sClient, ns, cleanupSnapshotCMName(mtName, isName))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(snapshot).To(HaveKey("d-exclusive"))
+			Expect(snapshot).NotTo(HaveKey("d-live"), "an image still used by a remaining ImageSet must not be deleted")
+		})
+
 		It("creates a cleanup job for exclusive images while updating the shared index for shared images", func() {
 			localCtx := context.Background()
 			mtName := "mt-partition-mixed"

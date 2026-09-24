@@ -900,10 +900,19 @@ func (r *MirrorTargetReconciler) partitionAndCreateCleanupJob(
 		return false, fmt.Errorf("failed to load shared image index: %w", err)
 	}
 
+	// The shared index alone is not enough: the manager rewrites it without
+	// the removed ImageSet as soon as it notices the removal, which can be
+	// before this runs. A destination still present in any remaining
+	// ImageSet's live state is needed and must never be deleted.
+	live, err := r.liveDestinations(ctx, mt, isName)
+	if err != nil {
+		return false, err
+	}
+
 	exclusiveState := make(imagestate.ImageState)
 	sharedDests := make([]string, 0)
 	for dest, entry := range isState {
-		if index.IsShared(dest) {
+		if index.IsShared(dest) || live[dest] {
 			sharedDests = append(sharedDests, dest)
 			continue
 		}
@@ -946,6 +955,26 @@ func (r *MirrorTargetReconciler) partitionAndCreateCleanupJob(
 	}
 
 	return created, nil
+}
+
+// liveDestinations returns every destination referenced by the state
+// ConfigMap of an ImageSet in mt.Spec.ImageSets other than exclude, i.e. the
+// images the MirrorTarget still needs.
+func (r *MirrorTargetReconciler) liveDestinations(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget, exclude string) (map[string]bool, error) {
+	live := make(map[string]bool)
+	for _, name := range mt.Spec.ImageSets {
+		if name == exclude {
+			continue
+		}
+		state, err := imagestate.Load(ctx, r.Client, mt.Namespace, name)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load state for imageset %s: %w", name, err)
+		}
+		for dest := range state {
+			live[dest] = true
+		}
+	}
+	return live, nil
 }
 
 // createCleanupJob creates a Kubernetes Job that deletes all images listed in
