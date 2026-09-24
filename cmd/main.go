@@ -24,7 +24,7 @@ As of v0.1.0+, the oc-mirror-operator uses a modular 3-component architecture:
 This file (cmd/main.go) with subcommands is NO LONGER USED in v0.1.0+ deployments.
 It will be removed in a future major release.
 
-Migration: See docs/migration-v0.0-to-v0.1.md for upgrade instructions.
+Migration: See docs/upgrades.md for upgrade instructions.
 */
 
 package main

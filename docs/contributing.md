@@ -1,345 +1,134 @@
-# Contributing Guide
+# Contributing
 
-Thank you for contributing to `oc-mirror-operator`! This document describes
-the project layout, development workflow, CI pipeline, and how to run tests.
+Thanks for contributing. This page covers the process: layout, tests, lint, CI and
+releases. Build and deployment mechanics are in the [Developer guide](developer-guide.md).
 
----
+**Contents**
 
-## Table of Contents
-
-1. [Prerequisites](#prerequisites)
-2. [Repository Layout](#repository-layout)
-3. [Development Setup](#development-setup)
-4. [Building](#building)
-5. [Unit Tests](#unit-tests)
-6. [E2E Tests](#e2e-tests)
-7. [Linting](#linting)
-8. [Generating Manifests](#generating-manifests)
-9. [CI Pipeline](#ci-pipeline)
-10. [Release Process](#release-process)
-11. [Code Style](#code-style)
-12. [Submitting Changes](#submitting-changes)
+- [Repository layout](#repository-layout)
+- [Development setup](#development-setup)
+- [Tests](#tests)
+- [E2E tests](#e2e-tests)
+- [Linting](#linting)
+- [Generated files](#generated-files)
+- [CI](#ci)
+- [Releases](#releases)
+- [Code style](#code-style)
+- [Submitting changes](#submitting-changes)
 
 ---
 
-## Prerequisites
+## Repository layout
 
-| Tool | Version | Purpose |
-|---|---|---|
-| Go | ≥ 1.25 (see `go.mod`) | Build and test |
-| Docker or Podman | any recent | Build container images |
-| KinD | ≥ 0.25 | Local E2E cluster |
-| kubectl | ≥ 1.29 | Cluster interaction |
-| operator-sdk | ≥ 1.37 | Bundle/CSV generation |
-| controller-gen | auto-installed | CRD/RBAC code generation |
-| kustomize | auto-installed | Config building |
+See [Architecture → Repository layout](architecture.md#repository-layout). In short:
+`api/` types, `internal/controller/` reconcilers, `pkg/mirror/` the mirroring logic
+shared by manager, workers and jobs, `cmd/` one `main` per binary, `ui/` the console
+plugin, `config/` kustomize and the CSV base, `test/e2e/` Ginkgo suites, `docs/` this
+documentation.
 
-Install the pinned versions of controller-gen and kustomize used by the project:
+## Development setup
 
 ```bash
-make controller-gen kustomize
+git clone https://github.com/mariusbertram/oc-mirror-operator.git && cd oc-mirror-operator
+go mod download
+make controller-gen kustomize golangci-lint setup-envtest    # pinned tools into bin/
+make hooks                                                   # pre-commit: fmt, vet, lint, tests
 ```
 
----
+`AGENTS.md`/`CLAUDE.md` hold the condensed conventions that AI assistants and humans
+alike are expected to follow (invariants, "if you change X also update Y", coverage
+expectations).
 
-## Repository Layout
-
-```
-.
-├── api/v1alpha1/          # CRD types (MirrorTarget, ImageSet)
-├── cmd/                   # main.go entry points (operator, manager, worker, resource-api, cleanup)
-│   └── catalog-builder/   # catalog-builder binary
-├── config/                # Kustomize config (CRDs, RBAC, manifests)
-│   ├── crd/               # Generated CRD manifests
-│   ├── rbac/              # RBAC for the operator itself
-│   ├── manager/           # Manager Deployment
-│   ├── samples/           # Example CR YAML files
-│   └── manifests/bases/   # Base CSV for OLM bundle
-├── bundle/                # Generated OLM bundle (do not edit manually)
-├── docs/                  # Documentation
-├── internal/controller/   # Reconciliation logic (MirrorTarget, ImageSet)
-├── pkg/
-│   ├── mirror/
-│   │   ├── manager/       # Manager pod orchestration logic
-│   │   ├── catalog/       # OLM catalog filtering and FBC building
-│   │   ├── client/        # OCI registry client (blob upload, image copy)
-│   │   ├── imagestate/    # Gzip-compressed ConfigMap state management
-│   │   ├── resources/     # IDMS/ITMS/CatalogSource generation helpers
-│   │   └── release/       # Cincinnati graph resolution, version ranges
-│   ├── resourceapi/       # Standalone Resource API server (REST + Web UI)
-│   │   └── ui/            # Embedded Web UI Dashboard (HTML/CSS/JS)
-│   └── ...
-├── test/e2e/              # End-to-end tests (Ginkgo)
-├── hack/                  # Helper scripts
-├── Makefile               # Build targets
-└── .github/workflows/     # CI/CD pipelines
-```
-
----
-
-## Development Setup
+## Tests
 
 ```bash
-# Clone the repository
-git clone https://github.com/mariusbertram/oc-mirror-operator.git
-cd oc-mirror-operator
-
-# Install Go dependencies
-go mod tidy
-
-# Install code-generation tools
-make controller-gen kustomize
-
-# Install the pre-commit hook (runs fmt, vet, lint, and tests before each commit)
-make hooks
-```
-
----
-
-## Building
-
-The oc-mirror operator uses a modular architecture with three separate container images. All binaries can be built together:
-
-```bash
-# Build all three binaries (controller, manager, worker)
-make build
-
-# Build individual binaries
-make build/controller    # Build controller only
-make build/manager       # Build manager only
-make build/worker        # Build worker only
-```
-
-### Container Images
-
-**Build all three images:**
-
-```bash
-# Using podman (default)
-make docker-build-all IMG_BASE=<your-registry>/oc-mirror
-
-# Using docker
-make docker-build-all IMG_BASE=<your-registry>/oc-mirror CONTAINER_TOOL=docker
-```
-
-This creates three images with `IMG_BASE` as prefix:
-- `<your-registry>/oc-mirror-controller:dev`
-- `<your-registry>/oc-mirror-manager:dev`
-- `<your-registry>/oc-mirror-worker:dev`
-
-**Or build individual images:**
-
-```bash
-make docker-build-controller IMG_BASE=<your-registry>/oc-mirror
-make docker-build-manager    IMG_BASE=<your-registry>/oc-mirror
-make docker-build-worker     IMG_BASE=<your-registry>/oc-mirror
-```
-
-**Push images:**
-
-```bash
-make docker-push-all IMG_BASE=<your-registry>/oc-mirror
-
-# Or push individually
-make docker-push-controller IMG_BASE=<your-registry>/oc-mirror
-make docker-push-manager    IMG_BASE=<your-registry>/oc-mirror
-make docker-push-worker     IMG_BASE=<your-registry>/oc-mirror
-```
-
-**Multi-arch images (linux/amd64 + linux/arm64):**
-
-```bash
-make docker-buildx-all IMG_BASE=<your-registry>/oc-mirror
-```
-
----
-
-## Modular Architecture
-
-Each component is a separate binary with distinct responsibilities:
-
-| Component | Binary Location | Dockerfile | Environment |
-|-----------|-----------------|-----------|-------------|
-| **Controller** | `cmd/controller/main.go` | `Dockerfile.controller` | Kubernetes operator (watches CRs) |
-| **Manager** | `cmd/manager/main.go` | `Dockerfile.manager` | Per-MirrorTarget Pod (orchestrates workers) |
-| **Worker** | `cmd/worker/main.go` | `Dockerfile.worker` | Ephemeral Pods + cleanup Job (mirrors images) |
-
-All three share common libraries in `pkg/mirror/` to avoid code duplication and maintain consistency across components.
-
-## Unit Tests
-
-```bash
-make test
-```
-
-This runs all unit tests and writes a coverage report to `cover.out`. To view
-the HTML coverage report:
-
-```bash
+make test                                   # everything except e2e; writes cover.out
+go test ./pkg/mirror/release/ -run TestResolveReleaseNodes -v
+go test ./internal/controller/ -ginkgo.focus="should reconcile MirrorTarget" -v
 go tool cover -html=cover.out
 ```
 
-**Adding tests**: Unit tests live alongside the package they test
-(`_test.go` suffix). Table-driven tests with `t.Run` subtest names are
-preferred. Tests must not depend on a running cluster.
+- Unit tests are co-located (`_test.go`), table-driven with `t.Run`.
+- Controller tests use envtest (a real API server + etcd downloaded by `make setup-envtest`).
+- Manager tests use the controller-runtime fake client and `httptest` registries.
+- Target: **≥ 90 % per package** of hand-written Go code. `cmd/*` (thin wiring) and
+  generated deepcopy code are excluded. Document genuinely unreachable branches instead
+  of forcing fault injection.
 
----
+## E2E tests
 
-## E2E Tests
-
-End-to-end tests require a KinD cluster with the operator deployed.
-
-### Quick start
+Ginkgo suites in `test/e2e/`, labelled `cluster`, `integration`, `release`, `catalog`,
+`catalog-cluster`, `olm-upgrade`.
 
 ```bash
-# 1. Create a KinD cluster with a local registry
-./hack/kind-with-registry.sh
-
-# 2. Build and load all three images into the cluster
-make docker-build-all IMAGE_TAG_BASE=localhost:5001/oc-mirror-operator VERSION=dev
-kind load docker-image localhost:5001/oc-mirror-operator-controller:dev
-kind load docker-image localhost:5001/oc-mirror-operator-manager:dev
-kind load docker-image localhost:5001/oc-mirror-operator-worker:dev
-
-# 3. Deploy the operator
-make deploy IMG=localhost:5001/oc-mirror-operator-controller:dev
-
-# 4. Run the e2e suite
-make test-e2e
+make test-integration          # no cluster needed (integration, release, catalog labels)
+make test-e2e-cluster          # creates a Kind cluster, builds and loads the image, runs the "cluster" label
+make test-e2e                  # full suite incl. OLM upgrade phase
 ```
 
-### Environment variables
-
-| Variable | Default | Description |
-|---|---|---|
-| `IMG` | `$(IMAGE_TAG_BASE)-controller:v$(VERSION)` | Controller image used in the Deployment (modular architecture — refers to the controller component only). |
-| `KIND_PROVIDER` | `kind` | Container runtime for KinD (`docker` or `podman`). |
-| `TEST_CATALOG_IMAGE` | see e2e code | Upstream catalog image used in catalog tests. |
-
-### Test structure
-
-The e2e suite is in `test/e2e/` and uses Ginkgo with `BeforeSuite`/`AfterSuite`
-hooks. The operator is deployed **once** in `BeforeSuite`; individual tests
-create their own MirrorTarget and ImageSet resources and clean up after
-themselves. CRDs are never deleted between test runs to avoid race conditions
-with the API server.
-
-There are two test categories:
-
-- **In-memory catalog tests** — pure Go, no cluster needed (`make test` includes
-  these via build tag).
-- **Cluster tests** — require a KinD cluster with the operator deployed.
-  - *Regular e2e* (`cluster` label): mirror lifecycle, Resource API Deployment/Service
-    verification, resource ConfigMap persistence, catalog builds.
-  - *Catalog-cluster tests* (`catalog-cluster` label): require a reachable
-    upstream catalog image, verify catalog resources in ConfigMaps.
-  - *OLM upgrade tests* (`olm-upgrade` label): validate the full OLM upgrade
-    path. Run as Phase 2 of the merged CI e2e job.
-
----
+Useful variables: `KIND_CLUSTER`, `KIND_PROVIDER` (`docker`/`podman`),
+`SKIP_CLUSTER_SETUP=true`, `SKIP_OPERATOR_DEPLOY=true`, `CERT_MANAGER_INSTALL_SKIP=true`,
+`TEST_CATALOG_IMAGE`. The operator is deployed once in `BeforeSuite`; each test creates
+and removes its own resources.
 
 ## Linting
 
 ```bash
-make lint
+make lint            # golangci-lint v2, config in .golangci.yml, same version as CI
+make lint-fix
+gofmt -l .           # must print nothing
+npm --prefix ui run lint && npx --prefix ui tsc --noEmit -p ui/tsconfig.json
 ```
 
-This runs `golangci-lint` with the config in `.golangci.yml`. The same version
-is used in CI (`v2.11.4`). Fix auto-fixable issues with:
+CI fails on any golangci-lint finding, including `prealloc` and `lll` in test files.
 
-```bash
-golangci-lint run --fix
-```
+## Generated files
 
-Always run `gofmt -w ./...` before committing to avoid CI failures on whitespace
-or formatting issues.
+| Changed | Regenerate |
+|---|---|
+| `api/v1alpha1/*_types.go` | `make generate manifests` (deepcopy, CRDs) |
+| `// +kubebuilder:rbac` markers | `make manifests` |
+| CSV metadata (`config/manifests/bases/…clusterserviceversion.yaml`) | `make bundle` |
+| `bundle/`, `catalog/` | never by hand |
 
----
+## CI
 
-## Generating Manifests
-
-After changing CRD types or adding RBAC markers, regenerate manifests:
-
-```bash
-# Regenerate deepcopy methods and CRD manifests
-make generate manifests
-
-# Regenerate the OLM bundle (CSV, CRDs, RBAC)
-make bundle IMG=<registry>/oc-mirror:<version>
-```
-
-> **Do not edit files in `bundle/` manually.** They are overwritten by
-> `make bundle`. Instead, edit the base CSV at
-> `config/manifests/bases/oc-mirror-operator.clusterserviceversion.yaml`.
-
----
-
-## CI Pipeline
-
-The project uses GitHub Actions. Workflows are in `.github/workflows/`.
+`.github/workflows/`:
 
 | Workflow | Trigger | Jobs |
 |---|---|---|
-| `ci.yml` | push / pull_request | unit tests → build image → e2e (KinD, two phases: regular + OLM upgrade) → multi-arch check → bundle build check |
-| `lint.yml` | push / pull_request | golangci-lint + gofmt |
-| `release.yml` | push tag `v*` | build multi-arch image → push to GHCR → regenerate bundle → build & push bundle image → create GitHub release |
+| `ci.yml` | push, PR | unit tests → build component images (artifact) → e2e on Kind (regular + OLM upgrade) → console plugin smoke test → multi-arch build check → bundle build check → grype |
+| `lint.yml` | push, PR | golangci-lint + gofmt ("Run on Ubuntu"), UI lint + type-check ("Run on UI") |
+| `dependency-review.yml` | PR | dependency review |
+| `release.yml` | tag `v*` | multi-arch images → GHCR, bundle, GitHub release, PR against `brtrm-dev-catalog` |
 
-### CI principles
-- **Least-privilege permissions**: Every job specifies only the permissions it
-  needs. The default is `permissions: {}` (deny all).
-- **Build once, reuse**: The operator image is built once and exported as a
-  workflow artifact, then loaded into the KinD cluster by the e2e job. This
-  avoids redundant builds.
-- **Node.js 24 compatible actions**: All action versions are pinned to versions
-  compatible with the GitHub Actions Node.js 24 runtime.
+Every job declares least-privilege permissions; images are built once and reused via
+artifacts.
 
----
+## Releases
 
-## Release Process
+1. Update `config/manifests/bases/oc-mirror.clusterserviceversion.yaml` (version,
+   `replaces`, permissions) and `CHANGELOG.md`.
+2. `git tag vX.Y.Z && git push origin vX.Y.Z`.
+3. `release.yml` builds and pushes `ghcr.io/mariusbertram/oc-mirror-operator-{controller,manager,worker,plugin,bundle}:vX.Y.Z`,
+   creates the GitHub release and opens the catalog PR.
 
-1. Ensure all changes are on `main` and tests pass.
-2. Update `config/manifests/bases/oc-mirror-operator.clusterserviceversion.yaml`
-   with the new version and any new features/permissions.
-3. Create and push a git tag:
-   ```bash
-   git tag v0.0.X
-   git push origin v0.0.X
-   ```
-4. The `release.yml` workflow automatically:
-   - Builds a multi-arch image and pushes it to GHCR.
-   - Runs `make bundle IMG=ghcr.io/mariusbertram/oc-mirror-operator:v0.0.X` to
-     regenerate the OLM bundle from the latest manifests.
-   - Builds and pushes the bundle image.
-   - Creates a GitHub Release.
-5. Update `CHANGELOG.md` with the new version section.
+## Code style
 
----
+- `gofmt`, standard Go idioms, errors wrapped with `fmt.Errorf("context: %w", err)`.
+- Small named helpers instead of long reconcile bodies; comment the non-obvious *why*,
+  not the *what*.
+- Structured logging via controller-runtime in the controller; `oclog` in manager and
+  workers.
+- All condition updates go through `setCondition()`; `observedGeneration` is always set.
+- New pods keep the restricted security context of the existing ones.
+- Conventional commit subjects (`fix: …`, `feat: …`, `docs: …`).
 
-## Code Style
+## Submitting changes
 
-- Follow standard Go idioms and `gofmt` formatting.
-- Keep functions focused — split large reconcile loops into named helpers.
-- Prefer named return variables for complex error-return functions.
-- Errors should be wrapped with `fmt.Errorf("context: %w", err)`.
-- Log with structured fields via `ctrl.Log` (zap-based). Use `Info` for normal
-  flow, `Error` only for actual errors.
-- Do not add comments that just restate the code; comment only non-obvious logic.
-- Table-driven tests with meaningful subtest names.
-
----
-
-## Submitting Changes
-
-1. Fork the repository and create a feature branch:
-   ```bash
-   git checkout -b fix/my-bug-fix
-   ```
-2. Make your changes, add/update tests.
-3. Run `make test lint` locally — ensure everything passes.
-4. Run `gofmt -w ./...` to fix formatting.
-5. Commit with a conventional commit message:
-   ```
-   fix: resolve worker SA name collision for multi-MirrorTarget deployments
-   ```
-6. Push and open a Pull Request against `main`.
-7. Address any CI failures or review comments.
+1. Branch from `main`, make the change with tests.
+2. `make test lint` and, for UI changes, the UI checks above.
+3. Open a PR against `main`; CI must be green. Stacked PRs are welcome — say so in the
+   description and base each PR on the previous branch.
+4. Docs live in `docs/`; update the page that documents the behaviour you changed in the
+   same PR.

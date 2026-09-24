@@ -50,7 +50,7 @@ The operator uses a modular 3-component architecture with separate binaries and 
 
 Additional entrypoints: `cmd/worker/main.go cleanup` subcommand (deletes orphaned images from registry), `cmd/catalog-builder/main.go` (OLM FBC filtering, runs in Jobs).
 
-> **Note**: `cmd/main.go` is the deprecated v0.0.x single-binary entrypoint — it is no longer used in production deployments. See `docs/migration-v0.0-to-v0.1.md`.
+> **Note**: `cmd/main.go` is the deprecated v0.0.x single-binary entrypoint — it is no longer used in production deployments. See `docs/upgrades.md`.
 
 ### CRDs (`api/v1alpha1/`)
 
