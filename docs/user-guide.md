@@ -1188,7 +1188,9 @@ removes the annotation value it actually honored.
 
 Failed images (including permanently failed ones) get a fresh retry cycle; already
 `Mirrored` images are left untouched (use [force-resync](#92-force-resync-re-transfer-everything)
-to re-transfer those).
+to re-transfer those). A permanently failed image keeps its `permanentlyFailed` marker during
+that retry, so it is still counted as failed (not pending) in the ImageSet status and does not
+hold back the catalog build while it is being retried.
 
 Recollect also requests exactly one rebuild of the ImageSet's filtered operator catalogs, but —
 like every catalog build — only once no image of the ImageSet is pending any more. When the
