@@ -46,7 +46,7 @@ resource. Bodies are JSON; a successful call returns `204 No Content`.
 
 | Method | Path | Body |
 |---|---|---|
-| PATCH | `/api/v1/targets/{namespace}/{name}/spec` | `{registry, insecure, authSecret, concurrency, batchSize, pollInterval, checkExistInterval}` — replaces these fields |
+| PATCH | `/api/v1/targets/{namespace}/{name}/spec` | `{registry, insecure, authSecret, concurrency, batchSize, pollInterval, checkExistInterval}` — JSON merge patch (RFC 7396): absent fields stay unchanged, `null` resets a field to its default, other values replace it; `registry`, if present, must not be empty |
 | PATCH | `/api/v1/imagesets/{namespace}/{name}/operators` | List of catalog entries; package filters and `signatureVerification` of kept entries are preserved |
 | PATCH | `/api/v1/imagesets/{namespace}/{name}/catalogs/{slug}/packages` | `{packages: [{name, minVersion, maxVersion, channels: [{name, minVersion, maxVersion}]}], exclude: […]}` |
 | PATCH | `/api/v1/imagesets/{namespace}/{name}/releases` | `{graph, architectures, channels: [{name, type, minVersion, maxVersion, shortestPath, full}]}` |
