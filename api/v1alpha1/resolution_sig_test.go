@@ -106,6 +106,10 @@ func TestOperatorEntrySignature(t *testing.T) {
 		// so they do affect the signature in current implementation.
 		{"target catalog", Operator{Catalog: "catalog:latest", TargetCatalog: "target"}, false},
 		{"target tag", Operator{Catalog: "catalog:latest", TargetTag: "v1"}, false},
+
+		// Package-level fields that change the resolved content (#134).
+		{"previous versions", Operator{Catalog: "catalog:latest", IncludeConfig: IncludeConfig{Packages: []IncludePackage{{Name: "p", PreviousVersions: 2}}}}, false},
+		{"default channel", Operator{Catalog: "catalog:latest", IncludeConfig: IncludeConfig{Packages: []IncludePackage{{Name: "p", DefaultChannel: "stable"}}}}, false},
 	}
 
 	for _, v := range variations {

@@ -462,6 +462,18 @@ func (m *CatalogBuildManager) BuildSignature(operators []mirrorv1alpha1.Operator
 		}
 		_, _ = fmt.Fprintf(h, "catalog=%s\n", op.Catalog)
 		_, _ = fmt.Fprintf(h, "full=%t\n", op.Full)
+		// Only written when set, so signatures of entries not using these
+		// fields are unchanged from before they were covered.
+		if op.SkipDependencies {
+			_, _ = fmt.Fprintf(h, "skipDeps=true\n")
+		}
+		// The push destination of the built catalog.
+		if op.TargetCatalog != "" {
+			_, _ = fmt.Fprintf(h, "targetCatalog=%s\n", op.TargetCatalog)
+		}
+		if op.TargetTag != "" {
+			_, _ = fmt.Fprintf(h, "targetTag=%s\n", op.TargetTag)
+		}
 
 		// Sort packages for deterministic output.
 		pkgs := make([]mirrorv1alpha1.IncludePackage, len(op.Packages))
@@ -475,6 +487,14 @@ func (m *CatalogBuildManager) BuildSignature(operators []mirrorv1alpha1.Operator
 			}
 			if p.MaxVersion != "" {
 				_, _ = fmt.Fprintf(h, "pkg.max=%s\n", p.MaxVersion)
+			}
+			// Both are passed to the catalog-builder with the package config
+			// and change the content of the built catalog.
+			if p.DefaultChannel != "" {
+				_, _ = fmt.Fprintf(h, "pkg.defaultChannel=%s\n", p.DefaultChannel)
+			}
+			if p.PreviousVersions != 0 {
+				_, _ = fmt.Fprintf(h, "pkg.previousVersions=%d\n", p.PreviousVersions)
 			}
 			// Sort channels for deterministic output.
 			chans := make([]mirrorv1alpha1.IncludeChannel, len(p.Channels))

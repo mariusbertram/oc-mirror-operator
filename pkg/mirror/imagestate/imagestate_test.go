@@ -739,3 +739,115 @@ func TestMigrate_DeleteErrorNonNotFound(t *testing.T) {
 		t.Fatalf("expected the delete error to propagate, got %v", err)
 	}
 }
+
+// --- #139: MirrorTarget and ImageSet sharing a name ---
+
+func TestSaveRaw_MarksFormat(t *testing.T) {
+	c := newFakeClient().Build()
+	if err := Save(context.Background(), c, "ns", "is", ImageState{}, nil, nil); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	cm := &corev1.ConfigMap{}
+	_ = c.Get(context.Background(), types.NamespacedName{Namespace: "ns", Name: ConfigMapName("is")}, cm)
+	if cm.Annotations[FormatAnnotation] != FormatPerImageSet {
+		t.Fatalf("format annotation = %q", cm.Annotations[FormatAnnotation])
+	}
+}
+
+func TestMigrate_KeepsStateOfImageSetNamedLikeMirrorTarget(t *testing.T) {
+	state := ImageState{"reg.io/a:v1": {Source: "s", State: testStateMirrored, Origin: OriginAdditional}}
+
+	t.Run("annotated", func(t *testing.T) {
+		c := newFakeClient().Build()
+		if err := Save(context.Background(), c, "ns", "mirror", state, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		assertMigrationKeepsState(t, c)
+	})
+
+	t.Run("written before the format annotation existed", func(t *testing.T) {
+		data, err := encodeGzipJSON(state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cm := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: "mirror-images", Namespace: "ns"},
+			BinaryData: map[string][]byte{"images.json.gz": data},
+		}
+		assertMigrationKeepsState(t, newFakeClient().WithRuntimeObjects(cm).Build())
+	})
+}
+
+func assertMigrationKeepsState(t *testing.T, c client.Client) {
+	t.Helper()
+	if err := MigrateConsolidatedToPerImageSet(context.Background(), c, "ns", "mirror", nil, nil); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	got, err := Load(context.Background(), c, "ns", "mirror")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e := got["reg.io/a:v1"]; e == nil || e.State != testStateMirrored {
+		t.Fatalf("ImageSet state lost by migration: %v", got)
+	}
+}
+
+// A genuine legacy map whose referencing ImageSets include one named like
+// the MirrorTarget migrates that ImageSet into the very same ConfigMap,
+// which must then not be deleted.
+func TestMigrate_LegacyWithImageSetNamedLikeMirrorTarget(t *testing.T) {
+	legacy := map[string]*legacyImageEntry{
+		"dest-own":   {Source: "s1", State: testStateMirrored, Refs: []legacyImageRef{{ImageSet: "mirror", Origin: OriginAdditional}}},
+		"dest-other": {Source: "s2", State: testStateMirrored, Refs: []legacyImageRef{{ImageSet: "other", Origin: OriginAdditional}}},
+	}
+	data, err := encodeGzipJSON(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "mirror-images", Namespace: "ns"},
+		BinaryData: map[string][]byte{"images.json.gz": data},
+	}
+	c := newFakeClient().WithRuntimeObjects(cm).Build()
+
+	if err := MigrateConsolidatedToPerImageSet(context.Background(), c, "ns", "mirror", nil, nil); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	own, _ := Load(context.Background(), c, "ns", "mirror")
+	if len(own) != 1 || own["dest-own"] == nil {
+		t.Errorf("same-named ImageSet state = %v, want only dest-own", own)
+	}
+	other, _ := Load(context.Background(), c, "ns", "other")
+	if other["dest-other"] == nil {
+		t.Errorf("other ImageSet state = %v", other)
+	}
+	// Running the migration again is a no-op now.
+	if err := MigrateConsolidatedToPerImageSet(context.Background(), c, "ns", "mirror", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if again, _ := Load(context.Background(), c, "ns", "mirror"); len(again) != 1 {
+		t.Errorf("second migration changed the state: %v", again)
+	}
+}
+
+func TestLooksLegacy(t *testing.T) {
+	tests := []struct {
+		name    string
+		entries map[string]*legacyImageEntry
+		want    bool
+	}{
+		{"empty", map[string]*legacyImageEntry{}, true},
+		{"refs", map[string]*legacyImageEntry{"d": {Refs: []legacyImageRef{{ImageSet: "a"}}}}, true},
+		{"orphans only", map[string]*legacyImageEntry{"d": {Source: "s"}, "n": nil}, true},
+		{"current format", map[string]*legacyImageEntry{"d": {Origin: OriginOperator}}, false},
+		{"mixed refs wins", map[string]*legacyImageEntry{"d": {Origin: OriginOperator}, "e": {Refs: []legacyImageRef{{ImageSet: "a"}}}}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := looksLegacy(tt.entries); got != tt.want {
+				t.Errorf("looksLegacy() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

@@ -15,6 +15,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -620,7 +621,7 @@ var _ = Describe("Coverage tests", func() {
 			Expect(found).To(BeTrue(), "expected CatalogReady=WaitingForOperatorMirror condition")
 		})
 
-		It("creates build jobs only once the ImageSet has no pending images — recollect does not bypass this", func() {
+		It("creates build jobs only once the ImageSet has no pending images — a honored recollect does not bypass this", func() {
 			localCtx := context.Background()
 			isName := "is-catgate-recollect"
 			mtName := "mt-catgate-recollect"
@@ -648,7 +649,7 @@ var _ = Describe("Coverage tests", func() {
 				ObjectMeta: metav1.ObjectMeta{
 					Name:        isName,
 					Namespace:   ns,
-					Annotations: map[string]string{mirrorv1alpha1.RecollectAnnotation: "1"},
+					Annotations: map[string]string{mirrorv1alpha1.RecollectHonoredAnnotation: "1"},
 				},
 				Spec: mirrorv1alpha1.ImageSetSpec{
 					Mirror: mirrorv1alpha1.Mirror{Operators: []mirrorv1alpha1.Operator{op}},
@@ -899,7 +900,7 @@ var _ = Describe("Coverage tests", func() {
 				ObjectMeta: metav1.ObjectMeta{
 					Name:        isName,
 					Namespace:   ns,
-					Annotations: map[string]string{mirrorv1alpha1.RecollectAnnotation: ""},
+					Annotations: map[string]string{mirrorv1alpha1.RecollectHonoredAnnotation: ""},
 				},
 				Spec: mirrorv1alpha1.ImageSetSpec{
 					Mirror: mirrorv1alpha1.Mirror{
@@ -977,7 +978,7 @@ var _ = Describe("Coverage tests", func() {
 				ObjectMeta: metav1.ObjectMeta{
 					Name:        isName,
 					Namespace:   ns,
-					Annotations: map[string]string{mirrorv1alpha1.RecollectAnnotation: ""},
+					Annotations: map[string]string{mirrorv1alpha1.RecollectHonoredAnnotation: ""},
 				},
 				Spec: mirrorv1alpha1.ImageSetSpec{
 					Mirror: mirrorv1alpha1.Mirror{
@@ -1051,8 +1052,8 @@ var _ = Describe("Coverage tests", func() {
 					Name:      isName,
 					Namespace: ns,
 					Annotations: map[string]string{
-						mirrorv1alpha1.RecollectAnnotation:      "",
-						"mirror.openshift.io/catalog-build-sig": "stale-sig",
+						mirrorv1alpha1.RecollectHonoredAnnotation: "",
+						"mirror.openshift.io/catalog-build-sig":   "stale-sig",
 					},
 				},
 				Spec: mirrorv1alpha1.ImageSetSpec{
@@ -1135,8 +1136,8 @@ var _ = Describe("Coverage tests", func() {
 					Name:      isName,
 					Namespace: ns,
 					Annotations: map[string]string{
-						mirrorv1alpha1.RecollectAnnotation:      "",
-						"mirror.openshift.io/catalog-build-sig": buildSig,
+						mirrorv1alpha1.RecollectHonoredAnnotation: "",
+						"mirror.openshift.io/catalog-build-sig":   buildSig,
 					},
 				},
 				Spec: mirrorv1alpha1.ImageSetSpec{Mirror: mirrorv1alpha1.Mirror{Operators: ops}},
@@ -1431,7 +1432,7 @@ var _ = Describe("Coverage tests", func() {
 			Expect(foundDeferred).To(BeTrue(), "expected CatalogReady=WaitingForOperatorMirror")
 		})
 
-		It("only honors a recollect annotation once per distinct value", func() {
+		It("honors each recollect recorded by the manager exactly once", func() {
 			localCtx := context.Background()
 			isName := "is-catgate-recollect-once"
 			mtName := "mt-catgate-recollect-once"
@@ -1454,7 +1455,7 @@ var _ = Describe("Coverage tests", func() {
 					Name:      isName,
 					Namespace: ns,
 					Annotations: map[string]string{
-						mirrorv1alpha1.RecollectAnnotation: "run-1",
+						mirrorv1alpha1.RecollectHonoredAnnotation: "run-1",
 					},
 				},
 				Spec: mirrorv1alpha1.ImageSetSpec{
@@ -2297,10 +2298,11 @@ var _ = Describe("Coverage tests", func() {
 			Expect(err).To(HaveOccurred())
 			Expect(mt.Status.PendingCleanup).NotTo(ContainElement("orphans"))
 
-			// The pending-orphans ConfigMap is left untouched — nothing was
-			// deleted, so there is nothing to hand off to a cleanup Job.
-			stillThere := &corev1.ConfigMap{}
-			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: imagestate.OrphansConfigMapName(mtName), Namespace: ns}, stillThere)).To(Succeed())
+			// Nothing will ever consume these orphans, so the ConfigMap is
+			// cleared instead of accumulating them — otherwise switching the
+			// policy to Delete much later would delete stale entries (#133).
+			err = k8sClient.Get(localCtx, types.NamespacedName{Name: imagestate.OrphansConfigMapName(mtName), Namespace: ns}, &corev1.ConfigMap{})
+			Expect(apierrors.IsNotFound(err)).To(BeTrue(), "expected the orphans ConfigMap to be cleared, got %v", err)
 		})
 
 		It("creates cleanup job for orphaned images when cleanup-policy is Delete", func() {
@@ -3572,6 +3574,44 @@ var _ = Describe("Coverage tests", func() {
 			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: isName + "-images", Namespace: ns}, &corev1.ConfigMap{})).To(HaveOccurred())
 		})
 
+		It("never deletes an image a remaining ImageSet still uses, even if the index no longer lists it as shared", func() {
+			// The manager rewrites the shared index without a removed
+			// ImageSet as soon as it notices the removal, which can happen
+			// before this partition runs (#131).
+			localCtx := context.Background()
+			mtName := "mt-partition-live"
+			isName := "is-partition-live"
+			keptIS := "is-partition-live-kept"
+
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: mtName, Namespace: ns},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com", ImageSets: []string{keptIS}},
+			}
+			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
+			DeferCleanup(func() { cleanupMT(localCtx, mtName) })
+
+			removedState := imagestate.ImageState{
+				"d-exclusive": {Source: "s-exclusive", State: "Mirrored", Origin: imagestate.OriginAdditional},
+				"d-live":      {Source: "s-live", State: "Mirrored", Origin: imagestate.OriginAdditional},
+			}
+			Expect(imagestate.Save(localCtx, k8sClient, ns, isName, removedState, nil, nil)).To(Succeed())
+			keptState := imagestate.ImageState{"d-live": {Source: "s-live", State: "Mirrored", Origin: imagestate.OriginAdditional}}
+			Expect(imagestate.Save(localCtx, k8sClient, ns, keptIS, keptState, nil, nil)).To(Succeed())
+			DeferCleanup(func() {
+				_ = k8sClient.Delete(localCtx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: keptIS + "-images", Namespace: ns}})
+			})
+
+			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			created, err := r.partitionAndCreateCleanupJob(localCtx, mt, isName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(created).To(BeTrue())
+
+			snapshot, err := imagestate.LoadByConfigMapName(localCtx, k8sClient, ns, cleanupSnapshotCMName(mtName, isName))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(snapshot).To(HaveKey("d-exclusive"))
+			Expect(snapshot).NotTo(HaveKey("d-live"), "an image still used by a remaining ImageSet must not be deleted")
+		})
+
 		It("creates a cleanup job for exclusive images while updating the shared index for shared images", func() {
 			localCtx := context.Background()
 			mtName := "mt-partition-mixed"
@@ -3717,6 +3757,86 @@ var _ = Describe("Coverage tests", func() {
 			Expect(mt.Status.PendingCleanup).To(Equal([]string{"orphans"}))
 			// Left untouched — nothing was newly queued.
 			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: imagestate.OrphansConfigMapName(mtName), Namespace: ns}, &corev1.ConfigMap{})).To(Succeed())
+		})
+
+		It("never deletes an orphan that an ImageSet references again (#133)", func() {
+			localCtx := context.Background()
+			mtName := "mt-orphans-live"
+			isName := "is-orphans-live"
+
+			Expect(os.Setenv("OPERATOR_IMAGE", "test-operator:latest")).To(Succeed())
+			Expect(os.Setenv("MANAGER_IMAGE", "test-manager:latest")).To(Succeed())
+			Expect(os.Setenv("WORKER_IMAGE", "test-worker:latest")).To(Succeed())
+
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        mtName,
+					Namespace:   ns,
+					Annotations: map[string]string{mirrorv1alpha1.CleanupPolicyAnnotation: mirrorv1alpha1.CleanupPolicyDelete},
+				},
+				Spec: mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com", ImageSets: []string{isName}},
+			}
+			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
+			DeferCleanup(func() { cleanupMT(localCtx, mtName) })
+
+			const digest = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+			orphans := imagestate.ImageState{
+				"reg.example.com/stale:v1":         {Source: "s1", State: "Mirrored", Origin: imagestate.OriginOperator},
+				"reg.example.com/readded:v1":       {Source: "s2", State: "Mirrored", Origin: imagestate.OriginOperator},
+				"reg.example.com/pinned@" + digest: {Source: "s3", State: "Mirrored", Origin: imagestate.OriginAdditional},
+			}
+			Expect(imagestate.SaveRaw(localCtx, k8sClient, ns, imagestate.OrphansConfigMapName(mtName), orphans, nil, nil)).To(Succeed())
+			live := imagestate.ImageState{
+				"reg.example.com/readded:v1": {Source: "s2", State: "Mirrored", Origin: imagestate.OriginOperator},
+				// Same manifest as the pinned orphan, via a digest-derived tag:
+				// deleting the orphan by digest would remove this one too.
+				"reg.example.com/pinned:sha256-1111111111111111111111111111111111111111111111111111111111111111": {Source: "s3", State: "Mirrored", Origin: imagestate.OriginOperator},
+			}
+			Expect(imagestate.Save(localCtx, k8sClient, ns, isName, live, nil, nil)).To(Succeed())
+			DeferCleanup(func() {
+				_ = k8sClient.Delete(localCtx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: isName + "-images", Namespace: ns}})
+			})
+
+			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			Expect(r.reconcileOrphans(localCtx, mt)).To(Succeed())
+
+			Expect(mt.Status.PendingCleanup).To(ContainElement("orphans"))
+			snapshot, err := imagestate.LoadByConfigMapName(localCtx, k8sClient, ns, cleanupSnapshotCMName(mtName, "orphans"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(snapshot).To(HaveLen(1))
+			Expect(snapshot).To(HaveKey("reg.example.com/stale:v1"))
+		})
+
+		It("creates no cleanup job when every orphan is referenced again", func() {
+			localCtx := context.Background()
+			mtName := "mt-orphans-alllive"
+			isName := "is-orphans-alllive"
+
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        mtName,
+					Namespace:   ns,
+					Annotations: map[string]string{mirrorv1alpha1.CleanupPolicyAnnotation: mirrorv1alpha1.CleanupPolicyDelete},
+				},
+				Spec: mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com", ImageSets: []string{isName}},
+			}
+			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
+			DeferCleanup(func() { cleanupMT(localCtx, mtName) })
+
+			state := imagestate.ImageState{"reg.example.com/readded:v1": {Source: "s", State: "Mirrored", Origin: imagestate.OriginOperator}}
+			Expect(imagestate.SaveRaw(localCtx, k8sClient, ns, imagestate.OrphansConfigMapName(mtName), state, nil, nil)).To(Succeed())
+			Expect(imagestate.Save(localCtx, k8sClient, ns, isName, state, nil, nil)).To(Succeed())
+			DeferCleanup(func() {
+				_ = k8sClient.Delete(localCtx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: isName + "-images", Namespace: ns}})
+			})
+
+			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			Expect(r.reconcileOrphans(localCtx, mt)).To(Succeed())
+
+			Expect(mt.Status.PendingCleanup).NotTo(ContainElement("orphans"))
+			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: cleanupJobName(mtName, "orphans"), Namespace: ns}, &batchv1.Job{})).NotTo(Succeed())
+			err := k8sClient.Get(localCtx, types.NamespacedName{Name: imagestate.OrphansConfigMapName(mtName), Namespace: ns}, &corev1.ConfigMap{})
+			Expect(apierrors.IsNotFound(err)).To(BeTrue())
 		})
 
 		It("logs and leaves the orphans ConfigMap in place when createCleanupJob fails", func() {

@@ -143,6 +143,11 @@ type MirrorManager struct {
 	// dest-keyed map for O(1) worker status/should-mirror lookups regardless
 	// of how many ImageSets reference a destination.
 	owners map[string][]string
+	// ownerMeta holds, per destination and owning ImageSet, the spec
+	// metadata (Origin/EntrySig/OriginRef/IsBundleImage) that ImageSet's
+	// resolve produced it with — see specMeta. Each owner's view
+	// (filterByImageSetLocked) and state ConfigMap use its own copy.
+	ownerMeta map[string]map[string]specMeta
 	// catalogDigests holds, per ImageSet, the catalog-digest cache
 	// annotations (mirrorv1alpha1.CatalogDigestAnnotationKey → token) that the
 	// ImageSet's entries in imageState were resolved from. Flushed into the
@@ -496,7 +501,13 @@ func (m *MirrorManager) handleStatusUpdate(w http.ResponseWriter, r *http.Reques
 		m.setImageStateLocked(req.Destination, stateFailed, req.Error)
 		ocmetrics.ManagerImagesFailedTotal.WithLabelValues(m.TargetName, imageset).Inc()
 	} else {
-		m.mirrored[req.Destination] = true
+		// Only for destinations still in the working set: a late report for
+		// an entry dropped meanwhile (e.g. its ImageSet was removed) must not
+		// leave a stale fast-path flag that would flip the entry to Mirrored
+		// unchecked if it is ever added back.
+		if _, known := m.imageState[req.Destination]; known {
+			m.mirrored[req.Destination] = true
+		}
 		m.setImageStateLocked(req.Destination, stateMirrored, "")
 		// Record the digest the worker actually mirrored as the drift-check
 		// baseline for tag-referenced additional images (see
@@ -851,7 +862,7 @@ func (m *MirrorManager) checkDriftOne(ctx context.Context, dest string, requireS
 			oclog.Printf("Permanently-failed image %s not in target; resetting for retry\n", dest)
 			entry.State = statePending
 			entry.RetryCount = 0 // fresh 10-attempt window; PermanentlyFailed stays true
-			m.stateDirty = true
+			m.resetMirroredLocked(dest)
 		}
 		return
 	}
@@ -866,7 +877,7 @@ func (m *MirrorManager) checkDriftOne(ctx context.Context, dest string, requireS
 		entry.State = statePending
 		entry.LastError = ""
 		entry.RetryCount = 0
-		m.stateDirty = true
+		m.resetMirroredLocked(dest)
 		return
 	}
 	if m.additionalImageDriftedLocked(ctx, entry) {
@@ -874,13 +885,24 @@ func (m *MirrorManager) checkDriftOne(ctx context.Context, dest string, requireS
 		entry.State = statePending
 		entry.LastError = ""
 		entry.RetryCount = 0
-		m.stateDirty = true
+		m.resetMirroredLocked(dest)
 		return
 	}
 	m.mirrored[dest] = true
 	if !entry.SignatureVerified && anyOwnerRequiresSignedImages(m.owners[dest], requireSignedByIS) {
 		m.verifySignedImageLocked(ctx, dest, entry)
 	}
+}
+
+// resetMirroredLocked finishes moving dest out of the Mirrored state after
+// its entry.State has been changed: it clears the m.mirrored fast-path flag —
+// otherwise reconcile()'s Phase D "defensive sync" would flip the entry
+// straight back to Mirrored on the next tick without ever dispatching a
+// worker — and marks state and status dirty. Caller must hold m.mu.
+func (m *MirrorManager) resetMirroredLocked(dest string) {
+	delete(m.mirrored, dest)
+	m.stateDirty = true
+	m.statusDirty = true
 }
 
 // additionalImageDriftedLocked reports whether a tag-referenced additional
@@ -1049,6 +1071,15 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 		m.loadPartitionedState(ctx, mt, imageSets)
 	}
 
+	// Forget ImageSets that were removed from spec.imageSets since the state
+	// was loaded, so their images stop being dispatched, drift-checked and
+	// flushed. Cleanup of a removed ImageSet is the MirrorTarget
+	// controller's job (reconcileRemovedImageSets), so entries losing their
+	// last owner here are dropped, not staged as orphans.
+	if m.dropRemovedImageSetsLocked(mt) {
+		m.stateDirty = true
+	}
+
 	// Phase B: Per-IS resolution (may unlock mutex for network I/O).
 	// The resolver does cheap network probes (manifest digest + Cincinnati
 	// graph) and is gated via shouldResolve() so we don't hammer upstream
@@ -1077,11 +1108,12 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 			}
 			m.mu.Lock()
 		}
-		isView := filterByImageSet(m.imageState, m.owners, is.Name)
+		isView := m.filterByImageSetLocked(is.Name)
 		if shouldResolve(&is, mt, isView) {
 			isCopy := is.DeepCopy()
 			isViewSnap := cloneImageState(isView)
 			m.mu.Unlock()
+			_, recollect := is.Annotations[mirrorv1alpha1.RecollectAnnotation]
 			resolveCtx, cancelResolve := context.WithTimeout(ctx, resolveTimeout)
 			newPerISState, resolved, hadError, resolveErr := m.resolveImageSet(resolveCtx, isCopy, mt, isViewSnap)
 			cancelResolve()
@@ -1100,7 +1132,13 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 					// crash between a previous tick's ownership update and
 					// its flush); no need to track them here.
 					_ = mergeResolvedIntoConsolidated(m.imageState, m.owners, newPerISState, is.Name)
+					m.recordOwnerMetaLocked(is.Name, newPerISState)
 					m.stateDirty = true
+				}
+				if recollect && m.resetFailedForRecollectLocked(is.Name) {
+					oclog.Printf("Recollect for ImageSet %s: reset failed images to Pending for a fresh retry cycle\n", is.Name)
+					m.stateDirty = true
+					m.statusDirty = true
 				}
 				// Either merged just above, or equal to what's already in
 				// memory — so the digests this resolve used now describe
@@ -1165,6 +1203,7 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 			newOrphans[dest] = entry
 			delete(m.imageState, dest)
 			delete(m.owners, dest)
+			delete(m.ownerMeta, dest)
 			m.stateDirty = true
 			continue
 		}
@@ -1272,7 +1311,7 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 			if !containsString(mt.Spec.ImageSets, is.Name) {
 				continue
 			}
-			isView := filterByImageSet(m.imageState, m.owners, is.Name)
+			isView := m.filterByImageSetLocked(is.Name)
 			m.updateImageSetStatusLocked(ctx, &is, isView, justResolvedISes[is.Name] && !hadErrorISes[is.Name])
 		}
 		m.statusDirty = false
@@ -1284,6 +1323,42 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 	}
 
 	return nil
+}
+
+// dropRemovedImageSetsLocked removes every owner that is no longer in
+// mt.Spec.ImageSets from m.owners, drops entries left without any owner and
+// forgets the removed ImageSets' catalog digests. Returns true if anything
+// changed. Caller must hold m.mu.
+func (m *MirrorManager) dropRemovedImageSetsLocked(mt *mirrorv1alpha1.MirrorTarget) bool {
+	changed := false
+	for dest, names := range m.owners {
+		kept := names[:0:0]
+		for _, n := range names {
+			if containsString(mt.Spec.ImageSets, n) {
+				kept = append(kept, n)
+			}
+		}
+		if len(kept) == len(names) {
+			continue
+		}
+		changed = true
+		if len(kept) > 0 {
+			m.owners[dest] = kept
+			m.pruneOwnerMetaLocked(dest)
+			continue
+		}
+		oclog.Printf("Dropping %s: its ImageSet was removed from MirrorTarget %s\n", dest, m.TargetName)
+		delete(m.owners, dest)
+		delete(m.ownerMeta, dest)
+		delete(m.imageState, dest)
+		delete(m.mirrored, dest)
+	}
+	for isName := range m.catalogDigests {
+		if !containsString(mt.Spec.ImageSets, isName) {
+			delete(m.catalogDigests, isName)
+		}
+	}
+	return changed
 }
 
 // setImageStateLocked updates the in-memory state for a single destination
@@ -1301,8 +1376,12 @@ func (m *MirrorManager) setImageStateLocked(dest, st, lastError string) {
 	}
 	entry.State = st
 	entry.LastError = lastError
-	m.stateDirty = true
-	m.statusDirty = true
+	if st != stateMirrored {
+		m.resetMirroredLocked(dest) // also marks state and status dirty
+	} else {
+		m.stateDirty = true
+		m.statusDirty = true
+	}
 	if st == stateFailed {
 		entry.RetryCount++
 		ocmetrics.ManagerWorkerRetriesTotal.WithLabelValues(m.TargetName).Inc()
@@ -1335,13 +1414,15 @@ func (m *MirrorManager) flushPartitionedState(ctx context.Context, mt *mirrorv1a
 		for _, isName := range names {
 			state, ok := perImageSet[isName]
 			if !ok {
-				// isName owns this dest but is no longer in mt.Spec.ImageSets
-				// (removal cleanup hasn't run yet) — still flush it so the
-				// controller sees accurate state for the partition decision.
-				state = make(imagestate.ImageState)
-				perImageSet[isName] = state
+				// isName was removed from mt.Spec.ImageSets: never re-create
+				// its ConfigMap — the MirrorTarget controller consumes and
+				// deletes it (dropRemovedImageSetsLocked normally already
+				// removed such owners).
+				continue
 			}
-			state[dest] = entry
+			// Each owner's ConfigMap carries its own spec metadata, which
+			// the controller's catalog-build gate and the next load read.
+			state[dest] = m.ownerView(dest, isName, entry)
 		}
 		if len(names) > 1 {
 			index[dest] = append([]string(nil), names...)

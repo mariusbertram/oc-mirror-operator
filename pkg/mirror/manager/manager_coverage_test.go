@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"time"
 
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
@@ -20,6 +21,7 @@ import (
 	. "github.com/onsi/gomega"
 	"github.com/operator-framework/operator-registry/alpha/declcfg"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -648,8 +650,8 @@ var _ = Describe("Manager Coverage", func() {
 				},
 			}
 			owners := map[string][]string{}
-			Expect(filterByImageSet(state, owners, "other-is")).To(BeEmpty())
-			Expect(filterByImageSet(state, owners, testImageSetName)).To(BeEmpty())
+			Expect(filterByImageSet(state, owners, nil, "other-is")).To(BeEmpty())
+			Expect(filterByImageSet(state, owners, nil, testImageSetName)).To(BeEmpty())
 		})
 
 		It("includes an entry only for its current owner ImageSet", func() {
@@ -661,8 +663,8 @@ var _ = Describe("Manager Coverage", func() {
 				},
 			}
 			owners := map[string][]string{"reg.io/shared:v1": {testImageSetName}}
-			Expect(filterByImageSet(state, owners, testImageSetName)).To(HaveKey("reg.io/shared:v1"))
-			Expect(filterByImageSet(state, owners, "other-is")).NotTo(HaveKey("reg.io/shared:v1"))
+			Expect(filterByImageSet(state, owners, nil, testImageSetName)).To(HaveKey("reg.io/shared:v1"))
+			Expect(filterByImageSet(state, owners, nil, "other-is")).NotTo(HaveKey("reg.io/shared:v1"))
 		})
 
 		It("includes a shared entry in every owning ImageSet's view", func() {
@@ -674,8 +676,8 @@ var _ = Describe("Manager Coverage", func() {
 				},
 			}
 			owners := map[string][]string{"reg.io/shared:v2": {testImageSetName, "other-is"}}
-			Expect(filterByImageSet(state, owners, testImageSetName)).To(HaveKey("reg.io/shared:v2"))
-			Expect(filterByImageSet(state, owners, "other-is")).To(HaveKey("reg.io/shared:v2"))
+			Expect(filterByImageSet(state, owners, nil, testImageSetName)).To(HaveKey("reg.io/shared:v2"))
+			Expect(filterByImageSet(state, owners, nil, "other-is")).To(HaveKey("reg.io/shared:v2"))
 		})
 	})
 
@@ -916,6 +918,19 @@ var _ = Describe("Manager Coverage", func() {
 			Expect(m.imageState["reg.io/mirror/img:v1"].State).To(Equal(stateMirrored))
 			Expect(m.mirrored["reg.io/mirror/img:v1"]).To(BeTrue())
 			Expect(m.inProgress).NotTo(HaveKey("reg.io/mirror/img:v1"))
+		})
+
+		It("does not set the mirrored flag for a destination no longer in the working set", func() {
+			const dropped = "reg.io/mirror/dropped:v1"
+			m.inProgress[dropped] = testWorkerPodName
+			body, _ := json.Marshal(WorkerStatusRequest{PodName: testWorkerPodName, Destination: dropped})
+			req := httptest.NewRequest(http.MethodPost, "/status", bytes.NewReader(body))
+			req.Header.Set("Authorization", "Bearer test-token")
+			rr := httptest.NewRecorder()
+			m.handleStatusUpdate(rr, req)
+			Expect(rr.Code).To(Equal(http.StatusOK))
+			Expect(m.mirrored).NotTo(HaveKey(dropped))
+			Expect(m.inProgress).NotTo(HaveKey(dropped))
 		})
 
 		It("marks image as Failed on error", func() {
@@ -3470,6 +3485,47 @@ var _ = Describe("Manager Coverage", func() {
 			Expect(annoChanged).To(BeFalse())
 		})
 
+		It("resolves one Cincinnati graph per architecture and mirrors each (#136)", func() {
+			var mu sync.Mutex
+			requested := map[string]bool{}
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				arch := r.URL.Query().Get("arch")
+				mu.Lock()
+				requested[arch] = true
+				mu.Unlock()
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(release.Graph{Nodes: []release.Node{{Version: "4.18.1", Image: ""}}})
+			}))
+			defer srv.Close()
+			origURL := release.OcpUpdateURL
+			release.OcpUpdateURL = srv.URL
+			defer func() { release.OcpUpdateURL = origURL }()
+
+			ch := mirrorv1alpha1.ReleaseChannel{Name: "stable-4.18", SkipSignatureVerification: true}
+			is := &mirrorv1alpha1.ImageSet{
+				Spec: mirrorv1alpha1.ImageSetSpec{
+					Mirror: mirrorv1alpha1.Mirror{
+						Platform: mirrorv1alpha1.Platform{
+							Architectures: []string{"amd64", "arm64"},
+							Channels:      []mirrorv1alpha1.ReleaseChannel{ch},
+						},
+					},
+				},
+			}
+			newState := imagestate.ImageState{}
+			collector, _ := m.buildCollector(mt)
+
+			_, hadError, err := m.resolveReleaseSection(
+				context.TODO(), collector, is, mt,
+				imagestate.ImageState{}, newState, map[string]string{}, false)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(hadError).To(BeFalse())
+			Expect(requested).To(HaveKey("amd64"))
+			Expect(requested).To(HaveKey("arm64"))
+			Expect(newState).To(HaveKey("reg.io/openshift/release-images:4.18.1-x86_64"))
+			Expect(newState).To(HaveKey("reg.io/openshift/release-images:4.18.1-aarch64"))
+		})
+
 		It("resolves images and updates the digest annotation on a full success", func() {
 			node := release.Node{Version: "4.18.1", Image: ""}
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -3595,7 +3651,7 @@ var _ = Describe("Manager Coverage", func() {
 	// ─── flushPartitionedState ────────────────────────────────────────────
 
 	Context("flushPartitionedState", func() {
-		It("flushes a spec-orphaned owner's state and records the shared index for a multi-owner destination", func() {
+		It("does not re-create a removed ImageSet's state and records the shared index for a multi-owner destination", func() {
 			mt := &mirrorv1alpha1.MirrorTarget{
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
 				Spec:       mirrorv1alpha1.MirrorTargetSpec{ImageSets: []string{"is-a"}},
@@ -3611,9 +3667,11 @@ var _ = Describe("Manager Coverage", func() {
 
 			Expect(m.flushPartitionedState(context.TODO(), mt)).To(Succeed())
 
-			loadedC, err := imagestate.Load(context.TODO(), m.Client, "default", "is-c")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(loadedC).To(HaveKey("d2"))
+			// is-c was removed from spec.imageSets: its ConfigMap belongs to
+			// the MirrorTarget controller's removal cleanup now (#131).
+			cm := &corev1.ConfigMap{}
+			err := m.Client.Get(context.TODO(), client.ObjectKey{Namespace: "default", Name: imagestate.ConfigMapName("is-c")}, cm)
+			Expect(apierrors.IsNotFound(err)).To(BeTrue(), "expected no state ConfigMap for removed ImageSet, got err=%v", err)
 
 			index, err := imagestate.LoadIndex(context.TODO(), m.Client, "default", "test")
 			Expect(err).NotTo(HaveOccurred())

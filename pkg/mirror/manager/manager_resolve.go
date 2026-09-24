@@ -257,9 +257,11 @@ func (m *MirrorManager) resolveImageSet(ctx context.Context, is *mirrorv1alpha1.
 		annotationsChanged = true
 	}
 
-	// Clear the recollect annotation if it was honored.
+	// Clear the recollect annotation if it was honored, and leave a durable
+	// marker the ImageSet controller turns into one catalog rebuild.
 	if recollect {
 		delete(newAnnotations, mirrorv1alpha1.RecollectAnnotation)
+		newAnnotations[mirrorv1alpha1.RecollectHonoredAnnotation] = time.Now().UTC().Format(time.RFC3339Nano)
 		annotationsChanged = true
 	}
 
@@ -360,23 +362,39 @@ func (m *MirrorManager) resolveReleaseSection( //nolint:unparam
 		cached := annotations[annoKey]
 		originRef := fmt.Sprintf("%s [%s]", ch.Name, strings.Join(arch, ","))
 
-		payloadNodes, resolveErr := collector.ResolveReleasePayloadNodes(ctx, ch, arch)
-		if resolveErr != nil {
-			oclog.Printf("Warning: probe release channel %s: %v\n", ch.Name, resolveErr)
+		// Every architecture has its own Cincinnati graph and payloads.
+		nodesByArch := make(map[string][]release.Node, len(arch))
+		var verifiedNodes []release.Node
+		var probeErr error
+		rejected := false
+		for _, a := range arch {
+			payloadNodes, resolveErr := collector.ResolveReleasePayloadNodes(ctx, ch, a)
+			if resolveErr != nil {
+				probeErr = fmt.Errorf("%s: %w", a, resolveErr)
+				break
+			}
+			verified := m.verifyReleaseNodes(ctx, ch, payloadNodes)
+			if len(verified) == 0 && len(payloadNodes) > 0 {
+				rejected = true
+				break
+			}
+			nodesByArch[a] = verified
+			verifiedNodes = append(verifiedNodes, verified...)
+		}
+		if probeErr != nil {
+			oclog.Printf("Warning: probe release channel %s: %v\n", ch.Name, probeErr)
 			carryOverByOriginAndSig(currentState, newState, imagestate.OriginRelease, sig, originRef)
 			hadError = true
 			continue
 		}
-
-		verifiedNodes := m.verifyReleaseNodes(ctx, ch, payloadNodes)
-		if len(verifiedNodes) == 0 {
+		if rejected || len(verifiedNodes) == 0 {
 			oclog.Printf("Warning: no release nodes for channel %s passed signature verification; skipping\n", ch.Name)
 			carryOverByOriginAndSig(currentState, newState, imagestate.OriginRelease, sig, originRef)
 			// Only treat this as a transient failure worth retrying sooner
 			// than the next poll when nodes were actually found and rejected
-			// by verification — an empty payloadNodes set (no versions in the
+			// by verification — no nodes at all (no versions in the
 			// configured range yet) is a legitimate, stable outcome.
-			hadError = hadError || len(payloadNodes) > 0
+			hadError = hadError || rejected
 			continue
 		}
 
@@ -386,7 +404,7 @@ func (m *MirrorManager) resolveReleaseSection( //nolint:unparam
 			continue
 		}
 
-		images, err := collector.CollectReleasesForChannel(ctx, &is.Spec, mt, ch, verifiedNodes)
+		images, err := collector.CollectReleasesForChannel(ctx, &is.Spec, mt, ch, nodesByArch)
 		if err != nil {
 			oclog.Printf("Warning: collect release channel %s: %v\n", ch.Name, err)
 			carryOverByOriginAndSig(currentState, newState, imagestate.OriginRelease, sig, originRef)
@@ -799,7 +817,13 @@ func pruneObsoleteCacheAnnotations(annotations map[string]string, is *mirrorv1al
 
 // patchImageSetAnnotations re-applies the manager-owned cache annotations to
 // the ImageSet using retry-on-conflict.
+//
+// is.Annotations must still hold the annotations the resolve started from:
+// the recollect annotation is only removed if it still has the value that
+// was honored, so a recollect requested while the resolve was running is
+// kept for the next one instead of being silently dropped.
 func (m *MirrorManager) patchImageSetAnnotations(ctx context.Context, is *mirrorv1alpha1.ImageSet, desired map[string]string) error {
+	honoredRecollect, recollectHonored := is.Annotations[mirrorv1alpha1.RecollectAnnotation]
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		fresh := &mirrorv1alpha1.ImageSet{}
 		if err := m.Client.Get(ctx, client.ObjectKey{Namespace: is.Namespace, Name: is.Name}, fresh); err != nil {
@@ -811,18 +835,23 @@ func (m *MirrorManager) patchImageSetAnnotations(ctx context.Context, is *mirror
 		if fresh.Annotations == nil {
 			fresh.Annotations = map[string]string{}
 		}
-		for k := range fresh.Annotations {
+		for k, v := range fresh.Annotations {
 			if strings.HasPrefix(k, mirrorv1alpha1.CatalogDigestAnnotationPrefix) ||
 				strings.HasPrefix(k, mirrorv1alpha1.ReleaseDigestAnnotationPrefix) ||
-				k == mirrorv1alpha1.GraphImageBuiltAnnotation ||
-				k == mirrorv1alpha1.RecollectAnnotation {
+				k == mirrorv1alpha1.GraphImageBuiltAnnotation {
 				delete(fresh.Annotations, k)
+			}
+			if k == mirrorv1alpha1.RecollectAnnotation && recollectHonored && v == honoredRecollect {
+				if _, keep := desired[k]; !keep {
+					delete(fresh.Annotations, k)
+				}
 			}
 		}
 		for k, v := range desired {
 			if strings.HasPrefix(k, mirrorv1alpha1.CatalogDigestAnnotationPrefix) ||
 				strings.HasPrefix(k, mirrorv1alpha1.ReleaseDigestAnnotationPrefix) ||
-				k == mirrorv1alpha1.GraphImageBuiltAnnotation {
+				k == mirrorv1alpha1.GraphImageBuiltAnnotation ||
+				k == mirrorv1alpha1.RecollectHonoredAnnotation {
 				fresh.Annotations[k] = v
 			}
 		}
@@ -990,17 +1019,19 @@ func hasStaleCacheAnnotations(is *mirrorv1alpha1.ImageSet) bool {
 
 // filterByImageSet returns a per-IS view of the manager's live in-memory
 // state (m.imageState), scoped to destinations currently owned by isName per
-// the owners map. Unlike the pre-partitioning consolidated model, entries
-// here already carry their own scoped Origin/EntrySig/OriginRef directly —
-// there is no Refs promotion step, since ownership lives out-of-band in
-// owners rather than inside the entry.
-func filterByImageSet(state imagestate.ImageState, owners map[string][]string, isName string) imagestate.ImageState {
+// the owners map. Each returned entry is a copy carrying isName's own spec
+// metadata from ownerMeta (see specMeta) when recorded — nil ownerMeta, or no
+// record for isName, keeps the entry's own metadata.
+func filterByImageSet(state imagestate.ImageState, owners map[string][]string, ownerMeta map[string]map[string]specMeta, isName string) imagestate.ImageState {
 	result := make(imagestate.ImageState, len(state)/2)
 	for dest, entry := range state {
 		if entry == nil || !hasOwner(owners, dest, isName) {
 			continue
 		}
 		cp := *entry
+		if meta, ok := ownerMeta[dest][isName]; ok {
+			meta.applyTo(&cp)
+		}
 		result[dest] = &cp
 	}
 	return result
@@ -1046,6 +1077,33 @@ func (m *MirrorManager) resetImageSetToPendingLocked(isName string) bool {
 	return changed
 }
 
+// resetFailedForRecollectLocked gives every Failed image owned by isName —
+// including permanently failed ones — a fresh retry cycle after a recollect
+// was honored: State Pending, RetryCount 0, LastError cleared. Without this,
+// mergeWorkerUpdates and mergeResolvedIntoConsolidated keep the live Failed
+// state, so a permanently failed image would never be retried by recollect
+// (e.g. after fixing registry credentials). PermanentlyFailed stays set as
+// the sticky history marker (see resetImageSetToPendingLocked); already
+// Mirrored images are left alone, unlike force-resync.
+//
+// Caller must hold m.mu. Returns true if any entry was changed.
+func (m *MirrorManager) resetFailedForRecollectLocked(isName string) bool {
+	changed := false
+	for dest, entry := range m.imageState {
+		if entry == nil || entry.State != stateFailed || !hasOwner(m.owners, dest, isName) {
+			continue
+		}
+		if m.inProgress[dest] != "" {
+			continue
+		}
+		entry.State = statePending
+		entry.RetryCount = 0
+		entry.LastError = ""
+		changed = true
+	}
+	return changed
+}
+
 // clearForceResyncAnnotation removes the one-shot ForceResyncAnnotation from
 // the ImageSet after resetImageSetToPendingLocked has applied its effect, so
 // it doesn't keep re-triggering on every subsequent reconcile. Runs outside
@@ -1075,6 +1133,16 @@ func hasOwner(owners map[string][]string, dest, isName string) bool {
 		}
 	}
 	return false
+}
+
+// onlyOwner reports whether dest has no owner other than isName.
+func onlyOwner(owners map[string][]string, dest, isName string) bool {
+	for _, n := range owners[dest] {
+		if n != isName {
+			return false
+		}
+	}
+	return true
 }
 
 // addOwner records isName as an owner of dest, deduplicating.
@@ -1114,8 +1182,17 @@ func removeOwner(owners map[string][]string, dest, isName string) bool {
 //   - Adds/updates isName's ownership of each destination present in perISState.
 //   - Removes isName's ownership from destinations no longer in perISState.
 //
-// Global entry fields (State, RetryCount, LastError, PermanentlyFailed) are
-// preserved for existing entries — only Source and ownership are updated.
+// Lifecycle fields of existing entries (State, RetryCount, LastError,
+// PermanentlyFailed, SourceDigest, SignatureVerified) are preserved — they
+// describe the one underlying mirrored image. Source is always refreshed.
+// The per-spec metadata (Origin, EntrySig, OriginRef, IsBundleImage) is
+// refreshed too when isName is the destination's only owner: after a spec
+// edit changes an entry's signature, a stale EntrySig would make the next
+// cache-hit carry-over (carryOverByOriginAndSig) drop the destination and
+// orphan it, and would keep the controller's catalog-build gate waiting for
+// a signature no entry ever carries. For destinations shared with other
+// ImageSets the existing metadata is kept (single-valued, see
+// mergeIntoStateWithSig).
 // Destinations that lose their last owner are reported via the returned
 // slice so the caller (manager.go Phase D) can move them into the pending
 // orphans snapshot for the MirrorTarget controller's cleanup Job — they are
@@ -1127,8 +1204,12 @@ func mergeResolvedIntoConsolidated(state imagestate.ImageState, owners map[strin
 			continue
 		}
 		if existing, ok := state[dest]; ok {
-			if existing.Source != newEntry.Source {
-				existing.Source = newEntry.Source
+			existing.Source = newEntry.Source
+			if onlyOwner(owners, dest, isName) {
+				existing.Origin = newEntry.Origin
+				existing.EntrySig = newEntry.EntrySig
+				existing.OriginRef = newEntry.OriginRef
+				existing.IsBundleImage = newEntry.IsBundleImage
 			}
 		} else {
 			e := *newEntry
@@ -1167,6 +1248,7 @@ func (m *MirrorManager) loadPartitionedState(ctx context.Context, mt *mirrorv1al
 
 	imageState := make(imagestate.ImageState)
 	owners := make(map[string][]string)
+	ownerMeta := make(map[string]map[string]specMeta)
 	catalogDigests := make(map[string]map[string]string)
 	loaded := 0
 	for _, is := range imageSets.Items {
@@ -1190,12 +1272,17 @@ func (m *MirrorManager) loadPartitionedState(ctx context.Context, mt *mirrorv1al
 				continue
 			}
 			addOwner(owners, dest, is.Name)
+			if ownerMeta[dest] == nil {
+				ownerMeta[dest] = make(map[string]specMeta)
+			}
+			ownerMeta[dest][is.Name] = specMetaOf(entry)
 			imageState[dest] = mergeLoadedEntry(imageState[dest], entry)
 		}
 		loaded += len(isState)
 	}
 	m.imageState = imageState
 	m.owners = owners
+	m.ownerMeta = ownerMeta
 	m.catalogDigests = catalogDigests
 	if loaded > 0 {
 		oclog.Printf("Loaded %d image entries across %d ImageSets\n", len(imageState), len(imageSets.Items))

@@ -206,12 +206,17 @@ func TestCheckDriftOne_Mirrored_NotFound_ResetsToPending(t *testing.T) {
 	m := newTestManagerForSignatureCheck(t, host)
 	m.imageState = imagestate.ImageState{}
 	m.owners = map[string][]string{}
-	m.mirrored = map[string]bool{}
 	dest := fmt.Sprintf("%s/repo:v1", host)
+	// Every Mirrored entry has the fast-path flag set after its first tick.
+	m.mirrored = map[string]bool{dest: true}
 	m.imageState[dest] = &imagestate.ImageEntry{Source: "src", State: stateMirrored, RetryCount: 3, LastError: "old"}
 	m.owners[dest] = []string{"is-a"}
 
 	m.checkDriftOne(context.Background(), dest, map[string]bool{})
+
+	if m.mirrored[dest] {
+		t.Error("expected the mirrored fast-path flag to be cleared")
+	}
 
 	entry := m.imageState[dest]
 	if entry.State != statePending {

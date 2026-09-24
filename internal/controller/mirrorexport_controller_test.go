@@ -226,16 +226,25 @@ var _ = Describe("MirrorExport Controller", func() {
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
 			Expect(err).NotTo(HaveOccurred())
 
+			jobKey := types.NamespacedName{Name: exportbuilder.JobName(exportName), Namespace: "default"}
+			oldJob := &batchv1.Job{}
+			Expect(k8sClient.Get(ctx, jobKey, oldJob)).To(Succeed())
+
 			me := &mirrorv1alpha1.MirrorExport{}
 			Expect(k8sClient.Get(ctx, namespacedName, me)).To(Succeed())
-			me.Status.LastRenderedSignature = "a-stale-signature-that-will-never-match"
-			Expect(k8sClient.Status().Update(ctx, me)).To(Succeed())
+			me.Spec.Mirror.AdditionalImages = append(me.Spec.Mirror.AdditionalImages, mirrorv1alpha1.AdditionalImage{Name: "quay.io/foo/baz:v1"})
+			Expect(k8sClient.Update(ctx, me)).To(Succeed())
 
 			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
 			Expect(err).NotTo(HaveOccurred())
 
-			// The Job still exists (recreated under the same deterministic name).
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: exportbuilder.JobName(exportName), Namespace: "default"}, &batchv1.Job{})).To(Succeed())
+			// Recreated under the same deterministic name, for the new spec.
+			newJob := &batchv1.Job{}
+			Expect(k8sClient.Get(ctx, jobKey, newJob)).To(Succeed())
+			Expect(newJob.UID).NotTo(Equal(oldJob.UID))
+			mirrorSpecJSON, err := json.Marshal(me.Spec.Mirror)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(newJob.Annotations).To(HaveKeyWithValue(exportbuilder.SignatureAnnotation, exportbuilder.Signature(me, string(mirrorSpecJSON))))
 		})
 	})
 
@@ -322,6 +331,66 @@ var _ = Describe("MirrorExport Controller", func() {
 				}
 				return false
 			}, meTimeout, meInterval).Should(BeTrue())
+		})
+	})
+
+	Context("When the spec is fixed after a first render failed (#138)", func() {
+		const exportName = "me-fixafterfail"
+		ctx := context.Background()
+		namespacedName := types.NamespacedName{Name: exportName, Namespace: "default"}
+
+		BeforeEach(func() {
+			me := &mirrorv1alpha1.MirrorExport{
+				ObjectMeta: metav1.ObjectMeta{Name: exportName, Namespace: "default"},
+				Spec: mirrorv1alpha1.MirrorExportSpec{
+					Mirror: mirrorv1alpha1.Mirror{
+						AdditionalImages: []mirrorv1alpha1.AdditionalImage{{Name: "quay.io/foo/typo:v1"}},
+					},
+					Destination: mirrorv1alpha1.MirrorExportDestination{Registry: "registry.example.com/mirror"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, me)).To(Succeed())
+		})
+
+		AfterEach(func() {
+			deleteMirrorExportAndDerived(ctx, exportName)
+		})
+
+		It("replaces the failed Job instead of reporting its failure for the new spec, and requeues while failed", func() {
+			reconciler := newMirrorExportReconciler()
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			jobKey := types.NamespacedName{Name: exportbuilder.JobName(exportName), Namespace: "default"}
+			job := &batchv1.Job{}
+			Expect(k8sClient.Get(ctx, jobKey, job)).To(Succeed())
+			job.Status.Failed = 1
+			Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
+
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(BeNumerically(">", 0), "a failed build must be checked again once its Job is TTL-cleaned")
+
+			me := &mirrorv1alpha1.MirrorExport{}
+			Expect(k8sClient.Get(ctx, namespacedName, me)).To(Succeed())
+			Expect(me.Status.LastRenderedSignature).To(BeEmpty())
+			me.Spec.Mirror.AdditionalImages = []mirrorv1alpha1.AdditionalImage{{Name: "quay.io/foo/fixed:v1"}}
+			Expect(k8sClient.Update(ctx, me)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			newJob := &batchv1.Job{}
+			Expect(k8sClient.Get(ctx, jobKey, newJob)).To(Succeed())
+			Expect(newJob.UID).NotTo(Equal(job.UID), "the failed Job of the old spec must be replaced")
+			Expect(newJob.Status.Failed).To(BeZero())
+
+			Expect(k8sClient.Get(ctx, namespacedName, me)).To(Succeed())
+			for _, c := range me.Status.Conditions {
+				if c.Type == conditionTypeReady {
+					Expect(c.Reason).NotTo(Equal("ExportBuildFailed"), "the old spec's failure must not be reported for the new spec")
+				}
+			}
 		})
 	})
 

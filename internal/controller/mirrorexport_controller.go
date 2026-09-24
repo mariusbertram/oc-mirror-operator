@@ -118,13 +118,22 @@ func (r *MirrorExportReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, err
 	}
 
-	// Recreate the Job when the spec changed since the last render.
-	if me.Status.LastRenderedSignature != "" && me.Status.LastRenderedSignature != sig && phase != exportbuilder.JobPhaseNotFound {
-		l.Info("MirrorExport spec changed, recreating export build Job", "job", jobName)
-		if delErr := exportbuilder.DeleteExportJob(ctx, r.Client, jobName, me.Namespace); delErr != nil {
-			l.Error(delErr, "failed to delete stale export build Job", "job", jobName)
+	// Recreate the Job when it was created for a different spec — also while
+	// no render has ever succeeded (a failed or still running Job for an
+	// older spec must never be reported, or recorded, as the result of the
+	// current one).
+	if phase != exportbuilder.JobPhaseNotFound {
+		jobSig, sigErr := exportbuilder.ExportJobSignature(ctx, r.Client, jobName, me.Namespace)
+		if sigErr != nil {
+			return ctrl.Result{}, sigErr
 		}
-		phase = exportbuilder.JobPhaseNotFound
+		if jobSig != sig {
+			l.Info("MirrorExport spec changed, recreating export build Job", "job", jobName)
+			if delErr := exportbuilder.DeleteExportJob(ctx, r.Client, jobName, me.Namespace); delErr != nil {
+				l.Error(delErr, "failed to delete stale export build Job", "job", jobName)
+			}
+			phase = exportbuilder.JobPhaseNotFound
+		}
 	}
 
 	// Job was TTL-cleaned but this exact spec was already rendered successfully: nothing to do.
@@ -150,7 +159,10 @@ func (r *MirrorExportReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	case exportbuilder.JobPhaseFailed:
 		setCondition(&me.Status.Conditions, conditionTypeReady, metav1.ConditionFalse,
 			"ExportBuildFailed", "export build Job failed; see Job/Pod logs for details", me.Generation)
-		return ctrl.Result{}, r.Status().Update(ctx, me)
+		// The failed Job is kept for inspection until its TTL removes it;
+		// check back periodically so the build is retried then even if the
+		// Job's delete event is missed.
+		return ctrl.Result{RequeueAfter: time.Minute}, r.Status().Update(ctx, me)
 	default:
 		setCondition(&me.Status.Conditions, conditionTypeReady, metav1.ConditionFalse,
 			"ExportBuildRunning", "export build Job is resolving content", me.Generation)

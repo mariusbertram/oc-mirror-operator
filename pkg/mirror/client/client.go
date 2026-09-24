@@ -365,9 +365,15 @@ func (c *MirrorClient) ImageConfig(ctx context.Context, r ref.Ref) (*blob.BOCICo
 	return cfg, err
 }
 
-// DeleteManifest deletes a manifest (image) from the registry by reference.
-// Tag references are resolved to digests before deletion. Returns nil if the
-// image was already gone (404).
+// DeleteManifest deletes an image from the registry by reference. Returns nil
+// if the image was already gone (404).
+//
+// Tag references only remove that tag (regclient TagDelete: the OCI tag
+// delete API where supported, otherwise the tag is re-pointed at a unique
+// throw-away manifest which is then deleted). Deleting the manifest by digest
+// instead would remove every tag sharing that digest — e.g. the unchanged
+// components of a remaining release version in openshift/release. Digest
+// references delete the manifest itself.
 func (c *MirrorClient) DeleteManifest(ctx context.Context, image string) error {
 	err := c.deleteManifestWith(ctx, c.rc, image)
 	if err != nil && c.rcFallback != nil {
@@ -382,16 +388,15 @@ func (c *MirrorClient) deleteManifestWith(ctx context.Context, rc *regclient.Reg
 		return fmt.Errorf("failed to parse reference %s: %w", image, err)
 	}
 
-	// regclient requires a digest to delete; resolve tag→digest via HEAD.
 	if r.Digest == "" {
-		m, err := rc.ManifestHead(ctx, r)
+		err = rc.TagDelete(ctx, r)
 		if err != nil {
 			if errors.Is(err, errs.ErrNotFound) {
 				return nil // already gone
 			}
-			return fmt.Errorf("failed to resolve digest for %s: %w", image, err)
+			return fmt.Errorf("failed to delete tag %s: %w", image, err)
 		}
-		r.Digest = m.GetDescriptor().Digest.String()
+		return nil
 	}
 
 	err = rc.ManifestDelete(ctx, r)
