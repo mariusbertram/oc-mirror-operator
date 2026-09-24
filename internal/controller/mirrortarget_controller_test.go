@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -105,6 +106,22 @@ var _ = Describe("MirrorTarget Controller", func() {
 			}, timeout, interval).Should(Succeed())
 			Expect(deployment.Labels).To(HaveKeyWithValue("app", "oc-mirror-manager"))
 			Expect(deployment.Labels).To(HaveKeyWithValue("mirrortarget", resourceName))
+
+			By("verifying the manager is never run twice during a rollout (#137)")
+			Expect(deployment.Spec.Strategy.Type).To(Equal(appsv1.RecreateDeploymentStrategyType))
+			Expect(deployment.Spec.Strategy.RollingUpdate).To(BeNil())
+
+			By("converting a Deployment still using RollingUpdate on the next reconcile")
+			maxSurge := intstr.FromInt32(1)
+			deployment.Spec.Strategy = appsv1.DeploymentStrategy{
+				Type:          appsv1.RollingUpdateDeploymentStrategyType,
+				RollingUpdate: &appsv1.RollingUpdateDeployment{MaxSurge: &maxSurge},
+			}
+			Expect(k8sClient.Update(ctx, deployment)).To(Succeed())
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(k8sClient.Get(ctx, childName, deployment)).To(Succeed())
+			Expect(deployment.Spec.Strategy.Type).To(Equal(appsv1.RecreateDeploymentStrategyType))
 
 			By("verifying the Deployment has an ownerReference to the MirrorTarget")
 			Expect(deployment.OwnerReferences).To(HaveLen(1))

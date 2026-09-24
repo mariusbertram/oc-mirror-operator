@@ -177,6 +177,11 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		replicas := int32(1)
 		deployment.Spec = appsv1.DeploymentSpec{
 			Replicas: &replicas,
+			// The manager is the single writer of the image state (in-memory
+			// working set, state ConfigMaps, worker dispatch) and has no
+			// leader election: a RollingUpdate would run the old and new
+			// manager side by side during every rollout.
+			Strategy: appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType},
 			Selector: &metav1.LabelSelector{
 				MatchLabels: labels,
 			},
