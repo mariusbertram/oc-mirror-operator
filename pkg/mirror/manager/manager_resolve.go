@@ -1077,6 +1077,16 @@ func hasOwner(owners map[string][]string, dest, isName string) bool {
 	return false
 }
 
+// onlyOwner reports whether dest has no owner other than isName.
+func onlyOwner(owners map[string][]string, dest, isName string) bool {
+	for _, n := range owners[dest] {
+		if n != isName {
+			return false
+		}
+	}
+	return true
+}
+
 // addOwner records isName as an owner of dest, deduplicating.
 func addOwner(owners map[string][]string, dest, isName string) {
 	if hasOwner(owners, dest, isName) {
@@ -1114,8 +1124,17 @@ func removeOwner(owners map[string][]string, dest, isName string) bool {
 //   - Adds/updates isName's ownership of each destination present in perISState.
 //   - Removes isName's ownership from destinations no longer in perISState.
 //
-// Global entry fields (State, RetryCount, LastError, PermanentlyFailed) are
-// preserved for existing entries — only Source and ownership are updated.
+// Lifecycle fields of existing entries (State, RetryCount, LastError,
+// PermanentlyFailed, SourceDigest, SignatureVerified) are preserved — they
+// describe the one underlying mirrored image. Source is always refreshed.
+// The per-spec metadata (Origin, EntrySig, OriginRef, IsBundleImage) is
+// refreshed too when isName is the destination's only owner: after a spec
+// edit changes an entry's signature, a stale EntrySig would make the next
+// cache-hit carry-over (carryOverByOriginAndSig) drop the destination and
+// orphan it, and would keep the controller's catalog-build gate waiting for
+// a signature no entry ever carries. For destinations shared with other
+// ImageSets the existing metadata is kept (single-valued, see
+// mergeIntoStateWithSig).
 // Destinations that lose their last owner are reported via the returned
 // slice so the caller (manager.go Phase D) can move them into the pending
 // orphans snapshot for the MirrorTarget controller's cleanup Job — they are
@@ -1127,8 +1146,12 @@ func mergeResolvedIntoConsolidated(state imagestate.ImageState, owners map[strin
 			continue
 		}
 		if existing, ok := state[dest]; ok {
-			if existing.Source != newEntry.Source {
-				existing.Source = newEntry.Source
+			existing.Source = newEntry.Source
+			if onlyOwner(owners, dest, isName) {
+				existing.Origin = newEntry.Origin
+				existing.EntrySig = newEntry.EntrySig
+				existing.OriginRef = newEntry.OriginRef
+				existing.IsBundleImage = newEntry.IsBundleImage
 			}
 		} else {
 			e := *newEntry
