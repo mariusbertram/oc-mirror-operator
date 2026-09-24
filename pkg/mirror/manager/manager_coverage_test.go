@@ -650,8 +650,8 @@ var _ = Describe("Manager Coverage", func() {
 				},
 			}
 			owners := map[string][]string{}
-			Expect(filterByImageSet(state, owners, "other-is")).To(BeEmpty())
-			Expect(filterByImageSet(state, owners, testImageSetName)).To(BeEmpty())
+			Expect(filterByImageSet(state, owners, nil, "other-is")).To(BeEmpty())
+			Expect(filterByImageSet(state, owners, nil, testImageSetName)).To(BeEmpty())
 		})
 
 		It("includes an entry only for its current owner ImageSet", func() {
@@ -663,8 +663,8 @@ var _ = Describe("Manager Coverage", func() {
 				},
 			}
 			owners := map[string][]string{"reg.io/shared:v1": {testImageSetName}}
-			Expect(filterByImageSet(state, owners, testImageSetName)).To(HaveKey("reg.io/shared:v1"))
-			Expect(filterByImageSet(state, owners, "other-is")).NotTo(HaveKey("reg.io/shared:v1"))
+			Expect(filterByImageSet(state, owners, nil, testImageSetName)).To(HaveKey("reg.io/shared:v1"))
+			Expect(filterByImageSet(state, owners, nil, "other-is")).NotTo(HaveKey("reg.io/shared:v1"))
 		})
 
 		It("includes a shared entry in every owning ImageSet's view", func() {
@@ -676,8 +676,8 @@ var _ = Describe("Manager Coverage", func() {
 				},
 			}
 			owners := map[string][]string{"reg.io/shared:v2": {testImageSetName, "other-is"}}
-			Expect(filterByImageSet(state, owners, testImageSetName)).To(HaveKey("reg.io/shared:v2"))
-			Expect(filterByImageSet(state, owners, "other-is")).To(HaveKey("reg.io/shared:v2"))
+			Expect(filterByImageSet(state, owners, nil, testImageSetName)).To(HaveKey("reg.io/shared:v2"))
+			Expect(filterByImageSet(state, owners, nil, "other-is")).To(HaveKey("reg.io/shared:v2"))
 		})
 	})
 

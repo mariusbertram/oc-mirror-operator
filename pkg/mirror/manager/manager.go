@@ -143,6 +143,11 @@ type MirrorManager struct {
 	// dest-keyed map for O(1) worker status/should-mirror lookups regardless
 	// of how many ImageSets reference a destination.
 	owners map[string][]string
+	// ownerMeta holds, per destination and owning ImageSet, the spec
+	// metadata (Origin/EntrySig/OriginRef/IsBundleImage) that ImageSet's
+	// resolve produced it with — see specMeta. Each owner's view
+	// (filterByImageSetLocked) and state ConfigMap use its own copy.
+	ownerMeta map[string]map[string]specMeta
 	// catalogDigests holds, per ImageSet, the catalog-digest cache
 	// annotations (mirrorv1alpha1.CatalogDigestAnnotationKey → token) that the
 	// ImageSet's entries in imageState were resolved from. Flushed into the
@@ -1103,7 +1108,7 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 			}
 			m.mu.Lock()
 		}
-		isView := filterByImageSet(m.imageState, m.owners, is.Name)
+		isView := m.filterByImageSetLocked(is.Name)
 		if shouldResolve(&is, mt, isView) {
 			isCopy := is.DeepCopy()
 			isViewSnap := cloneImageState(isView)
@@ -1127,6 +1132,7 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 					// crash between a previous tick's ownership update and
 					// its flush); no need to track them here.
 					_ = mergeResolvedIntoConsolidated(m.imageState, m.owners, newPerISState, is.Name)
+					m.recordOwnerMetaLocked(is.Name, newPerISState)
 					m.stateDirty = true
 				}
 				if recollect && m.resetFailedForRecollectLocked(is.Name) {
@@ -1197,6 +1203,7 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 			newOrphans[dest] = entry
 			delete(m.imageState, dest)
 			delete(m.owners, dest)
+			delete(m.ownerMeta, dest)
 			m.stateDirty = true
 			continue
 		}
@@ -1304,7 +1311,7 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 			if !containsString(mt.Spec.ImageSets, is.Name) {
 				continue
 			}
-			isView := filterByImageSet(m.imageState, m.owners, is.Name)
+			isView := m.filterByImageSetLocked(is.Name)
 			m.updateImageSetStatusLocked(ctx, &is, isView, justResolvedISes[is.Name] && !hadErrorISes[is.Name])
 		}
 		m.statusDirty = false
@@ -1337,10 +1344,12 @@ func (m *MirrorManager) dropRemovedImageSetsLocked(mt *mirrorv1alpha1.MirrorTarg
 		changed = true
 		if len(kept) > 0 {
 			m.owners[dest] = kept
+			m.pruneOwnerMetaLocked(dest)
 			continue
 		}
 		oclog.Printf("Dropping %s: its ImageSet was removed from MirrorTarget %s\n", dest, m.TargetName)
 		delete(m.owners, dest)
+		delete(m.ownerMeta, dest)
 		delete(m.imageState, dest)
 		delete(m.mirrored, dest)
 	}
@@ -1411,7 +1420,9 @@ func (m *MirrorManager) flushPartitionedState(ctx context.Context, mt *mirrorv1a
 				// removed such owners).
 				continue
 			}
-			state[dest] = entry
+			// Each owner's ConfigMap carries its own spec metadata, which
+			// the controller's catalog-build gate and the next load read.
+			state[dest] = m.ownerView(dest, isName, entry)
 		}
 		if len(names) > 1 {
 			index[dest] = append([]string(nil), names...)

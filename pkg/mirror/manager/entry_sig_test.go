@@ -34,7 +34,7 @@ func TestMergeResolvedIntoConsolidated_RefreshesSpecMetadata(t *testing.T) {
 
 	// The next cache-hit resolve (carry-over by the new signature) keeps it.
 	next := imagestate.ImageState{}
-	carryOverByOriginAndSig(filterByImageSet(state, owners, "my-is"), next, imagestate.OriginOperator, "S2", "new")
+	carryOverByOriginAndSig(filterByImageSet(state, owners, nil, "my-is"), next, imagestate.OriginOperator, "S2", "new")
 	if _, ok := next[dest]; !ok {
 		t.Error("destination dropped by cache-hit carry-over after spec edit")
 	}

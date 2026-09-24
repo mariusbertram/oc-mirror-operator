@@ -1019,17 +1019,19 @@ func hasStaleCacheAnnotations(is *mirrorv1alpha1.ImageSet) bool {
 
 // filterByImageSet returns a per-IS view of the manager's live in-memory
 // state (m.imageState), scoped to destinations currently owned by isName per
-// the owners map. Unlike the pre-partitioning consolidated model, entries
-// here already carry their own scoped Origin/EntrySig/OriginRef directly —
-// there is no Refs promotion step, since ownership lives out-of-band in
-// owners rather than inside the entry.
-func filterByImageSet(state imagestate.ImageState, owners map[string][]string, isName string) imagestate.ImageState {
+// the owners map. Each returned entry is a copy carrying isName's own spec
+// metadata from ownerMeta (see specMeta) when recorded — nil ownerMeta, or no
+// record for isName, keeps the entry's own metadata.
+func filterByImageSet(state imagestate.ImageState, owners map[string][]string, ownerMeta map[string]map[string]specMeta, isName string) imagestate.ImageState {
 	result := make(imagestate.ImageState, len(state)/2)
 	for dest, entry := range state {
 		if entry == nil || !hasOwner(owners, dest, isName) {
 			continue
 		}
 		cp := *entry
+		if meta, ok := ownerMeta[dest][isName]; ok {
+			meta.applyTo(&cp)
+		}
 		result[dest] = &cp
 	}
 	return result
@@ -1246,6 +1248,7 @@ func (m *MirrorManager) loadPartitionedState(ctx context.Context, mt *mirrorv1al
 
 	imageState := make(imagestate.ImageState)
 	owners := make(map[string][]string)
+	ownerMeta := make(map[string]map[string]specMeta)
 	catalogDigests := make(map[string]map[string]string)
 	loaded := 0
 	for _, is := range imageSets.Items {
@@ -1269,12 +1272,17 @@ func (m *MirrorManager) loadPartitionedState(ctx context.Context, mt *mirrorv1al
 				continue
 			}
 			addOwner(owners, dest, is.Name)
+			if ownerMeta[dest] == nil {
+				ownerMeta[dest] = make(map[string]specMeta)
+			}
+			ownerMeta[dest][is.Name] = specMetaOf(entry)
 			imageState[dest] = mergeLoadedEntry(imageState[dest], entry)
 		}
 		loaded += len(isState)
 	}
 	m.imageState = imageState
 	m.owners = owners
+	m.ownerMeta = ownerMeta
 	m.catalogDigests = catalogDigests
 	if loaded > 0 {
 		oclog.Printf("Loaded %d image entries across %d ImageSets\n", len(imageState), len(imageSets.Items))
