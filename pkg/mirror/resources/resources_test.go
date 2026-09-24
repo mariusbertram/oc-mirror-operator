@@ -844,6 +844,28 @@ var _ = Describe("BuildUpstreamCatalogPackagesResponse", func() {
 		resp := BuildUpstreamCatalogPackagesResponse(CatalogInfo{}, &declcfg.DeclarativeConfig{})
 		Expect(resp.Packages).To(BeEmpty())
 	})
+
+	It("lists bundle names only where they differ from <package>.v<version>", func() {
+		bundle := func(name, version string) declcfg.Bundle {
+			return declcfg.Bundle{Schema: "olm.bundle", Name: name, Package: "op", Properties: []property.Property{
+				{Type: "olm.package", Value: json.RawMessage(`{"packageName":"op","version":"` + version + `"}`)},
+			}}
+		}
+		cfg := &declcfg.DeclarativeConfig{
+			Packages: []declcfg.Package{{Schema: "olm.package", Name: "op", DefaultChannel: "stable"}},
+			Channels: []declcfg.Channel{{Schema: "olm.channel", Name: "stable", Package: "op", Entries: []declcfg.ChannelEntry{
+				{Name: "op.v1.0.0"},
+				{Name: "op.1.1.0", Replaces: "op.v1.0.0"},
+				{Name: "op-unversioned"},
+			}}},
+			Bundles: []declcfg.Bundle{bundle("op.v1.0.0", "1.0.0"), bundle("op.1.1.0", "1.1.0")},
+		}
+
+		ch := BuildUpstreamCatalogPackagesResponse(CatalogInfo{}, cfg).Packages[0].Channels[0]
+		Expect(ch.Versions).To(Equal([]string{"1.0.0", "1.1.0"}))
+		Expect(ch.BundleNames).To(Equal(map[string]string{"1.1.0": "op.1.1.0"}))
+		Expect(ConventionalBundleName("op", "1.0.0")).To(Equal("op.v1.0.0"))
+	})
 })
 
 // Ensure json import is used.

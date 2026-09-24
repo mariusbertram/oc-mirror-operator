@@ -37,6 +37,38 @@ function catalogDisplayLabel(slug: string, source?: string): string {
   return `${base}:${tagMatch[1]}`;
 }
 
+/** Compare dotted/dashed version strings numerically where possible. */
+function compareVersions(a: string, b: string): number {
+  const pa = a.split(/[.+-]/);
+  const pb = b.split(/[.+-]/);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const x = pa[i] ?? '';
+    const y = pb[i] ?? '';
+    const nx = Number(x);
+    const ny = Number(y);
+    const c = !Number.isNaN(nx) && !Number.isNaN(ny) && x !== '' && y !== '' ? nx - ny : x.localeCompare(y);
+    if (c !== 0) return c;
+  }
+  return 0;
+}
+
+type BundleOption = { name: string; version: string };
+
+/** All bundles of a package across its channels, newest first. Bundle names
+ *  follow "<package>.v<version>" unless the channel lists an exception. */
+function packageBundles(p: CatalogPackage): BundleOption[] {
+  const byName = new Map<string, string>();
+  for (const c of p.channels) {
+    for (const v of c.versions || []) {
+      const name = c.bundleNames?.[v] || `${p.name}.v${v}`;
+      if (!byName.has(name)) byName.set(name, v);
+    }
+  }
+  return [...byName.entries()]
+    .map(([name, version]) => ({ name, version }))
+    .sort((a, b) => compareVersions(b.version, a.version));
+}
+
 /** Return the base catalog name (without any version-tag suffix) from a slug + source pair. */
 function catalogBaseName(slug: string, source?: string): string {
   if (source) {
@@ -123,6 +155,10 @@ export const CatalogBrowser: React.FC = () => {
   const [importedChannels, setImportedChannels] = useState<Record<string, Set<string>>>({});
   // versionMap[packageName][channelName] = { minVersion, maxVersion }
   const [versionMap, setVersionMap] = useState<Record<string, Record<string, VersionConstraint>>>({});
+  // pinnedBundles[pkgName] = bundle names pinned for the package
+  // (spec packages[].bundles). Present = the package is in pinning mode,
+  // which replaces channel and version filters.
+  const [pinnedBundles, setPinnedBundles] = useState<Record<string, Set<string>>>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -149,7 +185,11 @@ export const CatalogBrowser: React.FC = () => {
         setImported(new Set(fpResp.packages.map((p) => p.name)));
         const vm: Record<string, Record<string, VersionConstraint>> = {};
         const ic: Record<string, Set<string>> = {};
+        const pb: Record<string, Set<string>> = {};
         for (const pkg of constraints) {
+          if (pkg.bundles && pkg.bundles.length > 0) {
+            pb[pkg.name] = new Set(pkg.bundles);
+          }
           // If the package has an explicit channel list, those are the only
           // channels selected (not all channels).
           if (pkg.channels && pkg.channels.length > 0) {
@@ -167,6 +207,7 @@ export const CatalogBrowser: React.FC = () => {
         }
         setVersionMap(vm);
         setImportedChannels(ic);
+        setPinnedBundles(pb);
       })
       .catch((e: Error) => setError(e.message))
       .finally(() => setLoading(false));
@@ -183,6 +224,36 @@ export const CatalogBrowser: React.FC = () => {
     [upstream, search],
   );
 
+  const dropPin = (name: string) =>
+    setPinnedBundles((prev) => {
+      if (!(name in prev)) return prev;
+      const n = { ...prev };
+      delete n[name];
+      return n;
+    });
+
+  const togglePinning = (name: string) => {
+    if (name in pinnedBundles) {
+      dropPin(name);
+    } else {
+      // Pinning replaces channel and version filters for the package.
+      setPinnedBundles((prev) => ({ ...prev, [name]: new Set() }));
+      setImportedChannels((prev) => { const n = { ...prev }; delete n[name]; return n; });
+      setVersionMap((prev) => { const n = { ...prev }; delete n[name]; return n; });
+    }
+    setDirty(true);
+  };
+
+  const toggleBundle = (pkgName: string, bundleName: string) => {
+    setPinnedBundles((prev) => {
+      const next = new Set(prev[pkgName] || []);
+      if (next.has(bundleName)) next.delete(bundleName);
+      else next.add(bundleName);
+      return { ...prev, [pkgName]: next };
+    });
+    setDirty(true);
+  };
+
   const importPackage = (name: string) => {
     setImported((prev) => new Set([...prev, name]));
     // Whole-package import — clear any per-channel filter so all channels are included.
@@ -192,6 +263,7 @@ export const CatalogBrowser: React.FC = () => {
 
   const importChannel = (pkgName: string, channelName: string) => {
     setImported((prev) => new Set([...prev, pkgName]));
+    dropPin(pkgName);
     setImportedChannels((prev) => {
       const existing = prev[pkgName];
       if (existing === undefined) {
@@ -211,6 +283,7 @@ export const CatalogBrowser: React.FC = () => {
       return next;
     });
     setImportedChannels((prev) => { const n = { ...prev }; delete n[name]; return n; });
+    dropPin(name);
     if (selectedFiltered === name) setSelectedFiltered(null);
     setDirty(true);
   };
@@ -242,12 +315,14 @@ export const CatalogBrowser: React.FC = () => {
   const importAll = () => {
     setImported(new Set(upstream.map((p) => p.name)));
     setImportedChannels({});
+    setPinnedBundles({});
     setDirty(true);
   };
 
   const removeAll = () => {
     setImported(new Set());
     setImportedChannels({});
+    setPinnedBundles({});
     setSelectedFiltered(null);
     setDirty(true);
   };
@@ -268,10 +343,19 @@ export const CatalogBrowser: React.FC = () => {
 
   const handleSave = async () => {
     if (!namespace || !imageSetName || !slug) return;
+    const emptyPins = importedPackages.filter((p) => pinnedBundles[p.name]?.size === 0).map((p) => p.name);
+    if (emptyPins.length > 0) {
+      setError(`Select at least one bundle to pin for: ${emptyPins.join(', ')} (or turn pinning off).`);
+      return;
+    }
     setSaving(true);
     setError(null);
     setSuccessMsg(null);
     const packages = importedPackages.map((p) => {
+      const pins = pinnedBundles[p.name];
+      if (pins && pins.size > 0) {
+        return { name: p.name, bundles: [...pins].sort() };
+      }
       const pkgConstraints = versionMap[p.name] || {};
       const selectedChans = importedChannels[p.name];
       let channels: Array<{ name: string; minVersion?: string; maxVersion?: string }>;
@@ -292,7 +376,8 @@ export const CatalogBrowser: React.FC = () => {
             maxVersion: pkgConstraints[c.name]?.maxVersion || undefined,
           }));
       }
-      return { name: p.name, channels };
+      // An explicit empty list clears a pin the package may have had.
+      return { name: p.name, channels, bundles: [] as string[] };
     });
     const exclude = upstream.filter((p) => !imported.has(p.name)).map((p) => p.name);
     try {
@@ -657,7 +742,9 @@ export const CatalogBrowser: React.FC = () => {
                       <div>
                         <div className="mirror-dual-row__name">{p.name}</div>
                         <div className="mirror-dual-row__meta">
-                          {p.channels.length} channels · default: <code style={{ fontSize: 10 }}>{p.defaultChannel}</code>
+                          {pinnedBundles[p.name]
+                            ? `${pinnedBundles[p.name].size} bundle(s) pinned`
+                            : <>{p.channels.length} channels · default: <code style={{ fontSize: 10 }}>{p.defaultChannel}</code></>}
                         </div>
                       </div>
                       <button
@@ -676,7 +763,58 @@ export const CatalogBrowser: React.FC = () => {
                         ×
                       </button>
                     </div>
-                    {expanded && getImportedChannels(p).map((c) => {
+                    {expanded && (
+                      <div className="mirror-dual-channel" style={{ gridTemplateColumns: '20px 1fr' }}>
+                        <span />
+                        <label style={{ display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' }}>
+                          <input
+                            type="checkbox"
+                            checked={p.name in pinnedBundles}
+                            onChange={() => togglePinning(p.name)}
+                          />
+                          Pin specific bundles
+                          <span style={{ color: 'var(--pf-v6-global--Color--200)', fontSize: 10 }}>
+                            (replaces channel and version filters)
+                          </span>
+                        </label>
+                      </div>
+                    )}
+                    {expanded && pinnedBundles[p.name] && (() => {
+                      const pins = pinnedBundles[p.name];
+                      const options = packageBundles(p);
+                      // Pinned names not (or no longer) in the catalog listing stay visible.
+                      const known = new Set(options.map((o) => o.name));
+                      const extra = [...pins].filter((n) => !known.has(n)).map((n) => ({ name: n, version: '' }));
+                      const all = [...extra, ...options];
+                      return (
+                        <div
+                          className="mirror-dual-channel"
+                          style={{ gridTemplateColumns: '20px 1fr', alignItems: 'start' }}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <span />
+                          <div style={{ maxHeight: 220, overflowY: 'auto', display: 'grid', gap: 2 }}>
+                            {all.length === 0 && (
+                              <span style={{ color: 'var(--pf-v6-global--Color--200)' }}>No bundle versions available for this package.</span>
+                            )}
+                            {all.map((b) => (
+                              <label key={b.name} style={{ display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' }}>
+                                <input
+                                  type="checkbox"
+                                  checked={pins.has(b.name)}
+                                  onChange={() => toggleBundle(p.name, b.name)}
+                                />
+                                <span>{b.version || b.name}</span>
+                                {b.version && b.name !== `${p.name}.v${b.version}` && (
+                                  <code style={{ fontSize: 10, color: 'var(--pf-v6-global--Color--200)' }}>{b.name}</code>
+                                )}
+                              </label>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })()}
+                    {expanded && !pinnedBundles[p.name] && getImportedChannels(p).map((c) => {
                       const uniqueVersions = c.versions && c.versions.length > 0 ? c.versions : [];
                       const versionsAvailable = uniqueVersions.length > 0;
                       const constraint = versionMap[p.name]?.[c.name] || { minVersion: '', maxVersion: '' };

@@ -22,7 +22,7 @@ All paths are relative to the base URL, e.g.
 | GET | `/api/v1/targets/{mt}/imagesets/{is}/catalogs/{slug}/catalogsource.yaml` | OLM v0 `CatalogSource` for the filtered catalog |
 | GET | `/api/v1/targets/{mt}/imagesets/{is}/catalogs/{slug}/clustercatalog.yaml` | OLM v1 `ClusterCatalog` |
 | GET | `/api/v1/targets/{mt}/catalogs/{slug}/packages.json` | Packages, channels and bundle versions of the **filtered** catalog |
-| GET | `/api/v1/targets/{mt}/catalogs/{slug}/upstream-packages.json` | Packages, channels and channel heads of the **upstream** catalog |
+| GET | `/api/v1/targets/{mt}/catalogs/{slug}/upstream-packages.json` | Packages, channels and channel heads of the **upstream** catalog; per channel all `versions` and, where a bundle is not named `<package>.v<version>`, its name in `bundleNames` (for bundle pinning) |
 | GET | `/api/v1/targets/{mt}/signatures.yaml` | ConfigMaps with the verified GPG signatures of all mirrored release payloads (OpenShift signature-store format) |
 | GET | `/api/v1/targets/{namespace}/{name}/spec` | Editable subset of the MirrorTarget spec |
 | GET | `/api/v1/imagesets/{namespace}/{name}/operators` | Catalog entries (`catalog`, `targetCatalog`, `targetTag`, `full`, `skipDependencies`) |
