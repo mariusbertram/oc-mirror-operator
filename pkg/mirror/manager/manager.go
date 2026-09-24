@@ -851,7 +851,7 @@ func (m *MirrorManager) checkDriftOne(ctx context.Context, dest string, requireS
 			oclog.Printf("Permanently-failed image %s not in target; resetting for retry\n", dest)
 			entry.State = statePending
 			entry.RetryCount = 0 // fresh 10-attempt window; PermanentlyFailed stays true
-			m.stateDirty = true
+			m.resetMirroredLocked(dest)
 		}
 		return
 	}
@@ -866,7 +866,7 @@ func (m *MirrorManager) checkDriftOne(ctx context.Context, dest string, requireS
 		entry.State = statePending
 		entry.LastError = ""
 		entry.RetryCount = 0
-		m.stateDirty = true
+		m.resetMirroredLocked(dest)
 		return
 	}
 	if m.additionalImageDriftedLocked(ctx, entry) {
@@ -874,13 +874,24 @@ func (m *MirrorManager) checkDriftOne(ctx context.Context, dest string, requireS
 		entry.State = statePending
 		entry.LastError = ""
 		entry.RetryCount = 0
-		m.stateDirty = true
+		m.resetMirroredLocked(dest)
 		return
 	}
 	m.mirrored[dest] = true
 	if !entry.SignatureVerified && anyOwnerRequiresSignedImages(m.owners[dest], requireSignedByIS) {
 		m.verifySignedImageLocked(ctx, dest, entry)
 	}
+}
+
+// resetMirroredLocked finishes moving dest out of the Mirrored state after
+// its entry.State has been changed: it clears the m.mirrored fast-path flag —
+// otherwise reconcile()'s Phase D "defensive sync" would flip the entry
+// straight back to Mirrored on the next tick without ever dispatching a
+// worker — and marks state and status dirty. Caller must hold m.mu.
+func (m *MirrorManager) resetMirroredLocked(dest string) {
+	delete(m.mirrored, dest)
+	m.stateDirty = true
+	m.statusDirty = true
 }
 
 // additionalImageDriftedLocked reports whether a tag-referenced additional
@@ -1303,6 +1314,9 @@ func (m *MirrorManager) setImageStateLocked(dest, st, lastError string) {
 	entry.LastError = lastError
 	m.stateDirty = true
 	m.statusDirty = true
+	if st != stateMirrored {
+		m.resetMirroredLocked(dest)
+	}
 	if st == stateFailed {
 		entry.RetryCount++
 		ocmetrics.ManagerWorkerRetriesTotal.WithLabelValues(m.TargetName).Inc()
