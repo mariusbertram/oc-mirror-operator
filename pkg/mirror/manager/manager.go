@@ -101,6 +101,11 @@ const (
 	// reserved in inProgress forever.
 	workerPendingTimeout = 15 * time.Minute
 
+	// shouldMirrorLockWait bounds how long /should-mirror waits for m.mu
+	// before answering 200 (fail open) — well below the worker's 5 s
+	// request timeout.
+	shouldMirrorLockWait = 2 * time.Second
+
 	// workerImageBudget is the worst-case time a worker needs per image:
 	// two copy attempts of up to 20 minutes each, a 15 s back-off between
 	// them, and up to 2 minutes of digest verification (see
@@ -140,6 +145,13 @@ type MirrorManager struct {
 	// arrives so the reconcile loop runs immediately instead of waiting for
 	// the 30-second ticker.
 	urgentFlush chan struct{}
+
+	// statusQueue holds worker /status reports that have been acknowledged
+	// but not yet applied to the in-memory state — see handleStatusUpdate.
+	// Protected by statusMu (never held together with a blocking wait on
+	// mu), drained under mu by drainStatusQueueLocked.
+	statusMu    sync.Mutex
+	statusQueue []WorkerStatusRequest
 
 	// State in memory — protected by mu
 	mu         sync.RWMutex
@@ -532,11 +544,73 @@ func (m *MirrorManager) handleStatusUpdate(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
+	start := time.Now()
 	oclog.Printf("Received status update from %s for %s\n", req.PodName, req.Destination)
 
+	// Queue the report instead of applying it under m.mu directly: a
+	// reconcile tick holds m.mu across Kubernetes API calls (ConfigMap
+	// flushes, ImageSet status writes, pod creation), and a worker waiting
+	// behind it would time out and give up on its report, silently losing
+	// a finished mirror. Enqueueing needs only the small statusMu, and the
+	// 200 below is sent only after the report is queued, so every
+	// acknowledged report is applied before the manager can observe the
+	// worker pod as finished (cleanupFinishedWorkers drains the queue before
+	// acting on finished pods).
+	m.enqueueStatus(req)
+	if m.mu.TryLock() {
+		m.drainStatusQueueLocked()
+		m.mu.Unlock()
+	}
+
+	// Signal the reconcile loop to run immediately instead of waiting for
+	// the 30-second ticker; it also drains whatever could not be applied
+	// above. Non-blocking send: if a signal is already queued (channel
+	// capacity = 1) we skip — the pending reconcile will pick this up.
+	select {
+	case m.urgentFlush <- struct{}{}:
+	default:
+	}
+
+	ocmetrics.ManagerStatusCallbackDurationSeconds.WithLabelValues(m.TargetName).Observe(time.Since(start).Seconds())
+	w.WriteHeader(http.StatusOK)
+}
+
+// enqueueStatus appends a worker report to the status queue. Needs only
+// statusMu, never m.mu.
+func (m *MirrorManager) enqueueStatus(req WorkerStatusRequest) {
+	m.statusMu.Lock()
+	m.statusQueue = append(m.statusQueue, req)
+	m.statusMu.Unlock()
+}
+
+// queuedSuccess reports whether a successful report for dest is waiting in
+// the status queue.
+func (m *MirrorManager) queuedSuccess(dest string) bool {
+	m.statusMu.Lock()
+	defer m.statusMu.Unlock()
+	for _, req := range m.statusQueue {
+		if req.Destination == dest && req.Error == "" {
+			return true
+		}
+	}
+	return false
+}
+
+// drainStatusQueueLocked applies every queued worker report in arrival
+// order. Caller must hold m.mu.
+func (m *MirrorManager) drainStatusQueueLocked() {
+	m.statusMu.Lock()
+	queued := m.statusQueue
+	m.statusQueue = nil
+	m.statusMu.Unlock()
+	for _, req := range queued {
+		m.applyStatusLocked(req)
+	}
+}
+
+// applyStatusLocked applies one worker report to the in-memory state.
+// Caller must hold m.mu.
+func (m *MirrorManager) applyStatusLocked(req WorkerStatusRequest) {
 	imageset := ""
 	if names := m.owners[req.Destination]; len(names) > 0 {
 		imageset = names[0]
@@ -572,16 +646,6 @@ func (m *MirrorManager) handleStatusUpdate(w http.ResponseWriter, r *http.Reques
 	// other batch items in the same pod can continue reporting.
 	delete(m.inProgress, req.Destination)
 	m.statusDirty = true
-
-	// Signal the reconcile loop to run immediately instead of waiting for
-	// the 30-second ticker. Non-blocking send: if a signal is already queued
-	// (channel capacity = 1) we skip — the pending reconcile will pick this up.
-	select {
-	case m.urgentFlush <- struct{}{}:
-	default:
-	}
-
-	w.WriteHeader(http.StatusOK)
 }
 
 // handleShouldMirror lets a worker check, just before mirroring an image,
@@ -599,7 +663,11 @@ func (m *MirrorManager) handleStatusUpdate(w http.ResponseWriter, r *http.Reques
 //
 // The decision is taken under the manager mutex against the most recently
 // reconciled state cache. Worst-case latency between user-edit and the
-// worker honouring it is one reconcile cycle (≈30 s).
+// worker honouring it is one reconcile cycle (≈30 s). If the mutex stays
+// held (a reconcile tick blocked on the API server) for longer than
+// shouldMirrorLockWait, the handler answers 200 rather than keep the worker
+// waiting: the check is an optimisation, and the worker fails open anyway
+// once its own request times out.
 func (m *MirrorManager) handleShouldMirror(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -619,8 +687,15 @@ func (m *MirrorManager) handleShouldMirror(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	if m.queuedSuccess(dest) {
+		w.WriteHeader(http.StatusGone)
+		return
+	}
+	if !m.tryRLockFor(shouldMirrorLockWait) {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	defer m.mu.RUnlock()
 
 	entry, ok := m.imageState[dest]
 	if !ok {
@@ -633,6 +708,21 @@ func (m *MirrorManager) handleShouldMirror(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+// tryRLockFor tries to read-lock m.mu for up to wait. It reports whether the
+// lock was acquired; the caller must then RUnlock it.
+func (m *MirrorManager) tryRLockFor(wait time.Duration) bool {
+	deadline := time.Now().Add(wait)
+	for {
+		if m.mu.TryRLock() {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 // cleanupFinishedWorkers removes completed/failed worker pods.
@@ -697,6 +787,10 @@ func (m *MirrorManager) cleanupFinishedWorkers(ctx context.Context) {
 	// 2. Mutate state under the lock.
 	if len(done) > 0 {
 		m.mu.Lock()
+		// Apply queued worker reports first: a pod that reported every
+		// image before exiting must not have them reset or re-dispatched
+		// just because its reports are still waiting in the queue.
+		m.drainStatusQueueLocked()
 		for _, f := range done {
 			// Only drop if the entry still maps to the same pod (avoid
 			// racing with a freshly scheduled worker that reused the dest).
@@ -1105,6 +1199,7 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.drainStatusQueueLocked()
 
 	mt := &mirrorv1alpha1.MirrorTarget{}
 	if err := m.Client.Get(ctx, client.ObjectKey{Name: m.TargetName, Namespace: m.Namespace}, mt); err != nil {
@@ -1370,6 +1465,9 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 
 	// Phase F: Flush state to each owning ImageSet's own ConfigMap + the
 	// shared-image index, replacing the single consolidated ConfigMap write.
+	// Reports queued while m.mu was released for resolution are applied
+	// first so they are part of this flush.
+	m.drainStatusQueueLocked()
 	if m.stateDirty {
 		if err := m.flushPartitionedState(ctx, mt); err != nil {
 			oclog.Printf("Warning: failed to save partitioned state: %v\n", err)

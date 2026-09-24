@@ -34,6 +34,7 @@ user-workload monitoring so the ServiceMonitors are picked up.
 | `oc_mirror_manager_images_mirrored_total` | counter | `target`, `imageset` | Images reported mirrored by workers |
 | `oc_mirror_manager_images_failed_total` | counter | `target`, `imageset` | Images reported failed by workers |
 | `oc_mirror_manager_batch_duration_seconds` | histogram | `target` | Worker batch duration |
+| `oc_mirror_manager_status_callback_duration_seconds` | histogram | `target` | Time to acknowledge a worker's `/status` report |
 | `oc_mirror_manager_active_workers` | gauge | `target` | Worker pods currently in progress |
 | `oc_mirror_manager_worker_retries_total` | counter | `target` | Retry attempts (failure reports and signature failures) |
 

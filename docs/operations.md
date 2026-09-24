@@ -239,5 +239,4 @@ Built-in alerts: `OCMirrorHighFailedImages`, `OCMirrorAllImagesFailed`,
 
 Behaviour that differs from what this documentation describes is tracked in the
 [issue tracker](https://github.com/mariusbertram/oc-mirror-operator/issues?q=is%3Aissue+is%3Aopen+label%3Abug).
-Planned improvements (callback latency under load)
-carry the `enhancement` label.
+Planned improvements carry the `enhancement` label.
