@@ -185,8 +185,9 @@ What to mirror. Bound to a target only through `MirrorTarget.spec.imageSets`. Se
 | `defaultChannel` | string | Default channel to advertise in the filtered catalog. |
 | `previousVersions` | int | Heads-only mode only: older bundles to keep behind each channel head. Default 0. |
 | `minVersion` / `maxVersion` | string | Bundle version bounds across all channels. |
+| `bundles` | `[]{name}` | Mirror exactly these bundles (plus dependencies). Cannot be combined with `channels`, `minVersion`, `maxVersion` or `previousVersions`. |
 
-Heads-only mode applies when `channels`, `minVersion` and `maxVersion` are all unset.
+Heads-only mode applies when `channels`, `minVersion`, `maxVersion` and `bundles` are all unset.
 
 #### IncludeChannel
 

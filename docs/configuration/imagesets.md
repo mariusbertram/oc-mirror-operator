@@ -167,6 +167,7 @@ install and upgrade to the current version, and the mirror stays small.
 | A version range within a channel | `channels: [{name: stable, minVersion: "1.2.0", maxVersion: "1.4.0"}]` |
 | A version range across all channels | `minVersion: "1.2.0"` / `maxVersion: "1.4.0"` on the package |
 | Change the default channel the catalog advertises | `defaultChannel: stable` |
+| Exactly these bundles, by name | `bundles: [{name: web-terminal.v1.11.0}]` |
 
 ```yaml
 packages:
@@ -182,6 +183,27 @@ packages:
 
 `previousVersions` only applies in heads-only mode, i.e. when the package has no
 `channels`, `minVersion` or `maxVersion`.
+
+### Selecting individual bundles
+
+`bundles` pins an exact set of bundles, for versions that do not form a contiguous
+range (same as `packages[].bundles` in oc-mirror v2):
+
+```yaml
+packages:
+  - name: web-terminal
+    bundles:
+      - name: web-terminal.v1.10.1
+      - name: web-terminal.v1.11.0
+```
+
+Only these bundles (plus their dependencies) are mirrored. The filtered catalog lists
+them in every channel they belong to; the upgrade graph is reconnected across the
+dropped versions and each channel keeps exactly one head (the highest selected
+bundle). A name that does not exist in the catalog fails the entry. `bundles` cannot
+be combined with `channels`, `minVersion`, `maxVersion` or `previousVersions` — the API
+server rejects that. The console plugin keeps an existing selection when you save
+other package settings; the selection itself is edited in YAML.
 
 ### Whole catalog
 

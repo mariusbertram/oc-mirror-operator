@@ -219,6 +219,29 @@ spec:
                             description: IncludePackage contains a name (required)
                               and channels and/or versions (optional).
                             properties:
+                              bundles:
+                                description: |-
+                                  Bundles selects individual bundles of the package by name (e.g.
+                                  "web-terminal.v1.11.0"). Only these bundles are mirrored (plus their
+                                  dependencies), and the filtered catalog contains them in every channel
+                                  they belong to. Cannot be combined with channels, minVersion,
+                                  maxVersion or previousVersions.
+                                items:
+                                  description: SelectedBundle names a single bundle
+                                    of an operator package.
+                                  properties:
+                                    name:
+                                      description: Name of the bundle as listed in
+                                        the catalog (olm.bundle name).
+                                      minLength: 1
+                                      type: string
+                                  required:
+                                  - name
+                                  type: object
+                                type: array
+                                x-kubernetes-list-map-keys:
+                                - name
+                                x-kubernetes-list-type: map
                               channels:
                                 description: Channels to include.
                                 items:
@@ -259,6 +282,15 @@ spec:
                             required:
                             - name
                             type: object
+                            x-kubernetes-validations:
+                            - message: bundles cannot be combined with channels, minVersion,
+                                maxVersion or previousVersions
+                              rule: '!has(self.bundles) || size(self.bundles) == 0
+                                || ((!has(self.channels) || size(self.channels) ==
+                                0) && (!has(self.minVersion) || self.minVersion ==
+                                '''') && (!has(self.maxVersion) || self.maxVersion
+                                == '''') && (!has(self.previousVersions) || self.previousVersions
+                                == 0))'
                           type: array
                         signatureVerification:
                           description: |-
