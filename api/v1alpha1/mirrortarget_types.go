@@ -232,6 +232,14 @@ const (
 	// that it is a one-shot trigger.
 	RecollectAnnotation = "mirror.openshift.io/recollect"
 
+	// RecollectHonoredAnnotation is written by the manager every time it
+	// honors a RecollectAnnotation, with a value that is unique per honored
+	// recollect (an RFC 3339 timestamp). Unlike the one-shot
+	// RecollectAnnotation it stays in place, so the ImageSet controller can
+	// request exactly one catalog rebuild per recollect whenever the
+	// ImageSet's images are fully mirrored, no matter how long that takes.
+	RecollectHonoredAnnotation = "mirror.openshift.io/recollect-honored"
+
 	// ForceResyncAnnotation forces the manager to reset every image owned by
 	// the ImageSet back to "Pending" — including ones already in "Mirrored"
 	// state — so all of them are re-verified and re-transferred to the target

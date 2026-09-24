@@ -1093,6 +1093,7 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 			isCopy := is.DeepCopy()
 			isViewSnap := cloneImageState(isView)
 			m.mu.Unlock()
+			_, recollect := is.Annotations[mirrorv1alpha1.RecollectAnnotation]
 			resolveCtx, cancelResolve := context.WithTimeout(ctx, resolveTimeout)
 			newPerISState, resolved, hadError, resolveErr := m.resolveImageSet(resolveCtx, isCopy, mt, isViewSnap)
 			cancelResolve()
@@ -1112,6 +1113,11 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 					// its flush); no need to track them here.
 					_ = mergeResolvedIntoConsolidated(m.imageState, m.owners, newPerISState, is.Name)
 					m.stateDirty = true
+				}
+				if recollect && m.resetFailedForRecollectLocked(is.Name) {
+					oclog.Printf("Recollect for ImageSet %s: reset failed images to Pending for a fresh retry cycle\n", is.Name)
+					m.stateDirty = true
+					m.statusDirty = true
 				}
 				// Either merged just above, or equal to what's already in
 				// memory — so the digests this resolve used now describe

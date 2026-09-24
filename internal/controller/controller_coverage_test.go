@@ -620,7 +620,7 @@ var _ = Describe("Coverage tests", func() {
 			Expect(found).To(BeTrue(), "expected CatalogReady=WaitingForOperatorMirror condition")
 		})
 
-		It("creates build jobs only once the ImageSet has no pending images — recollect does not bypass this", func() {
+		It("creates build jobs only once the ImageSet has no pending images — a honored recollect does not bypass this", func() {
 			localCtx := context.Background()
 			isName := "is-catgate-recollect"
 			mtName := "mt-catgate-recollect"
@@ -648,7 +648,7 @@ var _ = Describe("Coverage tests", func() {
 				ObjectMeta: metav1.ObjectMeta{
 					Name:        isName,
 					Namespace:   ns,
-					Annotations: map[string]string{mirrorv1alpha1.RecollectAnnotation: "1"},
+					Annotations: map[string]string{mirrorv1alpha1.RecollectHonoredAnnotation: "1"},
 				},
 				Spec: mirrorv1alpha1.ImageSetSpec{
 					Mirror: mirrorv1alpha1.Mirror{Operators: []mirrorv1alpha1.Operator{op}},
@@ -899,7 +899,7 @@ var _ = Describe("Coverage tests", func() {
 				ObjectMeta: metav1.ObjectMeta{
 					Name:        isName,
 					Namespace:   ns,
-					Annotations: map[string]string{mirrorv1alpha1.RecollectAnnotation: ""},
+					Annotations: map[string]string{mirrorv1alpha1.RecollectHonoredAnnotation: ""},
 				},
 				Spec: mirrorv1alpha1.ImageSetSpec{
 					Mirror: mirrorv1alpha1.Mirror{
@@ -977,7 +977,7 @@ var _ = Describe("Coverage tests", func() {
 				ObjectMeta: metav1.ObjectMeta{
 					Name:        isName,
 					Namespace:   ns,
-					Annotations: map[string]string{mirrorv1alpha1.RecollectAnnotation: ""},
+					Annotations: map[string]string{mirrorv1alpha1.RecollectHonoredAnnotation: ""},
 				},
 				Spec: mirrorv1alpha1.ImageSetSpec{
 					Mirror: mirrorv1alpha1.Mirror{
@@ -1051,8 +1051,8 @@ var _ = Describe("Coverage tests", func() {
 					Name:      isName,
 					Namespace: ns,
 					Annotations: map[string]string{
-						mirrorv1alpha1.RecollectAnnotation:      "",
-						"mirror.openshift.io/catalog-build-sig": "stale-sig",
+						mirrorv1alpha1.RecollectHonoredAnnotation: "",
+						"mirror.openshift.io/catalog-build-sig":   "stale-sig",
 					},
 				},
 				Spec: mirrorv1alpha1.ImageSetSpec{
@@ -1135,8 +1135,8 @@ var _ = Describe("Coverage tests", func() {
 					Name:      isName,
 					Namespace: ns,
 					Annotations: map[string]string{
-						mirrorv1alpha1.RecollectAnnotation:      "",
-						"mirror.openshift.io/catalog-build-sig": buildSig,
+						mirrorv1alpha1.RecollectHonoredAnnotation: "",
+						"mirror.openshift.io/catalog-build-sig":   buildSig,
 					},
 				},
 				Spec: mirrorv1alpha1.ImageSetSpec{Mirror: mirrorv1alpha1.Mirror{Operators: ops}},
@@ -1431,7 +1431,7 @@ var _ = Describe("Coverage tests", func() {
 			Expect(foundDeferred).To(BeTrue(), "expected CatalogReady=WaitingForOperatorMirror")
 		})
 
-		It("only honors a recollect annotation once per distinct value", func() {
+		It("honors each recollect recorded by the manager exactly once", func() {
 			localCtx := context.Background()
 			isName := "is-catgate-recollect-once"
 			mtName := "mt-catgate-recollect-once"
@@ -1454,7 +1454,7 @@ var _ = Describe("Coverage tests", func() {
 					Name:      isName,
 					Namespace: ns,
 					Annotations: map[string]string{
-						mirrorv1alpha1.RecollectAnnotation: "run-1",
+						mirrorv1alpha1.RecollectHonoredAnnotation: "run-1",
 					},
 				},
 				Spec: mirrorv1alpha1.ImageSetSpec{
