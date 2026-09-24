@@ -434,6 +434,17 @@ type ChannelSummary struct {
 	// in this channel. Populated by BuildUpstreamCatalogPackagesResponse to allow
 	// full version range selection in the UI without storing every bundle entry.
 	Versions []string `json:"versions,omitempty"`
+	// BundleNames maps a version from Versions to its bundle name, for the
+	// bundles whose name does not follow the usual "<package>.v<version>"
+	// scheme (see ConventionalBundleName). Together they let the UI pin
+	// individual bundles by name without the response listing every bundle.
+	BundleNames map[string]string `json:"bundleNames,omitempty"`
+}
+
+// ConventionalBundleName is the bundle name most catalogs use for a
+// package version; ChannelSummary.BundleNames lists only the exceptions.
+func ConventionalBundleName(pkg, version string) string {
+	return pkg + ".v" + version
 }
 
 // BundleEntry describes a single bundle version within a channel.
@@ -484,9 +495,20 @@ func BuildUpstreamCatalogPackagesResponse(cat CatalogInfo, cfg *declcfg.Declarat
 			// Collect all unique non-empty version strings across every bundle in
 			// the channel so the UI version-range dropdowns can show the full list.
 			versionSet := make(map[string]struct{}, len(ch.Entries))
+			var bundleNames map[string]string
 			for _, e := range ch.Entries {
-				if v := bundleVersions[e.Name]; v != "" {
-					versionSet[v] = struct{}{}
+				v := bundleVersions[e.Name]
+				if v == "" {
+					continue
+				}
+				versionSet[v] = struct{}{}
+				if e.Name != ConventionalBundleName(pkgName, v) {
+					if bundleNames == nil {
+						bundleNames = make(map[string]string)
+					}
+					if _, dup := bundleNames[v]; !dup {
+						bundleNames[v] = e.Name
+					}
 				}
 			}
 			versions := make([]string, 0, len(versionSet))
@@ -495,7 +517,7 @@ func BuildUpstreamCatalogPackagesResponse(cat CatalogInfo, cfg *declcfg.Declarat
 			}
 			sortVersionStrings(versions)
 
-			chSummaries = append(chSummaries, ChannelSummary{Name: ch.Name, Entries: entries, Versions: versions})
+			chSummaries = append(chSummaries, ChannelSummary{Name: ch.Name, Entries: entries, Versions: versions, BundleNames: bundleNames})
 		}
 
 		packages = append(packages, PackageSummary{

@@ -89,6 +89,8 @@ export interface CatalogChannel {
   }[];
   /** All available version strings in this channel, sorted ascending. */
   versions?: string[];
+  /** Bundle name per version, only where it is not "<package>.v<version>". */
+  bundleNames?: Record<string, string>;
 }
 
 export interface CatalogPackage {

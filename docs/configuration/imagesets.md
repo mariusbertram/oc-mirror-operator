@@ -195,8 +195,11 @@ them in every channel they belong to; the upgrade graph is reconnected across th
 dropped versions and each channel keeps exactly one head (the highest selected
 bundle). A name that does not exist in the catalog fails the entry. `bundles` cannot
 be combined with `channels`, `minVersion`, `maxVersion` or `previousVersions` — the API
-server rejects that. The console plugin keeps an existing selection when you save
-other package settings; the selection itself is edited in YAML.
+server rejects that.
+
+In the console plugin's catalog browser, expand a selected package and tick **Pin
+specific bundles** to pick the versions from a list; this replaces the package's channel
+and version filters.
 
 ### Whole catalog
 
@@ -355,7 +358,7 @@ an operator catalog; cleanup is scoped per `ImageSet`. Images referenced by seve
 ## Editing from the console plugin
 
 On OpenShift the [console plugin](../consuming-results.md#openshift-console-plugin)
-edits most of this spec through the Resource API: catalogs and package filters
-(**Operators**, **Catalogs** tabs), release channels (**Releases**), Helm repositories,
+edits most of this spec through the Resource API: catalogs, package filters and
+bundle pins (**Operators**, **Catalogs** tabs), release channels (**Releases**), Helm repositories,
 additional images, blocked images and `requireSignedImages`. `signatureVerification`
 remains YAML-only.
