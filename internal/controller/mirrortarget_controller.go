@@ -767,8 +767,14 @@ func (r *MirrorTargetReconciler) reconcileOrphans(ctx context.Context, mt *mirro
 
 	cleanupPolicy := mt.Annotations[mirrorv1alpha1.CleanupPolicyAnnotation]
 	if cleanupPolicy != mirrorv1alpha1.CleanupPolicyDelete {
+		// Nothing will ever consume these orphans: drop them instead of
+		// letting them pile up (and be deleted much later, without anyone
+		// remembering why, once the policy is switched to Delete).
 		l.Info("Images orphaned by spec narrowing/blocking but cleanup-policy not set to Delete — leaving them in the registry",
 			"count", len(orphans))
+		if err := r.Delete(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: orphansCMName, Namespace: mt.Namespace}}); err != nil && !errors.IsNotFound(err) {
+			l.Error(err, "Failed to clear pending orphans ConfigMap")
+		}
 		return nil
 	}
 
@@ -776,6 +782,26 @@ func (r *MirrorTargetReconciler) reconcileOrphans(ctx context.Context, mt *mirro
 		if p == "orphans" {
 			return nil
 		}
+	}
+
+	// An orphan may be needed again by now (the package/version was added
+	// back since it was staged) — never delete an image that any ImageSet
+	// of this MirrorTarget currently references.
+	live, err := r.liveDestinations(ctx, mt, "")
+	if err != nil {
+		return err
+	}
+	for dest := range orphans {
+		if live.needs(dest) {
+			delete(orphans, dest)
+		}
+	}
+	if len(orphans) == 0 {
+		l.Info("All pending orphans are referenced again — nothing to clean up")
+		if err := r.Delete(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: orphansCMName, Namespace: mt.Namespace}}); err != nil && !errors.IsNotFound(err) {
+			l.Error(err, "Failed to clear pending orphans ConfigMap")
+		}
+		return nil
 	}
 
 	snapshotName := cleanupSnapshotCMName(mt.Name, "orphans")
@@ -912,7 +938,7 @@ func (r *MirrorTargetReconciler) partitionAndCreateCleanupJob(
 	exclusiveState := make(imagestate.ImageState)
 	sharedDests := make([]string, 0)
 	for dest, entry := range isState {
-		if index.IsShared(dest) || live[dest] {
+		if index.IsShared(dest) || live.needs(dest) {
 			sharedDests = append(sharedDests, dest)
 			continue
 		}
@@ -957,21 +983,62 @@ func (r *MirrorTargetReconciler) partitionAndCreateCleanupJob(
 	return created, nil
 }
 
-// liveDestinations returns every destination referenced by the state
-// ConfigMap of an ImageSet in mt.Spec.ImageSets other than exclude, i.e. the
-// images the MirrorTarget still needs.
-func (r *MirrorTargetReconciler) liveDestinations(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget, exclude string) (map[string]bool, error) {
-	live := make(map[string]bool)
+// liveImages is the set of images a MirrorTarget still needs, see
+// liveDestinations.
+type liveImages struct {
+	dests map[string]bool
+	// digests holds "<repository>@<digest>" for every live destination whose
+	// digest is known from its name.
+	digests map[string]bool
+}
+
+// needs reports whether deleting dest could remove a live image: dest itself
+// is live, or dest is a digest reference to a manifest a live destination in
+// the same repository also points at (deleting by digest removes every tag
+// of that manifest).
+func (l liveImages) needs(dest string) bool {
+	if l.dests[dest] {
+		return true
+	}
+	if !strings.Contains(dest, "@sha256:") {
+		return false
+	}
+	repo, digest := repoAndDigest(dest)
+	return digest != "" && l.digests[repo+"@"+digest]
+}
+
+// repoAndDigest splits a destination into its repository and the manifest
+// digest encoded in its name, handling digest references ("repo@sha256:x")
+// and the digest-derived tags of mirror.ComponentDestination
+// ("repo:sha256-x"). digest is "" for plain tags.
+func repoAndDigest(dest string) (repo, digest string) {
+	if i := strings.Index(dest, "@sha256:"); i >= 0 {
+		return dest[:i], dest[i+1:]
+	}
+	if i := strings.LastIndex(dest, ":sha256-"); i >= 0 {
+		return dest[:i], "sha256:" + dest[i+len(":sha256-"):]
+	}
+	return dest, ""
+}
+
+// liveDestinations returns the images referenced by the state ConfigMap of
+// every ImageSet in mt.Spec.ImageSets other than exclude, i.e. the images
+// the MirrorTarget still needs.
+func (r *MirrorTargetReconciler) liveDestinations(ctx context.Context, mt *mirrorv1alpha1.MirrorTarget, exclude string) (liveImages, error) {
+	live := liveImages{dests: map[string]bool{}, digests: map[string]bool{}}
 	for _, name := range mt.Spec.ImageSets {
 		if name == exclude {
 			continue
 		}
 		state, err := imagestate.Load(ctx, r.Client, mt.Namespace, name)
 		if err != nil {
-			return nil, fmt.Errorf("failed to load state for imageset %s: %w", name, err)
+			return liveImages{}, fmt.Errorf("failed to load state for imageset %s: %w", name, err)
 		}
 		for dest := range state {
-			live[dest] = true
+			live.dests[dest] = true
+			if repo, digest := repoAndDigest(dest); digest != "" {
+				live.digests[repo+"@"+digest] = true
+			}
 		}
 	}
 	return live, nil
