@@ -113,7 +113,7 @@ Per MirrorTarget `<name>` (all owned by it and garbage-collected with it):
 | ServiceAccount, Role, RoleBinding | `<name>-worker` | Worker identity, no API permissions. |
 | NetworkPolicy | `<name>-manager-ingress`, `<name>-worker-ingress-deny` | See [Network requirements](network.md). |
 | Secret | `<name>-worker-token` | Bearer token for the status API (created by the manager). |
-| ConfigMap | `oc-mirror-<name>-resources`, `<name>-signatures`, `<name>-images-index`, `<name>-images-orphans`, `oc-mirror-<name>-<slug>-packages`, `…-upstream-packages` | See [Concepts → Where state lives](../concepts.md#where-state-lives). |
+| ConfigMap | `oc-mirror-<name>-resources`, `<name>-signatures`, `<name>-images-index`, `<name>-images-orphans`, `<name>-images-summary`, `oc-mirror-<name>-<slug>-packages`, `…-upstream-packages` | See [Concepts → Where state lives](../concepts.md#where-state-lives). |
 | Job | `cleanup-<name>-<imageset>-<hash>` | Cleanup Jobs. |
 
 Per namespace (owned by every MirrorTarget in it, so they outlive any single one):

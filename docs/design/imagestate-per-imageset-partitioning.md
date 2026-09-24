@@ -108,6 +108,25 @@ for one ImageSet:
   happen — the entry is removed at one-remaining, not zero — kept as an
   invariant check).
 
+### 3.3 MirrorTarget summary
+
+The MirrorTarget-level totals (`status.totalImages` etc.) count a shared image
+once. Rather than have the MirrorTarget controller decode every ImageSet's
+state ConfigMap on each reconcile, the manager, which already holds the merged
+state in memory, writes the deduplicated counts at the end of every state
+flush (and once after start-up) into a small plain-data ConfigMap:
+
+```
+<mt>-images-summary  →  imageSets: is-a,is-b   total  mirrored  pending  failed
+```
+
+The controller uses it only when `imageSets` matches the sorted
+`spec.imageSets`; otherwise (manager not upgraded yet, spec just edited) it
+falls back to decoding the per-ImageSet ConfigMaps. The ImageSet watch only
+re-reconciles a MirrorTarget when an ImageSet is created or deleted or its
+status counters change; changes to the summary ConfigMap itself also trigger
+it.
+
 This makes the index a pure *overflow table* for the shared case, not a
 mirror of every entry's ownership.
 

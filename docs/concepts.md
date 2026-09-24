@@ -139,6 +139,7 @@ See [Architecture](architecture.md) for the internals of each.
 |---|---|---|
 | `<imageset>-images` ConfigMap | manager | Gzip-compressed JSON: destination → `{source, state, retryCount, lastError, permanentlyFailed, origin, entrySig, originRef, catalog, …}`. ~30 bytes per image; 50 000 images fit comfortably under the 1 MiB ConfigMap limit. Also carries the resolved catalog digests as an annotation. |
 | `<target>-images-index` ConfigMap | manager | Destinations referenced by more than one `ImageSet` (so cleanup never deletes a shared image). Only exists when something is shared. |
+| `<target>-images-summary` ConfigMap | manager | MirrorTarget-level image counts, deduplicated across `ImageSet`s, written on every state flush. The controller copies them into `MirrorTarget.status` instead of decoding every state ConfigMap. |
 | `<target>-images-orphans` ConfigMap | manager → controller | Images that dropped out of every `ImageSet` (spec narrowing, blocked). Consumed by the cleanup Job when `cleanup-policy=Delete`. |
 | `<target>-cleanup-<imageset>-<hash>` ConfigMap | controller | Snapshot handed to a cleanup Job. |
 | `oc-mirror-<target>-resources` ConfigMap | manager | Generated IDMS/ITMS/CatalogSource/ClusterCatalog YAML plus `index.json`. |
