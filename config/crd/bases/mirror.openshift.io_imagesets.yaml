@@ -248,9 +248,9 @@ spec:
                                 maxVersion or previousVersions
                               rule: '!has(self.bundles) || size(self.bundles) == 0
                                 || ((!has(self.channels) || size(self.channels) ==
-                                0) && (!has(self.minVersion) || self.minVersion ==
-                                '''') && (!has(self.maxVersion) || self.maxVersion
-                                == '''') && (!has(self.previousVersions) || self.previousVersions
+                                0) && (!has(self.minVersion) || size(self.minVersion)
+                                == 0) && (!has(self.maxVersion) || size(self.maxVersion)
+                                == 0) && (!has(self.previousVersions) || self.previousVersions
                                 == 0))'
                           type: array
                         signatureVerification:
