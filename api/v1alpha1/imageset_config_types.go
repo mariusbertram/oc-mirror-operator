@@ -169,7 +169,7 @@ type IncludeConfig struct {
 }
 
 // IncludePackage contains a name (required) and channels and/or versions (optional).
-// +kubebuilder:validation:XValidation:rule="!has(self.bundles) || size(self.bundles) == 0 || ((!has(self.channels) || size(self.channels) == 0) && (!has(self.minVersion) || self.minVersion == ”) && (!has(self.maxVersion) || self.maxVersion == ”) && (!has(self.previousVersions) || self.previousVersions == 0))",message="bundles cannot be combined with channels, minVersion, maxVersion or previousVersions"
+// +kubebuilder:validation:XValidation:rule="!has(self.bundles) || size(self.bundles) == 0 || ((!has(self.channels) || size(self.channels) == 0) && (!has(self.minVersion) || size(self.minVersion) == 0) && (!has(self.maxVersion) || size(self.maxVersion) == 0) && (!has(self.previousVersions) || self.previousVersions == 0))",message="bundles cannot be combined with channels, minVersion, maxVersion or previousVersions"
 type IncludePackage struct {
 	// Name of package.
 	Name string `json:"name"`
