@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"time"
 
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
@@ -3482,6 +3483,47 @@ var _ = Describe("Manager Coverage", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(hadError).To(BeFalse())
 			Expect(annoChanged).To(BeFalse())
+		})
+
+		It("resolves one Cincinnati graph per architecture and mirrors each (#136)", func() {
+			var mu sync.Mutex
+			requested := map[string]bool{}
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				arch := r.URL.Query().Get("arch")
+				mu.Lock()
+				requested[arch] = true
+				mu.Unlock()
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(release.Graph{Nodes: []release.Node{{Version: "4.18.1", Image: ""}}})
+			}))
+			defer srv.Close()
+			origURL := release.OcpUpdateURL
+			release.OcpUpdateURL = srv.URL
+			defer func() { release.OcpUpdateURL = origURL }()
+
+			ch := mirrorv1alpha1.ReleaseChannel{Name: "stable-4.18", SkipSignatureVerification: true}
+			is := &mirrorv1alpha1.ImageSet{
+				Spec: mirrorv1alpha1.ImageSetSpec{
+					Mirror: mirrorv1alpha1.Mirror{
+						Platform: mirrorv1alpha1.Platform{
+							Architectures: []string{"amd64", "arm64"},
+							Channels:      []mirrorv1alpha1.ReleaseChannel{ch},
+						},
+					},
+				},
+			}
+			newState := imagestate.ImageState{}
+			collector, _ := m.buildCollector(mt)
+
+			_, hadError, err := m.resolveReleaseSection(
+				context.TODO(), collector, is, mt,
+				imagestate.ImageState{}, newState, map[string]string{}, false)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(hadError).To(BeFalse())
+			Expect(requested).To(HaveKey("amd64"))
+			Expect(requested).To(HaveKey("arm64"))
+			Expect(newState).To(HaveKey("reg.io/openshift/release-images:4.18.1-x86_64"))
+			Expect(newState).To(HaveKey("reg.io/openshift/release-images:4.18.1-aarch64"))
 		})
 
 		It("resolves images and updates the digest annotation on a full success", func() {

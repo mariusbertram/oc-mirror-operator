@@ -287,7 +287,7 @@ entries:
 
 			// ExtractComponentImages will fail (nil registry client) — that's OK,
 			// the payload images are already appended before component extraction.
-			results, err := col.CollectReleasesForChannel(context.TODO(), spec, target, rel, payloadNodes)
+			results, err := col.CollectReleasesForChannel(context.TODO(), spec, target, rel, map[string][]release.Node{"amd64": payloadNodes})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Collect destinations that contain a payload version tag.
@@ -307,13 +307,34 @@ entries:
 			))
 		})
 
+		It("mirrors every configured architecture with its own payloads and tags (#136)", func() {
+			spec.Mirror.Platform.Architectures = []string{"amd64", "arm64"}
+			rel := mirrorv1alpha1.ReleaseChannel{Name: "stable-4.21"}
+			nodesByArch := map[string][]release.Node{
+				"amd64": {{Version: "4.21.9", Image: "quay.io/openshift-release-dev/ocp-release@sha256:aaa"}},
+				"arm64": {{Version: "4.21.9", Image: "quay.io/openshift-release-dev/ocp-release@sha256:bbb"}},
+			}
+
+			results, err := col.CollectReleasesForChannel(context.TODO(), spec, target, rel, nodesByArch)
+			Expect(err).NotTo(HaveOccurred())
+
+			bySource := map[string]string{}
+			for _, r := range results {
+				bySource[r.Source] = r.Destination
+			}
+			Expect(bySource).To(HaveKeyWithValue("quay.io/openshift-release-dev/ocp-release@sha256:aaa",
+				"internal.registry.io/openshift/release-images:4.21.9-x86_64"))
+			Expect(bySource).To(HaveKeyWithValue("quay.io/openshift-release-dev/ocp-release@sha256:bbb",
+				"internal.registry.io/openshift/release-images:4.21.9-aarch64"))
+		})
+
 		It("should tag a single pinned payload with its exact version (maxVersion-only)", func() {
 			payloadNodes := []release.Node{
 				{Version: "4.21.9", Image: "quay.io/openshift-release-dev/ocp-release@sha256:aaa"},
 			}
 			rel := mirrorv1alpha1.ReleaseChannel{Name: "stable-4.21", MaxVersion: "4.21.9"}
 
-			results, err := col.CollectReleasesForChannel(context.TODO(), spec, target, rel, payloadNodes)
+			results, err := col.CollectReleasesForChannel(context.TODO(), spec, target, rel, map[string][]release.Node{"amd64": payloadNodes})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(results).NotTo(BeEmpty())
 			Expect(results[0].Destination).To(Equal("internal.registry.io/openshift/release-images:4.21.9-x86_64"))
@@ -326,7 +347,7 @@ entries:
 			}
 			rel := mirrorv1alpha1.ReleaseChannel{Name: "stable-4.21"}
 
-			results, err := col.CollectReleasesForChannel(context.TODO(), spec, target, rel, payloadNodes)
+			results, err := col.CollectReleasesForChannel(context.TODO(), spec, target, rel, map[string][]release.Node{"amd64": payloadNodes})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(results).NotTo(BeEmpty())
 			Expect(results[0].Destination).To(Equal("internal.registry.io/openshift/release-images:4.21.11-x86_64"))
@@ -337,7 +358,7 @@ entries:
 			payloadNodes := []release.Node{{Version: "4.21.9", Image: image}}
 			rel := mirrorv1alpha1.ReleaseChannel{Name: "stable-4.21"}
 
-			results, err := col.CollectReleasesForChannel(context.TODO(), spec, target, rel, payloadNodes)
+			results, err := col.CollectReleasesForChannel(context.TODO(), spec, target, rel, map[string][]release.Node{"amd64": payloadNodes})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(results).To(HaveLen(2)) // payload + 1 component
 
@@ -357,7 +378,7 @@ entries:
 			rel := mirrorv1alpha1.ReleaseChannel{Name: "stable-4.21"}
 			spec.Mirror.Platform.KubeVirtContainer = true
 
-			results, err := col.CollectReleasesForChannel(context.TODO(), spec, target, rel, payloadNodes)
+			results, err := col.CollectReleasesForChannel(context.TODO(), spec, target, rel, map[string][]release.Node{"amd64": payloadNodes})
 			Expect(err).NotTo(HaveOccurred())
 
 			var kv *TargetImage
@@ -376,7 +397,7 @@ entries:
 			rel := mirrorv1alpha1.ReleaseChannel{Name: "stable-4.21"}
 			spec.Mirror.Platform.KubeVirtContainer = true
 
-			results, err := col.CollectReleasesForChannel(context.TODO(), spec, target, rel, payloadNodes)
+			results, err := col.CollectReleasesForChannel(context.TODO(), spec, target, rel, map[string][]release.Node{"amd64": payloadNodes})
 			Expect(err).NotTo(HaveOccurred())
 			// payload + component-a only; no kubevirt image since extraction failed.
 			Expect(results).To(HaveLen(2))
