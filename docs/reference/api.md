@@ -148,7 +148,7 @@ What to mirror. Bound to a target only through `MirrorTarget.spec.imageSets`. Se
 | Field | Type | Description |
 |---|---|---|
 | `channels` | [][ReleaseChannel](#releasechannel) | |
-| `architectures` | []string | `amd64` (default), `arm64`, `s390x`, `ppc64le`. Each listed architecture is resolved and mirrored separately. |
+| `architectures` | []string | `amd64` (default), `arm64`, `s390x`, `ppc64le`, `multi` (multi-architecture payload, mirrored as manifest lists). Each listed architecture is resolved and mirrored separately. |
 | `graph` | bool | Build and push the OSUS graph-data image `openshift/graph-image:latest`. |
 | `kubeVirtContainer` | bool | Also mirror the KubeVirt container-disk image of each release. |
 | `release` | string | **Not implemented** (disk-to-mirror). |

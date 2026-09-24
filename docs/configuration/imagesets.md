@@ -78,7 +78,7 @@ Several channels can be listed; each is resolved independently.
 
 ```yaml
 platform:
-  architectures: [amd64, arm64]        # amd64 | arm64 | s390x | ppc64le
+  architectures: [amd64, arm64]        # amd64 | arm64 | s390x | ppc64le | multi
 ```
 
 Every listed architecture is resolved separately: the Cincinnati graph is queried per
@@ -86,6 +86,13 @@ architecture, each release gets its own payload and component images tagged
 `<version>-<arch name>` (`x86_64`, `aarch64`, `s390x`, `ppc64le`), and the version
 selection above applies per architecture. KubeVirt container disks are extracted for all
 listed architectures where the release provides them.
+
+`multi` selects the **multi-architecture payload** (Cincinnati `arch=multi`), which
+clusters with heterogeneous compute (for example amd64 control plane plus arm64
+workers) install or migrate to. Its payload and component images are manifest lists and
+are mirrored as such, with every architecture they contain; the payload is tagged
+`<version>-multi`, and the KubeVirt container disks of all architectures are included.
+`multi` can be listed next to single architectures.
 
 ### OKD
 
