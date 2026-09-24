@@ -248,6 +248,27 @@ var _ = Describe("BuildSignature", func() {
 		Expect(mgr.BuildSignature(ops1)).To(Equal(mgr.BuildSignature(ops2)))
 	})
 
+	// Every field that changes the built catalog or where it is pushed must
+	// change the signature, or edits to it never trigger a rebuild (#134).
+	DescribeTable("changes when a build-relevant field changes",
+		func(changed mirrorv1alpha1.Operator) {
+			base := mirrorv1alpha1.Operator{Catalog: "cat:v1", IncludeConfig: mirrorv1alpha1.IncludeConfig{
+				Packages: []mirrorv1alpha1.IncludePackage{{Name: "p"}},
+			}}
+			Expect(mgr.BuildSignature([]mirrorv1alpha1.Operator{changed})).NotTo(Equal(mgr.BuildSignature([]mirrorv1alpha1.Operator{base})))
+		},
+		Entry("skipDependencies", mirrorv1alpha1.Operator{Catalog: "cat:v1", SkipDependencies: true, IncludeConfig: mirrorv1alpha1.IncludeConfig{
+			Packages: []mirrorv1alpha1.IncludePackage{{Name: "p"}}}}),
+		Entry("targetCatalog", mirrorv1alpha1.Operator{Catalog: "cat:v1", TargetCatalog: "mirror/catalog", IncludeConfig: mirrorv1alpha1.IncludeConfig{
+			Packages: []mirrorv1alpha1.IncludePackage{{Name: "p"}}}}),
+		Entry("targetTag", mirrorv1alpha1.Operator{Catalog: "cat:v1", TargetTag: "v2", IncludeConfig: mirrorv1alpha1.IncludeConfig{
+			Packages: []mirrorv1alpha1.IncludePackage{{Name: "p"}}}}),
+		Entry("defaultChannel", mirrorv1alpha1.Operator{Catalog: "cat:v1", IncludeConfig: mirrorv1alpha1.IncludeConfig{
+			Packages: []mirrorv1alpha1.IncludePackage{{Name: "p", DefaultChannel: "stable"}}}}),
+		Entry("previousVersions", mirrorv1alpha1.Operator{Catalog: "cat:v1", IncludeConfig: mirrorv1alpha1.IncludeConfig{
+			Packages: []mirrorv1alpha1.IncludePackage{{Name: "p", PreviousVersions: 2}}}}),
+	)
+
 	It("includes Full flag in signature", func() {
 		ops1 := []mirrorv1alpha1.Operator{{Catalog: "cat:v1", Full: false}}
 		ops2 := []mirrorv1alpha1.Operator{{Catalog: "cat:v1", Full: true}}
