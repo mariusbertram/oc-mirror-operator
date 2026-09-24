@@ -141,6 +141,13 @@ spec:
 image size because large layers are buffered on disk, not in RAM. The manager holds the
 whole image state in memory; budget roughly 1 GiB per 100 000 images.
 
+Worker pods carry a *preferred* pod anti-affinity against each other
+(`topologyKey: kubernetes.io/hostname`, all `app=oc-mirror-worker` pods in the
+namespace), so with `concurrency` > 1 the scheduler spreads them across nodes and
+their network and disk load is shared. It is only a preference: with fewer
+schedulable nodes than concurrent workers, workers share nodes rather than stay
+`Pending`. `nodeSelector` and `tolerations` narrow the candidate nodes as usual.
+
 ## HTTP proxy
 
 ```yaml

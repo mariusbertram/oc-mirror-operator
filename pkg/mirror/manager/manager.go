@@ -2157,6 +2157,7 @@ func (m *MirrorManager) startWorkerBatch(ctx context.Context, mt *mirrorv1alpha1
 			Volumes:      volumes,
 			NodeSelector: mt.Spec.Worker.NodeSelector,
 			Tolerations:  mt.Spec.Worker.Tolerations,
+			Affinity:     workerAffinity(),
 		},
 	}
 
@@ -2176,6 +2177,27 @@ func (m *MirrorManager) startWorkerBatch(ctx context.Context, mt *mirrorv1alpha1
 		return "", err
 	}
 	return created.Name, nil
+}
+
+// workerAffinity asks the scheduler to spread worker pods across nodes
+// instead of packing them onto one: each worker prefers nodes that do not yet
+// run another worker pod in the same namespace. The rule is preferred, not
+// required, so with fewer schedulable nodes than concurrent workers the pods
+// still start (sharing nodes) instead of staying Pending.
+func workerAffinity() *corev1.Affinity {
+	return &corev1.Affinity{
+		PodAntiAffinity: &corev1.PodAntiAffinity{
+			PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{{
+				Weight: 100,
+				PodAffinityTerm: corev1.PodAffinityTerm{
+					LabelSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"app": "oc-mirror-worker"},
+					},
+					TopologyKey: corev1.LabelHostname,
+				},
+			}},
+		},
+	}
 }
 
 func pointerTo[T any](v T) *T {

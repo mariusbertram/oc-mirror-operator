@@ -24,6 +24,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	k8sfake "k8s.io/client-go/kubernetes/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -1710,6 +1711,17 @@ var _ = Describe("Manager Coverage", func() {
 			Expect(pod.Labels["app"]).To(Equal("oc-mirror-worker"))
 			Expect(pod.Labels["mirrortarget"]).To(Equal("test"))
 			Expect(pod.Spec.Containers[0].Args).To(BeEmpty())
+
+			// Workers prefer, but do not require, nodes without another worker.
+			Expect(pod.Spec.Affinity).NotTo(BeNil())
+			Expect(pod.Spec.Affinity.PodAntiAffinity).NotTo(BeNil())
+			Expect(pod.Spec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution).To(BeEmpty())
+			terms := pod.Spec.Affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution
+			Expect(terms).To(HaveLen(1))
+			Expect(terms[0].PodAffinityTerm.TopologyKey).To(Equal(corev1.LabelHostname))
+			sel, selErr := metav1.LabelSelectorAsSelector(terms[0].PodAffinityTerm.LabelSelector)
+			Expect(selErr).NotTo(HaveOccurred())
+			Expect(sel.Matches(labels.Set(pod.Labels))).To(BeTrue())
 		})
 
 		It("adds --insecure flag when Insecure is true", func() {
