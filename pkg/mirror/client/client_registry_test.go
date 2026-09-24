@@ -250,6 +250,17 @@ func (f *fakeRegistry) deleteManifest(w http.ResponseWriter, r *http.Request, pa
 	_, found := f.manifests[key]
 	delete(f.manifests, key)
 	delete(f.mediaType, key)
+	// Like Docker Distribution and Quay, deleting by digest removes the
+	// manifest — and with it every tag in the repository pointing at it.
+	if strings.HasPrefix(tagOrDigest, "sha256:") {
+		for k, body := range f.manifests {
+			if strings.HasPrefix(k, repo+":") && sha256Digest(body) == tagOrDigest {
+				delete(f.manifests, k)
+				delete(f.mediaType, k)
+				found = true
+			}
+		}
+	}
 	f.mu.Unlock()
 	if !found {
 		http.NotFound(w, r)
@@ -520,6 +531,45 @@ var registryOps = []registryOp{
 			seedTestImage(t, reg, "repo-delete-by-tag", "v1")
 			if err := mc.DeleteManifest(context.Background(), host+"/repo-delete-by-tag:v1"); err != nil {
 				t.Fatalf("DeleteManifest: %v", err)
+			}
+		},
+	},
+	{
+		// Two tags sharing one digest (e.g. an unchanged release component
+		// in two z-streams): deleting one tag must not remove the other (#132).
+		name: "DeleteManifest_ByTag_KeepsOtherTagsOfSameDigest",
+		run: func(t *testing.T, mc *MirrorClient, reg *fakeRegistry, host string) {
+			digest, _ := seedTestImage(t, reg, "repo-delete-shared", "4.16.10-x86_64-etcd")
+			reg.mu.Lock()
+			body := reg.manifests["repo-delete-shared:"+digest]
+			reg.mu.Unlock()
+			reg.seedManifest("repo-delete-shared", "4.16.11-x86_64-etcd", ociManifestMediaType, body)
+
+			if err := mc.DeleteManifest(context.Background(), host+"/repo-delete-shared:4.16.10-x86_64-etcd"); err != nil {
+				t.Fatalf("DeleteManifest: %v", err)
+			}
+
+			reg.mu.Lock()
+			defer reg.mu.Unlock()
+			if _, ok := reg.manifests["repo-delete-shared:4.16.10-x86_64-etcd"]; ok {
+				t.Error("expected the deleted tag to be gone")
+			}
+			if _, ok := reg.manifests["repo-delete-shared:4.16.11-x86_64-etcd"]; !ok {
+				t.Error("deleting one tag removed another tag sharing its digest")
+			}
+		},
+	},
+	{
+		name: "DeleteManifest_ByDigest",
+		run: func(t *testing.T, mc *MirrorClient, reg *fakeRegistry, host string) {
+			digest, _ := seedTestImage(t, reg, "repo-delete-by-digest", "v1")
+			if err := mc.DeleteManifest(context.Background(), host+"/repo-delete-by-digest@"+digest); err != nil {
+				t.Fatalf("DeleteManifest: %v", err)
+			}
+			reg.mu.Lock()
+			defer reg.mu.Unlock()
+			if _, ok := reg.manifests["repo-delete-by-digest:"+digest]; ok {
+				t.Error("expected the manifest to be deleted")
 			}
 		},
 	},
