@@ -539,7 +539,7 @@ var _ = Describe("Coverage Tests", func() {
 	})
 
 	Describe("ResolveReleasePayloadNodes", func() {
-		It("defaults to amd64 when no archs specified", func() {
+		It("defaults to amd64 when no arch is specified", func() {
 			mc := mirrorclient.NewMirrorClient(nil, "")
 			col := NewCollector(mc)
 			// Use a cancelled context so it fails fast
@@ -547,7 +547,7 @@ var _ = Describe("Coverage Tests", func() {
 			cancel()
 			_, err := col.ResolveReleasePayloadNodes(ctx, mirrorv1alpha1.ReleaseChannel{
 				Name: "stable-4.15",
-			}, nil)
+			}, "")
 			Expect(err).To(HaveOccurred())
 		})
 	})

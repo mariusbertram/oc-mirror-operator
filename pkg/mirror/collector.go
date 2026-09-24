@@ -181,50 +181,79 @@ func (c *Collector) CollectReleases(ctx context.Context, spec *mirrorv1alpha1.Im
 	return results, nil
 }
 
-// ResolveReleasePayloadNodes resolves the Cincinnati graph for the given
-// channel and returns the matched Nodes (Version + Image). The caller can use
-// the returned Node.Version for per-version destination tagging and
-// NodeImages() for signature computation.
-func (c *Collector) ResolveReleasePayloadNodes(ctx context.Context, rel mirrorv1alpha1.ReleaseChannel, arch []string) ([]release.Node, error) {
-	if len(arch) == 0 {
-		arch = []string{"amd64"}
+// ResolveReleasePayloadNodes resolves the Cincinnati graph of the given
+// channel for a single architecture (the graph, and so every payload digest,
+// is per architecture) and returns the matched Nodes (Version + Image). The
+// caller can use the returned Node.Version for per-version destination
+// tagging and NodeImages() for signature computation.
+func (c *Collector) ResolveReleasePayloadNodes(ctx context.Context, rel mirrorv1alpha1.ReleaseChannel, arch string) ([]release.Node, error) {
+	if arch == "" {
+		arch = "amd64"
 	}
-	return c.releaseResolver.ResolveReleaseNodes(ctx, rel.Name, rel.MinVersion, rel.MaxVersion, arch, rel.Full, rel.ShortestPath)
+	return c.releaseResolver.ResolveReleaseNodes(ctx, rel.Name, rel.MinVersion, rel.MaxVersion, []string{arch}, rel.Full, rel.ShortestPath)
 }
 
-// CollectReleasesForChannel resolves a single release channel and extracts
-// component + KubeVirt images. If payloadNodes is non-nil it is used as-is
+// ReleaseArchitectures returns spec's release architectures, defaulting to
+// amd64.
+func ReleaseArchitectures(spec *mirrorv1alpha1.ImageSetSpec) []string {
+	if len(spec.Mirror.Platform.Architectures) == 0 {
+		return []string{"amd64"}
+	}
+	return spec.Mirror.Platform.Architectures
+}
+
+// CollectReleasesForChannel resolves a single release channel for every
+// architecture in spec.Mirror.Platform.Architectures and extracts component
+// + KubeVirt images. Each architecture has its own payloads (own Cincinnati
+// graph) and is tagged "<version>-<arch>" at the destination, so resolved
+// versions and architectures never collide.
+//
+// nodesByArch holds the already resolved payload nodes per architecture
 // (avoids an extra Cincinnati round-trip when the caller already invoked
-// ResolveReleasePayloadNodes for caching purposes). Each payload image is
-// tagged at the destination using its own Node.Version, so multiple resolved
-// versions never collide on a shared ":latest" tag.
+// ResolveReleasePayloadNodes for caching purposes); architectures missing
+// from it are resolved here. Pass nil to resolve all of them.
 func (c *Collector) CollectReleasesForChannel(
 	ctx context.Context,
 	spec *mirrorv1alpha1.ImageSetSpec,
 	target *mirrorv1alpha1.MirrorTarget,
 	rel mirrorv1alpha1.ReleaseChannel,
-	payloadNodes []release.Node,
+	nodesByArch map[string][]release.Node,
 ) ([]TargetImage, error) {
-	results := make([]TargetImage, 0, len(payloadNodes))
-	arch := spec.Mirror.Platform.Architectures
-	if len(arch) == 0 {
-		arch = []string{"amd64"}
-	}
-
-	if payloadNodes == nil {
-		var err error
-		payloadNodes, err = c.releaseResolver.ResolveReleaseNodes(ctx, rel.Name, rel.MinVersion, rel.MaxVersion, arch, rel.Full, rel.ShortestPath)
-		if err != nil {
-			return nil, fmt.Errorf("resolve release %s: %w", rel.Name, err)
+	var results []TargetImage
+	for i, arch := range ReleaseArchitectures(spec) {
+		payloadNodes, ok := nodesByArch[arch]
+		if !ok {
+			var err error
+			payloadNodes, err = c.ResolveReleasePayloadNodes(ctx, rel, arch)
+			if err != nil {
+				return nil, fmt.Errorf("resolve release %s (%s): %w", rel.Name, arch, err)
+			}
 		}
+		// KubeVirt container disks for all architectures are listed in
+		// every payload, so they are only extracted once (first arch).
+		results = append(results, c.collectReleasesForArch(ctx, spec, target, arch, i == 0, payloadNodes)...)
 	}
+	return results, nil
+}
 
+// collectReleasesForArch emits the payload and component images of
+// payloadNodes (all of architecture arch), plus the KubeVirt images when
+// withKubeVirt is set.
+func (c *Collector) collectReleasesForArch(
+	ctx context.Context,
+	spec *mirrorv1alpha1.ImageSetSpec,
+	target *mirrorv1alpha1.MirrorTarget,
+	arch string,
+	withKubeVirt bool,
+	payloadNodes []release.Node,
+) []TargetImage {
+	results := make([]TargetImage, 0, len(payloadNodes))
 	for _, node := range payloadNodes {
-		releaseTag := releaseTagFor(node.Version, arch[0])
+		releaseTag := releaseTagFor(node.Version, arch)
 		dest := releasePayloadDestination(target.Spec.Registry, releaseTag)
 		results = append(results, c.toTargetImage(node.Image, dest, nil))
 
-		componentImages, extractErr := c.releaseResolver.ExtractComponentImages(ctx, node.Image, arch[0])
+		componentImages, extractErr := c.releaseResolver.ExtractComponentImages(ctx, node.Image, arch)
 		if extractErr != nil {
 			oclog.Printf("Warning: failed to extract component images from %s: %v\n", node.Image, extractErr)
 			continue
@@ -234,8 +263,8 @@ func (c *Collector) CollectReleasesForChannel(
 			results = append(results, c.toTargetImage(comp.Image, compDest, nil))
 		}
 
-		if spec.Mirror.Platform.KubeVirtContainer {
-			kvImages, kvErr := c.releaseResolver.ExtractKubeVirtImages(ctx, node.Image, arch)
+		if withKubeVirt && spec.Mirror.Platform.KubeVirtContainer {
+			kvImages, kvErr := c.releaseResolver.ExtractKubeVirtImages(ctx, node.Image, ReleaseArchitectures(spec))
 			if kvErr != nil {
 				oclog.Printf("Warning: failed to extract KubeVirt images from %s: %v\n", node.Image, kvErr)
 			} else {
@@ -246,7 +275,7 @@ func (c *Collector) CollectReleasesForChannel(
 			}
 		}
 	}
-	return results, nil
+	return results
 }
 
 // CollectOperators resolves all operator catalogs referenced via

@@ -362,23 +362,39 @@ func (m *MirrorManager) resolveReleaseSection( //nolint:unparam
 		cached := annotations[annoKey]
 		originRef := fmt.Sprintf("%s [%s]", ch.Name, strings.Join(arch, ","))
 
-		payloadNodes, resolveErr := collector.ResolveReleasePayloadNodes(ctx, ch, arch)
-		if resolveErr != nil {
-			oclog.Printf("Warning: probe release channel %s: %v\n", ch.Name, resolveErr)
+		// Every architecture has its own Cincinnati graph and payloads.
+		nodesByArch := make(map[string][]release.Node, len(arch))
+		var verifiedNodes []release.Node
+		var probeErr error
+		rejected := false
+		for _, a := range arch {
+			payloadNodes, resolveErr := collector.ResolveReleasePayloadNodes(ctx, ch, a)
+			if resolveErr != nil {
+				probeErr = fmt.Errorf("%s: %w", a, resolveErr)
+				break
+			}
+			verified := m.verifyReleaseNodes(ctx, ch, payloadNodes)
+			if len(verified) == 0 && len(payloadNodes) > 0 {
+				rejected = true
+				break
+			}
+			nodesByArch[a] = verified
+			verifiedNodes = append(verifiedNodes, verified...)
+		}
+		if probeErr != nil {
+			oclog.Printf("Warning: probe release channel %s: %v\n", ch.Name, probeErr)
 			carryOverByOriginAndSig(currentState, newState, imagestate.OriginRelease, sig, originRef)
 			hadError = true
 			continue
 		}
-
-		verifiedNodes := m.verifyReleaseNodes(ctx, ch, payloadNodes)
-		if len(verifiedNodes) == 0 {
+		if rejected || len(verifiedNodes) == 0 {
 			oclog.Printf("Warning: no release nodes for channel %s passed signature verification; skipping\n", ch.Name)
 			carryOverByOriginAndSig(currentState, newState, imagestate.OriginRelease, sig, originRef)
 			// Only treat this as a transient failure worth retrying sooner
 			// than the next poll when nodes were actually found and rejected
-			// by verification — an empty payloadNodes set (no versions in the
+			// by verification — no nodes at all (no versions in the
 			// configured range yet) is a legitimate, stable outcome.
-			hadError = hadError || len(payloadNodes) > 0
+			hadError = hadError || rejected
 			continue
 		}
 
@@ -388,7 +404,7 @@ func (m *MirrorManager) resolveReleaseSection( //nolint:unparam
 			continue
 		}
 
-		images, err := collector.CollectReleasesForChannel(ctx, &is.Spec, mt, ch, verifiedNodes)
+		images, err := collector.CollectReleasesForChannel(ctx, &is.Spec, mt, ch, nodesByArch)
 		if err != nil {
 			oclog.Printf("Warning: collect release channel %s: %v\n", ch.Name, err)
 			carryOverByOriginAndSig(currentState, newState, imagestate.OriginRelease, sig, originRef)
