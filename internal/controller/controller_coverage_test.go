@@ -15,6 +15,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -2297,10 +2298,11 @@ var _ = Describe("Coverage tests", func() {
 			Expect(err).To(HaveOccurred())
 			Expect(mt.Status.PendingCleanup).NotTo(ContainElement("orphans"))
 
-			// The pending-orphans ConfigMap is left untouched — nothing was
-			// deleted, so there is nothing to hand off to a cleanup Job.
-			stillThere := &corev1.ConfigMap{}
-			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: imagestate.OrphansConfigMapName(mtName), Namespace: ns}, stillThere)).To(Succeed())
+			// Nothing will ever consume these orphans, so the ConfigMap is
+			// cleared instead of accumulating them — otherwise switching the
+			// policy to Delete much later would delete stale entries (#133).
+			err = k8sClient.Get(localCtx, types.NamespacedName{Name: imagestate.OrphansConfigMapName(mtName), Namespace: ns}, &corev1.ConfigMap{})
+			Expect(apierrors.IsNotFound(err)).To(BeTrue(), "expected the orphans ConfigMap to be cleared, got %v", err)
 		})
 
 		It("creates cleanup job for orphaned images when cleanup-policy is Delete", func() {
@@ -3755,6 +3757,86 @@ var _ = Describe("Coverage tests", func() {
 			Expect(mt.Status.PendingCleanup).To(Equal([]string{"orphans"}))
 			// Left untouched — nothing was newly queued.
 			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: imagestate.OrphansConfigMapName(mtName), Namespace: ns}, &corev1.ConfigMap{})).To(Succeed())
+		})
+
+		It("never deletes an orphan that an ImageSet references again (#133)", func() {
+			localCtx := context.Background()
+			mtName := "mt-orphans-live"
+			isName := "is-orphans-live"
+
+			Expect(os.Setenv("OPERATOR_IMAGE", "test-operator:latest")).To(Succeed())
+			Expect(os.Setenv("MANAGER_IMAGE", "test-manager:latest")).To(Succeed())
+			Expect(os.Setenv("WORKER_IMAGE", "test-worker:latest")).To(Succeed())
+
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        mtName,
+					Namespace:   ns,
+					Annotations: map[string]string{mirrorv1alpha1.CleanupPolicyAnnotation: mirrorv1alpha1.CleanupPolicyDelete},
+				},
+				Spec: mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com", ImageSets: []string{isName}},
+			}
+			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
+			DeferCleanup(func() { cleanupMT(localCtx, mtName) })
+
+			const digest = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+			orphans := imagestate.ImageState{
+				"reg.example.com/stale:v1":         {Source: "s1", State: "Mirrored", Origin: imagestate.OriginOperator},
+				"reg.example.com/readded:v1":       {Source: "s2", State: "Mirrored", Origin: imagestate.OriginOperator},
+				"reg.example.com/pinned@" + digest: {Source: "s3", State: "Mirrored", Origin: imagestate.OriginAdditional},
+			}
+			Expect(imagestate.SaveRaw(localCtx, k8sClient, ns, imagestate.OrphansConfigMapName(mtName), orphans, nil, nil)).To(Succeed())
+			live := imagestate.ImageState{
+				"reg.example.com/readded:v1": {Source: "s2", State: "Mirrored", Origin: imagestate.OriginOperator},
+				// Same manifest as the pinned orphan, via a digest-derived tag:
+				// deleting the orphan by digest would remove this one too.
+				"reg.example.com/pinned:sha256-1111111111111111111111111111111111111111111111111111111111111111": {Source: "s3", State: "Mirrored", Origin: imagestate.OriginOperator},
+			}
+			Expect(imagestate.Save(localCtx, k8sClient, ns, isName, live, nil, nil)).To(Succeed())
+			DeferCleanup(func() {
+				_ = k8sClient.Delete(localCtx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: isName + "-images", Namespace: ns}})
+			})
+
+			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			Expect(r.reconcileOrphans(localCtx, mt)).To(Succeed())
+
+			Expect(mt.Status.PendingCleanup).To(ContainElement("orphans"))
+			snapshot, err := imagestate.LoadByConfigMapName(localCtx, k8sClient, ns, cleanupSnapshotCMName(mtName, "orphans"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(snapshot).To(HaveLen(1))
+			Expect(snapshot).To(HaveKey("reg.example.com/stale:v1"))
+		})
+
+		It("creates no cleanup job when every orphan is referenced again", func() {
+			localCtx := context.Background()
+			mtName := "mt-orphans-alllive"
+			isName := "is-orphans-alllive"
+
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        mtName,
+					Namespace:   ns,
+					Annotations: map[string]string{mirrorv1alpha1.CleanupPolicyAnnotation: mirrorv1alpha1.CleanupPolicyDelete},
+				},
+				Spec: mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com", ImageSets: []string{isName}},
+			}
+			Expect(k8sClient.Create(localCtx, mt)).To(Succeed())
+			DeferCleanup(func() { cleanupMT(localCtx, mtName) })
+
+			state := imagestate.ImageState{"reg.example.com/readded:v1": {Source: "s", State: "Mirrored", Origin: imagestate.OriginOperator}}
+			Expect(imagestate.SaveRaw(localCtx, k8sClient, ns, imagestate.OrphansConfigMapName(mtName), state, nil, nil)).To(Succeed())
+			Expect(imagestate.Save(localCtx, k8sClient, ns, isName, state, nil, nil)).To(Succeed())
+			DeferCleanup(func() {
+				_ = k8sClient.Delete(localCtx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: isName + "-images", Namespace: ns}})
+			})
+
+			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			Expect(r.reconcileOrphans(localCtx, mt)).To(Succeed())
+
+			Expect(mt.Status.PendingCleanup).NotTo(ContainElement("orphans"))
+			Expect(k8sClient.Get(localCtx, types.NamespacedName{Name: cleanupJobName(mtName, "orphans"), Namespace: ns}, &batchv1.Job{})).NotTo(Succeed())
+			err := k8sClient.Get(localCtx, types.NamespacedName{Name: imagestate.OrphansConfigMapName(mtName), Namespace: ns}, &corev1.ConfigMap{})
+			Expect(apierrors.IsNotFound(err)).To(BeTrue())
 		})
 
 		It("logs and leaves the orphans ConfigMap in place when createCleanupJob fails", func() {
