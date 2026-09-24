@@ -1133,6 +1133,12 @@ type packageConstraint struct {
 	MinVersion string                     `json:"minVersion,omitempty"`
 	MaxVersion string                     `json:"maxVersion,omitempty"`
 	Channels   []packageChannelConstraint `json:"channels,omitempty"`
+	// Bundles selects individual bundles by name (IncludePackage.Bundles).
+	// In a PATCH, an absent field keeps the package's current selection as
+	// long as the package sets no channel/version constraints, so clients
+	// that do not know about bundle selection don't clear it; an explicit
+	// list (also empty) replaces it.
+	Bundles *[]string `json:"bundles,omitempty"`
 }
 
 type packagePatchBody struct {
@@ -1218,6 +1224,12 @@ func (s *Server) handlePatchCatalogPackages(w http.ResponseWriter, r *http.Reque
 			// Rebuild the package list. Prefer the extended `packages` format
 			// (which carries per-channel version constraints) over the legacy
 			// `include` string array.
+			existingBundles := make(map[string][]mirrorv1alpha1.SelectedBundle, len(op.Packages))
+			for _, p := range op.Packages {
+				if len(p.Bundles) > 0 {
+					existingBundles[p.Name] = p.Bundles
+				}
+			}
 			var packages []mirrorv1alpha1.IncludePackage
 			if len(patch.Packages) > 0 {
 				for _, pc := range patch.Packages {
@@ -1237,11 +1249,19 @@ func (s *Server) handlePatchCatalogPackages(w http.ResponseWriter, r *http.Reque
 							},
 						})
 					}
+					switch {
+					case pc.Bundles != nil:
+						for _, b := range *pc.Bundles {
+							p.Bundles = append(p.Bundles, mirrorv1alpha1.SelectedBundle{Name: b})
+						}
+					case len(p.Channels) == 0 && p.MinVersion == "" && p.MaxVersion == "":
+						p.Bundles = existingBundles[p.Name]
+					}
 					packages = append(packages, p)
 				}
 			} else {
 				for _, inc := range patch.Include {
-					packages = append(packages, mirrorv1alpha1.IncludePackage{Name: inc})
+					packages = append(packages, mirrorv1alpha1.IncludePackage{Name: inc, Bundles: existingBundles[inc]})
 				}
 			}
 			is.Spec.Mirror.Operators[i].Packages = packages
@@ -1303,6 +1323,13 @@ func (s *Server) handleGetPackageConstraints(w http.ResponseWriter, r *http.Requ
 					MinVersion: ch.MinVersion,
 					MaxVersion: ch.MaxVersion,
 				})
+			}
+			if len(pkg.Bundles) > 0 {
+				names := make([]string, 0, len(pkg.Bundles))
+				for _, b := range pkg.Bundles {
+					names = append(names, b.Name)
+				}
+				pc.Bundles = &names
 			}
 			result = append(result, pc)
 		}

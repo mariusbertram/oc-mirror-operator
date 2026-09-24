@@ -43,17 +43,24 @@ func OperatorEntrySignature(op Operator) string {
 		Channels         []IncludeChannel `json:"c,omitempty"`
 		IncludeBundle    IncludeBundle    `json:"b,omitempty"`
 		PreviousVersions int              `json:"pv,omitempty"`
+		Bundles          []string         `json:"sb,omitempty"`
 	}
 	pkgs := make([]pkgSig, 0, len(op.Packages))
 	for _, p := range op.Packages {
 		ch := append([]IncludeChannel(nil), p.Channels...)
 		sort.Slice(ch, func(i, j int) bool { return ch[i].Name < ch[j].Name })
+		bundles := make([]string, 0, len(p.Bundles))
+		for _, b := range p.Bundles {
+			bundles = append(bundles, b.Name)
+		}
+		sort.Strings(bundles)
 		pkgs = append(pkgs, pkgSig{
 			Name:             p.Name,
 			DefaultChannel:   p.DefaultChannel,
 			Channels:         ch,
 			IncludeBundle:    p.IncludeBundle,
 			PreviousVersions: p.PreviousVersions,
+			Bundles:          bundles,
 		})
 	}
 	sort.Slice(pkgs, func(i, j int) bool { return pkgs[i].Name < pkgs[j].Name })

@@ -169,6 +169,7 @@ type IncludeConfig struct {
 }
 
 // IncludePackage contains a name (required) and channels and/or versions (optional).
+// +kubebuilder:validation:XValidation:rule="!has(self.bundles) || size(self.bundles) == 0 || ((!has(self.channels) || size(self.channels) == 0) && (!has(self.minVersion) || self.minVersion == ”) && (!has(self.maxVersion) || self.maxVersion == ”) && (!has(self.previousVersions) || self.previousVersions == 0))",message="bundles cannot be combined with channels, minVersion, maxVersion or previousVersions"
 type IncludePackage struct {
 	// Name of package.
 	Name string `json:"name"`
@@ -186,6 +187,23 @@ type IncludePackage struct {
 
 	// +optional
 	IncludeBundle `json:",inline"`
+
+	// Bundles selects individual bundles of the package by name (e.g.
+	// "web-terminal.v1.11.0"). Only these bundles are mirrored (plus their
+	// dependencies), and the filtered catalog contains them in every channel
+	// they belong to. Cannot be combined with channels, minVersion,
+	// maxVersion or previousVersions.
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	Bundles []SelectedBundle `json:"bundles,omitempty"`
+}
+
+// SelectedBundle names a single bundle of an operator package.
+type SelectedBundle struct {
+	// Name of the bundle as listed in the catalog (olm.bundle name).
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
 }
 
 // IncludeChannel contains a name (required) and versions (optional).

@@ -77,6 +77,8 @@ export interface PackageConstraint {
   minVersion?: string;
   maxVersion?: string;
   channels?: ChannelConstraint[];
+  /** Bundles selected by name; kept by the server when omitted from a PATCH. */
+  bundles?: string[];
 }
 
 export interface CatalogChannel {

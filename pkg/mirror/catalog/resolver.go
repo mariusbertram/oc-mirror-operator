@@ -764,6 +764,46 @@ func repairChannelGraph(original []declcfg.ChannelEntry, kept map[string]bool) [
 	return result
 }
 
+// mergeChannelHeads makes sure a channel has exactly one head (an entry not
+// replaced or skipped by any other entry): if several remain, the
+// highest-versioned one becomes the head and skips the others, so clusters on
+// any of them can still upgrade and opm accepts the catalog.
+func mergeChannelHeads(entries []declcfg.ChannelEntry, bundlesByName map[string]declcfg.Bundle) []declcfg.ChannelEntry {
+	superseded := make(map[string]bool, len(entries))
+	for _, e := range entries {
+		if e.Replaces != "" {
+			superseded[e.Replaces] = true
+		}
+		for _, sk := range e.Skips {
+			superseded[sk] = true
+		}
+	}
+	var heads []string
+	for _, e := range entries {
+		if !superseded[e.Name] {
+			heads = append(heads, e.Name)
+		}
+	}
+	if len(heads) <= 1 {
+		return entries
+	}
+	top := highestVersionBundle(heads, bundlesByName)
+	out := make([]declcfg.ChannelEntry, len(entries))
+	copy(out, entries)
+	for i := range out {
+		if out[i].Name != top {
+			continue
+		}
+		out[i].Skips = append([]string(nil), out[i].Skips...)
+		for _, h := range heads {
+			if h != top {
+				out[i].Skips = append(out[i].Skips, h)
+			}
+		}
+	}
+	return out
+}
+
 // highestVersionBundle picks the candidate with the highest olm.package
 // semver version; unparseable/missing versions sort last, ties (or when no
 // version can be parsed at all) are broken by name for determinism.
@@ -906,9 +946,24 @@ func (r *CatalogResolver) FilterFBC(_ context.Context, cfg *declcfg.DeclarativeC
 	// Build per-package filter structs from the expanded include list.
 	explicitFilters := make(map[string]pkgIncludeFilter, len(allIncludes))
 	prevVersionsByPkg := make(map[string]int, len(allIncludes))
+	// selectedBundlesByPkg holds the bundles picked by name
+	// (IncludePackage.Bundles); such packages keep exactly these bundles.
+	selectedBundlesByPkg := make(map[string]map[string]bool)
 	for _, inc := range allIncludes {
 		explicitFilters[inc.Name] = buildPkgIncludeFilter(inc)
 		prevVersionsByPkg[inc.Name] = inc.PreviousVersions
+		if len(inc.Bundles) == 0 {
+			continue
+		}
+		sel := make(map[string]bool, len(inc.Bundles))
+		for _, sb := range inc.Bundles {
+			b, ok := bundlesByName[sb.Name]
+			if !ok || b.Package != inc.Name {
+				return nil, fmt.Errorf("package %s: bundle %q not found in catalog", inc.Name, sb.Name)
+			}
+			sel[sb.Name] = true
+		}
+		selectedBundlesByPkg[inc.Name] = sel
 	}
 
 	// Identify "heads-only" explicit packages: no channels, no version filters.
@@ -918,6 +973,9 @@ func (r *CatalogResolver) FilterFBC(_ context.Context, cfg *declcfg.DeclarativeC
 	explicitHeadBundles := make(map[string]bool) // bundleName -> allowed (for BFS and final)
 	for pkgName, f := range explicitFilters {
 		if !f.allowAllChannels || f.pkgHasMinVer || f.pkgHasMaxVer || len(f.channelFilters) > 0 {
+			continue
+		}
+		if len(selectedBundlesByPkg[pkgName]) > 0 {
 			continue
 		}
 		// If all channels have empty entries, we cannot determine heads —
@@ -983,7 +1041,23 @@ func (r *CatalogResolver) FilterFBC(_ context.Context, cfg *declcfg.DeclarativeC
 		// Check if the package has any entries in its channels.
 		pkgHasEntries := pkgHasChannelEntries[current]
 
-		if isExplicit && !pkgHasEntries {
+		if sel := selectedBundlesByPkg[current]; isExplicit && len(sel) > 0 {
+			// Bundles selected by name: keep exactly these, in every
+			// channel that lists them. repairChannelGraph below reconnects
+			// the upgrade graph across the dropped entries.
+			for name := range sel {
+				allowedBundles[name] = true
+				currentAllowed = append(currentAllowed, name)
+			}
+			sort.Strings(currentAllowed)
+			for _, ch := range channelsByPkg[current] {
+				for _, entry := range ch.Entries {
+					if sel[entry.Name] {
+						markChannelEntry(allowedEntries, current, ch.Name, entry.Name)
+					}
+				}
+			}
+		} else if isExplicit && !pkgHasEntries {
 			// Explicit package but no channel entries found: include all its bundles.
 			for _, b := range bundlesByPkg[current] {
 				allowedBundles[b.Name] = true
@@ -1101,6 +1175,10 @@ func (r *CatalogResolver) FilterFBC(_ context.Context, cfg *declcfg.DeclarativeC
 		trimmed.Entries = repairChannelGraph(ch.Entries, sel)
 		if len(trimmed.Entries) == 0 {
 			continue
+		}
+		if len(selectedBundlesByPkg[ch.Package]) > 0 {
+			// Bundles picked by name need not lie on one replaces chain.
+			trimmed.Entries = mergeChannelHeads(trimmed.Entries, bundlesByName)
 		}
 		filtered.Channels = append(filtered.Channels, trimmed)
 
