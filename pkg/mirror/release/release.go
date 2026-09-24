@@ -19,6 +19,7 @@ import (
 
 	"github.com/blang/semver/v4"
 	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
+	"github.com/regclient/regclient/types/descriptor"
 	"github.com/regclient/regclient/types/manifest"
 	"github.com/regclient/regclient/types/platform"
 	"github.com/regclient/regclient/types/ref"
@@ -295,6 +296,51 @@ type ComponentImage struct {
 	Image string
 }
 
+// MultiArch is the architecture name of the multi-architecture release
+// payload (Cincinnati arch=multi): a manifest list with one entry per
+// architecture, whose component images are manifest lists as well.
+const MultiArch = "multi"
+
+// platformManifest returns the platform-specific manifest of m (and its
+// reference) when m is a manifest list, or m itself otherwise. For arch
+// MultiArch any member carries the same release metadata (the
+// image-references and CoreOS stream it lists are multi-arch too), so
+// linux/amd64 is used when present and the first entry otherwise.
+func (r *ReleaseResolver) platformManifest(ctx context.Context, imgRef ref.Ref, m manifest.Manifest, arch, payloadImage string) (ref.Ref, manifest.Manifest, error) {
+	if !m.IsList() {
+		return imgRef, m, nil
+	}
+	var desc descriptor.Descriptor
+	if arch == MultiArch {
+		entries, listErr := m.(manifest.Indexer).GetManifestList()
+		if listErr != nil || len(entries) == 0 {
+			return imgRef, nil, fmt.Errorf("empty manifest list in %s: %v", payloadImage, listErr)
+		}
+		desc = entries[0]
+		amd64 := platform.Platform{OS: "linux", Architecture: "amd64"}
+		if d, err := manifest.GetPlatformDesc(m, &amd64); err == nil {
+			desc = *d
+		}
+	} else {
+		p, parseErr := platform.Parse(fmt.Sprintf("linux/%s", arch))
+		if parseErr != nil {
+			return imgRef, nil, fmt.Errorf("failed to parse platform linux/%s: %w", arch, parseErr)
+		}
+		d, descErr := manifest.GetPlatformDesc(m, &p)
+		if descErr != nil {
+			return imgRef, nil, fmt.Errorf("no manifest found for linux/%s in %s: %w", arch, payloadImage, descErr)
+		}
+		desc = *d
+	}
+	imgRef.Digest = desc.Digest.String()
+	imgRef.Tag = ""
+	pm, err := r.client.ManifestGet(ctx, imgRef)
+	if err != nil {
+		return imgRef, nil, fmt.Errorf("failed to get platform manifest for %s: %w", payloadImage, err)
+	}
+	return imgRef, pm, nil
+}
+
 // ExtractComponentImages pulls the release payload image, locates the
 // release-manifests/image-references layer, and returns all ~190 component
 // images contained in it, each with its component name.
@@ -318,21 +364,9 @@ func (r *ReleaseResolver) ExtractComponentImages(ctx context.Context, payloadIma
 	}
 
 	// If the manifest is a list (multi-arch), resolve the requested platform.
-	if m.IsList() {
-		p, parseErr := platform.Parse(fmt.Sprintf("linux/%s", arch))
-		if parseErr != nil {
-			return nil, fmt.Errorf("failed to parse platform linux/%s: %w", arch, parseErr)
-		}
-		desc, descErr := manifest.GetPlatformDesc(m, &p)
-		if descErr != nil {
-			return nil, fmt.Errorf("no manifest found for linux/%s in %s: %w", arch, payloadImage, descErr)
-		}
-		imgRef.Digest = desc.Digest.String()
-		imgRef.Tag = ""
-		m, err = r.client.ManifestGet(ctx, imgRef)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get platform manifest for %s: %w", payloadImage, err)
-		}
+	imgRef, m, err = r.platformManifest(ctx, imgRef, m, arch, payloadImage)
+	if err != nil {
+		return nil, err
 	}
 
 	layers, err := m.GetLayers() //nolint:staticcheck
@@ -455,21 +489,9 @@ func (r *ReleaseResolver) ExtractKubeVirtImages(ctx context.Context, payloadImag
 		return nil, fmt.Errorf("failed to get manifest for %s: %w", payloadImage, err)
 	}
 
-	if m.IsList() {
-		p, parseErr := platform.Parse(fmt.Sprintf("linux/%s", primaryArch))
-		if parseErr != nil {
-			return nil, fmt.Errorf("failed to parse platform linux/%s: %w", primaryArch, parseErr)
-		}
-		desc, descErr := manifest.GetPlatformDesc(m, &p)
-		if descErr != nil {
-			return nil, fmt.Errorf("no manifest found for linux/%s in %s: %w", primaryArch, payloadImage, descErr)
-		}
-		imgRef.Digest = desc.Digest.String()
-		imgRef.Tag = ""
-		m, err = r.client.ManifestGet(ctx, imgRef)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get platform manifest for %s: %w", payloadImage, err)
-		}
+	imgRef, m, err = r.platformManifest(ctx, imgRef, m, primaryArch, payloadImage)
+	if err != nil {
+		return nil, err
 	}
 
 	layers, err := m.GetLayers() //nolint:staticcheck
@@ -515,6 +537,11 @@ func scanLayerForKubeVirtImages(rdr io.Reader, arches []string) ([]string, bool,
 
 	wantArches := make(map[string]bool)
 	for _, a := range arches {
+		if a == MultiArch {
+			// The multi payload serves every architecture: take them all.
+			wantArches = nil
+			break
+		}
 		if mapped, ok := archMap[a]; ok {
 			wantArches[mapped] = true
 		} else {
