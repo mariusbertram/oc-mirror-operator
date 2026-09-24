@@ -119,6 +119,10 @@ var _ = Describe("MirrorTarget Controller", func() {
 			}
 			Expect(openPorts).To(ConsistOf(int32(8080), int32(9090)))
 
+			By("verifying the manager is only ready once its worker status API is up (#145)")
+			Expect(deployment.Spec.Template.Spec.Containers[0].ReadinessProbe).NotTo(BeNil())
+			Expect(deployment.Spec.Template.Spec.Containers[0].ReadinessProbe.HTTPGet.Path).To(Equal("/readyz"))
+
 			By("verifying the manager is never run twice during a rollout (#137)")
 			Expect(deployment.Spec.Strategy.Type).To(Equal(appsv1.RecreateDeploymentStrategyType))
 			Expect(deployment.Spec.Strategy.RollingUpdate).To(BeNil())

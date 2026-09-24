@@ -235,6 +235,21 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 								TimeoutSeconds:      5,
 								FailureThreshold:    3,
 							},
+							// Ready once the worker status API is listening
+							// (after the worker token bootstrap), not ready
+							// again when the reconcile loop stalls (see
+							// pkg/mirror/manager handleReadyz).
+							ReadinessProbe: &corev1.Probe{
+								ProbeHandler: corev1.ProbeHandler{
+									HTTPGet: &corev1.HTTPGetAction{
+										Path: "/readyz",
+										Port: intstr.FromString("metrics"),
+									},
+								},
+								PeriodSeconds:    5,
+								TimeoutSeconds:   5,
+								FailureThreshold: 3,
+							},
 						},
 					},
 					Volumes:      managerPodVolumes(mt),

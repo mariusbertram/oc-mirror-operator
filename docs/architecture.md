@@ -48,7 +48,8 @@ One code base, three images, several roles:
    │ 30 s tick / urgent flush                                             │
    │  A load state ─ B resolve ImageSets ─ C drift sweep (bg) ─ D classify│
    │  E dispatch batches ─ F flush ConfigMaps ─ G ImageSet.status ─ H IDMS│
-   │  :8080 /status /should-mirror (worker token)   :9090 /metrics /healthz│
+   │  :8080 /status /should-mirror (worker token)                         │
+   │  :9090 /metrics /healthz /readyz                                     │
    └──────────────────────────────────────────────────────────────────────┘
                  │ Pod create                      ▲ HTTP
                  ▼                                 │
@@ -91,6 +92,9 @@ immediately after a worker callback (`urgentFlush`). Each tick (`reconcile()`):
 
 A heartbeat is written around each tick and exposed on `/healthz` (port 9090); the
 Deployment's liveness probe restarts a manager whose loop has been silent for 1.5 h.
+`/readyz` (readiness probe) reports ready only while the worker status API is listening
+and the heartbeat is fresh; it does not wait for the first resolve, so surviving workers
+can report right after a restart.
 
 The status API on port 8080 (`/status`, `/should-mirror`) is protected by a bearer token
 generated once and stored in `<target>-worker-token`; comparison is constant-time.

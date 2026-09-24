@@ -209,7 +209,8 @@ annotation.
 
 - **Manager:** `kubectl rollout restart deployment/<target>-manager -n mirror`. State is
   reloaded from the ConfigMaps; running workers are re-adopted from their pod
-  annotations. A restart also triggers an immediate drift check.
+  annotations. A restart also triggers an immediate drift check. The Deployment reports
+  ready once the manager's worker status API is listening.
 - **Workers:** deleting a worker pod returns its images to `Pending`; they are
   dispatched again on the next tick.
 - **Controller:** safe to restart at any time; it holds no state.
@@ -235,5 +236,5 @@ Built-in alerts: `OCMirrorHighFailedImages`, `OCMirrorAllImagesFailed`,
 
 Behaviour that differs from what this documentation describes is tracked in the
 [issue tracker](https://github.com/mariusbertram/oc-mirror-operator/issues?q=is%3Aissue+is%3Aopen+label%3Abug).
-Planned improvements (retry backoff, readiness probe, callback latency under load)
+Planned improvements (retry backoff, callback latency under load)
 carry the `enhancement` label.
