@@ -956,6 +956,88 @@ type mirrorTargetSpecWire struct {
 	CheckExistInterval string `json:"checkExistInterval,omitempty"`
 }
 
+// parseMirrorTargetSpecPatch parses a PATCH body for the editable
+// MirrorTarget spec subset with JSON merge-patch semantics (RFC 7396): a
+// field that is absent is left unchanged, null resets it to its default, and
+// any other value replaces it. Previously every field was replaced, so a
+// client that sent only batchSize silently reset pollInterval,
+// checkExistInterval, concurrency, … to their defaults. It returns the
+// function applying the validated patch to a spec.
+func parseMirrorTargetSpecPatch(body []byte) (func(*mirrorv1alpha1.MirrorTargetSpec), error) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil || raw == nil {
+		return nil, fmt.Errorf("invalid JSON body")
+	}
+	var steps []func(*mirrorv1alpha1.MirrorTargetSpec)
+	isNull := func(v json.RawMessage) bool { return string(v) == "null" }
+
+	if v, ok := raw["registry"]; ok {
+		var registry string
+		if isNull(v) || json.Unmarshal(v, &registry) != nil || registry == "" {
+			return nil, fmt.Errorf("registry must be a non-empty string")
+		}
+		steps = append(steps, func(s *mirrorv1alpha1.MirrorTargetSpec) { s.Registry = registry })
+	}
+	if v, ok := raw["insecure"]; ok {
+		var insecure bool
+		if !isNull(v) && json.Unmarshal(v, &insecure) != nil {
+			return nil, fmt.Errorf("invalid insecure: must be a boolean")
+		}
+		steps = append(steps, func(s *mirrorv1alpha1.MirrorTargetSpec) { s.Insecure = insecure })
+	}
+	if v, ok := raw["authSecret"]; ok {
+		var secret string
+		if !isNull(v) && json.Unmarshal(v, &secret) != nil {
+			return nil, fmt.Errorf("invalid authSecret: must be a string")
+		}
+		steps = append(steps, func(s *mirrorv1alpha1.MirrorTargetSpec) { s.AuthSecret = secret })
+	}
+	for _, key := range []string{"concurrency", "batchSize"} {
+		v, ok := raw[key]
+		if !ok {
+			continue
+		}
+		var n int
+		if !isNull(v) && json.Unmarshal(v, &n) != nil {
+			return nil, fmt.Errorf("invalid %s: must be an integer", key)
+		}
+		if key == "concurrency" {
+			steps = append(steps, func(s *mirrorv1alpha1.MirrorTargetSpec) { s.Concurrency = n })
+		} else {
+			steps = append(steps, func(s *mirrorv1alpha1.MirrorTargetSpec) { s.BatchSize = n })
+		}
+	}
+	for _, key := range []string{"pollInterval", "checkExistInterval"} {
+		v, ok := raw[key]
+		if !ok {
+			continue
+		}
+		var text string
+		if !isNull(v) && json.Unmarshal(v, &text) != nil {
+			return nil, fmt.Errorf("invalid %s: must be a duration string", key)
+		}
+		var d *metav1.Duration
+		if text != "" {
+			parsed, err := time.ParseDuration(text)
+			if err != nil {
+				return nil, fmt.Errorf("invalid %s: %v", key, err)
+			}
+			d = &metav1.Duration{Duration: parsed}
+		}
+		if key == "pollInterval" {
+			steps = append(steps, func(s *mirrorv1alpha1.MirrorTargetSpec) { s.PollInterval = d })
+		} else {
+			steps = append(steps, func(s *mirrorv1alpha1.MirrorTargetSpec) { s.CheckExistInterval = d })
+		}
+	}
+
+	return func(s *mirrorv1alpha1.MirrorTargetSpec) {
+		for _, step := range steps {
+			step(s)
+		}
+	}, nil
+}
+
 // handleGetMirrorTargetSpec returns the current editable subset of the
 // MirrorTarget spec.
 func (s *Server) handleGetMirrorTargetSpec(w http.ResponseWriter, r *http.Request) {
@@ -1007,43 +1089,15 @@ func (s *Server) handlePatchMirrorTargetSpec(w http.ResponseWriter, r *http.Requ
 		http.Error(w, "failed to read body", http.StatusBadRequest)
 		return
 	}
-	var patch mirrorTargetSpecWire
-	if err := json.Unmarshal(body, &patch); err != nil {
-		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+	apply, err := parseMirrorTargetSpecPatch(body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
-	}
-	if patch.Registry == "" {
-		http.Error(w, "registry is required", http.StatusBadRequest)
-		return
-	}
-
-	var pollInterval, checkExistInterval *metav1.Duration
-	if patch.PollInterval != "" {
-		d, parseErr := time.ParseDuration(patch.PollInterval)
-		if parseErr != nil {
-			http.Error(w, fmt.Sprintf("invalid pollInterval: %v", parseErr), http.StatusBadRequest)
-			return
-		}
-		pollInterval = &metav1.Duration{Duration: d}
-	}
-	if patch.CheckExistInterval != "" {
-		d, parseErr := time.ParseDuration(patch.CheckExistInterval)
-		if parseErr != nil {
-			http.Error(w, fmt.Sprintf("invalid checkExistInterval: %v", parseErr), http.StatusBadRequest)
-			return
-		}
-		checkExistInterval = &metav1.Duration{Duration: d}
 	}
 
 	c := s.clientForRequest(r)
 	err = updateMirrorTargetWithRetry(r.Context(), c, namespace, name, func(mt *mirrorv1alpha1.MirrorTarget) error {
-		mt.Spec.Registry = patch.Registry
-		mt.Spec.Insecure = patch.Insecure
-		mt.Spec.AuthSecret = patch.AuthSecret
-		mt.Spec.Concurrency = patch.Concurrency
-		mt.Spec.BatchSize = patch.BatchSize
-		mt.Spec.PollInterval = pollInterval
-		mt.Spec.CheckExistInterval = checkExistInterval
+		apply(&mt.Spec)
 		return nil
 	})
 	if err != nil {

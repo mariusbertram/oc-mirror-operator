@@ -112,8 +112,19 @@ export const getFilteredPackages = (targetName: string, slug: string) =>
 export const getMirrorTargetSpec = (namespace: string, targetName: string) =>
   get<MirrorTargetSpecWire>(`/api/v1/targets/${namespace}/${targetName}/spec`);
 
+// The endpoint has JSON merge-patch semantics: absent fields are left
+// unchanged, null resets a field to its default. Send cleared optional fields
+// as null so clearing a field in the form resets it instead of keeping the
+// old value.
 export const patchMirrorTargetSpec = (namespace: string, targetName: string, spec: MirrorTargetSpecWire) =>
-  patch<void>(`/api/v1/targets/${namespace}/${targetName}/spec`, spec);
+  patch<void>(`/api/v1/targets/${namespace}/${targetName}/spec`, {
+    ...spec,
+    authSecret: spec.authSecret ?? null,
+    concurrency: spec.concurrency ?? null,
+    batchSize: spec.batchSize ?? null,
+    pollInterval: spec.pollInterval ?? null,
+    checkExistInterval: spec.checkExistInterval ?? null,
+  });
 
 export const getUpstreamPackages = (targetName: string, slug: string) =>
   get<CatalogPackagesResponse>(`/api/v1/targets/${targetName}/catalogs/${slug}/upstream-packages.json`);

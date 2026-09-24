@@ -188,6 +188,50 @@ var _ = Describe("ResourceAPI Server", func() {
 			Expect(getRR.Body.String()).To(ContainSubstring("12h0m0s"))
 		})
 
+		It("leaves fields absent from the PATCH body unchanged and resets null fields (#151)", func() {
+			url := fmt.Sprintf("/api/v1/targets/%s/%s/spec", ns, mtName)
+			get := func() string {
+				rr := httptest.NewRecorder()
+				router.ServeHTTP(rr, httptest.NewRequest("GET", url, nil))
+				return rr.Body.String()
+			}
+			patchBody := func(body string) {
+				rr := httptest.NewRecorder()
+				router.ServeHTTP(rr, writeRequest("PATCH", url, bytes.NewBufferString(body)))
+				Expect(rr.Code).To(Equal(http.StatusNoContent), rr.Body.String())
+			}
+
+			patchBody(`{"registry":"registry.example.com/mirror","concurrency":3,"batchSize":20,"pollInterval":"12h","checkExistInterval":"2h","authSecret":"pull"}`)
+
+			// Only batchSize: everything else must survive.
+			patchBody(`{"batchSize":30}`)
+			spec := get()
+			Expect(spec).To(ContainSubstring(`"batchSize":30`))
+			Expect(spec).To(ContainSubstring(`"concurrency":3`))
+			Expect(spec).To(ContainSubstring("12h0m0s"))
+			Expect(spec).To(ContainSubstring("2h0m0s"))
+			Expect(spec).To(ContainSubstring(`"authSecret":"pull"`))
+			Expect(spec).To(ContainSubstring("registry.example.com/mirror"))
+
+			// null resets to the default.
+			patchBody(`{"concurrency":null,"pollInterval":null,"authSecret":null}`)
+			spec = get()
+			Expect(spec).NotTo(ContainSubstring(`"concurrency"`))
+			Expect(spec).NotTo(ContainSubstring("12h0m0s"))
+			Expect(spec).NotTo(ContainSubstring(`"authSecret"`))
+			Expect(spec).To(ContainSubstring(`"batchSize":30`))
+			Expect(spec).To(ContainSubstring("2h0m0s"))
+		})
+
+		It("returns 400 for a PATCH value of the wrong type", func() {
+			url := fmt.Sprintf("/api/v1/targets/%s/%s/spec", ns, mtName)
+			for _, body := range []string{`{"concurrency":"five"}`, `{"insecure":"yes"}`, `{"registry":null}`, `[]`} {
+				rr := httptest.NewRecorder()
+				router.ServeHTTP(rr, writeRequest("PATCH", url, bytes.NewBufferString(body)))
+				Expect(rr.Code).To(Equal(http.StatusBadRequest), body)
+			}
+		})
+
 		It("returns 400 when registry is empty on PATCH", func() {
 			url := fmt.Sprintf("/api/v1/targets/%s/%s/spec", ns, mtName)
 			req := writeRequest("PATCH", url, bytes.NewBufferString(`{"registry":""}`))

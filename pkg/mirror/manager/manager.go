@@ -1896,7 +1896,6 @@ func (m *MirrorManager) startWorkerBatch(ctx context.Context, mt *mirrorv1alpha1
 			RestartPolicy:         corev1.RestartPolicyNever,
 			ActiveDeadlineSeconds: pointerTo(workerActiveDeadlineSeconds(len(items))),
 			ServiceAccountName:    m.TargetName + "-worker",
-			ImagePullSecrets:      []corev1.LocalObjectReference{{Name: mt.Spec.AuthSecret}},
 			SecurityContext: &corev1.PodSecurityContext{
 				RunAsNonRoot: pointerTo(true),
 				SeccompProfile: &corev1.SeccompProfile{
@@ -1923,6 +1922,13 @@ func (m *MirrorManager) startWorkerBatch(ctx context.Context, mt *mirrorv1alpha1
 			NodeSelector: mt.Spec.Worker.NodeSelector,
 			Tolerations:  mt.Spec.Worker.Tolerations,
 		},
+	}
+
+	// Only reference a pull secret that exists: an entry with an empty name
+	// makes the kubelet warn for every worker pod and is rejected by some
+	// admission policies.
+	if mt.Spec.AuthSecret != "" {
+		pod.Spec.ImagePullSecrets = []corev1.LocalObjectReference{{Name: mt.Spec.AuthSecret}}
 	}
 
 	if err := controllerutil.SetControllerReference(mt, pod, m.Scheme); err != nil {
