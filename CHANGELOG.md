@@ -68,6 +68,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   operator-origin image) faster overall.
 
 ### Security
+- **VEX re-pinned after dependency bumps**: the `not_affected` statements for
+  containerd GO-2026-5064 / GO-2026-5338 / GO-2026-5622 and x/crypto
+  GO-2026-5932 named the exact module versions they were triaged against
+  (`containerd@v1.7.33`, `x/crypto@v0.53.0`), so the containerd bump to
+  v1.7.35 made them stop matching and the release image scan failed on the
+  two Critical findings. Re-triaged against `containerd@v1.7.35` and
+  `x/crypto@v0.55.0`: still only containerd's client packages (`remotes`,
+  `content`, `images`, …, pulled in by Helm's OCI registry client) are
+  linked into any binary — no CRI plugin or checkpoint/restore code — and
+  the v1 module line still has no fixed version. Dropping containerd
+  entirely requires Helm ≥ 3.21, which in turn requires Go 1.26 and
+  k8s.io 0.36+; that upgrade is tracked separately.
 - **Go toolchain bumped 1.25.7 → 1.25.13**, resolving 26 reachable
   standard-library vulnerabilities flagged by `govulncheck` (call-graph
   confirmed as actually reachable from this codebase, not just present in
