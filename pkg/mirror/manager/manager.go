@@ -502,7 +502,7 @@ func (m *MirrorManager) handleStatusUpdate(w http.ResponseWriter, r *http.Reques
 		m.setImageStateLocked(req.Destination, stateMirrored, "")
 		// Record the digest the worker actually mirrored as the drift-check
 		// baseline for tag-referenced additional images (see
-		// additionalImageDriftedLocked) — free, since the worker already
+		// sourceDigestNoLock/applySourceDigestLocked) — free, since the worker already
 		// resolves it to verify the copy. setImageStateLocked's idempotency
 		// check can early-return without this running again on a duplicate
 		// callback, but SourceDigest doesn't change between duplicates either.
@@ -801,10 +801,13 @@ func (m *MirrorManager) runDriftSweep(ctx context.Context, destinations []string
 }
 
 // checkDriftOne verifies a single destination against the target registry
-// and applies the result to the shared imagestate, mirroring the checks a
-// synchronous sweep used to perform inline in reconcile()'s Phase D. Holds
-// m.mu only for the brief snapshot-read and result-apply steps around the
-// (lock-free) network call.
+// and applies the result to the shared imagestate. All network calls —
+// CheckExist, the upstream digest of a tag-referenced additional image and
+// the cosign signature lookup — run without m.mu; the entry is then
+// re-fetched under the lock once and only updated if it is still the entry
+// the checks were made for (same State, PermanentlyFailed and Source).
+// Otherwise a resolve, orphan sweep or worker callback changed it in the
+// meantime and the (now stale) result is dropped (#149).
 func (m *MirrorManager) checkDriftOne(ctx context.Context, dest string, requireSignedByIS map[string]bool) {
 	ctx, cancel := context.WithTimeout(ctx, driftCheckTimeout)
 	defer cancel()
@@ -823,14 +826,31 @@ func (m *MirrorManager) checkDriftOne(ctx context.Context, dest string, requireS
 		m.mu.Unlock()
 		return
 	}
+	snap := *entry
+	needsSignatureCheck := !entry.SignatureVerified && anyOwnerRequiresSignedImages(m.owners[dest], requireSignedByIS)
 	m.mu.Unlock()
 
 	exists, checkErr := m.checkExistNoLock(ctx, dest)
 
+	var (
+		sourceDigest  string
+		haveDigest    bool
+		sigErr        error
+		haveSignature bool
+		upstreamMoved bool
+	)
+	if !permanentlyFailedRecoveryCheck && checkErr == nil && exists {
+		sourceDigest, haveDigest = m.sourceDigestNoLock(ctx, snap.Origin, snap.Source)
+		upstreamMoved = haveDigest && snap.SourceDigest != "" && snap.SourceDigest != sourceDigest
+		if !upstreamMoved && needsSignatureCheck {
+			haveSignature, sigErr = m.signatureErrNoLock(ctx, dest)
+		}
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	entry, ok = m.imageState[dest]
-	if !ok || entry == nil {
+	if !ok || entry == nil || entry.State != snap.State || entry.PermanentlyFailed != snap.PermanentlyFailed || entry.Source != snap.Source {
 		return
 	}
 
@@ -871,7 +891,7 @@ func (m *MirrorManager) checkDriftOne(ctx context.Context, dest string, requireS
 		m.resetMirroredLocked(dest)
 		return
 	}
-	if m.additionalImageDriftedLocked(ctx, entry) {
+	if haveDigest && m.applySourceDigestLocked(entry, sourceDigest) {
 		oclog.Printf("Additional image %s: upstream source %s has moved; resetting to Pending for re-mirror\n", dest, entry.Source)
 		entry.State = statePending
 		entry.LastError = ""
@@ -880,8 +900,8 @@ func (m *MirrorManager) checkDriftOne(ctx context.Context, dest string, requireS
 		return
 	}
 	m.mirrored[dest] = true
-	if !entry.SignatureVerified && anyOwnerRequiresSignedImages(m.owners[dest], requireSignedByIS) {
-		m.verifySignedImageLocked(ctx, dest, entry)
+	if haveSignature && !entry.SignatureVerified {
+		m.applySignatureResultLocked(dest, entry, sigErr)
 	}
 }
 
@@ -896,11 +916,12 @@ func (m *MirrorManager) resetMirroredLocked(dest string) {
 	m.statusDirty = true
 }
 
-// additionalImageDriftedLocked reports whether a tag-referenced additional
-// image (imagestate.OriginAdditional) has changed upstream since it was
-// mirrored, by comparing entry.Source's current manifest digest against
-// entry.SourceDigest — the digest the worker resolved and reported at mirror
-// time (see handleStatusUpdate).
+// sourceDigestNoLock resolves the current upstream manifest digest of a
+// tag-referenced additional image (imagestate.OriginAdditional) for the drift
+// check, which compares it against entry.SourceDigest — the digest the worker
+// resolved and reported at mirror time (see handleStatusUpdate) — in
+// applySourceDigestLocked. ok is false when the check does not apply or the
+// digest could not be resolved.
 //
 // This only applies to additional images: release and operator destinations
 // are content-addressed (mirror.ComponentDestination bakes the source digest
@@ -912,7 +933,7 @@ func (m *MirrorManager) resetMirroredLocked(dest string) {
 // changes, and mergeIntoStateWithSig would keep preserving "Mirrored"
 // forever. Digest-pinned sources ("@sha256:...") can't drift and are skipped.
 //
-// Always records the freshly resolved digest (even when unchanged) as the
+// The freshly resolved digest is always recorded (even when unchanged) as the
 // new baseline. A failed resolution is logged and treated as "not drifted"
 // rather than forcing a spurious re-mirror; an entry that somehow has no
 // baseline yet (e.g. state migrated from before this field existed) is
@@ -920,21 +941,25 @@ func (m *MirrorManager) resetMirroredLocked(dest string) {
 // meaningless without one — the freshly resolved digest recorded here
 // becomes the baseline for the next window.
 //
-// Caller must hold m.mu; it is released for the duration of the network call.
-func (m *MirrorManager) additionalImageDriftedLocked(ctx context.Context, entry *imagestate.ImageEntry) bool {
-	if entry.Origin != imagestate.OriginAdditional || strings.Contains(entry.Source, "@sha256:") {
-		return false
+// Must be called without m.mu held.
+func (m *MirrorManager) sourceDigestNoLock(ctx context.Context, origin imagestate.ImageOrigin, source string) (string, bool) {
+	if origin != imagestate.OriginAdditional || strings.Contains(source, "@sha256:") {
+		return "", false
 	}
-
 	checkClient, _ := m.clientCache.GetOrCreate(nil, m.authConfigPath)
-	m.mu.Unlock()
-	digest, err := checkClient.GetDigest(ctx, entry.Source)
-	m.mu.Lock()
+	digest, err := checkClient.GetDigest(ctx, source)
 	if err != nil {
-		oclog.Printf("CheckExist: failed to resolve digest for additional image source %s: %v\n", entry.Source, err)
-		return false
+		oclog.Printf("CheckExist: failed to resolve digest for additional image source %s: %v\n", source, err)
+		return "", false
 	}
+	return digest, true
+}
 
+// applySourceDigestLocked records digest (from sourceDigestNoLock) as entry's
+// new drift baseline and reports whether it differs from the previous one. An
+// entry without a baseline yet is never reported as drifted. Caller must hold
+// m.mu.
+func (m *MirrorManager) applySourceDigestLocked(entry *imagestate.ImageEntry, digest string) bool {
 	drifted := entry.SourceDigest != "" && entry.SourceDigest != digest
 	if entry.SourceDigest != digest {
 		entry.SourceDigest = digest
@@ -974,31 +999,31 @@ func destinationDigest(dest string) string {
 	return ""
 }
 
-// verifySignedImageLocked checks whether dest carries a valid cosign
-// signature, for entries whose owning ImageSet(s) have
-// Mirror.RequireSignedImages set and that have not been verified yet. Called
-// once per entry during the drift-check sweep (Phase D) — SignatureVerified
-// then makes it a no-op on future sweeps.
+// signatureErrNoLock checks whether dest carries a valid cosign signature,
+// for entries whose owning ImageSet(s) have Mirror.RequireSignedImages set and
+// that have not been verified yet. Called once per entry during the drift
+// sweep — SignatureVerified then makes it a no-op on future sweeps. checked
+// is false when dest has no digest to check a signature against.
 //
-// On success, sets entry.SignatureVerified. On failure, fails the entry via
-// the normal retry lifecycle (State: Failed, RetryCount, PermanentlyFailed
-// after 10 attempts) with a descriptive lastError, and clears
-// m.mirrored[dest] so the next tick's "entry.State == stateMirrored" fast
-// path does not fire and silently flip the entry back to Mirrored.
-//
-// Caller must hold m.mu; released for the duration of the network call.
-func (m *MirrorManager) verifySignedImageLocked(ctx context.Context, dest string, entry *imagestate.ImageEntry) {
+// Must be called without m.mu held.
+func (m *MirrorManager) signatureErrNoLock(ctx context.Context, dest string) (checked bool, sigErr error) {
 	digest := destinationDigest(dest)
 	if digest == "" {
 		oclog.Printf("Warning: %s has no digest to check a signature against; skipping RequireSignedImages check\n", dest)
-		return
+		return false, nil
 	}
-
 	checkClient, _ := m.clientCache.GetOrCreate(nil, m.authConfigPath)
-	m.mu.Unlock()
-	sigErr := cosign.HasValidSignature(ctx, checkClient, dest, digest)
-	m.mu.Lock()
+	return true, cosign.HasValidSignature(ctx, checkClient, dest, digest)
+}
 
+// applySignatureResultLocked applies the result of signatureErrNoLock for
+// dest. On success, sets entry.SignatureVerified. On failure, fails the entry
+// via the normal retry lifecycle (State: Failed, RetryCount,
+// PermanentlyFailed after 10 attempts) with a descriptive lastError, and
+// clears m.mirrored[dest] so the next tick's "entry.State == stateMirrored"
+// fast path does not fire and silently flip the entry back to Mirrored.
+// Caller must hold m.mu.
+func (m *MirrorManager) applySignatureResultLocked(dest string, entry *imagestate.ImageEntry, sigErr error) {
 	if sigErr == nil {
 		entry.SignatureVerified = true
 		m.stateDirty = true

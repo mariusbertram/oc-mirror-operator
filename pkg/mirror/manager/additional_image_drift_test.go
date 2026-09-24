@@ -57,9 +57,7 @@ func TestAdditionalImageDriftedLocked_NoDrift(t *testing.T) {
 		SourceDigest: digest,
 	}
 
-	m.mu.Lock()
-	drifted := m.additionalImageDriftedLocked(context.Background(), entry)
-	m.mu.Unlock()
+	drifted := additionalImageDrifted(m, context.Background(), entry)
 
 	if drifted {
 		t.Error("expected no drift when the upstream digest is unchanged")
@@ -87,9 +85,7 @@ func TestAdditionalImageDriftedLocked_Drifted(t *testing.T) {
 
 	digest = newDigest // simulate the upstream tag moving to new content
 
-	m.mu.Lock()
-	drifted := m.additionalImageDriftedLocked(context.Background(), entry)
-	m.mu.Unlock()
+	drifted := additionalImageDrifted(m, context.Background(), entry)
 
 	if !drifted {
 		t.Error("expected drift to be detected when the upstream digest changed")
@@ -115,9 +111,7 @@ func TestAdditionalImageDriftedLocked_DigestPinnedSource_Skipped(t *testing.T) {
 		SourceDigest: digest,
 	}
 
-	m.mu.Lock()
-	drifted := m.additionalImageDriftedLocked(context.Background(), entry)
-	m.mu.Unlock()
+	drifted := additionalImageDrifted(m, context.Background(), entry)
 
 	if drifted {
 		t.Error("expected no drift check for a digest-pinned source, which cannot drift")
@@ -136,9 +130,7 @@ func TestAdditionalImageDriftedLocked_NonAdditionalOrigin_Skipped(t *testing.T) 
 		SourceDigest: "sha256:" + strings.Repeat("d", 64),
 	}
 
-	m.mu.Lock()
-	drifted := m.additionalImageDriftedLocked(context.Background(), entry)
-	m.mu.Unlock()
+	drifted := additionalImageDrifted(m, context.Background(), entry)
 
 	if drifted {
 		t.Error("expected release-origin entries to never be drift-checked")
@@ -160,9 +152,7 @@ func TestAdditionalImageDriftedLocked_NoBaseline_EstablishesOneWithoutFlaggingDr
 		// field existed.
 	}
 
-	m.mu.Lock()
-	drifted := m.additionalImageDriftedLocked(context.Background(), entry)
-	m.mu.Unlock()
+	drifted := additionalImageDrifted(m, context.Background(), entry)
 
 	if drifted {
 		t.Error("expected no drift on the first check with no prior baseline")
@@ -198,9 +188,7 @@ func TestAdditionalImageDriftedLocked_ResolutionFailure_NotDrifted(t *testing.T)
 		SourceDigest: oldDigest,
 	}
 
-	m.mu.Lock()
-	drifted := m.additionalImageDriftedLocked(context.Background(), entry)
-	m.mu.Unlock()
+	drifted := additionalImageDrifted(m, context.Background(), entry)
 
 	if drifted {
 		t.Error("expected a failed digest resolution to be treated as not drifted")
@@ -208,4 +196,16 @@ func TestAdditionalImageDriftedLocked_ResolutionFailure_NotDrifted(t *testing.T)
 	if entry.SourceDigest != oldDigest {
 		t.Errorf("expected SourceDigest to be left unchanged on a resolution failure, got %q", entry.SourceDigest)
 	}
+}
+
+// additionalImageDrifted runs the drift sweep's two steps for one entry: the
+// unlocked upstream digest lookup and the locked baseline update.
+func additionalImageDrifted(m *MirrorManager, ctx context.Context, entry *imagestate.ImageEntry) bool {
+	digest, ok := m.sourceDigestNoLock(ctx, entry.Origin, entry.Source)
+	if !ok {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.applySourceDigestLocked(entry, digest)
 }

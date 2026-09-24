@@ -162,7 +162,7 @@ func TestAnyOwnerRequiresSignedImages(t *testing.T) {
 	}
 }
 
-// --- verifySignedImageLocked ---
+// --- signatureErrNoLock / applySignatureResultLocked ---
 
 // fakeSignaturePayload builds a "simple signing" payload attesting to digest.
 func fakeSignaturePayload(digest string) []byte {
@@ -270,7 +270,7 @@ func fakeCosignSignatureServer(t *testing.T, imageDigest string) string {
 // newTestManagerForSignatureCheck builds a MirrorManager with an
 // initialized clientCache pre-warmed against host as an insecure (HTTP)
 // registry, so subsequent internal m.clientCache.GetOrCreate(nil, "") calls
-// (as verifySignedImageLocked makes) hit the same cached, insecure-capable
+// (as signatureErrNoLock makes) hit the same cached, insecure-capable
 // client without needing to touch unexported ClientCache internals.
 func newTestManagerForSignatureCheck(t *testing.T, host string) *MirrorManager {
 	t.Helper()
@@ -291,9 +291,7 @@ func TestVerifySignedImageLocked_ValidSignature_MarksVerified(t *testing.T) {
 	dest := fmt.Sprintf("%s/example/repo:sha256-%s", host, strings.Repeat("a", 64))
 	entry := &imagestate.ImageEntry{Source: "src", State: stateMirrored}
 
-	m.mu.Lock()
-	m.verifySignedImageLocked(context.Background(), dest, entry)
-	m.mu.Unlock()
+	verifySignedImage(m, context.Background(), dest, entry)
 
 	if !entry.SignatureVerified {
 		t.Error("expected SignatureVerified = true for a well-formed signature")
@@ -329,9 +327,7 @@ func TestVerifySignedImageLocked_MissingSignature_FailsEntry(t *testing.T) {
 	m.mirrored[dest] = true
 	entry := &imagestate.ImageEntry{Source: "src", State: stateMirrored}
 
-	m.mu.Lock()
-	m.verifySignedImageLocked(context.Background(), dest, entry)
-	m.mu.Unlock()
+	verifySignedImage(m, context.Background(), dest, entry)
 
 	if entry.SignatureVerified {
 		t.Error("expected SignatureVerified = false when no signature exists")
@@ -358,9 +354,7 @@ func TestVerifySignedImageLocked_NoDigest_SkipsCheck(t *testing.T) {
 	dest := "registry.example.com/example/repo:latest" // no digest
 	entry := &imagestate.ImageEntry{Source: "src", State: stateMirrored}
 
-	m.mu.Lock()
-	m.verifySignedImageLocked(context.Background(), dest, entry)
-	m.mu.Unlock()
+	verifySignedImage(m, context.Background(), dest, entry)
 
 	if entry.SignatureVerified {
 		t.Error("expected SignatureVerified to stay false when no digest is available to check")
@@ -371,4 +365,16 @@ func TestVerifySignedImageLocked_NoDigest_SkipsCheck(t *testing.T) {
 	if m.stateDirty {
 		t.Error("expected stateDirty to stay false when the check is skipped entirely")
 	}
+}
+
+// verifySignedImage runs the drift sweep's two signature steps for one entry:
+// the unlocked cosign lookup and the locked result application.
+func verifySignedImage(m *MirrorManager, ctx context.Context, dest string, entry *imagestate.ImageEntry) {
+	checked, sigErr := m.signatureErrNoLock(ctx, dest)
+	if !checked {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.applySignatureResultLocked(dest, entry, sigErr)
 }
