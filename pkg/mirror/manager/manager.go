@@ -1361,10 +1361,11 @@ func (m *MirrorManager) setImageStateLocked(dest, st, lastError string) {
 	}
 	entry.State = st
 	entry.LastError = lastError
-	m.stateDirty = true
-	m.statusDirty = true
 	if st != stateMirrored {
-		m.resetMirroredLocked(dest)
+		m.resetMirroredLocked(dest) // also marks state and status dirty
+	} else {
+		m.stateDirty = true
+		m.statusDirty = true
 	}
 	if st == stateFailed {
 		entry.RetryCount++

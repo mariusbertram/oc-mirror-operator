@@ -313,7 +313,8 @@ kubectl get imagesets -n <namespace>
 
 | Annotation | Value | Description |
 |---|---|---|
-| `mirror.openshift.io/recollect` | `"true"` (any value) | Force re-resolution of all upstream content on the next reconcile. One-shot: removed by the manager after recollection completes. |
+| `mirror.openshift.io/recollect` | `"true"` (any value) | Force re-resolution of all upstream content on the next reconcile and give failed images (including permanently failed ones) a fresh retry cycle. One-shot: removed by the manager after recollection completes. |
+| `mirror.openshift.io/recollect-honored` | RFC 3339 timestamp | **Written by the manager, read-only.** Set each time the manager honors a `recollect`; the ImageSet controller turns every new value into exactly one catalog rebuild once the ImageSet's images are mirrored. Do not set or remove it manually. |
 | `mirror.openshift.io/force-resync` | `"true"` (any value) | Reset every image owned by the ImageSet back to `Pending` on the next reconcile — including ones already `Mirrored` — so all of them are re-verified and re-transferred, regardless of current state. One-shot: removed by the manager after the reset is applied. |
 
 ---
