@@ -9,6 +9,7 @@ func TestNewClientCache(t *testing.T) {
 	cc := NewClientCache()
 	if cc == nil {
 		t.Fatal("expected non-nil ClientCache")
+		return // unreachable; keeps staticcheck's SA5011 from flagging the derefs below
 	}
 	if cc.refreshAfter != 5*time.Minute {
 		t.Errorf("expected refreshAfter=5m, got %v", cc.refreshAfter)
