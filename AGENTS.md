@@ -33,7 +33,7 @@ make test-integration     # Integration tests without a cluster (labels: integra
 ```
 
 E2E environment variables: `SKIP_CLUSTER_SETUP=true`, `SKIP_OPERATOR_DEPLOY=true`, `CERT_MANAGER_INSTALL_SKIP=true`.
-E2E Ginkgo labels: `cluster`, `integration`, `release`, `catalog`, `catalog-cluster`, `olm-upgrade`.
+E2E Ginkgo labels: `cluster`, `integration`, `release`, `catalog`, `catalog-cluster`.
 
 Container tool defaults to **podman** (`CONTAINER_TOOL ?= podman`). Override with `CONTAINER_TOOL=docker` if needed.
 

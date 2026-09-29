@@ -58,12 +58,12 @@ go tool cover -html=cover.out
 ## E2E tests
 
 Ginkgo suites in `test/e2e/`, labelled `cluster`, `integration`, `release`, `catalog`,
-`catalog-cluster`, `olm-upgrade`.
+`catalog-cluster`.
 
 ```bash
 make test-integration          # no cluster needed (integration, release, catalog labels)
 make test-e2e-cluster          # creates a Kind cluster, builds and loads the image, runs the "cluster" label
-make test-e2e                  # full suite incl. OLM upgrade phase
+make test-e2e                  # full suite
 ```
 
 Useful variables: `KIND_CLUSTER`, `KIND_PROVIDER` (`docker`/`podman`),
@@ -97,7 +97,7 @@ CI fails on any golangci-lint finding, including `prealloc` and `lll` in test fi
 
 | Workflow | Trigger | Jobs |
 |---|---|---|
-| `ci.yml` | push, PR | unit tests → build component images (artifact) → e2e on Kind (regular + OLM upgrade) → console plugin smoke test → multi-arch build check → bundle build check → grype |
+| `ci.yml` | push, PR | unit tests → build component images (artifact) → e2e on Kind → console plugin smoke test → multi-arch build check → bundle validate (`operator-sdk bundle validate`, operatorframework suite) + bundle image build check → grype |
 | `lint.yml` | push, PR | golangci-lint + gofmt ("Run on Ubuntu"), UI lint + type-check ("Run on UI") |
 | `dependency-review.yml` | PR | dependency review |
 | `release.yml` | tag `v*` | multi-arch images → GHCR, bundle, GitHub release, PR against `brtrm-dev-catalog` |

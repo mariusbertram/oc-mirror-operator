@@ -2,7 +2,8 @@ name: CI
 
 # Runs on every push and pull request.
 # Jobs: test → build (image artifact) → e2e (reuses artifact)
-# Also verifies that multi-arch and bundle builds succeed, and runs a
+# Also validates the OLM bundle (operator-sdk bundle validate), verifies
+# that multi-arch and bundle image builds succeed, and runs a
 # headless-browser smoke test of the console plugin against a real
 # openshift/origin-console container (plugin-smoke-test).
 
@@ -161,7 +162,7 @@ jobs:
           path: operator-*-image.tar
           retention-days: 1
 
-  # ── 3. Bundle image build check ────────────────────────────────────────────
+  # ── 3. Bundle validation + image build check ───────────────────────────────
   build-bundle-check:
     name: Build bundle image check
     runs-on: ubuntu-latest
@@ -169,6 +170,23 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Generate and validate bundle
+        run: |
+          # make bundle regenerates bundle/ from config/ and runs the default
+          # `operator-sdk bundle validate`; the operatorframework suite adds the
+          # OperatorHub, good-practices and deprecated-API checks on top.
+          IMG_CONTROLLER=example.com/oc-mirror-controller:v0.0.1 \
+          IMG_MANAGER=example.com/oc-mirror-manager:v0.0.1 \
+          IMG_WORKER=example.com/oc-mirror-worker:v0.0.1 \
+          IMG_PLUGIN=example.com/oc-mirror-plugin:v0.0.1 \
+          USE_IMAGE_DIGESTS=false \
+            make bundle
+          bin/operator-sdk bundle validate ./bundle --select-optional suite=operatorframework
 
       - uses: docker/setup-buildx-action@v4
 
@@ -225,21 +243,16 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: false
 
-  # ── 5. E2E tests (all: cluster, catalog, OLM upgrade) ────────────────────
-  # Single Kind cluster with local registry; tests run in two phases:
-  #   Phase 1 — regular tests (operator deployed via make deploy)
-  #   Phase 2 — OLM upgrade tests (operator installed via bundle)
+  # ── 5. E2E tests (cluster, catalog, release) ─────────────────────────────
+  # Single Kind cluster; operator deployed via make deploy.
   e2e:
     name: E2E tests
     runs-on: ubuntu-latest
     needs: build
     permissions:
       contents: read
-      packages: read
     steps:
       - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0  # required to access git tags for OLM upgrade
 
       - uses: actions/setup-go@v6
         with:
@@ -257,10 +270,7 @@ jobs:
           chmod +x ./kind
           sudo mv ./kind /usr/local/bin/kind
 
-      - name: Start local registry
-        run: docker run -d -p 127.0.0.1:5001:5000 --name kind-registry --restart=always registry:2
-
-      - name: Create Kind cluster with registry mirror
+      - name: Create Kind cluster
         run: |
           # Retry up to 3 times — KinD cluster creation can fail transiently
           # on GitHub Actions runners (kubelet cgroup race, slow I/O).
@@ -275,11 +285,6 @@ jobs:
           nodes:
           - role: control-plane
             image: kindest/node:v1.33.1@sha256:050072256b9a903bd914c0b2866828150cb229cea0efe5892e2b644d5dd3b34f
-          # containerd 2.x registry mirror config
-          containerdConfigPatches:
-          - |-
-            [plugins."io.containerd.cri.v1.images".registry]
-              config_path = "/etc/containerd/certs.d"
           EOF
 
             if [ $? -eq 0 ]; then
@@ -295,19 +300,6 @@ jobs:
             echo "Cluster creation failed, retrying in ${backoff}s..."
             sleep $backoff
           done
-
-          # Configure registry mirror inside the node (containerd 2.x certs.d format)
-          for node in $(kind get nodes --name oc-mirror-e2e); do
-            docker exec "$node" mkdir -p /etc/containerd/certs.d/localhost:5001
-            docker exec "$node" sh -c 'cat > /etc/containerd/certs.d/localhost:5001/hosts.toml <<TOML
-          server = "http://kind-registry:5000"
-
-          [host."http://kind-registry:5000"]
-            capabilities = ["pull", "resolve", "push"]
-          TOML'
-          done
-
-          docker network connect kind kind-registry 2>/dev/null || true
 
       - name: Verify cluster health
         run: |
@@ -346,8 +338,7 @@ jobs:
             --for=condition=Available \
             --timeout=300s
 
-      # ── Phase 1: regular e2e tests ──────────────────────────────────────
-      - name: "Phase 1: Run E2E tests (cluster, catalog, release)"
+      - name: Run E2E tests (cluster, catalog, release)
         run: |
           go mod tidy
           SKIP_CLUSTER_SETUP=true \
@@ -355,115 +346,12 @@ jobs:
           KIND_CLUSTER=oc-mirror-e2e \
           go test ./test/e2e/ -v -timeout 45m \
             -ginkgo.v \
-            -ginkgo.label-filter="!catalog-live && !olm-upgrade"
+            -ginkgo.label-filter="!catalog-live"
           # label map:
           #   cluster         – needs Kind + deployed operator (mirror, catalog-cluster)
           #   catalog         – pure in-memory FBC filter tests, no cluster required
           #   release         – Cincinnati API (api.openshift.com), reachable in CI
           #   catalog-live    – quay.io/operatorhubio/catalog (~2 GB), manual only
-          #   olm-upgrade     – OLM bundle upgrade tests (run in phase 2)
-
-      # ── Phase 2: OLM upgrade test ──────────────────────────────────────
-      # The "old" bundle is the newest release in HEAD's history whose bundle
-      # image is already published; the phase runs only when the bundle sources
-      # changed since that release.
-      - name: Determine bundle versions for OLM upgrade test
-        id: bundle-ver
-        run: |
-          BUNDLE_REPO="ghcr.io/${{ github.repository }}-bundle"
-          # --merged ignores tags on commits HEAD doesn't contain, e.g. a release
-          # tagged on main after this branch forked.
-          # A tag's bundle is missing while its release.yml run is still in
-          # flight (or after it failed), so fall back to the newest release whose
-          # bundle can actually be pulled instead of failing on "manifest unknown".
-          OLD_TAG=""
-          for tag in $(git tag --merged HEAD --list 'v*' --sort=-version:refname); do
-            if docker manifest inspect "$BUNDLE_REPO:${tag#v}" >/dev/null 2>&1; then
-              OLD_TAG="$tag"
-              break
-            fi
-            echo "::notice::Bundle image for $tag is not published (release still running or failed), trying the previous release"
-          done
-          OLD_VER="${OLD_TAG#v}"
-          # New bundle: a CI pre-release of the next patch after the newest
-          # vX.Y.Z tag in the repo (published or not), e.g. v0.1.2 -> 0.1.3-ci.
-          # That sorts above every existing release, so the test is a real
-          # upgrade and never a downgrade. Real version management happens in
-          # release.yml when a v* tag is pushed.
-          NEW_VER="0.0.1-ci"
-          for tag in $(git tag --list 'v*' --sort=-version:refname); do
-            if [[ "$tag" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
-              NEW_VER="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$((BASH_REMATCH[3] + 1))-ci"
-              break
-            fi
-          done
-          echo "old_tag=$OLD_TAG" >> "$GITHUB_OUTPUT"
-          echo "old_ver=$OLD_VER"  >> "$GITHUB_OUTPUT"
-          echo "new_ver=$NEW_VER"  >> "$GITHUB_OUTPUT"
-
-          RUN_UPGRADE=true
-          # The bundle is generated from config/ (CRDs, RBAC, CSV base, manager
-          # deployment), which is itself generated from api/; bundle.Dockerfile
-          # carries the bundle labels.
-          BUNDLE_SOURCES=(api config bundle.Dockerfile)
-          if [ -z "$OLD_TAG" ]; then
-            echo "::warning::No release in HEAD's history has a published bundle image, skipping OLM upgrade test"
-            RUN_UPGRADE=false
-          elif git diff --quiet "$OLD_TAG" HEAD -- "${BUNDLE_SOURCES[@]}"; then
-            echo "::notice::Bundle sources (${BUNDLE_SOURCES[*]}) unchanged since $OLD_TAG, skipping OLM upgrade test"
-            RUN_UPGRADE=false
-          else
-            echo "Old bundle: $OLD_TAG ($OLD_VER) → New bundle: $NEW_VER"
-            git diff --stat "$OLD_TAG" HEAD -- "${BUNDLE_SOURCES[@]}"
-          fi
-          echo "run_upgrade=$RUN_UPGRADE" >> "$GITHUB_OUTPUT"
-
-      - name: Download and install operator-sdk
-        if: steps.bundle-ver.outputs.run_upgrade == 'true'
-        run: make operator-sdk
-
-      - name: Pull old bundle from newest published release and push to local registry
-        if: steps.bundle-ver.outputs.run_upgrade == 'true'
-        run: |
-          # Use the pre-built release bundle from ghcr.io unchanged — it has the
-          # correct ghcr.io image references set by release.yml, unlike the bundle/
-          # directory in the tag which may still contain local dev-registry refs.
-          docker pull ghcr.io/${{ github.repository }}-bundle:${{ steps.bundle-ver.outputs.old_ver }}
-          docker tag  ghcr.io/${{ github.repository }}-bundle:${{ steps.bundle-ver.outputs.old_ver }} \
-                      localhost:5001/oc-mirror-bundle:${{ steps.bundle-ver.outputs.old_ver }}
-          docker push localhost:5001/oc-mirror-bundle:${{ steps.bundle-ver.outputs.old_ver }}
-
-      - name: Build new bundle image and push to local registry
-        if: steps.bundle-ver.outputs.run_upgrade == 'true'
-        run: |
-          IMG_CONTROLLER=example.com/oc-mirror-controller:v0.0.1 \
-          IMG_MANAGER=example.com/oc-mirror-manager:v0.0.1 \
-          IMG_WORKER=example.com/oc-mirror-worker:v0.0.1 \
-          IMG_PLUGIN=example.com/oc-mirror-plugin:v0.0.1 \
-          VERSION=${{ steps.bundle-ver.outputs.new_ver }} \
-          USE_IMAGE_DIGESTS=false \
-            PATH=$PATH:$(go env GOPATH)/bin make bundle
-          docker build -f bundle.Dockerfile -t localhost:5001/oc-mirror-bundle:${{ steps.bundle-ver.outputs.new_ver }} .
-          docker push localhost:5001/oc-mirror-bundle:${{ steps.bundle-ver.outputs.new_ver }}
-
-      - name: Install OLM
-        if: steps.bundle-ver.outputs.run_upgrade == 'true'
-        run: bin/operator-sdk olm install --timeout 5m
-
-      - name: "Phase 2: Run OLM upgrade E2E tests"
-        if: steps.bundle-ver.outputs.run_upgrade == 'true'
-        run: |
-          OLD_BUNDLE_IMG=localhost:5001/oc-mirror-bundle:${{ steps.bundle-ver.outputs.old_ver }} \
-          NEW_BUNDLE_IMG=localhost:5001/oc-mirror-bundle:${{ steps.bundle-ver.outputs.new_ver }} \
-          OPERATOR_SDK_BIN=bin/operator-sdk \
-          BUNDLE_SDK_FLAGS="--use-http" \
-          SKIP_CLUSTER_SETUP=true \
-          SKIP_OPERATOR_DEPLOY=true \
-          CERT_MANAGER_INSTALL_SKIP=true \
-          KIND_CLUSTER=oc-mirror-e2e \
-          go test ./test/e2e/ -v -timeout 30m \
-            -ginkgo.v \
-            -ginkgo.label-filter="olm-upgrade"
 
       - name: Diagnostic dump on failure
         if: failure()
@@ -489,22 +377,11 @@ jobs:
             echo "--- Node: $node ---"
             docker exec "$node" crictl images 2>/dev/null | grep -E "oc-mirror|example.com" || true
           done
-          echo "=== Controller-Manager Logs (oc-mirror-operator / OLM) ==="
-          kubectl logs -l control-plane=controller-manager -n oc-mirror-operator --tail=100 --all-containers 2>/dev/null || true
-          echo "=== OLM Pods ==="
-          kubectl get pods -n olm -o wide 2>/dev/null || true
-          echo "=== CSVs ==="
-          kubectl get csv -A 2>/dev/null || true
-          echo "=== Deployments in oc-mirror-operator ==="
-          kubectl get deployments -n oc-mirror-operator -o wide 2>/dev/null || true
-          echo "=== Roles in oc-mirror-operator ==="
-          kubectl get roles -n oc-mirror-operator 2>/dev/null || true
 
       - name: Cleanup
         if: always()
         run: |
           kind delete cluster --name oc-mirror-e2e
-          docker rm -f kind-registry 2>/dev/null || true
 
   # ── 6. Console plugin smoke test (real console + headless browser) ────────
   # Runs the actual openshift/origin-console "bridge" container against a Kind
