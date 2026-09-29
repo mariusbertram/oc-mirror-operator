@@ -593,20 +593,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [v0.0.13] - 2026-05-02
 
-### Added
-- **Developer Guide**: New comprehensive documentation for building and deploying the operator in various environments (OpenShift, MicroShift, KinD, standard Kubernetes).
-- **Image Status Redesign**: Completely redesigned the image mirroring status tab in the Web UI, providing a more condensed and intuitive view with status badges and registry tooltips.
-
-### Fixed
-- **CSV RelatedImages**: Implemented dynamic detection and replacement logic in Kustomize to ensure modular images (manager, worker) are correctly included in the `relatedImages` section of the ClusterServiceVersion with their respective SHA digests.
-- **Worker Storage Default**: Refactored worker storage to use node-local `emptyDir` by default for blob buffering. PVC-backed generic ephemeral volumes are now only provisioned if a `storageClassName` is explicitly specified.
-- **UI Scroll Restoration**: Fixed a bug where the UI would jump to the top during the 30-second auto-refresh cycle. Scroll position is now preserved across refreshes.
-- **UI Font Assets (404s)**: Fixed Red Hat font loading by correcting relative paths and adding a server-side redirect from `/ui` to `/ui/` for consistent path resolution.
-- **CRD Spec Clean-up**: Removed `+kubebuilder:default` tag for storage size in the CRD to prevent the Kubernetes API from automatically injecting default values into the spec, while maintaining the 10 GiB fallback in the operator logic.
-
----
-
-## [0.1.0] - 2026-05-01
+This release split the operator into separate controller, manager and worker
+images. The split was drafted as "0.1.0" (dated 2026-05-01) but shipped as
+v0.0.13; its entries are merged into this section.
 
 ### BREAKING CHANGES
 - **Container image split**: Operator now requires 3 separate container images instead of a single monolithic image:
@@ -626,6 +615,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Separate RBAC roles**: Each component gets its own ServiceAccount and Role for least-privilege access
 - **Improved testability**: Modular architecture makes unit testing and local development simpler
 - **Helm chart enhancements**: Per-component image configuration and resource limits
+- **Developer Guide**: New comprehensive documentation for building and deploying the operator in various environments (OpenShift, MicroShift, KinD, standard Kubernetes).
+- **Image Status Redesign**: Completely redesigned the image mirroring status tab in the Web UI, providing a more condensed and intuitive view with status badges and registry tooltips.
 
 ### Changed
 - **Documentation**: Updated README, user guide, and contributing guide for new 3-component architecture
@@ -636,6 +627,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Registry connection pooling now isolated per component
 - Token scope errors in Quay compatibility fixed (per-component credential isolation)
+- **CSV RelatedImages**: Implemented dynamic detection and replacement logic in Kustomize to ensure modular images (manager, worker) are correctly included in the `relatedImages` section of the ClusterServiceVersion with their respective SHA digests.
+- **Worker Storage Default**: Refactored worker storage to use node-local `emptyDir` by default for blob buffering. PVC-backed generic ephemeral volumes are now only provisioned if a `storageClassName` is explicitly specified.
+- **UI Scroll Restoration**: Fixed a bug where the UI would jump to the top during the 30-second auto-refresh cycle. Scroll position is now preserved across refreshes.
+- **UI Font Assets (404s)**: Fixed Red Hat font loading by correcting relative paths and adding a server-side redirect from `/ui` to `/ui/` for consistent path resolution.
+- **CRD Spec Clean-up**: Removed `+kubebuilder:default` tag for storage size in the CRD to prevent the Kubernetes API from automatically injecting default values into the spec, while maintaining the 10 GiB fallback in the operator logic.
 
 ### Deprecated
 - Single-binary deployment (`v0.0.x` and earlier) – **migrate to v0.1.0+** for modular deployment
