@@ -37,6 +37,15 @@ import (
 // configsPath is the standard FBC directory inside a catalog image.
 const configsPath = "configs/"
 
+// maxFBCFileSize bounds a single FBC file extracted from a catalog layer.
+// 512 MiB comfortably fits the largest real-world catalog.json seen so far
+// (openshift-gitops-operator, ~187 MiB in redhat-operator-index:v4.16, Sep 2026)
+// while still protecting the manager from malicious/corrupt layers claiming
+// gigantic file sizes. Files over the cap are skipped with a warning — never
+// silently truncated (silent truncation produced invalid JSON that failed
+// declcfg parsing with a misleading "unexpected EOF"; see FINDINGS F2).
+const maxFBCFileSize = 512 << 20 // 512 MiB
+
 // cachePath is the path opm uses for its pre-built pogreb cache. Source
 // catalog images ship a pre-built cache here that is keyed to the unfiltered
 // catalog content; once we replace /configs the cache is stale, so any layer
@@ -168,10 +177,23 @@ func classifyAndExtractFBC(r io.Reader, configFS fstest.MapFS) (skippable bool, 
 		// Extract FBC files regardless of whether the layer is skippable,
 		// because the opaque whiteout replaces configs/ from all layers.
 		if hdr.Typeflag == tar.TypeReg && strings.HasPrefix(name, configsPath) {
-			data, readErr := io.ReadAll(io.LimitReader(tr, 64*1024*1024))
-			if readErr == nil {
-				configFS[name] = &fstest.MapFile{Data: data}
+			// Never silently truncate: read one byte past the cap to detect
+			// real oversized files (a bare LimitReader ends with a clean EOF
+			// and would store truncated JSON that breaks declcfg parsing with
+			// a misleading "unexpected EOF" — see FINDINGS F2).
+			data, readErr := io.ReadAll(io.LimitReader(tr, maxFBCFileSize+1))
+			if readErr != nil {
+				return false, 0, "", fmt.Errorf("reading %s: %w", name, readErr)
 			}
+			if int64(len(data)) > maxFBCFileSize {
+				return false, 0, "", fmt.Errorf("FBC file %s is %d bytes, over the %d byte limit",
+					name, hdr.Size, maxFBCFileSize)
+			}
+			if int64(len(data)) < hdr.Size {
+				return false, 0, "", fmt.Errorf("FBC file %s short read: got %d of %d bytes",
+					name, len(data), hdr.Size)
+			}
+			configFS[name] = &fstest.MapFile{Data: data}
 		}
 
 		if !strings.HasPrefix(name, configsPath) && !strings.HasPrefix(name, cachePath) {
@@ -458,10 +480,25 @@ func extractFBCLayer(r io.Reader, fsMap fstest.MapFS) int {
 			continue
 		}
 
-		// Cap individual file reads to 64 MiB to prevent OOM when a malicious
-		// or corrupt catalog layer claims an enormous file size.
-		data, readErr := io.ReadAll(io.LimitReader(tr, 64*1024*1024))
+		// Guard against OOM from malicious or corrupt catalog layers: files
+		// larger than maxFBCFileSize are rejected, never silently truncated.
+		// Reading one byte past the cap tells a real oversized file apart from
+		// one that is exactly the cap — a bare LimitReader would return clean
+		// EOF at the limit and store truncated JSON (found as F2: the
+		// redhat-operator-index grew catalog.json files past 64 MiB, which then
+		// failed declcfg parsing with a misleading "unexpected EOF").
+		data, readErr := io.ReadAll(io.LimitReader(tr, maxFBCFileSize+1))
 		if readErr != nil {
+			continue
+		}
+		if int64(len(data)) > maxFBCFileSize {
+			slog.WarnContext(context.Background(), "skipping oversized FBC file",
+				"file", name, "size", hdr.Size, "cap", maxFBCFileSize)
+			continue
+		}
+		if int64(len(data)) < hdr.Size {
+			slog.WarnContext(context.Background(), "skipping short-read FBC file",
+				"file", name, "expected", hdr.Size, "got", len(data))
 			continue
 		}
 
