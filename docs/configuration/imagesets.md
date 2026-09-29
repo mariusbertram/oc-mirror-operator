@@ -301,6 +301,17 @@ spec:
                 - "{.spec.extraContainerImage}"
 ```
 
+Both repository kinds are supported:
+
+- **HTTP(S) repositories** with an `index.yaml`. Download URLs in the index may point at
+  plain `.tgz` archives or at `oci://` artifacts (as Bitnami's index does).
+- **OCI repositories** (`url: oci://registry-1.docker.io/bitnamicharts`). The chart is
+  pulled from `<url>/<name>:<version>`, so `version` is required; there is no index to
+  pick the latest version from.
+
+OCI charts are pulled with the manager's registry credentials (the MirrorTarget's
+`authSecret`), like images.
+
 Each chart is downloaded from the repository index and **fully rendered** with the Helm
 SDK (default values and capabilities, like `helm template`). Every rendered manifest is
 then scanned for images at the default JSONPath locations

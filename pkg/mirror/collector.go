@@ -45,8 +45,17 @@ func NewCollector(client *mirrorclient.MirrorClient) *Collector {
 		client:          client,
 		releaseResolver: release.New(client),
 		catalogResolver: catalog.New(client),
-		helmResolver:    helm.New(),
+		helmResolver:    helm.NewWithOCI(ociClientOrNil(client)),
 	}
+}
+
+// ociClientOrNil returns client as a helm.OCIClient, or a nil interface for a
+// nil client (a typed nil would make the helm resolver call methods on it).
+func ociClientOrNil(client *mirrorclient.MirrorClient) helm.OCIClient {
+	if client == nil {
+		return nil
+	}
+	return client
 }
 
 // CollectTargetImages parses the ImageSet configuration and returns the list

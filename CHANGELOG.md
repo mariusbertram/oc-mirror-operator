@@ -93,6 +93,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already triaged as `not_affected` in `vex/oc-mirror-operator.openvex.json`.
 
 ### Fixed
+- **Helm charts stored in OCI registries (#187)**: repositories whose
+  `index.yaml` points at `oci://` archives (e.g. Bitnami) failed with
+  `unsupported protocol scheme "oci"`, because charts were only fetched
+  over HTTP. The Helm resolver now pulls `oci://` charts through the
+  manager's registry client (same credentials and insecure-host handling as
+  images). It picks the chart layer by media type (current and Helm
+  3.0–3.7). `oci://` repository URLs are supported too, with an explicit
+  chart version.
+- **ImageSet stayed `Ready=False/Unbound` after being bound; resolves were
+  not recorded (#189)**: the manager records a resolve (ObservedGeneration,
+  LastSuccessfulPollTime, the Ready condition) only when the ImageSet status
+  is dirty, and a resolve did not mark it dirty. Unless a worker callback
+  happened in the same tick, the resolve was not recorded, `shouldResolve()`
+  stayed true so the ImageSet was re-resolved on every tick, and `Ready` kept
+  the controller's "no MirrorTarget references ImageSet …" from before the
+  binding. A resolve now marks the status dirty. The ImageSet controller also
+  replaces a stale `Unbound` with `Ready=False/Resolving` as soon as a
+  MirrorTarget references the ImageSet, until the manager's first resolve
+  sets its own condition.
 - **Monitoring reconciler errored forever on plain Kubernetes (#188)**: it
   created the dashboard ConfigMap in `openshift-config-managed` on every
   reconcile, which fails where that namespace does not exist — about one
