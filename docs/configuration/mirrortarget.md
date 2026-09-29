@@ -37,7 +37,9 @@ spec:
 - `registry` is the prefix of every destination reference. A path component (`/mirror`)
   is recommended so the mirror lives in its own organization/project.
 - `insecure: true` switches the registry client to *HTTP first, then HTTPS without
-  certificate verification*. Use it for in-cluster `registry:5000`-style registries.
+  certificate verification* — for the workers' copies and the manager's drift checks
+  alike. When both attempts fail, the error shows both reasons, the HTTP one first.
+  Use it for in-cluster `registry:5000`-style registries.
   For registries with a private CA prefer [`caBundle`](#custom-ca-bundle) and keep
   `insecure: false`.
 

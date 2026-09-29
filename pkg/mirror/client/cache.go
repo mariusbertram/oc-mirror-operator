@@ -1,11 +1,14 @@
 package client
 
 import (
+	"slices"
+	"strings"
 	"sync"
 	"time"
 )
 
-// ClientCache provides pooled access to MirrorClient instances keyed by authConfigPath.
+// ClientCache provides pooled access to MirrorClient instances keyed by
+// authConfigPath and insecure-host set.
 // This reduces connection churn and token scope accumulation issues (e.g., Quay's
 // nginx proxy rejecting tokens > ~8 KB). Cached clients are refreshed every 5 minutes.
 type ClientCache struct {
@@ -29,10 +32,20 @@ func NewClientCacheWithInterval(refreshAfter time.Duration) *ClientCache {
 	}
 }
 
-// GetOrCreate returns a cached MirrorClient for the given authConfigPath, creating
-// one if necessary. Clients are automatically refreshed after the configured interval.
+// cacheKey identifies a client by its credentials and its insecure hosts, so
+// a caller asking for a different insecure-host set never gets a client built
+// for another one (e.g. an HTTPS-only client for an insecure HTTP registry).
+func cacheKey(insecureHosts []string, authConfigPath string) string {
+	hosts := slices.Clone(insecureHosts)
+	slices.Sort(hosts)
+	return authConfigPath + "\x00" + strings.Join(hosts, ",")
+}
+
+// GetOrCreate returns a cached MirrorClient for the given insecure hosts and
+// authConfigPath, creating one if necessary. Clients are automatically
+// refreshed after the configured interval.
 func (cc *ClientCache) GetOrCreate(insecureHosts []string, authConfigPath string) (*MirrorClient, error) {
-	key := authConfigPath
+	key := cacheKey(insecureHosts, authConfigPath)
 
 	cc.mu.Lock()
 	defer cc.mu.Unlock()
@@ -47,10 +60,10 @@ func (cc *ClientCache) GetOrCreate(insecureHosts []string, authConfigPath string
 	return client, nil
 }
 
-// RefreshClient forces a refresh of the cached client for the given authConfigPath.
-// This is useful when auth config has changed.
+// RefreshClient forces a refresh of the cached client for the given insecure
+// hosts and authConfigPath. This is useful when auth config has changed.
 func (cc *ClientCache) RefreshClient(insecureHosts []string, authConfigPath string) (*MirrorClient, error) {
-	key := authConfigPath
+	key := cacheKey(insecureHosts, authConfigPath)
 
 	cc.mu.Lock()
 	client := NewMirrorClient(insecureHosts, authConfigPath)

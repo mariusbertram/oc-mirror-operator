@@ -37,6 +37,7 @@ user-workload monitoring so the ServiceMonitors are picked up.
 | `oc_mirror_manager_status_callback_duration_seconds` | histogram | `target` | Time to acknowledge a worker's `/status` report |
 | `oc_mirror_manager_active_workers` | gauge | `target` | Worker pods currently in progress |
 | `oc_mirror_manager_worker_retries_total` | counter | `target` | Retry attempts (failure reports and signature failures) |
+| `oc_mirror_manager_drift_check_errors_total` | counter | `target` | Drift checks that could not reach the target registry. The image keeps its state ("assuming present"), so a steadily rising value means drift is not being detected — check connectivity, credentials and `insecure` |
 
 ## Alerts (`PrometheusRule oc-mirror`)
 
@@ -59,4 +60,7 @@ oc_mirror_mirrortarget_images_mirrored / oc_mirror_mirrortarget_images_total
 
 # images per minute
 rate(oc_mirror_manager_images_mirrored_total[10m]) * 60
+
+# drift checks failing (target registry unreachable for the manager)
+increase(oc_mirror_manager_drift_check_errors_total[6h]) > 0
 ```

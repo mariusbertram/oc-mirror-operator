@@ -93,6 +93,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already triaged as `not_affected` in `vex/oc-mirror-operator.openvex.json`.
 
 ### Fixed
+- **`insecure: true` targets: drift check spoke HTTPS; real copy errors were
+  hidden (#186, #190)**: the manager built its drift-check and signature
+  clients without the target's insecure host, so against an HTTP-only
+  registry every check failed with "server gave HTTP response to HTTPS
+  client" and was treated as "assuming present" — images deleted from the
+  target were never re-mirrored. The manager now passes the target host as
+  insecure when `spec.insecure` is set (the client cache is keyed by the
+  insecure-host set, so an insecure and a secure client are never mixed
+  up). Separately, every `MirrorClient` call with an insecure-host fallback
+  returned only the fallback's error when both legs failed, so any failure
+  against an HTTP-only registry — e.g. a copy rejected for an unrelated
+  reason — surfaced as the same HTTPS transport error; both errors are now
+  kept (HTTP first), and no fallback runs once the context is done. Drift
+  checks that cannot reach the registry are counted in the new
+  `oc_mirror_manager_drift_check_errors_total` metric.
 - **Drift sweep: checks failed with "context deadline exceeded" against a
   busy target registry**: the sweep ran 20 checks in parallel, but regclient
   allows only 3 concurrent requests per registry, so the rest queued inside

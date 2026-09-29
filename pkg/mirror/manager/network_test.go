@@ -8,8 +8,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/imagestate"
+	dto "github.com/prometheus/client_model/go"
 	"k8s.io/apimachinery/pkg/runtime"
+
+	ocmetrics "github.com/mariusbertram/oc-mirror-operator/pkg/metrics"
+	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/imagestate"
 )
 
 // fakeExistenceServer serves a fake registry whose manifest endpoint always
@@ -117,7 +120,7 @@ func TestCheckExistNoLock_NonRetryableError_ReturnsImmediately(t *testing.T) {
 func TestCheckExistNoLock_400_DiscardsCachedClientAndRetries(t *testing.T) {
 	host := fakeBadRequestTLSServer(t)
 	m := newTestManagerForSignatureCheck(t, host)
-	before, _ := m.clientCache.GetOrCreate(nil, "")
+	before, _ := m.clientCache.GetOrCreate(m.targetInsecureHosts(), "")
 
 	exists, err := m.checkExistNoLock(context.Background(), fmt.Sprintf("%s/repo:v1", host))
 	if exists {
@@ -126,17 +129,30 @@ func TestCheckExistNoLock_400_DiscardsCachedClientAndRetries(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error from the retried request")
 	}
-	if strings.Contains(err.Error(), "[http 400]") {
-		t.Errorf("expected the returned error to come from the fresh (unconfigured) client, not the original 400: %v", err)
-	}
 
-	after, _ := m.clientCache.GetOrCreate(nil, "")
+	after, _ := m.clientCache.GetOrCreate(m.targetInsecureHosts(), "")
 	if before == after {
 		t.Error("expected checkExistNoLock to discard the cached client and install a fresh one after a 400")
+	}
+	// The fresh client must keep the insecure-host config: the retry reaches
+	// the registry again (and gets its 400) instead of failing on TLS
+	// verification like an HTTPS-only client would.
+	if !strings.Contains(err.Error(), "[http 400]") {
+		t.Errorf("expected the retried request to reach the registry again, got: %v", err)
 	}
 }
 
 // ─── checkDriftOne ─────────────────────────────────────────────────────
+
+// driftCheckErrors reads oc_mirror_manager_drift_check_errors_total for target.
+func driftCheckErrors(t *testing.T, target string) float64 {
+	t.Helper()
+	var metric dto.Metric
+	if err := ocmetrics.ManagerDriftCheckErrorsTotal.WithLabelValues(target).Write(&metric); err != nil {
+		t.Fatalf("read drift_check_errors_total: %v", err)
+	}
+	return metric.GetCounter().GetValue()
+}
 
 func newDriftTestManager() *MirrorManager {
 	m := NewWithClients(nil, nil, "t", "default", "img", "", runtime.NewScheme())
@@ -236,6 +252,7 @@ func TestCheckDriftOne_Mirrored_CheckErr_AssumesPresent(t *testing.T) {
 	m.imageState[dest] = &imagestate.ImageEntry{Source: "src", State: stateMirrored}
 	m.owners[dest] = []string{"is-a"}
 
+	before := driftCheckErrors(t, m.TargetName)
 	m.checkDriftOne(context.Background(), dest, map[string]bool{})
 
 	if !m.mirrored[dest] {
@@ -243,6 +260,10 @@ func TestCheckDriftOne_Mirrored_CheckErr_AssumesPresent(t *testing.T) {
 	}
 	if m.imageState[dest].State != stateMirrored {
 		t.Errorf("expected State to stay Mirrored, got %q", m.imageState[dest].State)
+	}
+	// ...but not silently: every inconclusive check is counted.
+	if got := driftCheckErrors(t, m.TargetName) - before; got != 1 {
+		t.Errorf("drift_check_errors_total increased by %v, want 1", got)
 	}
 }
 

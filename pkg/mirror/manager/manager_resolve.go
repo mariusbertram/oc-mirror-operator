@@ -289,14 +289,39 @@ func (m *MirrorManager) buildCollector(mt *mirrorv1alpha1.MirrorTarget) (*mirror
 // registryClientFor returns a MirrorClient configured for mt's target
 // registry, using the insecure-host override when set.
 func (m *MirrorManager) registryClientFor(mt *mirrorv1alpha1.MirrorTarget) *mirrorclient.MirrorClient {
-	if !mt.Spec.Insecure {
+	hosts := insecureHostsFor(mt)
+	if hosts == nil {
 		return m.mirrorClient
 	}
-	host := mt.Spec.Registry
-	if i := strings.Index(host, "/"); i >= 0 {
-		host = host[:i]
+	return mirrorclient.NewMirrorClient(hosts, m.authConfigPath)
+}
+
+// insecureHostsFor returns the registry host of mt's target when mt sets
+// spec.insecure, nil otherwise — the insecure-host list for its clients.
+func insecureHostsFor(mt *mirrorv1alpha1.MirrorTarget) []string {
+	if !mt.Spec.Insecure {
+		return nil
 	}
-	return mirrorclient.NewMirrorClient([]string{host}, m.authConfigPath)
+	host, _, _ := strings.Cut(mt.Spec.Registry, "/")
+	if host == "" {
+		return nil
+	}
+	return []string{host}
+}
+
+// setTargetInsecureHosts records the insecure-host list the manager's own
+// registry clients use (see MirrorManager.insecureHosts).
+func (m *MirrorManager) setTargetInsecureHosts(hosts []string) {
+	m.insecureHosts.Store(&hosts)
+}
+
+// targetInsecureHosts returns the insecure-host list recorded by the last
+// reconcile (nil before the first one or when the target is not insecure).
+func (m *MirrorManager) targetInsecureHosts() []string {
+	if p := m.insecureHosts.Load(); p != nil {
+		return *p
+	}
+	return nil
 }
 
 // resolveGraphImage builds and pushes the Cincinnati graph-data image (see

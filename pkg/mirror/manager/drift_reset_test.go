@@ -9,6 +9,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	k8sfake "k8s.io/client-go/kubernetes/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
@@ -59,11 +60,19 @@ func countWorkerPods(t *testing.T, cs *k8sfake.Clientset) int {
 }
 
 // An image the drift sweep finds missing from the target registry must be
-// re-mirrored, not flipped back to Mirrored by the next tick (#129).
+// re-mirrored, not flipped back to Mirrored by the next tick (#129). The
+// target is a plain-HTTP registry with spec.insecure set, so this also covers
+// the drift check speaking HTTP to it instead of HTTPS (#190).
 func TestDriftReset_MissingImageIsRedispatched(t *testing.T) {
 	host := fakeExistenceServer(t, false)
 	m, cs := newReconcileTestManager(t, []string{"my-is"}, "my-is")
-	if _, err := m.clientCache.GetOrCreate([]string{host}, ""); err != nil {
+	mt := &mirrorv1alpha1.MirrorTarget{}
+	if err := m.Client.Get(context.Background(), client.ObjectKey{Name: "test", Namespace: "default"}, mt); err != nil {
+		t.Fatal(err)
+	}
+	mt.Spec.Registry = host + "/mirror"
+	mt.Spec.Insecure = true
+	if err := m.Client.Update(context.Background(), mt); err != nil {
 		t.Fatal(err)
 	}
 	dest := host + "/repo:v1"

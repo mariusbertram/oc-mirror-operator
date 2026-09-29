@@ -22,7 +22,35 @@ import (
 // MirrorClient handles image mirroring using regclient
 type MirrorClient struct {
 	rc         *regclient.RegClient
-	rcFallback *regclient.RegClient // HTTP fallback for insecure hosts
+	rcFallback *regclient.RegClient // HTTPS (skip-verify) fallback for insecure hosts
+}
+
+// withFallback runs call against the primary client and, if that fails and an
+// insecure-host fallback client exists, once more against the fallback. The
+// primary client speaks plain HTTP to insecure hosts and the fallback HTTPS
+// without certificate verification, so for a registry that only speaks one of
+// the two, one leg always fails at the transport layer. When both legs fail,
+// both errors are returned: previously only the fallback's error survived, so
+// against an HTTP-only registry every failure — whatever its real cause —
+// surfaced as "server gave HTTP response to HTTPS client" (#186). No fallback
+// is attempted once ctx is done: the second leg would fail on the same
+// expired context and only bury the original error.
+func withFallback[T any](ctx context.Context, c *MirrorClient, call func(*regclient.RegClient) (T, error)) (T, error) {
+	v, err := call(c.rc)
+	if err == nil || c.rcFallback == nil || ctx.Err() != nil {
+		return v, err
+	}
+	fv, ferr := call(c.rcFallback)
+	if ferr == nil {
+		return fv, nil
+	}
+	return fv, fallbackError(err, ferr)
+}
+
+// fallbackError combines the primary and fallback errors of withFallback;
+// errors.Is/As match either.
+func fallbackError(primary, fallback error) error {
+	return fmt.Errorf("%w (insecure-registry fallback over HTTPS also failed: %w)", primary, fallback)
 }
 
 // largeBlobThreshold is the size above which blobs are pre-buffered to disk
@@ -156,10 +184,10 @@ func (c *MirrorClient) DownloadToOCILayout(ctx context.Context, src string, ociD
 	if len(platforms) > 0 {
 		opts = append(opts, regclient.ImageWithPlatforms(platforms))
 	}
-	if err := c.rc.ImageCopy(ctx, srcRef, dstRef, opts...); err != nil {
-		if c.rcFallback != nil {
-			return c.rcFallback.ImageCopy(ctx, srcRef, dstRef, opts...)
-		}
+	_, err = withFallback(ctx, c, func(rc *regclient.RegClient) (struct{}, error) {
+		return struct{}{}, rc.ImageCopy(ctx, srcRef, dstRef, opts...)
+	})
+	if err != nil {
 		return fmt.Errorf("failed to download %s to OCI layout: %w", src, err)
 	}
 	return nil
@@ -169,12 +197,13 @@ func (c *MirrorClient) DownloadToOCILayout(ctx context.Context, src string, ociD
 // It returns the effective destination reference that was actually pushed (which may
 // differ from dest when src is a digest-only reference and a tag is synthesized).
 func (c *MirrorClient) CopyImage(ctx context.Context, src, dest string) (string, error) {
-	effectiveDest, err := c.copyImageWith(ctx, c.rc, src, dest)
-	if err != nil && c.rcFallback != nil {
-		oclog.Printf("HTTP failed for %s, falling back to HTTPS (skip-verify): %v\n", dest, err)
-		return c.copyImageWith(ctx, c.rcFallback, src, dest)
-	}
-	return effectiveDest, err
+	return withFallback(ctx, c, func(rc *regclient.RegClient) (string, error) {
+		effectiveDest, err := c.copyImageWith(ctx, rc, src, dest)
+		if err != nil && rc == c.rc && c.rcFallback != nil && ctx.Err() == nil {
+			oclog.Printf("HTTP failed for %s, falling back to HTTPS (skip-verify): %v\n", dest, err)
+		}
+		return effectiveDest, err
+	})
 }
 
 func (c *MirrorClient) copyImageWith(ctx context.Context, rc *regclient.RegClient, src, dest string) (string, error) {
@@ -232,11 +261,9 @@ func (c *MirrorClient) copyImageWith(ctx context.Context, rc *regclient.RegClien
 // Returns (true, nil) if the image exists, (false, nil) if it does not exist
 // (404/MANIFEST_UNKNOWN), or (false, err) for other errors (auth, network).
 func (c *MirrorClient) CheckExist(ctx context.Context, image string) (bool, error) {
-	exists, err := c.checkExistWith(ctx, c.rc, image)
-	if err != nil && c.rcFallback != nil {
-		return c.checkExistWith(ctx, c.rcFallback, image)
-	}
-	return exists, err
+	return withFallback(ctx, c, func(rc *regclient.RegClient) (bool, error) {
+		return c.checkExistWith(ctx, rc, image)
+	})
 }
 
 func (c *MirrorClient) checkExistWith(ctx context.Context, rc *regclient.RegClient, image string) (bool, error) {
@@ -258,11 +285,9 @@ func (c *MirrorClient) checkExistWith(ctx context.Context, rc *regclient.RegClie
 
 // GetDigest returns the digest of an image
 func (c *MirrorClient) GetDigest(ctx context.Context, image string) (string, error) {
-	digest, err := c.getDigestWith(ctx, c.rc, image)
-	if err != nil && c.rcFallback != nil {
-		return c.getDigestWith(ctx, c.rcFallback, image)
-	}
-	return digest, err
+	return withFallback(ctx, c, func(rc *regclient.RegClient) (string, error) {
+		return c.getDigestWith(ctx, rc, image)
+	})
 }
 
 func (c *MirrorClient) getDigestWith(ctx context.Context, rc *regclient.RegClient, image string) (string, error) {
@@ -299,70 +324,60 @@ func (c *MirrorClient) BlobExists(ctx context.Context, r ref.Ref, d descriptor.D
 // ManifestHead performs a HEAD request for a manifest, returning its descriptor
 // without downloading the body.
 func (c *MirrorClient) ManifestHead(ctx context.Context, r ref.Ref) (manifest.Manifest, error) {
-	m, err := c.rc.ManifestHead(ctx, r)
-	if err != nil && c.rcFallback != nil {
-		return c.rcFallback.ManifestHead(ctx, r)
-	}
-	return m, err
+	return withFallback(ctx, c, func(rc *regclient.RegClient) (manifest.Manifest, error) {
+		return rc.ManifestHead(ctx, r)
+	})
 }
 
 // ManifestGet retrieves a manifest from the registry.
 func (c *MirrorClient) ManifestGet(ctx context.Context, r ref.Ref) (manifest.Manifest, error) {
-	m, err := c.rc.ManifestGet(ctx, r)
-	if err != nil && c.rcFallback != nil {
-		return c.rcFallback.ManifestGet(ctx, r)
-	}
-	return m, err
+	return withFallback(ctx, c, func(rc *regclient.RegClient) (manifest.Manifest, error) {
+		return rc.ManifestGet(ctx, r)
+	})
 }
 
 // ManifestPut pushes a manifest to the registry.
 func (c *MirrorClient) ManifestPut(ctx context.Context, r ref.Ref, m manifest.Manifest) error {
-	err := c.rc.ManifestPut(ctx, r, m)
-	if err != nil && c.rcFallback != nil {
-		return c.rcFallback.ManifestPut(ctx, r, m)
-	}
+	_, err := withFallback(ctx, c, func(rc *regclient.RegClient) (struct{}, error) {
+		return struct{}{}, rc.ManifestPut(ctx, r, m)
+	})
 	return err
 }
 
 // BlobGet retrieves a blob from the registry.
 func (c *MirrorClient) BlobGet(ctx context.Context, r ref.Ref, d descriptor.Descriptor) (blob.Reader, error) {
-	br, err := c.rc.BlobGet(ctx, r, d)
-	if err != nil && c.rcFallback != nil {
-		return c.rcFallback.BlobGet(ctx, r, d)
-	}
-	return br, err
+	return withFallback(ctx, c, func(rc *regclient.RegClient) (blob.Reader, error) {
+		return rc.BlobGet(ctx, r, d)
+	})
 }
 
 // BlobPut pushes a blob to the registry.
 func (c *MirrorClient) BlobPut(ctx context.Context, r ref.Ref, d descriptor.Descriptor, rdr io.Reader) (descriptor.Descriptor, error) {
-	desc, err := c.rc.BlobPut(ctx, r, d, rdr)
-	if err != nil && c.rcFallback != nil {
-		// Reset reader for fallback if possible (e.g. *bytes.Reader).
-		if seeker, ok := rdr.(io.Seeker); ok {
-			_, _ = seeker.Seek(0, io.SeekStart)
+	return withFallback(ctx, c, func(rc *regclient.RegClient) (descriptor.Descriptor, error) {
+		if rc != c.rc {
+			// Reset reader for fallback if possible (e.g. *bytes.Reader).
+			if seeker, ok := rdr.(io.Seeker); ok {
+				_, _ = seeker.Seek(0, io.SeekStart)
+			}
 		}
-		return c.rcFallback.BlobPut(ctx, r, d, rdr)
-	}
-	return desc, err
+		return rc.BlobPut(ctx, r, d, rdr)
+	})
 }
 
 // BlobCopy copies a blob from src to dst, using cross-repo mount when possible.
 // Large blobs are pre-buffered to disk via the reader hook to avoid upload timeouts.
 func (c *MirrorClient) BlobCopy(ctx context.Context, src, dst ref.Ref, d descriptor.Descriptor) error {
-	err := c.rc.BlobCopy(ctx, src, dst, d, regclient.BlobWithReaderHook(bufferLargeBlobs))
-	if err != nil && c.rcFallback != nil {
-		return c.rcFallback.BlobCopy(ctx, src, dst, d, regclient.BlobWithReaderHook(bufferLargeBlobs))
-	}
+	_, err := withFallback(ctx, c, func(rc *regclient.RegClient) (struct{}, error) {
+		return struct{}{}, rc.BlobCopy(ctx, src, dst, d, regclient.BlobWithReaderHook(bufferLargeBlobs))
+	})
 	return err
 }
 
 // ImageConfig retrieves the OCI image config for a given ref and platform.
 func (c *MirrorClient) ImageConfig(ctx context.Context, r ref.Ref) (*blob.BOCIConfig, error) {
-	cfg, err := c.rc.ImageConfig(ctx, r, regclient.ImageWithPlatform("linux/amd64"))
-	if err != nil && c.rcFallback != nil {
-		return c.rcFallback.ImageConfig(ctx, r, regclient.ImageWithPlatform("linux/amd64"))
-	}
-	return cfg, err
+	return withFallback(ctx, c, func(rc *regclient.RegClient) (*blob.BOCIConfig, error) {
+		return rc.ImageConfig(ctx, r, regclient.ImageWithPlatform("linux/amd64"))
+	})
 }
 
 // DeleteManifest deletes an image from the registry by reference. Returns nil
@@ -375,10 +390,9 @@ func (c *MirrorClient) ImageConfig(ctx context.Context, r ref.Ref) (*blob.BOCICo
 // components of a remaining release version in openshift/release. Digest
 // references delete the manifest itself.
 func (c *MirrorClient) DeleteManifest(ctx context.Context, image string) error {
-	err := c.deleteManifestWith(ctx, c.rc, image)
-	if err != nil && c.rcFallback != nil {
-		return c.deleteManifestWith(ctx, c.rcFallback, image)
-	}
+	_, err := withFallback(ctx, c, func(rc *regclient.RegClient) (struct{}, error) {
+		return struct{}{}, c.deleteManifestWith(ctx, rc, image)
+	})
 	return err
 }
 
