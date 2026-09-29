@@ -16,6 +16,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/regclient/regclient/types/blob"
+	"github.com/regclient/regclient/types/descriptor"
+	"github.com/regclient/regclient/types/manifest"
+	"github.com/regclient/regclient/types/ref"
 	helmchart "helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/chart/loader"
 	"helm.sh/helm/v3/pkg/chartutil"
@@ -38,14 +42,46 @@ var defaultImagePaths = []string{
 	"{.spec.containers[*].image}",
 }
 
+// ociScheme prefixes chart references stored in an OCI registry, both in
+// repository URLs and in index.yaml download URLs (e.g. Bitnami's index
+// points at oci://registry-1.docker.io/bitnamicharts/<chart>:<version>).
+const ociScheme = "oci://"
+
+// helmChartLayerMediaTypes are the layer media types of a Helm chart archive
+// in an OCI artifact: the current one and the one Helm 3.0–3.7 pushed.
+var helmChartLayerMediaTypes = map[string]bool{
+	"application/vnd.cncf.helm.chart.content.v1.tar+gzip": true,
+	"application/tar+gzip":                                true,
+}
+
+// maxChartArchiveSize bounds a downloaded chart archive.
+const maxChartArchiveSize = 64 * 1024 * 1024
+
+// OCIClient is the part of the registry client needed to pull a chart stored
+// as an OCI artifact. *mirrorclient.MirrorClient implements it, so OCI charts
+// are pulled with the same credentials and insecure-host handling as images.
+type OCIClient interface {
+	ManifestGet(ctx context.Context, r ref.Ref) (manifest.Manifest, error)
+	BlobGet(ctx context.Context, r ref.Ref, d descriptor.Descriptor) (blob.Reader, error)
+}
+
 // Resolver downloads Helm charts from repositories and extracts container
 // image references from their rendered manifests.
 type Resolver struct {
 	httpClient *http.Client
+	oci        OCIClient
 }
 
+// New returns a Resolver for HTTP(S) chart repositories only; charts stored
+// in OCI registries (oci://) fail with a clear error. Use NewWithOCI to
+// support those too.
 func New() *Resolver {
-	return &Resolver{httpClient: &http.Client{Timeout: 2 * time.Minute}}
+	return NewWithOCI(nil)
+}
+
+// NewWithOCI returns a Resolver that pulls oci:// charts through oci.
+func NewWithOCI(oci OCIClient) *Resolver {
+	return &Resolver{httpClient: &http.Client{Timeout: 2 * time.Minute}, oci: oci}
 }
 
 // ResolveChart downloads the named chart from the repository at repoURL
@@ -53,10 +89,23 @@ func New() *Resolver {
 // the latest non-prerelease version, matching Helm CLI defaults), renders its
 // templates, and returns every distinct container image reference found,
 // matching defaultImagePaths plus chart.ImagePaths.
+//
+// For an OCI repository (repoURL oci://<registry>/<namespace>) there is no
+// index.yaml; the chart is pulled from <repoURL>/<name>:<version>, so a
+// version is required.
 func (r *Resolver) ResolveChart(ctx context.Context, repoURL string, chart mirrorv1alpha1.Chart) ([]string, error) {
-	chartURL, err := r.resolveChartURL(ctx, repoURL, chart.Name, chart.Version)
-	if err != nil {
-		return nil, fmt.Errorf("resolve chart URL: %w", err)
+	var chartURL string
+	if strings.HasPrefix(repoURL, ociScheme) {
+		if chart.Version == "" {
+			return nil, fmt.Errorf("chart %q: a version is required for OCI repository %s (there is no index to pick the latest from)", chart.Name, repoURL)
+		}
+		chartURL = strings.TrimSuffix(repoURL, "/") + "/" + chart.Name + ":" + chart.Version
+	} else {
+		var err error
+		chartURL, err = r.resolveChartURL(ctx, repoURL, chart.Name, chart.Version)
+		if err != nil {
+			return nil, fmt.Errorf("resolve chart URL: %w", err)
+		}
 	}
 
 	ch, err := r.downloadChart(ctx, chartURL)
@@ -99,9 +148,18 @@ func (r *Resolver) resolveChartURL(ctx context.Context, repoURL, name, version s
 
 // downloadChart fetches and loads a chart archive (.tgz) directly from an
 // in-memory buffer — chart archives are small enough (typically KB to a few
-// MB) that no temp file is needed.
+// MB) that no temp file is needed. oci:// references are pulled from the
+// registry (#187); everything else over HTTP(S).
 func (r *Resolver) downloadChart(ctx context.Context, chartURL string) (*helmchart.Chart, error) {
-	data, err := r.get(ctx, chartURL)
+	var (
+		data []byte
+		err  error
+	)
+	if strings.HasPrefix(chartURL, ociScheme) {
+		data, err = r.pullOCIChart(ctx, chartURL)
+	} else {
+		data, err = r.get(ctx, chartURL)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("fetch chart archive: %w", err)
 	}
@@ -110,6 +168,46 @@ func (r *Resolver) downloadChart(ctx context.Context, chartURL string) (*helmcha
 		return nil, fmt.Errorf("load chart archive: %w", err)
 	}
 	return ch, nil
+}
+
+// pullOCIChart pulls the chart archive layer of the OCI artifact at chartURL
+// (oci://<registry>/<repo>:<tag> or @<digest>).
+func (r *Resolver) pullOCIChart(ctx context.Context, chartURL string) ([]byte, error) {
+	if r.oci == nil {
+		return nil, fmt.Errorf("%s is stored in an OCI registry, but no registry client is configured", chartURL)
+	}
+	cref, err := ref.New(strings.TrimPrefix(chartURL, ociScheme))
+	if err != nil {
+		return nil, fmt.Errorf("parse %s: %w", chartURL, err)
+	}
+	m, err := r.oci.ManifestGet(ctx, cref)
+	if err != nil {
+		return nil, fmt.Errorf("get manifest of %s: %w", chartURL, err)
+	}
+	imager, ok := m.(manifest.Imager)
+	if !ok {
+		return nil, fmt.Errorf("%s is not a single-artifact manifest (media type %s)", chartURL, m.GetDescriptor().MediaType)
+	}
+	layers, err := imager.GetLayers()
+	if err != nil {
+		return nil, fmt.Errorf("list layers of %s: %w", chartURL, err)
+	}
+	for _, layer := range layers {
+		if !helmChartLayerMediaTypes[layer.MediaType] {
+			continue
+		}
+		br, err := r.oci.BlobGet(ctx, cref, layer)
+		if err != nil {
+			return nil, fmt.Errorf("get chart layer of %s: %w", chartURL, err)
+		}
+		defer func() { _ = br.Close() }()
+		data, err := io.ReadAll(io.LimitReader(br, maxChartArchiveSize))
+		if err != nil {
+			return nil, fmt.Errorf("read chart layer of %s: %w", chartURL, err)
+		}
+		return data, nil
+	}
+	return nil, fmt.Errorf("%s has no Helm chart layer", chartURL)
 }
 
 func (r *Resolver) get(ctx context.Context, url string) ([]byte, error) {
@@ -125,7 +223,7 @@ func (r *Resolver) get(ctx context.Context, url string) ([]byte, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("fetch %s: HTTP %d", url, resp.StatusCode)
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024*1024))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxChartArchiveSize))
 	if err != nil {
 		return nil, fmt.Errorf("read response body: %w", err)
 	}
