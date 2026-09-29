@@ -364,24 +364,50 @@ jobs:
           #   olm-upgrade     – OLM bundle upgrade tests (run in phase 2)
 
       # ── Phase 2: OLM upgrade test ──────────────────────────────────────
-      - name: Download and install operator-sdk
-        run: make operator-sdk
-
+      # Runs only when the bundle sources changed since the latest release tag
+      # reachable from HEAD and that release's bundle image is published.
       - name: Determine bundle versions for OLM upgrade test
         id: bundle-ver
         run: |
-          # Old bundle: from the latest release tag (the "before" state for the upgrade)
-          OLD_TAG=$(git tag --sort=-version:refname | head -1)
+          # Old bundle: the latest release tag in HEAD's history (the "before"
+          # state for the upgrade). --merged ignores tags on commits HEAD doesn't
+          # contain, e.g. a release tagged on main after this branch forked.
+          OLD_TAG=$(git tag --merged HEAD --list 'v*' --sort=-version:refname | head -1)
           OLD_VER="${OLD_TAG#v}"
-          # New bundle: fixed CI dev version — always higher than any release tag.
+          # New bundle: fixed CI dev version.
           # Real version management happens in release.yml when a v* tag is pushed.
           NEW_VER="0.0.99"
           echo "old_tag=$OLD_TAG" >> "$GITHUB_OUTPUT"
           echo "old_ver=$OLD_VER"  >> "$GITHUB_OUTPUT"
           echo "new_ver=$NEW_VER"  >> "$GITHUB_OUTPUT"
-          echo "Old bundle: $OLD_TAG ($OLD_VER) → New bundle: $NEW_VER"
+
+          RUN_UPGRADE=true
+          # The bundle is generated from config/ (CRDs, RBAC, CSV base, manager
+          # deployment), which is itself generated from api/; bundle.Dockerfile
+          # carries the bundle labels.
+          BUNDLE_SOURCES=(api config bundle.Dockerfile)
+          if [ -z "$OLD_TAG" ]; then
+            echo "::notice::No release tag in HEAD's history, skipping OLM upgrade test"
+            RUN_UPGRADE=false
+          elif git diff --quiet "$OLD_TAG" HEAD -- "${BUNDLE_SOURCES[@]}"; then
+            echo "::notice::Bundle sources (${BUNDLE_SOURCES[*]}) unchanged since $OLD_TAG, skipping OLM upgrade test"
+            RUN_UPGRADE=false
+          elif ! docker manifest inspect "ghcr.io/${{ github.repository }}-bundle:$OLD_VER" >/dev/null 2>&1; then
+            # E.g. the tag was just pushed and release.yml hasn't published it yet.
+            echo "::warning::Bundle image for $OLD_TAG is not published (yet), skipping OLM upgrade test"
+            RUN_UPGRADE=false
+          else
+            echo "Old bundle: $OLD_TAG ($OLD_VER) → New bundle: $NEW_VER"
+            git diff --stat "$OLD_TAG" HEAD -- "${BUNDLE_SOURCES[@]}"
+          fi
+          echo "run_upgrade=$RUN_UPGRADE" >> "$GITHUB_OUTPUT"
+
+      - name: Download and install operator-sdk
+        if: steps.bundle-ver.outputs.run_upgrade == 'true'
+        run: make operator-sdk
 
       - name: Pull old bundle from latest release and push to local registry
+        if: steps.bundle-ver.outputs.run_upgrade == 'true'
         run: |
           # Use the pre-built release bundle from ghcr.io unchanged — it has the
           # correct ghcr.io image references set by release.yml, unlike the bundle/
@@ -392,6 +418,7 @@ jobs:
           docker push localhost:5001/oc-mirror-bundle:${{ steps.bundle-ver.outputs.old_ver }}
 
       - name: Build new bundle image and push to local registry
+        if: steps.bundle-ver.outputs.run_upgrade == 'true'
         run: |
           IMG_CONTROLLER=example.com/oc-mirror-controller:v0.0.1 \
           IMG_MANAGER=example.com/oc-mirror-manager:v0.0.1 \
@@ -404,9 +431,11 @@ jobs:
           docker push localhost:5001/oc-mirror-bundle:${{ steps.bundle-ver.outputs.new_ver }}
 
       - name: Install OLM
+        if: steps.bundle-ver.outputs.run_upgrade == 'true'
         run: bin/operator-sdk olm install --timeout 5m
 
       - name: "Phase 2: Run OLM upgrade E2E tests"
+        if: steps.bundle-ver.outputs.run_upgrade == 'true'
         run: |
           OLD_BUNDLE_IMG=localhost:5001/oc-mirror-bundle:${{ steps.bundle-ver.outputs.old_ver }} \
           NEW_BUNDLE_IMG=localhost:5001/oc-mirror-bundle:${{ steps.bundle-ver.outputs.new_ver }} \
