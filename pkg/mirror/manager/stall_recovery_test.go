@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -192,6 +193,113 @@ func TestRunDriftSweep_HangingRegistryDoesNotWedgeSweep(t *testing.T) {
 	if m.driftSweepRunning {
 		t.Error("expected driftSweepRunning to be reset after the sweep")
 	}
+}
+
+// hangOnceRegistry serves a fake registry whose manifest endpoint hangs (until
+// the request is cancelled) for the first hangFor manifest requests and
+// answers 404 afterwards. It returns the host and a counter of manifest
+// requests seen.
+func hangOnceRegistry(t *testing.T, hangFor int32) (string, *atomic.Int32) {
+	t.Helper()
+	var manifestReqs atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == registryPingPath {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if strings.Contains(r.URL.Path, "/manifests/") && manifestReqs.Add(1) <= hangFor {
+			<-r.Context().Done()
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	return strings.TrimPrefix(srv.URL, "http://"), &manifestReqs
+}
+
+// A check that runs into driftCheckTimeout (e.g. queued behind a registry
+// that is rate-limiting for a while) must be retried once after the first
+// pass instead of being written off as "assuming present" right away — the
+// retry here finds the image missing and resets it for re-mirroring.
+func TestRunDriftSweep_RetriesTimedOutCheckOnce(t *testing.T) {
+	orig := driftCheckTimeout
+	// Long enough to outlast regclient's per-host backoff (0.1s << n) that the
+	// first, timed-out request leaves behind for the retry.
+	driftCheckTimeout = time.Second
+	t.Cleanup(func() { driftCheckTimeout = orig })
+
+	host, manifestReqs := hangOnceRegistry(t, 1)
+	m := newTestManagerForSignatureCheck(t, host)
+	dest := host + "/example/img:v1"
+	m.imageState = imagestate.ImageState{dest: {Source: "src", State: stateMirrored}}
+	m.owners = map[string][]string{dest: {"is"}}
+	m.mirrored = map[string]bool{dest: true}
+	m.driftSweepRunning = true
+
+	m.runDriftSweep(context.Background(), []string{dest}, nil)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if got := m.imageState[dest].State; got != statePending {
+		t.Errorf("state = %q, want %q: the retried check should have found the image missing", got, statePending)
+	}
+	if m.mirrored[dest] {
+		t.Error("expected the mirrored fast-path flag to be cleared")
+	}
+	if got := manifestReqs.Load(); got < 2 {
+		t.Errorf("manifest requests = %d, want at least 2 (first attempt + retry)", got)
+	}
+	if m.driftSweepRunning {
+		t.Error("expected driftSweepRunning to be reset after the sweep")
+	}
+}
+
+func TestCheckDriftAttempt_Timeout(t *testing.T) {
+	orig := driftCheckTimeout
+	driftCheckTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { driftCheckTimeout = orig })
+
+	host, _ := hangOnceRegistry(t, 1<<30)
+	dest := host + "/example/img:v1"
+	newManager := func() *MirrorManager {
+		m := newTestManagerForSignatureCheck(t, host)
+		m.imageState = imagestate.ImageState{dest: {Source: "src", State: stateMirrored}}
+		m.owners = map[string][]string{dest: {"is"}}
+		m.mirrored = map[string]bool{}
+		return m
+	}
+
+	t.Run("first attempt asks for a retry and leaves the entry alone", func(t *testing.T) {
+		m := newManager()
+		if !m.checkDriftAttempt(context.Background(), dest, nil, false) {
+			t.Error("expected a timed-out non-final attempt to ask for a retry")
+		}
+		if m.mirrored[dest] {
+			t.Error("expected no result to be applied for a timed-out non-final attempt")
+		}
+		if got := m.imageState[dest].State; got != stateMirrored {
+			t.Errorf("state = %q, want %q", got, stateMirrored)
+		}
+	})
+
+	t.Run("final attempt assumes present", func(t *testing.T) {
+		m := newManager()
+		if m.checkDriftAttempt(context.Background(), dest, nil, true) {
+			t.Error("a final attempt must never ask for a retry")
+		}
+		if !m.mirrored[dest] {
+			t.Error("expected the final attempt to fall back to assuming the image is present")
+		}
+	})
+
+	t.Run("cancelled sweep does not retry", func(t *testing.T) {
+		m := newManager()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if m.checkDriftAttempt(ctx, dest, nil, false) {
+			t.Error("expected no retry once the sweep's own context is cancelled")
+		}
+	})
 }
 
 func TestHandleReadyz(t *testing.T) {

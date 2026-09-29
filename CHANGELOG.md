@@ -93,6 +93,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already triaged as `not_affected` in `vex/oc-mirror-operator.openvex.json`.
 
 ### Fixed
+- **Drift sweep: checks failed with "context deadline exceeded" against a
+  busy target registry**: the sweep ran 20 checks in parallel, but regclient
+  allows only 3 concurrent requests per registry, so the rest queued inside
+  regclient, together with regclient's per-host backoff after 429/5xx
+  responses, while their 2-minute per-check deadline was already running.
+  Those checks were logged as `CheckExist error … context deadline exceeded
+  – assuming present` and the images went unchecked until the next sweep.
+  The sweep now runs 3 checks in parallel (the same effective throughput),
+  and checks that still time out are retried once at the end of the sweep
+  before falling back to "assuming present".
 - **e2e: controller-runtime logger never set**: catalog FBC e2e tests call
   `FilterFBC`, which logs via `pkg/oclog`; the suite never called
   `logf.SetLogger`, so controller-runtime printed a
