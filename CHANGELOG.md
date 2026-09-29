@@ -7,90 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-- **Working ESLint setup for the console plugin UI**: `ui/package.json` had a
-  `lint` script and `eslint`/`typescript-eslint` as devDependencies, but no
-  `eslint.config.js` (ESLint v9 requires flat config), so `npm run lint`
-  failed immediately, and no CI job ever ran it. Added `ui/eslint.config.js`
-  (typescript-eslint recommended rules + the two classic
-  `eslint-plugin-react-hooks` correctness rules — not its v7 "recommended"
-  preset, which bundles React Compiler-oriented rules that don't apply to
-  this React 17 codebase and would just be noise) and a `ui-lint` job in
-  `.github/workflows/lint.yml` that runs `npm run lint` and a `tsc --noEmit`
-  type-check on every push/PR. Also removed a handful of pre-existing dead
-  code the new lint config surfaced (an unused `post()` helper in
-  `api/client.ts`, unused imports/a dead function in `CatalogBrowser.tsx`)
-  and replaced `React.FC<any>` with `React.FC<Record<string, unknown>>` in
-  the plugin's thin page-wrapper components.
-- **MirrorTarget settings editable from the console plugin**: `registry`,
-  `insecure`, `authSecret`, `concurrency`, `batchSize`, `pollInterval`, and
-  `checkExistInterval` had no write path at all — the resource API only
-  exposed read-only MirrorTarget endpoints. Added `GET`/`PATCH
-  /api/v1/targets/{namespace}/{name}/spec` and a "Settings" tab on the
-  MirrorTarget detail page. More infrastructure-oriented fields (`expose`,
-  `proxy`, `caBundle`, `workerStorage`, pod resources/tolerations) remain
-  `kubectl`/YAML-only.
-- **Operator catalog list editable from the console plugin**: previously only
-  package filters for an already-resolved catalog could be edited (via
-  `.../catalogs/{slug}/packages`) — adding, removing, or reconfiguring
-  (`targetCatalog`/`targetTag`/`full`/`skipDependencies`) a catalog itself
-  required `kubectl`. Added `GET`/`PATCH
-  /api/v1/imagesets/{namespace}/{name}/operators` and an "Operators" tab on
-  the ImageSet detail page. Saving preserves existing package filters and
-  cosign signature verification config for catalogs that are kept (matched by
-  catalog reference), since those aren't part of this wire format.
-- **`requireSignedImages` toggle in the console plugin**: added `GET`/`PATCH
-  /api/v1/imagesets/{namespace}/{name}/settings` and a switch in the
-  ImageSet Overview tab.
-- **Additional Images editable from the console plugin**: `spec.mirror.additionalImages`
-  had no `GET`/`PATCH` API endpoint or UI, unlike Helm repositories and blocked
-  images, which already had both. Added `GET`/`PATCH
-  /api/v1/imagesets/{namespace}/{name}/additional-images` and a new
-  "Additional Images" tab on the ImageSet detail page for adding, editing, and
-  removing entries (name, optional target repo, optional target tag).
-- **Force Resync trigger**: a new `mirror.openshift.io/force-resync`
-  one-shot ImageSet annotation (and matching `PATCH
-  .../force-resync` API endpoint / "Force Resync" button in the console
-  plugin) resets every image owned by the ImageSet back to `Pending`,
-  independent of its current state — including images already `Mirrored` —
-  so all of them are re-verified and re-transferred to the target registry.
-  Unlike the existing `recollect` trigger, which only forces re-resolution of
-  the upstream content list and leaves already-mirrored images untouched,
-  this is for recovering from target-registry data loss or suspected
-  corruption of previously-mirrored content.
-- **Operator bundle images are mirrored ahead of their related images**: the
-  manager now tags each operator-origin imagestate entry with
-  `isBundleImage` (true for a bundle's own container image, false for the
-  operand/related images it references) and dispatches pending bundle
-  images to worker batches before anything else. OLM installs/upgrades to
-  the bundle image directly, so this both gets operators usable sooner and
-  reaches the `CatalogReady` mirroring gate (which waits on every
-  operator-origin image) faster overall.
-
-### Security
-- **VEX re-pinned after dependency bumps**: the `not_affected` statements for
-  containerd GO-2026-5064 / GO-2026-5338 / GO-2026-5622 and x/crypto
-  GO-2026-5932 named the exact module versions they were triaged against
-  (`containerd@v1.7.33`, `x/crypto@v0.53.0`), so the containerd bump to
-  v1.7.35 made them stop matching and the release image scan failed on the
-  two Critical findings. Re-triaged against `containerd@v1.7.35` and
-  `x/crypto@v0.55.0`: still only containerd's client packages (`remotes`,
-  `content`, `images`, …, pulled in by Helm's OCI registry client) are
-  linked into any binary — no CRI plugin or checkpoint/restore code — and
-  the v1 module line still has no fixed version. Dropping containerd
-  entirely requires Helm ≥ 3.21, which in turn requires Go 1.26 and
-  k8s.io 0.36+; that upgrade is tracked separately.
-- **Go toolchain bumped 1.25.7 → 1.25.13**, resolving 26 reachable
-  standard-library vulnerabilities flagged by `govulncheck` (call-graph
-  confirmed as actually reachable from this codebase, not just present in
-  `go.sum`). All five `Dockerfile*` base images were re-pinned to
-  `golang:1.25.13` by digest (verified against the `Docker-Content-Digest`
-  registry API response and a local `sha256sum` of the downloaded manifest
-  before pinning). The remaining `govulncheck` findings
-  (`golang.org/x/crypto/openpgp` — GO-2026-5932; `containerd` —
-  GO-2026-5622, GO-2026-5338, GO-2026-5064) are third-party modules with no
-  upstream fix available and are unaffected by this change; they are
-  already triaged as `not_affected` in `vex/oc-mirror-operator.openvex.json`.
+### Changed
+- **CI: OLM upgrade e2e test replaced by bundle validation**: the
+  `olm-upgrade` e2e phase installed the previous release's bundle from GHCR
+  and upgraded it via `operator-sdk run bundle-upgrade`. It broke whenever a
+  release tag was pushed while its `release.yml` run hadn't published the
+  bundle yet (`manifest unknown`), tested a semver downgrade (the CI bundle
+  was always `0.0.99`), and created its MirrorTarget only after the upgrade,
+  so it never checked that existing resources survive one. Removed the test,
+  the phase and the local `kind-registry` it needed; the
+  `build-bundle-check` job now runs `make bundle` (default
+  `operator-sdk bundle validate`) plus
+  `operator-sdk bundle validate --select-optional suite=operatorframework`
+  before building the bundle image.
 
 ### Fixed
 - **Helm charts stored in OCI registries (#187)**: repositories whose
@@ -149,6 +78,112 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `logf.SetLogger`, so controller-runtime printed a
   "log.SetLogger(...) was never called" stack trace and dropped the lines.
   `BeforeSuite` now sets a zap logger writing to `GinkgoWriter`.
+
+---
+
+## [v0.1.2] - 2026-09-29
+
+### Added
+- **Multi-architecture release payload** (`platform.architectures: [multi]`):
+  the manifest-list payload Cincinnati returns for `arch=multi` is now
+  mirrored. Release metadata is read from the `linux/amd64` member (or the
+  first one), and every component manifest list is mirrored with all its
+  platforms. Before, resolution failed with "no manifest found for
+  linux/multi" (#177).
+- **Select individual operator bundles by name** (`packages[].bundles`,
+  oc-mirror v2 parity): a package can pin an exact set of bundles that do not
+  form a contiguous version range. The filtered catalog keeps exactly those
+  bundles (plus their dependencies) and repairs the upgrade graph so every
+  channel keeps a single head.
+- **Pin bundles from the console plugin**: the catalog browser has a
+  "Pin specific bundles" toggle per package that writes `packages[].bundles`.
+
+### Fixed
+- **FBC files over 64 MiB were silently truncated (#181)**: catalog
+  extraction read every `configs/` file through a 64 MiB `LimitReader`, so
+  larger files (up to ~190 MiB in `redhat-operator-index` v4.16) were cut off.
+  The whole catalog then failed with a bare "unexpected EOF", or a package was
+  dropped silently. The cap is now 512 MiB per file, and a file over it fails
+  the catalog with an explicit error.
+
+### Security
+- **VEX re-pinned to containerd v1.7.36**: after the Dependabot bump the
+  `not_affected` statements for GO-2026-5064, GO-2026-5338 and GO-2026-5622
+  no longer matched, and the release scan failed. v1.7.36 has no fix for the
+  v1 module; the vulnerable CRI checkpoint/restore code is still never
+  reached.
+
+---
+
+## [v0.1.0] - 2026-09-24
+
+### Added
+- **Every configured release architecture is mirrored (#136)**:
+  `platform.architectures` used to resolve only its first element. Each
+  architecture now gets its own Cincinnati graph, verification and
+  `<version>-<arch>` tags.
+- **Configurable retry budget with backoff (#144)**: failed images are
+  retried after an exponential backoff (1 min doubling up to 1 h, ±10 %
+  jitter) instead of on every tick. The budget is set with
+  `MirrorTarget.spec.maxRetries`.
+- **Manager readiness probe (#145)**: `/readyz` reports ready only once the
+  status API listens, so workers no longer report to a manager that cannot
+  accept them yet.
+- **Worker pods spread across nodes**: a preferred pod anti-affinity
+  distributes concurrent workers over nodes; with too few nodes they still
+  share.
+
+### Changed
+- **Worker and cleanup logic moved into `pkg/mirror/worker` and
+  `pkg/mirror/cleanup` (#173)**: both binaries are thin wrappers around them.
+- **Documentation restructured around one reading path (#168).**
+
+### Fixed
+- **Images the drift sweep finds missing are re-mirrored (#129)**, and a
+  drift result is never applied to an entry that changed in the meantime
+  (#149).
+- **Recollect** now reliably retries failed images and rebuilds catalogs
+  (#135), and spec metadata of existing entries is refreshed on resolve
+  (#130).
+- **Cleanup safety**: stale orphans can no longer delete images that are
+  needed again (#133), and cleaning up a tag reference deletes only that tag
+  (#132).
+- **ImageSets removed from a MirrorTarget** are no longer worked on
+  (#131). The state of an ImageSet named like its MirrorTarget is kept
+  (#139). Spec metadata is kept per owner for shared destinations (#160).
+- **Rollouts never run two managers at once (#137).** A MirrorExport whose
+  spec changed before a render succeeded is rebuilt (#138). The resolution and
+  build signatures cover all relevant fields (#134).
+- **Worker status reports are queued (#170)** so they never wait on the
+  reconcile lock. The controller no longer decodes every state ConfigMap for
+  the MirrorTarget totals (#171).
+- **MirrorTarget spec edits from the console are merge patches (#151)**, and
+  workers no longer get an empty pull secret. The source catalog is stored
+  explicitly on image entries (#146).
+
+### Security
+- **Unauthenticated write path of the Resource API closed (#141)**: the
+  manager ran its own copy of the Resource API with the coordinator service
+  account, reachable on port 8081 from every source. Without a token it fell
+  back to that service account, so anyone reaching the manager pod could
+  change what gets mirrored. The embedded API was removed from the manager.
+
+---
+
+## [v0.0.47] - 2026-09-24
+
+### Fixed
+- **Manager could hang on a stalled registry connection**: registry,
+  Cincinnati and cosign calls had no deadline. A hung drift check blocked
+  every later sweep, and a hung resolve blocked the whole reconcile loop.
+  Each drift check is now bounded to 2 minutes and each resolve to one hour
+  (retried on the next tick on timeout).
+
+---
+
+## [v0.0.46] - 2026-09-24
+
+### Fixed
 - **Operator catalogs could still offer bundles that were not mirrored yet**:
   - *Digest/state race*: the manager writes a newly resolved catalog digest
     onto the ImageSet as soon as it resolves it, but that digest's `Pending`
@@ -178,6 +213,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - The controller now also watches the per-ImageSet imagestate ConfigMaps
     (it only mapped the legacy per-MirrorTarget name), so the build starts as
     soon as the last image is mirrored.
+
+### Security
+- **VEX re-pinned after dependency bumps**: the `not_affected` statements for
+  containerd GO-2026-5064 / GO-2026-5338 / GO-2026-5622 and x/crypto
+  GO-2026-5932 named the exact module versions they were triaged against
+  (`containerd@v1.7.33`, `x/crypto@v0.53.0`), so the containerd bump to
+  v1.7.35 made them stop matching and the release image scan failed on the
+  two Critical findings. Re-triaged against `containerd@v1.7.35` and
+  `x/crypto@v0.55.0`: still only containerd's client packages (`remotes`,
+  `content`, `images`, …, pulled in by Helm's OCI registry client) are
+  linked into any binary — no CRI plugin or checkpoint/restore code — and
+  the v1 module line still has no fixed version. Dropping containerd
+  entirely requires Helm ≥ 3.21, which in turn requires Go 1.26 and
+  k8s.io 0.36+; that upgrade is tracked separately.
+
+---
+
+## [v0.0.45] - 2026-09-09
+
+### Added
+- **Operator bundle images are mirrored ahead of their related images**: the
+  manager now tags each operator-origin imagestate entry with
+  `isBundleImage` (true for a bundle's own container image, false for the
+  operand/related images it references) and dispatches pending bundle
+  images to worker batches before anything else. OLM installs/upgrades to
+  the bundle image directly, so this both gets operators usable sooner and
+  reaches the `CatalogReady` mirroring gate (which waits on every
+  operator-origin image) faster overall.
+
+### Fixed
 - **Catalog build gate could still open on a stale imagestate scan**: the
   `CatalogReady` gate required every operator-origin imagestate entry to be
   `Mirrored`/`PermanentlyFailed`, cross-checked against the current spec via
@@ -189,6 +254,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ObservedGeneration` once it has cleanly (re-)resolved the *whole* current
   spec generation, so this closes the gap unconditionally instead of relying
   on signature bookkeeping that could be bypassed.
+
+### Security
+- **Go toolchain bumped 1.25.7 → 1.25.13**, resolving 26 reachable
+  standard-library vulnerabilities flagged by `govulncheck` (call-graph
+  confirmed as actually reachable from this codebase, not just present in
+  `go.sum`). All five `Dockerfile*` base images were re-pinned to
+  `golang:1.25.13` by digest (verified against the `Docker-Content-Digest`
+  registry API response and a local `sha256sum` of the downloaded manifest
+  before pinning). The remaining `govulncheck` findings
+  (`golang.org/x/crypto/openpgp` — GO-2026-5932; `containerd` —
+  GO-2026-5622, GO-2026-5338, GO-2026-5064) are third-party modules with no
+  upstream fix available and are unaffected by this change; they are
+  already triaged as `not_affected` in `vex/oc-mirror-operator.openvex.json`.
+
+---
+
+## [v0.0.44] - 2026-08-16
+
+### Added
+- **Working ESLint setup for the console plugin UI**: `ui/package.json` had a
+  `lint` script and `eslint`/`typescript-eslint` as devDependencies, but no
+  `eslint.config.js` (ESLint v9 requires flat config), so `npm run lint`
+  failed immediately, and no CI job ever ran it. Added `ui/eslint.config.js`
+  (typescript-eslint recommended rules + the two classic
+  `eslint-plugin-react-hooks` correctness rules — not its v7 "recommended"
+  preset, which bundles React Compiler-oriented rules that don't apply to
+  this React 17 codebase and would just be noise) and a `ui-lint` job in
+  `.github/workflows/lint.yml` that runs `npm run lint` and a `tsc --noEmit`
+  type-check on every push/PR. Also removed a handful of pre-existing dead
+  code the new lint config surfaced (an unused `post()` helper in
+  `api/client.ts`, unused imports/a dead function in `CatalogBrowser.tsx`)
+  and replaced `React.FC<any>` with `React.FC<Record<string, unknown>>` in
+  the plugin's thin page-wrapper components.
+- **MirrorTarget settings editable from the console plugin**: `registry`,
+  `insecure`, `authSecret`, `concurrency`, `batchSize`, `pollInterval`, and
+  `checkExistInterval` had no write path at all — the resource API only
+  exposed read-only MirrorTarget endpoints. Added `GET`/`PATCH
+  /api/v1/targets/{namespace}/{name}/spec` and a "Settings" tab on the
+  MirrorTarget detail page. More infrastructure-oriented fields (`expose`,
+  `proxy`, `caBundle`, `workerStorage`, pod resources/tolerations) remain
+  `kubectl`/YAML-only.
+- **Operator catalog list editable from the console plugin**: previously only
+  package filters for an already-resolved catalog could be edited (via
+  `.../catalogs/{slug}/packages`) — adding, removing, or reconfiguring
+  (`targetCatalog`/`targetTag`/`full`/`skipDependencies`) a catalog itself
+  required `kubectl`. Added `GET`/`PATCH
+  /api/v1/imagesets/{namespace}/{name}/operators` and an "Operators" tab on
+  the ImageSet detail page. Saving preserves existing package filters and
+  cosign signature verification config for catalogs that are kept (matched by
+  catalog reference), since those aren't part of this wire format.
+- **`requireSignedImages` toggle in the console plugin**: added `GET`/`PATCH
+  /api/v1/imagesets/{namespace}/{name}/settings` and a switch in the
+  ImageSet Overview tab.
+- **Additional Images editable from the console plugin**: `spec.mirror.additionalImages`
+  had no `GET`/`PATCH` API endpoint or UI, unlike Helm repositories and blocked
+  images, which already had both. Added `GET`/`PATCH
+  /api/v1/imagesets/{namespace}/{name}/additional-images` and a new
+  "Additional Images" tab on the ImageSet detail page for adding, editing, and
+  removing entries (name, optional target repo, optional target tag).
+- **Force Resync trigger**: a new `mirror.openshift.io/force-resync`
+  one-shot ImageSet annotation (and matching `PATCH
+  .../force-resync` API endpoint / "Force Resync" button in the console
+  plugin) resets every image owned by the ImageSet back to `Pending`,
+  independent of its current state — including images already `Mirrored` —
+  so all of them are re-verified and re-transferred to the target registry.
+  Unlike the existing `recollect` trigger, which only forces re-resolution of
+  the upstream content list and leaves already-mirrored images untouched,
+  this is for recovering from target-registry data loss or suspected
+  corruption of previously-mirrored content.
+
+### Fixed
 - **IDMS/ITMS entries kept a tag on the source repository for images
   resolved to both a tag and a digest** (e.g. `repo:v1.2@sha256:...`, as
   produced by Helm-templated and some catalog bundle image references):
@@ -198,6 +334,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `source` field of an `ImageDigestMirrorSet`/`ImageTagMirrorSet` entry must
   be a bare repository — one with a lingering tag is rejected as invalid by
   the cluster. `splitImageRef` now always strips both, in either order.
+
+---
+
+## [v0.0.40] - 2026-08-08
+
+### Fixed
 - **Tag-referenced `additionalImages` never picked up upstream changes**:
   once mirrored, an additional image's imagestate entry stayed `Mirrored`
   forever — `CollectAdditional` re-enumerates the spec on every resolve, but
@@ -211,6 +353,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   digest the worker already resolves to verify its copy); a mismatch resets
   the entry to `Pending` for a fresh mirror. Digest-pinned additional images
   (`@sha256:...`) are unaffected, since they can't drift.
+
+---
+
+## [v0.0.39] - 2026-07-28
+
+### Fixed
 - **Console plugin crashed on the ImageSets and Mirror Targets pages on
   OpenShift 4.19–4.21 ("Minified React error #130" in `@patternfly/react-table`
   components)**: lowering `@console/pluginAPI` to `>=4.19.0-0` let the plugin
@@ -233,6 +381,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `validateSharedModules` is re-enabled in `webpack.plugin.js` so future
   dependency drift is caught at build time instead of shipping a runtime
   crash.
+
+---
+
+## [v0.0.38] - 2026-07-23
+
+### Fixed
 - **Catalog build launched immediately when adding an operator to an
   ImageSet**: the mirroring-complete gate only inspected the imagestate
   ConfigMap, which still reflected the previously resolved spec (typically
@@ -252,33 +406,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the plugin on any cluster older than OpenShift 4.22. The requirement is
   now `>= 4.19.0-0` (4.19 is the oldest console shipping the PatternFly 6
   runtime the UI is built against).
-- **Filtered catalog unservable: "multiple channel heads found in graph"**:
-  Heads-only filtering selected the head bundle of every channel, but channel
-  trimming then kept any globally selected bundle in every channel it appeared
-  in. For catalogs whose aggregate channel (e.g. `stable`) also lists the heads
-  of per-minor stream channels (`stable-3.0`, `stable-3.1`, …) as historical
-  entries — such as `servicemeshoperator3` — the aggregate channel ended up
-  with one head per stream and `opm serve` refused to rebuild its cache,
-  making the entire catalog (and every operator in it) uninstallable. Channel
-  entries are now selected strictly per channel, and the `replaces` chain of
-  the surviving entries is repaired across dropped entries (nearest kept
-  ancestor becomes the new `replaces`, dropped intermediates are recorded in
-  `skips`), matching oc-mirror v2's channel filtering semantics. Filtering can
-  no longer introduce additional channel heads.
+
+---
+
+## [v0.0.37] - 2026-07-23
 
 ### Changed
-- **CI: OLM upgrade e2e test replaced by bundle validation**: the
-  `olm-upgrade` e2e phase installed the previous release's bundle from GHCR
-  and upgraded it via `operator-sdk run bundle-upgrade`. It broke whenever a
-  release tag was pushed while its `release.yml` run hadn't published the
-  bundle yet (`manifest unknown`), tested a semver downgrade (the CI bundle
-  was always `0.0.99`), and created its MirrorTarget only after the upgrade,
-  so it never checked that existing resources survive one. Removed the test,
-  the phase and the local `kind-registry` it needed; the
-  `build-bundle-check` job now runs `make bundle` (default
-  `operator-sdk bundle validate`) plus
-  `operator-sdk bundle validate --select-optional suite=operatorframework`
-  before building the bundle image.
 - **Catalog image build is faster and idempotent**:
   - Only the `linux/amd64` platform of a multi-arch source catalog is
     downloaded (previously all platforms were pulled and then discarded).
@@ -294,38 +427,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     instead of buffering the uncompressed tar in memory.
   - The graph-data image build likewise downloads only `linux/amd64` of its
     base image.
-- **Operator catalog tag-to-digest drift**: `resolveOperatorSection` probed
-  the catalog's digest via `GetCatalogDigest` for caching purposes, then
-  separately re-pulled the catalog by its original tag reference in
-  `ResolveCatalogFull`/`LoadFBC` — if the upstream tag moved between the two
-  calls, the packages/images actually collected could silently correspond to
-  different catalog content than the digest recorded in the cache
-  annotation. `CatalogResolver.PinDigest` now rewrites the catalog reference
-  to the exact digest probed before every subsequent pull in the same
-  resolution pass, closing that window.
-- **`AdditionalImage.TargetTag` was silently ignored**: `spec.mirror.additionalImages[].targetTag`
-  was defined in the API and documented as working, but the collector never applied it —
-  the destination always kept the source image's own tag (or whatever tag was baked into
-  `targetRepo`). `TargetTag`, when set, now always overrides the destination tag,
-  regardless of whether `targetRepo` is also set.
-- **CheckExist HTTP 400 on HAProxy/nginx routes**: When the manager pod performs
-  drift-check verification against a target registry exposed via an OpenShift Route
-  (HAProxy) or Quay's nginx proxy, the `Authorization` Bearer token scope can grow
-  beyond the proxy's header-size limit (~8 KB) after authenticating to many
-  repositories in a single CheckExist cycle. HAProxy responds with `<BADREQ>` /
-  HTTP 400, which previously caused all subsequent checks in the same window to be
-  silently skipped. The manager now detects HTTP 400 responses and immediately
-  force-refreshes the client cache so subsequent checks use a fresh, narrow-scope
-  Bearer token.
-- **Catalog rebuild triggered before bundle images are present**: After a catalog's
-  upstream digest changed (new operator version), the controller triggered a catalog
-  rebuild immediately via `alreadyBuilt=true` shortcut — even though the new bundle
-  images were still in `Pending` state. Clusters that consumed the rebuilt catalog
-  saw new operator versions available for install while the required images had not
-  yet been mirrored to the target registry. The controller now re-gates the rebuild
-  on `operatorMirroringComplete` (all operator images `Mirrored` or
-  `PermanentlyFailed`) whenever a rebuild is triggered by a signature change or poll
-  expiry.
+
+### Fixed
+- **Filtered catalog unservable: "multiple channel heads found in graph"**:
+  Heads-only filtering selected the head bundle of every channel, but channel
+  trimming then kept any globally selected bundle in every channel it appeared
+  in. For catalogs whose aggregate channel (e.g. `stable`) also lists the heads
+  of per-minor stream channels (`stable-3.0`, `stable-3.1`, …) as historical
+  entries — such as `servicemeshoperator3` — the aggregate channel ended up
+  with one head per stream and `opm serve` refused to rebuild its cache,
+  making the entire catalog (and every operator in it) uninstallable. Channel
+  entries are now selected strictly per channel, and the `replaces` chain of
+  the surviving entries is repaired across dropped entries (nearest kept
+  ancestor becomes the new `replaces`, dropped intermediates are recorded in
+  `skips`), matching oc-mirror v2's channel filtering semantics. Filtering can
+  no longer introduce additional channel heads.
+
+---
+
+## [v0.0.34] - 2026-07-08
 
 ### Added
 - **Release Signature Verification**: Release payload GPG signatures downloaded
@@ -383,28 +503,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ImageSet entry is, when `mirror.openshift.io/cleanup-policy=Delete` is set.
   Editable via a new REST endpoint (`GET`/`PATCH .../blocked-images`) and a new
   "Blocked Images" tab on the console plugin's ImageSet detail page.
+
+### Changed
+- **Operator catalog tag-to-digest drift**: `resolveOperatorSection` probed
+  the catalog's digest via `GetCatalogDigest` for caching purposes, then
+  separately re-pulled the catalog by its original tag reference in
+  `ResolveCatalogFull`/`LoadFBC` — if the upstream tag moved between the two
+  calls, the packages/images actually collected could silently correspond to
+  different catalog content than the digest recorded in the cache
+  annotation. `CatalogResolver.PinDigest` now rewrites the catalog reference
+  to the exact digest probed before every subsequent pull in the same
+  resolution pass, closing that window.
+- **`AdditionalImage.TargetTag` was silently ignored**: `spec.mirror.additionalImages[].targetTag`
+  was defined in the API and documented as working, but the collector never applied it —
+  the destination always kept the source image's own tag (or whatever tag was baked into
+  `targetRepo`). `TargetTag`, when set, now always overrides the destination tag,
+  regardless of whether `targetRepo` is also set.
+- **CheckExist HTTP 400 on HAProxy/nginx routes**: When the manager pod performs
+  drift-check verification against a target registry exposed via an OpenShift Route
+  (HAProxy) or Quay's nginx proxy, the `Authorization` Bearer token scope can grow
+  beyond the proxy's header-size limit (~8 KB) after authenticating to many
+  repositories in a single CheckExist cycle. HAProxy responds with `<BADREQ>` /
+  HTTP 400, which previously caused all subsequent checks in the same window to be
+  silently skipped. The manager now detects HTTP 400 responses and immediately
+  force-refreshes the client cache so subsequent checks use a fresh, narrow-scope
+  Bearer token.
+- **Catalog rebuild triggered before bundle images are present**: After a catalog's
+  upstream digest changed (new operator version), the controller triggered a catalog
+  rebuild immediately via `alreadyBuilt=true` shortcut — even though the new bundle
+  images were still in `Pending` state. Clusters that consumed the rebuilt catalog
+  saw new operator versions available for install while the required images had not
+  yet been mirrored to the target registry. The controller now re-gates the rebuild
+  on `operatorMirroringComplete` (all operator images `Mirrored` or
+  `PermanentlyFailed`) whenever a rebuild is triggered by a signature change or poll
+  expiry.
+
+---
+
+## [v0.0.20] - 2026-05-09
+
+### Added
 - **OpenShift Console Plugin**: A new `ConsolePlugin` controller deploys a dedicated plugin pod (`oc-mirror-plugin`) into the operator namespace and registers it with the OpenShift Console. The plugin provides an integrated multi-page UI directly in the OCP web console — no external URL needed.
   - Pages: MirrorTarget overview, ImageSet detail (with image status), CatalogBrowser, Failed Images
   - Auto-deployed on OpenShift clusters; gracefully skipped on non-OCP Kubernetes
   - Plugin resources (Deployment, Service, ConsolePlugin CR, RBAC) are cleaned up via finalizer when the operator is uninstalled
-
 - **CatalogBrowser — Per-Channel Import/Remove**: Clicking `+ Add` on a single channel now imports only that channel instead of the entire package. Clicking `×` on a channel in the filtered pane removes just that channel. The whole-package import button still exists to add all channels at once. The filtered pane shows each selected channel individually with its own remove button.
-
 - **CatalogBrowser — All Channel Versions in Dropdowns**: The `minVersion`/`maxVersion` dropdowns now show all available operator versions in a channel, not just the channel-head. A `versions` field is added to `ChannelSummary` in the cached ConfigMap (sorted, deduplicated). Cache version bumped `v4 → v5` to force rebuild of existing caches.
-
 - **CatalogBrowser — Version Constraints per Channel**: Version constraint (`minVersion`/`maxVersion`) can now be set per individual channel in addition to per package.
-
 - **MonitoringReconciler**: Manages optional `ServiceMonitor`, `PrometheusRule`, and Grafana dashboard `ConfigMap` resources. Automatically creates/updates these when Prometheus Operator CRDs are present in the cluster.
-
 - **Prometheus Metrics**: Operator controller, manager pods, and worker pods now expose Prometheus metrics (reconcile durations, mirroring progress, error counters).
-
 - **Single-namespace mode**: Operator can be deployed in a single namespace without cluster-wide permissions. `ConsolePlugin` controller uses a watcher pattern to reconcile cluster-scoped `ConsolePlugin` CR without a `ClusterRole`.
-
 - **React/TypeScript Console Plugin UI** (replaces embedded Go-served HTML dashboard):
   - Built with PatternFly v6, React 18, react-router v7
   - Separate `Dockerfile.plugin` and webpack build (`webpack.plugin.js`)
   - Published as `oc-mirror-plugin` container image
   - Dark theme support with PF v6 CSS variables; transparent backgrounds
+
+### Changed
+- **UIConfiguration CRD removed**: Replaced by the always-on `ConsolePlugin` controller. The CRD is no longer needed — the plugin is automatically enabled on OpenShift clusters.
+- **DashboardReconciler merged into ConsolePlugin controller**: Unified reconciliation path for all plugin-related resources.
+- **Operator catalog cache version**: Bumped from `v4` to `v5` to force re-population of the operator cache ConfigMaps with the new `versions` field.
 
 ### Fixed
 - **Dark theme**: Removed hardcoded white background in `plugin-styles.css` and `ImageSetDetail` Tabs — plugin now correctly inherits the OCP console dark theme.
@@ -417,11 +575,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Stale UIConfiguration CRD**: Removed leftover `UIConfiguration` CRD, ClusterServiceVersion entry, and bundle manifests from OLM bundle.
 - **oauth-proxy removal**: Removed leftover oauth-proxy Deployment/Service/Secret from bundle kustomize config.
 - **E2E tests**: Replaced hardcoded namespace strings with `operatorNamespace` variable; fixed `IMG_DASHBOARD → IMG_PLUGIN` env var references.
-
-### Changed
-- **UIConfiguration CRD removed**: Replaced by the always-on `ConsolePlugin` controller. The CRD is no longer needed — the plugin is automatically enabled on OpenShift clusters.
-- **DashboardReconciler merged into ConsolePlugin controller**: Unified reconciliation path for all plugin-related resources.
-- **Operator catalog cache version**: Bumped from `v4` to `v5` to force re-population of the operator cache ConfigMaps with the new `versions` field.
 
 ---
 
