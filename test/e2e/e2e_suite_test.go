@@ -27,6 +27,8 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	"github.com/mariusbertram/oc-mirror-operator/test/utils"
 )
@@ -67,6 +69,11 @@ func TestE2E(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
+	// Library code under test (e.g. catalog.FilterFBC via pkg/oclog) logs through
+	// controller-runtime's global logger; without this, controller-runtime prints a
+	// "log.SetLogger(...) was never called" stack trace and drops those log lines.
+	logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true)))
+
 	if !skipClusterSetup {
 		By("building the component images (controller, manager, worker, plugin)")
 		controllerImage := "example.com/oc-mirror-controller:v0.0.1"
