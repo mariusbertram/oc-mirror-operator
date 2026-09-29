@@ -40,7 +40,7 @@ make test-integration     # Integration tests without a cluster (labels: integra
 ```
 
 E2E environment variables: `SKIP_CLUSTER_SETUP=true`, `SKIP_OPERATOR_DEPLOY=true`, `CERT_MANAGER_INSTALL_SKIP=true`.
-E2E Ginkgo labels: `cluster`, `integration`, `release`, `catalog`, `catalog-cluster`, `olm-upgrade`.
+E2E Ginkgo labels: `cluster`, `integration`, `release`, `catalog`, `catalog-cluster`.
 
 Console plugin smoke test (CI job `plugin-smoke-test` in `.github/workflows/ci.yml`): runs the real
 `quay.io/openshift/origin-console` bridge container against a Kind cluster with the plugin binary

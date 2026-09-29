@@ -93,6 +93,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already triaged as `not_affected` in `vex/oc-mirror-operator.openvex.json`.
 
 ### Fixed
+- **e2e: controller-runtime logger never set**: catalog FBC e2e tests call
+  `FilterFBC`, which logs via `pkg/oclog`; the suite never called
+  `logf.SetLogger`, so controller-runtime printed a
+  "log.SetLogger(...) was never called" stack trace and dropped the lines.
+  `BeforeSuite` now sets a zap logger writing to `GinkgoWriter`.
 - **Operator catalogs could still offer bundles that were not mirrored yet**:
   - *Digest/state race*: the manager writes a newly resolved catalog digest
     onto the ImageSet as soon as it resolves it, but that digest's `Pending`
@@ -211,6 +216,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no longer introduce additional channel heads.
 
 ### Changed
+- **CI: OLM upgrade e2e test replaced by bundle validation**: the
+  `olm-upgrade` e2e phase installed the previous release's bundle from GHCR
+  and upgraded it via `operator-sdk run bundle-upgrade`. It broke whenever a
+  release tag was pushed while its `release.yml` run hadn't published the
+  bundle yet (`manifest unknown`), tested a semver downgrade (the CI bundle
+  was always `0.0.99`), and created its MirrorTarget only after the upgrade,
+  so it never checked that existing resources survive one. Removed the test,
+  the phase and the local `kind-registry` it needed; the
+  `build-bundle-check` job now runs `make bundle` (default
+  `operator-sdk bundle validate`) plus
+  `operator-sdk bundle validate --select-optional suite=operatorframework`
+  before building the bundle image.
 - **Catalog image build is faster and idempotent**:
   - Only the `linux/amd64` platform of a multi-arch source catalog is
     downloaded (previously all platforms were pulled and then discarded).
