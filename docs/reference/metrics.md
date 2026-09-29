@@ -10,7 +10,8 @@
 The `MonitoringReconciler` creates both ServiceMonitors, the PrometheusRule below and
 the dashboard ConfigMap `oc-mirror-dashboard` in `openshift-config-managed` (visible
 under **Observe → Dashboards** in the OpenShift console). ServiceMonitor/PrometheusRule
-are only created when the prometheus-operator CRDs exist. On OpenShift, enable
+are only created when the prometheus-operator CRDs exist; the dashboard ConfigMap only
+on OpenShift (when the `console.openshift.io` ConsolePlugin API exists). On OpenShift, enable
 user-workload monitoring so the ServiceMonitors are picked up.
 
 ## Metrics

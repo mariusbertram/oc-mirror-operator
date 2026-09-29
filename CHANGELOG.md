@@ -93,6 +93,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already triaged as `not_affected` in `vex/oc-mirror-operator.openvex.json`.
 
 ### Fixed
+- **Monitoring reconciler errored forever on plain Kubernetes (#188)**: it
+  created the dashboard ConfigMap in `openshift-config-managed` on every
+  reconcile, which fails where that namespace does not exist — about one
+  `Reconciler error` per minute, and `oc_mirror_reconcile_errors_total`
+  (with the `OCMirrorReconcileErrors` alert) was never zero. The dashboard is
+  now only created when the OpenShift console API (`console.openshift.io`
+  ConsolePlugin) exists, the same check the console-plugin reconciler uses.
 - **`insecure: true` targets: drift check spoke HTTPS; real copy errors were
   hidden (#186, #190)**: the manager built its drift-check and signature
   clients without the target's insecure host, so against an HTTP-only
