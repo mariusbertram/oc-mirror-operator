@@ -766,7 +766,10 @@ name: test-op
 		{name: "configs/test-op/catalog.yaml", typeflag: tar.TypeReg, size: int64(len(body)), body: body},
 	})
 	fsMap := make(fstest.MapFS)
-	count := extractFBCLayer(bytes.NewReader(data), fsMap)
+	count, err := extractFBCLayer(bytes.NewReader(data), fsMap)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if count != 1 {
 		t.Errorf("expected 1 config file extracted, got %d", count)
 	}
@@ -781,7 +784,10 @@ func TestExtractFBCLayer_SkipsNonConfigPaths(t *testing.T) {
 		{name: "usr/bin/opm", typeflag: tar.TypeReg, size: 3, body: []byte("opm")},
 	})
 	fsMap := make(fstest.MapFS)
-	count := extractFBCLayer(bytes.NewReader(data), fsMap)
+	count, err := extractFBCLayer(bytes.NewReader(data), fsMap)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if count != 0 {
 		t.Errorf("expected 0 config files, got %d", count)
 	}
@@ -793,7 +799,10 @@ func TestExtractFBCLayer_SkipsDirectories(t *testing.T) {
 		{name: "configs/test-op/", typeflag: tar.TypeDir},
 	})
 	fsMap := make(fstest.MapFS)
-	count := extractFBCLayer(bytes.NewReader(data), fsMap)
+	count, err := extractFBCLayer(bytes.NewReader(data), fsMap)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if count != 0 {
 		t.Errorf("expected 0 (dirs only), got %d", count)
 	}
@@ -801,7 +810,10 @@ func TestExtractFBCLayer_SkipsDirectories(t *testing.T) {
 
 func TestExtractFBCLayer_NotGzip(t *testing.T) {
 	fsMap := make(fstest.MapFS)
-	count := extractFBCLayer(bytes.NewReader([]byte("not gzip data")), fsMap)
+	count, err := extractFBCLayer(bytes.NewReader([]byte("not gzip data")), fsMap)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if count != 0 {
 		t.Errorf("expected 0 for non-gzip, got %d", count)
 	}
@@ -813,7 +825,10 @@ func TestExtractFBCLayer_WithLeadingDotSlash(t *testing.T) {
 		{name: "./configs/op/catalog.yaml", typeflag: tar.TypeReg, size: int64(len(body)), body: body},
 	})
 	fsMap := make(fstest.MapFS)
-	count := extractFBCLayer(bytes.NewReader(data), fsMap)
+	count, err := extractFBCLayer(bytes.NewReader(data), fsMap)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if count != 1 {
 		t.Errorf("expected 1 (leading ./ should be stripped), got %d", count)
 	}
@@ -824,7 +839,10 @@ func TestExtractFBCLayer_SymlinksSkipped(t *testing.T) {
 		{name: "configs/link", typeflag: tar.TypeSymlink},
 	})
 	fsMap := make(fstest.MapFS)
-	count := extractFBCLayer(bytes.NewReader(data), fsMap)
+	count, err := extractFBCLayer(bytes.NewReader(data), fsMap)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if count != 0 {
 		t.Errorf("expected 0 (symlinks skipped), got %d", count)
 	}
@@ -838,7 +856,10 @@ func TestExtractFBCLayer_MultipleFiles(t *testing.T) {
 		{name: "configs/pkg2/catalog.yaml", typeflag: tar.TypeReg, size: int64(len(body2)), body: body2},
 	})
 	fsMap := make(fstest.MapFS)
-	count := extractFBCLayer(bytes.NewReader(data), fsMap)
+	count, err := extractFBCLayer(bytes.NewReader(data), fsMap)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if count != 2 {
 		t.Errorf("expected 2 config files, got %d", count)
 	}
@@ -1344,7 +1365,10 @@ func TestExtractFBCLayer_CorruptedTar(t *testing.T) {
 	_ = gz.Close()
 
 	fsMap := make(fstest.MapFS)
-	count := extractFBCLayer(bytes.NewReader(buf.Bytes()), fsMap)
+	count, err := extractFBCLayer(bytes.NewReader(buf.Bytes()), fsMap)
+	if !errors.Is(err, errIncompleteFBC) {
+		t.Fatalf("expected errIncompleteFBC for a corrupted tar, got %v", err)
+	}
 	if count != 0 {
 		t.Errorf("expected 0 for corrupted tar, got %d", count)
 	}
@@ -1352,8 +1376,8 @@ func TestExtractFBCLayer_CorruptedTar(t *testing.T) {
 
 func TestExtractFBCLayer_TruncatedFileBody(t *testing.T) {
 	// The tar header itself is well-formed and passes tr.Next(), but the
-	// declared body is longer than what actually follows — io.ReadAll on the
-	// body must fail and the entry is skipped rather than partially stored.
+	// declared body is longer than what actually follows — reading the body
+	// must fail with the file name, and nothing is stored.
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gz)
@@ -1367,7 +1391,10 @@ func TestExtractFBCLayer_TruncatedFileBody(t *testing.T) {
 	_ = gz.Close() // no tar trailer written
 
 	fsMap := make(fstest.MapFS)
-	count := extractFBCLayer(bytes.NewReader(buf.Bytes()), fsMap)
+	count, err := extractFBCLayer(bytes.NewReader(buf.Bytes()), fsMap)
+	if !errors.Is(err, errIncompleteFBC) || !strings.Contains(err.Error(), "configs/pkg/catalog.yaml") {
+		t.Fatalf("expected errIncompleteFBC naming the file, got %v", err)
+	}
 	if count != 0 {
 		t.Errorf("expected 0 files extracted from a truncated body, got %d", count)
 	}
@@ -1454,8 +1481,8 @@ func TestClassifyAndExtractFBC_EmptyArchive(t *testing.T) {
 
 func TestClassifyAndExtractFBC_TruncatedTarBody(t *testing.T) {
 	// A well-formed gzip stream wrapping a tar header that claims more body
-	// bytes than actually follow: tr.Next() succeeds once, then a second
-	// tr.Next() call hits the truncated stream and returns a non-EOF error.
+	// bytes than actually follow: tr.Next() succeeds once, then reading the
+	// body hits the truncated stream.
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gz)
@@ -1470,8 +1497,11 @@ func TestClassifyAndExtractFBC_TruncatedTarBody(t *testing.T) {
 
 	fs := make(fstest.MapFS)
 	_, _, _, err := classifyAndExtractFBC(bytes.NewReader(buf.Bytes()), fs)
-	if err == nil {
-		t.Fatal("expected a tar error for a truncated archive")
+	if !errors.Is(err, errIncompleteFBC) {
+		t.Fatalf("expected errIncompleteFBC for a truncated archive, got %v", err)
+	}
+	if _, ok := fs["configs/pkg/catalog.yaml"]; ok {
+		t.Error("truncated entry should not be stored in configFS")
 	}
 }
 
@@ -1582,7 +1612,10 @@ func TestClassifySourceLayers_BlobGetFails(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	cr := classifySourceLayers(ctx, mc, localRef, layers, diffIDs, "test-image")
+	cr, err := classifySourceLayers(ctx, mc, localRef, layers, diffIDs, "test-image")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if len(cr.keptLayers) != 2 {
 		t.Errorf("expected 2 kept layers, got %d", len(cr.keptLayers))
 	}
@@ -1594,7 +1627,10 @@ func TestClassifySourceLayers_BlobGetFails(t *testing.T) {
 func TestClassifySourceLayers_EmptyLayers(t *testing.T) {
 	mc := mirrorclient.NewMirrorClient(nil, "")
 	localRef, _ := ref.New("localhost:1/test:latest")
-	cr := classifySourceLayers(context.Background(), mc, localRef, nil, nil, "test-image")
+	cr, err := classifySourceLayers(context.Background(), mc, localRef, nil, nil, "test-image")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if len(cr.keptLayers) != 0 {
 		t.Errorf("expected 0 kept layers, got %d", len(cr.keptLayers))
 	}

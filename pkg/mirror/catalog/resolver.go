@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -43,6 +44,35 @@ const configsPath = "configs/"
 // that contains it must be either skipped or whited out.
 const cachePath = "tmp/cache/"
 
+// maxFBCFileSize caps a single FBC file read from a catalog layer so a corrupt
+// or malicious tar header cannot make us allocate without bound. Real
+// catalogs are far from it but growing: in redhat-operator-index v4.16 the
+// largest file (openshift-gitops-operator/catalog.json) is about 190 MiB.
+// A variable so tests can lower it.
+var maxFBCFileSize int64 = 512 << 20
+
+// errIncompleteFBC marks an extraction error after which the FBC files taken
+// from a layer are no longer complete: a configs/ file could not be read in
+// full, or the tar stream broke after the layer was recognised as gzip. Such
+// an FBC must never be parsed or filtered as if it were the whole catalog.
+var errIncompleteFBC = errors.New("incomplete FBC")
+
+// readFBCFile reads the body of the current tar entry in full. It fails with
+// the file name when the entry is larger than maxFBCFileSize or the stream
+// ends before hdr.Size bytes, so a file is never stored truncated.
+func readFBCFile(tr io.Reader, hdr *tar.Header, name string) ([]byte, error) {
+	if hdr.Size > maxFBCFileSize {
+		return nil, fmt.Errorf("%w: FBC file %s is %d bytes, larger than the %d byte limit",
+			errIncompleteFBC, name, hdr.Size, maxFBCFileSize)
+	}
+	data := make([]byte, hdr.Size)
+	if n, err := io.ReadFull(tr, data); err != nil {
+		return nil, fmt.Errorf("%w: FBC file %s truncated after %d of %d bytes: %w",
+			errIncompleteFBC, name, n, hdr.Size, err)
+	}
+	return data, nil
+}
+
 // classifyResult holds the output of classifying all layers in a catalog image.
 type classifyResult struct {
 	keptLayers  []descriptor.Descriptor
@@ -53,8 +83,12 @@ type classifyResult struct {
 // classifySourceLayers reads every layer from a local OCI layout ref, classifies
 // each as FBC-only (skippable) or containing non-FBC content (kept), and
 // simultaneously extracts FBC config files into the returned MapFS.
+//
+// A layer that cannot be read or is not gzip is kept as-is. A layer whose FBC
+// content cannot be extracted completely (errIncompleteFBC) fails the whole
+// classification: filtering a partial catalog would silently drop packages.
 func classifySourceLayers(ctx context.Context, client *mirrorclient.MirrorClient, localRef ref.Ref,
-	srcLayers []descriptor.Descriptor, srcDiffIDs []godigest.Digest, imageLabel string) *classifyResult {
+	srcLayers []descriptor.Descriptor, srcDiffIDs []godigest.Digest, imageLabel string) (*classifyResult, error) {
 
 	keptLayers := make([]descriptor.Descriptor, 0, len(srcLayers))
 	keptDiffIDs := make([]godigest.Digest, 0, len(srcDiffIDs))
@@ -72,6 +106,9 @@ func classifySourceLayers(ctx context.Context, client *mirrorclient.MirrorClient
 		}
 		skip, sz, firstReject, classifyErr := classifyAndExtractFBC(blobRdr, configFS)
 		_ = blobRdr.Close()
+		if errors.Is(classifyErr, errIncompleteFBC) {
+			return nil, fmt.Errorf("layer %s of %s: %w", layer.Digest.String(), imageLabel, classifyErr)
+		}
 		if classifyErr != nil {
 			slog.WarnContext(ctx, "layer classification failed, will copy",
 				"image", imageLabel, "digest", layer.Digest.String(), "error", classifyErr)
@@ -103,7 +140,24 @@ func classifySourceLayers(ctx context.Context, client *mirrorclient.MirrorClient
 			"kept_layers", len(keptLayers),
 			"saved_compressed_bytes", skippedBytes)
 	}
-	return &classifyResult{keptLayers: keptLayers, keptDiffIDs: keptDiffIDs, configFS: configFS}
+	return &classifyResult{keptLayers: keptLayers, keptDiffIDs: keptDiffIDs, configFS: configFS}, nil
+}
+
+// parseExtractedFBC parses the configs/ files classifySourceLayers extracted
+// from a source catalog image.
+func parseExtractedFBC(ctx context.Context, configFS fstest.MapFS, imageLabel string) (*declcfg.DeclarativeConfig, error) {
+	if len(configFS) == 0 {
+		return nil, fmt.Errorf("no FBC config files found under %s in %s", configsPath, imageLabel)
+	}
+	subFS, err := fs.Sub(configFS, strings.TrimSuffix(configsPath, "/"))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create configs sub-fs: %w", err)
+	}
+	cfg, err := declcfg.LoadFS(ctx, subFS)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse FBC from %s: %w", imageLabel, err)
+	}
+	return cfg, nil
 }
 
 // resolveManifestList resolves a manifest list to a single linux/amd64 manifest.
@@ -139,6 +193,10 @@ func resolveManifestList(ctx context.Context, client *mirrorclient.MirrorClient,
 //
 // This avoids the need to download the same blob twice (once for
 // classification, once for FBC extraction in loadFBCFromImage).
+//
+// A gzip header error is returned as-is (the layer is simply not a gzip
+// layer). Every later error wraps errIncompleteFBC, because configs/ files
+// may already have been extracted from a layer that turned out to be broken.
 func classifyAndExtractFBC(r io.Reader, configFS fstest.MapFS) (skippable bool, totalSize int64, firstReject string, err error) {
 	gz, err := gzip.NewReader(r)
 	if err != nil {
@@ -156,7 +214,7 @@ func classifyAndExtractFBC(r io.Reader, configFS fstest.MapFS) (skippable bool, 
 			break
 		}
 		if nextErr != nil {
-			return false, 0, "", fmt.Errorf("tar: %w", nextErr)
+			return false, 0, "", fmt.Errorf("%w: tar: %w", errIncompleteFBC, nextErr)
 		}
 
 		name := strings.TrimPrefix(hdr.Name, "./")
@@ -168,10 +226,11 @@ func classifyAndExtractFBC(r io.Reader, configFS fstest.MapFS) (skippable bool, 
 		// Extract FBC files regardless of whether the layer is skippable,
 		// because the opaque whiteout replaces configs/ from all layers.
 		if hdr.Typeflag == tar.TypeReg && strings.HasPrefix(name, configsPath) {
-			data, readErr := io.ReadAll(io.LimitReader(tr, 64*1024*1024))
-			if readErr == nil {
-				configFS[name] = &fstest.MapFile{Data: data}
+			data, readErr := readFBCFile(tr, hdr, name)
+			if readErr != nil {
+				return false, 0, "", readErr
 			}
+			configFS[name] = &fstest.MapFile{Data: data}
 		}
 
 		if !strings.HasPrefix(name, configsPath) && !strings.HasPrefix(name, cachePath) {
@@ -402,11 +461,15 @@ func (r *CatalogResolver) loadFBCFromImage(ctx context.Context, catalogImage str
 				"image", catalogImage, "digest", layer.Digest.String(), "error", blobErr)
 			continue
 		}
-		if extractedFiles := extractFBCLayer(blobRdr, configFS); extractedFiles == 0 {
+		extractedFiles, extractErr := extractFBCLayer(blobRdr, configFS)
+		_ = blobRdr.Close()
+		if extractErr != nil {
+			return nil, fmt.Errorf("layer %s: %w", layer.Digest.String(), extractErr)
+		}
+		if extractedFiles == 0 {
 			slog.DebugContext(ctx, "no FBC files in layer",
 				"image", catalogImage, "digest", layer.Digest.String())
 		}
-		_ = blobRdr.Close()
 	}
 
 	if len(configFS) == 0 {
@@ -430,10 +493,14 @@ func (r *CatalogResolver) loadFBCFromImage(ctx context.Context, catalogImage str
 
 // extractFBCLayer reads a gzipped tar layer and copies every regular file found
 // under configs/ into fsMap. Returns the number of config files found.
-func extractFBCLayer(r io.Reader, fsMap fstest.MapFS) int {
+//
+// A layer that is not gzip yields (0, nil), as before. A broken tar stream or a
+// configs/ file that cannot be read in full is an error: storing the rest
+// would hand declcfg a truncated file or a catalog with packages missing.
+func extractFBCLayer(r io.Reader, fsMap fstest.MapFS) (int, error) {
 	gz, err := gzip.NewReader(r)
 	if err != nil {
-		return 0
+		return 0, nil
 	}
 	defer func() { _ = gz.Close() }()
 
@@ -445,7 +512,7 @@ func extractFBCLayer(r io.Reader, fsMap fstest.MapFS) int {
 			break
 		}
 		if nextErr != nil {
-			break
+			return count, fmt.Errorf("%w: tar: %w", errIncompleteFBC, nextErr)
 		}
 
 		// Normalize the path: remove leading "./".
@@ -458,17 +525,15 @@ func extractFBCLayer(r io.Reader, fsMap fstest.MapFS) int {
 			continue
 		}
 
-		// Cap individual file reads to 64 MiB to prevent OOM when a malicious
-		// or corrupt catalog layer claims an enormous file size.
-		data, readErr := io.ReadAll(io.LimitReader(tr, 64*1024*1024))
+		data, readErr := readFBCFile(tr, hdr, name)
 		if readErr != nil {
-			continue
+			return count, readErr
 		}
 
 		fsMap[name] = &fstest.MapFile{Data: data}
 		count++
 	}
-	return count
+	return count, nil
 }
 
 // OLM property types for dependency resolution.
@@ -1435,20 +1500,16 @@ func (r *CatalogResolver) BuildFilteredCatalogImage(ctx context.Context, sourceC
 	tlog(ctx, start, &prev, "Source catalog %s: %d layers (cached locally)", sourceCatalogImage, len(srcLayers))
 
 	// 6. Classify each layer AND extract FBC content — all reads are local disk I/O.
-	cr := classifySourceLayers(ctx, r.client, localRef, srcLayers, srcDiffIDs, sourceCatalogImage)
+	cr, err := classifySourceLayers(ctx, r.client, localRef, srcLayers, srcDiffIDs, sourceCatalogImage)
+	if err != nil {
+		return "", fmt.Errorf("failed to extract FBC from %s: %w", sourceCatalogImage, err)
+	}
 	tlog(ctx, start, &prev, "Layer classification complete: %d kept, %d skipped", len(cr.keptLayers), len(srcLayers)-len(cr.keptLayers))
 
 	// 7. Parse the FBC from the already-extracted config files (no re-download).
-	if len(cr.configFS) == 0 {
-		return "", fmt.Errorf("no FBC config files found under %s in %s", configsPath, sourceCatalogImage)
-	}
-	subFS, err := fs.Sub(cr.configFS, strings.TrimSuffix(configsPath, "/"))
+	cfg, err := parseExtractedFBC(ctx, cr.configFS, sourceCatalogImage)
 	if err != nil {
-		return "", fmt.Errorf("failed to create configs sub-fs: %w", err)
-	}
-	cfg, err := declcfg.LoadFS(ctx, subFS)
-	if err != nil {
-		return "", fmt.Errorf("failed to parse FBC from %s: %w", sourceCatalogImage, err)
+		return "", err
 	}
 
 	filtered, err := r.FilterFBC(ctx, cfg, includes)
