@@ -873,12 +873,15 @@ func (m *MirrorManager) checkExistNoLock(ctx context.Context, dest string) (bool
 	return freshClient.CheckExist(ctx, dest)
 }
 
-// driftSweepConcurrency bounds how many CheckExist calls the background
-// drift sweep runs against the target registry in parallel. Chosen to make
-// meaningful progress through MirrorTargets with tens of thousands of
-// images without hammering the registry harder than the existing worker
-// concurrency already does.
-const driftSweepConcurrency = 20
+// driftSweepConcurrency bounds how many destinations the background drift
+// sweep checks in parallel. It matches regclient's per-registry request limit
+// (config.Host.ReqConcurrent, default 3), which caps the manager's shared
+// client anyway: every check beyond that only queues inside regclient, and
+// since each check's driftCheckTimeout starts before it gets a request slot,
+// the time spent in that queue (plus regclient's per-host backoff after 429s
+// or 5xx) made checks against a busy registry fail with "context deadline
+// exceeded" although the registry would have answered.
+const driftSweepConcurrency = 3
 
 // startDriftSweepLocked launches an asynchronous drift-check sweep over every
 // currently Mirrored or PermanentlyFailed entry, unless one is already
@@ -919,9 +922,11 @@ func (m *MirrorManager) startDriftSweepLocked(ctx context.Context, requireSigned
 
 // runDriftSweep checks every destination in destinations against the target
 // registry, bounded to driftSweepConcurrency in flight at once, and applies
-// each result to the shared imagestate as it completes. Must be started via
-// `go m.runDriftSweep(...)` — does not hold m.mu itself except briefly inside
-// checkDriftOne.
+// each result to the shared imagestate as it completes. Checks that time out
+// are retried once after the first pass, so a registry that is slow or
+// rate-limiting for a while doesn't leave those images unchecked until the
+// next sweep. Must be started via `go m.runDriftSweep(...)` — does not hold
+// m.mu itself except briefly inside checkDriftOne.
 func (m *MirrorManager) runDriftSweep(ctx context.Context, destinations []string, requireSignedByIS map[string]bool) {
 	defer func() {
 		m.mu.Lock()
@@ -930,6 +935,22 @@ func (m *MirrorManager) runDriftSweep(ctx context.Context, destinations []string
 		oclog.Println("CheckExist: background drift sweep complete")
 	}()
 
+	timedOut := m.runDriftPass(ctx, destinations, requireSignedByIS, false)
+	if len(timedOut) == 0 || ctx.Err() != nil {
+		return
+	}
+	oclog.Printf("CheckExist: %d of %d checks timed out, retrying them once\n", len(timedOut), len(destinations))
+	m.runDriftPass(ctx, timedOut, requireSignedByIS, true)
+}
+
+// runDriftPass runs checkDriftAttempt for every destination, bounded to
+// driftSweepConcurrency in flight, and returns the destinations whose check
+// timed out and should be retried (always empty when finalAttempt is true).
+func (m *MirrorManager) runDriftPass(ctx context.Context, destinations []string, requireSignedByIS map[string]bool, finalAttempt bool) []string {
+	var (
+		timedOutMu sync.Mutex
+		timedOut   []string
+	)
 	sem := make(chan struct{}, driftSweepConcurrency)
 	var wg sync.WaitGroup
 	for _, dest := range destinations {
@@ -938,10 +959,15 @@ func (m *MirrorManager) runDriftSweep(ctx context.Context, destinations []string
 		go func(dest string) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			m.checkDriftOne(ctx, dest, requireSignedByIS)
+			if m.checkDriftAttempt(ctx, dest, requireSignedByIS, finalAttempt) {
+				timedOutMu.Lock()
+				timedOut = append(timedOut, dest)
+				timedOutMu.Unlock()
+			}
 		}(dest)
 	}
 	wg.Wait()
+	return timedOut
 }
 
 // checkDriftOne verifies a single destination against the target registry
@@ -953,14 +979,23 @@ func (m *MirrorManager) runDriftSweep(ctx context.Context, destinations []string
 // Otherwise a resolve, orphan sweep or worker callback changed it in the
 // meantime and the (now stale) result is dropped (#149).
 func (m *MirrorManager) checkDriftOne(ctx context.Context, dest string, requireSignedByIS map[string]bool) {
-	ctx, cancel := context.WithTimeout(ctx, driftCheckTimeout)
+	m.checkDriftAttempt(ctx, dest, requireSignedByIS, true)
+}
+
+// checkDriftAttempt is checkDriftOne for one pass of the drift sweep. When
+// finalAttempt is false and the CheckExist call runs into driftCheckTimeout
+// (while parentCtx is still alive), it leaves the entry untouched and returns
+// true so the sweep can retry it; otherwise it applies the result exactly like
+// checkDriftOne and returns false.
+func (m *MirrorManager) checkDriftAttempt(parentCtx context.Context, dest string, requireSignedByIS map[string]bool, finalAttempt bool) (retryLater bool) {
+	ctx, cancel := context.WithTimeout(parentCtx, driftCheckTimeout)
 	defer cancel()
 
 	m.mu.Lock()
 	entry, ok := m.imageState[dest]
 	if !ok || entry == nil || len(m.owners[dest]) == 0 {
 		m.mu.Unlock()
-		return
+		return false
 	}
 	permanentlyFailedRecoveryCheck := entry.State == stateFailed && entry.PermanentlyFailed
 	if entry.State != stateMirrored && !permanentlyFailedRecoveryCheck {
@@ -968,13 +1003,16 @@ func (m *MirrorManager) checkDriftOne(ctx context.Context, dest string, requireS
 		// changed this entry since the sweep snapshot was taken — it's no
 		// longer in a state this sweep is responsible for.
 		m.mu.Unlock()
-		return
+		return false
 	}
 	snap := *entry
 	needsSignatureCheck := !entry.SignatureVerified && anyOwnerRequiresSignedImages(m.owners[dest], requireSignedByIS)
 	m.mu.Unlock()
 
 	exists, checkErr := m.checkExistNoLock(ctx, dest)
+	if retryTimedOutCheck(ctx, parentCtx, finalAttempt, checkErr) {
+		return true
+	}
 
 	var (
 		sourceDigest  string
@@ -995,7 +1033,7 @@ func (m *MirrorManager) checkDriftOne(ctx context.Context, dest string, requireS
 	defer m.mu.Unlock()
 	entry, ok = m.imageState[dest]
 	if !ok || entry == nil || entry.State != snap.State || entry.PermanentlyFailed != snap.PermanentlyFailed || entry.Source != snap.Source {
-		return
+		return false
 	}
 
 	if permanentlyFailedRecoveryCheck {
@@ -1005,7 +1043,7 @@ func (m *MirrorManager) checkDriftOne(ctx context.Context, dest string, requireS
 		// catalog-build gate remains open.
 		if checkErr != nil {
 			oclog.Printf("CheckExist error for permanently-failed image %s: %v – keeping Failed\n", dest, checkErr)
-			return
+			return false
 		}
 		if exists {
 			oclog.Printf("Permanently-failed image %s found in target; marking Mirrored\n", dest)
@@ -1020,13 +1058,13 @@ func (m *MirrorManager) checkDriftOne(ctx context.Context, dest string, requireS
 			entry.NextRetryAt = nil
 			m.resetMirroredLocked(dest)
 		}
-		return
+		return false
 	}
 
 	if checkErr != nil {
 		oclog.Printf("CheckExist error for %s: %v – assuming present\n", dest, checkErr)
 		m.mirrored[dest] = true
-		return
+		return false
 	}
 	if !exists {
 		oclog.Printf("Image %s marked Mirrored but not found in registry; resetting to Pending\n", dest)
@@ -1035,7 +1073,7 @@ func (m *MirrorManager) checkDriftOne(ctx context.Context, dest string, requireS
 		entry.RetryCount = 0
 		entry.NextRetryAt = nil
 		m.resetMirroredLocked(dest)
-		return
+		return false
 	}
 	if haveDigest && m.applySourceDigestLocked(entry, sourceDigest) {
 		oclog.Printf("Additional image %s: upstream source %s has moved; resetting to Pending for re-mirror\n", dest, entry.Source)
@@ -1044,12 +1082,22 @@ func (m *MirrorManager) checkDriftOne(ctx context.Context, dest string, requireS
 		entry.RetryCount = 0
 		entry.NextRetryAt = nil
 		m.resetMirroredLocked(dest)
-		return
+		return false
 	}
 	m.mirrored[dest] = true
 	if haveSignature && !entry.SignatureVerified {
 		m.applySignatureResultLocked(dest, entry, sigErr)
 	}
+	return false
+}
+
+// retryTimedOutCheck reports whether a non-final drift check should be
+// retried: checkErr came from the per-check deadline (driftCheckTimeout on
+// ctx) running out while the sweep's own parentCtx is still alive, i.e. the
+// check was inconclusive rather than answered.
+func retryTimedOutCheck(ctx, parentCtx context.Context, finalAttempt bool, checkErr error) bool {
+	return !finalAttempt && checkErr != nil &&
+		errors.Is(ctx.Err(), context.DeadlineExceeded) && parentCtx.Err() == nil
 }
 
 // resetMirroredLocked finishes moving dest out of the Mirrored state after
