@@ -1344,6 +1344,15 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 				newPerISState = mergeWorkerUpdates(newPerISState, m.imageState)
 				justResolvedISes[is.Name] = true
 				hadErrorISes[is.Name] = hadError
+				// Phase G is the only place that records a resolve
+				// (ObservedGeneration, LastSuccessfulPollTime, the Ready
+				// condition), and it only runs when status is dirty. Without
+				// this, a resolve that did not coincide with a worker callback
+				// in the same tick was never recorded: shouldResolve() kept
+				// returning true, the ImageSet was re-resolved every tick, and
+				// Ready kept whatever it said before, e.g. the controller's
+				// "Unbound" from before the MirrorTarget referenced it (#189).
+				m.statusDirty = true
 				if resolved || len(isView) == 0 {
 					// Returned orphans are re-derived by Phase D's zero-owner
 					// sweep below (it also catches ones left over from a

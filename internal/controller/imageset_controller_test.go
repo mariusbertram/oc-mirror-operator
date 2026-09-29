@@ -22,6 +22,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -89,6 +90,36 @@ var _ = Describe("ImageSet Controller", func() {
 				}
 				return false
 			}, isTimeout, isInterval).Should(BeTrue())
+		})
+
+		It("replaces Unbound as soon as a MirrorTarget references the ImageSet (#189)", func() {
+			reconciler := newImageSetReconciler()
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("binding the ImageSet via a MirrorTarget created afterwards")
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: "mt-binds-later", Namespace: "default"},
+				Spec: mirrorv1alpha1.MirrorTargetSpec{
+					Registry:  "registry.example.com/mirror",
+					ImageSets: []string{resourceName},
+				},
+			}
+			Expect(k8sClient.Create(ctx, mt)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, mt) })
+
+			Eventually(func() error {
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+				return err
+			}, isTimeout, isInterval).Should(Succeed())
+
+			is := &mirrorv1alpha1.ImageSet{}
+			Expect(k8sClient.Get(ctx, namespacedName, is)).To(Succeed())
+			ready := apimeta.FindStatusCondition(is.Status.Conditions, conditionTypeReady)
+			Expect(ready).NotTo(BeNil())
+			Expect(ready.Reason).To(Equal("Resolving"))
+			Expect(ready.Message).To(ContainSubstring("mt-binds-later"))
+			Expect(ready.ObservedGeneration).To(Equal(is.Generation))
 		})
 	})
 

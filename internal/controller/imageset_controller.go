@@ -12,6 +12,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -73,6 +74,10 @@ const catalogRecollectSigAnnotation = "mirror.openshift.io/catalog-build-recolle
 // builds, each pushing a fresh catalog image to the registry.
 const catalogPollSigAnnotation = "mirror.openshift.io/catalog-build-poll-sig"
 
+// reasonUnbound is the Ready reason while no MirrorTarget references the
+// ImageSet.
+const reasonUnbound = "Unbound"
+
 // +kubebuilder:rbac:groups=mirror.openshift.io,resources=imagesets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=mirror.openshift.io,resources=imagesets/status,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=mirror.openshift.io,resources=imagesets/finalizers,verbs=update
@@ -101,9 +106,21 @@ func (r *ImageSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (r
 	mt, err := r.findOwningMirrorTarget(ctx, is)
 	if err != nil {
 		l.Info("No MirrorTarget references this ImageSet", "imageSet", is.Name, "reason", err.Error())
-		setCondition(&is.Status.Conditions, conditionTypeReady, metav1.ConditionFalse, "Unbound", err.Error(), is.Generation)
+		setCondition(&is.Status.Conditions, conditionTypeReady, metav1.ConditionFalse, reasonUnbound, err.Error(), is.Generation)
 		_ = r.Status().Update(ctx, is)
 		return ctrl.Result{RequeueAfter: 1 * time.Minute}, nil
+	}
+	// The manager owns Ready once the ImageSet is bound, but only writes it
+	// after its first resolve, which for a large catalog takes minutes.
+	// Replace a stale "Unbound" right away so the status does not claim no
+	// MirrorTarget references the ImageSet while one is already working on
+	// it (#189).
+	if c := apimeta.FindStatusCondition(is.Status.Conditions, conditionTypeReady); c != nil && c.Reason == reasonUnbound {
+		setCondition(&is.Status.Conditions, conditionTypeReady, metav1.ConditionFalse, "Resolving",
+			fmt.Sprintf("bound to MirrorTarget %s; waiting for its manager to resolve the images", mt.Name), is.Generation)
+		if err := r.Status().Update(ctx, is); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	// 2. Compute poll state. Determines whether a periodic upstream re-check is due.
