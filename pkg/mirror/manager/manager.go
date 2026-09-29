@@ -133,6 +133,12 @@ type MirrorManager struct {
 	mirrorClient   *mirrorclient.MirrorClient
 	authConfigPath string // path to Docker config for creating fresh clients
 	clientCache    *mirrorclient.ClientCache
+	// insecureHosts holds the target registry host while the MirrorTarget
+	// sets spec.insecure (see setTargetInsecureHosts), so the manager's own
+	// registry clients (drift check, signature lookup) speak HTTP-first to
+	// an insecure target like the workers do. Read lock-free by the
+	// background drift sweep.
+	insecureHosts atomic.Pointer[[]string]
 
 	workerToken string
 
@@ -863,13 +869,13 @@ func workerActiveDeadlineSeconds(batchLen int) int64 {
 func (m *MirrorManager) checkExistNoLock(ctx context.Context, dest string) (bool, error) {
 	// Use cached client; ClientCache automatically refreshes every 5 minutes
 	// to prevent auth token scope accumulation.
-	checkClient, _ := m.clientCache.GetOrCreate(nil, m.authConfigPath)
+	checkClient, _ := m.clientCache.GetOrCreate(m.targetInsecureHosts(), m.authConfigPath)
 	exists, checkErr := checkClient.CheckExist(ctx, dest)
 	if checkErr == nil || !errors.Is(checkErr, errs.ErrHTTPStatus) || !strings.Contains(checkErr.Error(), "400") {
 		return exists, checkErr
 	}
 
-	freshClient, _ := m.clientCache.RefreshClient(nil, m.authConfigPath)
+	freshClient, _ := m.clientCache.RefreshClient(m.targetInsecureHosts(), m.authConfigPath)
 	return freshClient.CheckExist(ctx, dest)
 }
 
@@ -1042,6 +1048,7 @@ func (m *MirrorManager) checkDriftAttempt(parentCtx context.Context, dest string
 		// unavailability). PermanentlyFailed stays true so the
 		// catalog-build gate remains open.
 		if checkErr != nil {
+			ocmetrics.ManagerDriftCheckErrorsTotal.WithLabelValues(m.TargetName).Inc()
 			oclog.Printf("CheckExist error for permanently-failed image %s: %v – keeping Failed\n", dest, checkErr)
 			return false
 		}
@@ -1062,6 +1069,7 @@ func (m *MirrorManager) checkDriftAttempt(parentCtx context.Context, dest string
 	}
 
 	if checkErr != nil {
+		ocmetrics.ManagerDriftCheckErrorsTotal.WithLabelValues(m.TargetName).Inc()
 		oclog.Printf("CheckExist error for %s: %v – assuming present\n", dest, checkErr)
 		m.mirrored[dest] = true
 		return false
@@ -1141,7 +1149,7 @@ func (m *MirrorManager) sourceDigestNoLock(ctx context.Context, origin imagestat
 	if origin != imagestate.OriginAdditional || strings.Contains(source, "@sha256:") {
 		return "", false
 	}
-	checkClient, _ := m.clientCache.GetOrCreate(nil, m.authConfigPath)
+	checkClient, _ := m.clientCache.GetOrCreate(m.targetInsecureHosts(), m.authConfigPath)
 	digest, err := checkClient.GetDigest(ctx, source)
 	if err != nil {
 		oclog.Printf("CheckExist: failed to resolve digest for additional image source %s: %v\n", source, err)
@@ -1207,7 +1215,7 @@ func (m *MirrorManager) signatureErrNoLock(ctx context.Context, dest string) (ch
 		oclog.Printf("Warning: %s has no digest to check a signature against; skipping RequireSignedImages check\n", dest)
 		return false, nil
 	}
-	checkClient, _ := m.clientCache.GetOrCreate(nil, m.authConfigPath)
+	checkClient, _ := m.clientCache.GetOrCreate(m.targetInsecureHosts(), m.authConfigPath)
 	return true, cosign.HasValidSignature(ctx, checkClient, dest, digest)
 }
 
@@ -1249,6 +1257,7 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 	if err := m.Client.Get(ctx, client.ObjectKey{Name: m.TargetName, Namespace: m.Namespace}, mt); err != nil {
 		return err
 	}
+	m.setTargetInsecureHosts(insecureHostsFor(mt))
 
 	imageSets := &mirrorv1alpha1.ImageSetList{}
 	if err := m.Client.List(ctx, imageSets, client.InNamespace(m.Namespace)); err != nil {
@@ -1381,7 +1390,7 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 		m.lastDriftCheck = time.Now()
 		// Refresh the cached client to avoid auth token scope accumulation.
 		// Quay's nginx proxy returns 400 when the Bearer token exceeds ~8 KB.
-		_, _ = m.clientCache.RefreshClient(nil, m.authConfigPath)
+		_, _ = m.clientCache.RefreshClient(m.targetInsecureHosts(), m.authConfigPath)
 		m.startDriftSweepLocked(ctx, requireSignedByIS)
 	}
 

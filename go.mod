@@ -12,6 +12,7 @@ require (
 	github.com/openshift/api v0.0.0-20260416105050-3c6b218b8a80
 	github.com/operator-framework/operator-registry v1.65.0
 	github.com/prometheus/client_golang v1.23.2
+	github.com/prometheus/client_model v0.6.2
 	github.com/regclient/regclient v0.11.5
 	github.com/sigstore/sigstore v1.10.8
 	golang.org/x/sync v0.22.0
@@ -108,7 +109,6 @@ require (
 	github.com/peterbourgon/diskv v2.0.1+incompatible // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
-	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.67.5 // indirect
 	github.com/prometheus/procfs v0.19.2 // indirect
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect

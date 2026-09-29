@@ -80,6 +80,16 @@ var (
 		},
 		[]string{"target"},
 	)
+
+	ManagerDriftCheckErrorsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "oc_mirror",
+			Subsystem: "manager",
+			Name:      "drift_check_errors_total",
+			Help:      "Total number of drift checks that could not reach the target registry (the image's state was left unchanged).",
+		},
+		[]string{"target"},
+	)
 )
 
 // ManagerRegistry is a dedicated prometheus registry for manager-pod metrics.
@@ -98,6 +108,7 @@ func init() {
 		ManagerStatusCallbackDurationSeconds,
 		ManagerActiveWorkers,
 		ManagerWorkerRetriesTotal,
+		ManagerDriftCheckErrorsTotal,
 	)
 }
 

@@ -267,17 +267,14 @@ func fakeCosignSignatureServer(t *testing.T, imageDigest string) string {
 	return strings.TrimPrefix(srv.URL, "http://")
 }
 
-// newTestManagerForSignatureCheck builds a MirrorManager with an
-// initialized clientCache pre-warmed against host as an insecure (HTTP)
-// registry, so subsequent internal m.clientCache.GetOrCreate(nil, "") calls
-// (as signatureErrNoLock makes) hit the same cached, insecure-capable
-// client without needing to touch unexported ClientCache internals.
+// newTestManagerForSignatureCheck builds a MirrorManager whose target
+// registry is host, marked insecure (as reconcile does for a MirrorTarget
+// with spec.insecure), so its internal registry clients (drift check,
+// signature lookup) talk plain HTTP to the httptest server at host.
 func newTestManagerForSignatureCheck(t *testing.T, host string) *MirrorManager {
 	t.Helper()
 	m := NewWithClients(nil, nil, "sig-test-target", "default", "test-image:latest", "", runtime.NewScheme())
-	if _, err := m.clientCache.GetOrCreate([]string{host}, ""); err != nil {
-		t.Fatalf("pre-warm client cache: %v", err)
-	}
+	m.setTargetInsecureHosts([]string{host})
 	return m
 }
 
