@@ -385,9 +385,18 @@ jobs:
             echo "::notice::Bundle image for $tag is not published (release still running or failed), trying the previous release"
           done
           OLD_VER="${OLD_TAG#v}"
-          # New bundle: fixed CI dev version.
-          # Real version management happens in release.yml when a v* tag is pushed.
-          NEW_VER="0.0.99"
+          # New bundle: a CI pre-release of the next patch after the newest
+          # vX.Y.Z tag in the repo (published or not), e.g. v0.1.2 -> 0.1.3-ci.
+          # That sorts above every existing release, so the test is a real
+          # upgrade and never a downgrade. Real version management happens in
+          # release.yml when a v* tag is pushed.
+          NEW_VER="0.0.1-ci"
+          for tag in $(git tag --list 'v*' --sort=-version:refname); do
+            if [[ "$tag" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+              NEW_VER="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$((BASH_REMATCH[3] + 1))-ci"
+              break
+            fi
+          done
           echo "old_tag=$OLD_TAG" >> "$GITHUB_OUTPUT"
           echo "old_ver=$OLD_VER"  >> "$GITHUB_OUTPUT"
           echo "new_ver=$NEW_VER"  >> "$GITHUB_OUTPUT"
