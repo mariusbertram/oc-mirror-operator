@@ -22,6 +22,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -116,17 +117,38 @@ var _ = Describe("Monitoring Controller", func() {
 	})
 
 	Context("Reconcile", func() {
-		It("should create the dashboard ConfigMap and return RequeueAfter when ServiceMonitor CRD is unavailable", func() {
+		It("skips the dashboard without error on plain Kubernetes (no OpenShift console API)", func() {
+			// The fake client's default RESTMapper knows neither the
+			// ConsolePlugin nor the ServiceMonitor GVK — a plain Kubernetes
+			// cluster without prometheus-operator (#188).
 			req := reconcile.Request{NamespacedName: types.NamespacedName{Name: testNS}}
 			result, err := r.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
-			// ServiceMonitor CRD is not registered in the fake scheme, so the
-			// reconciler logs a skip message and returns RequeueAfter.
 			Expect(result.RequeueAfter).To(Equal(monitoringReconcileInterval))
 
-			// Dashboard ConfigMap must have been created even on the CRD-skip path.
 			cm := &corev1.ConfigMap{}
-			Expect(r.Client.Get(ctx, types.NamespacedName{
+			err = r.Get(ctx, types.NamespacedName{
+				Name:      dashboardConfigMapName,
+				Namespace: dashboardConfigMapNamespace,
+			}, cm)
+			Expect(apierrors.IsNotFound(err)).To(BeTrue(), "no dashboard ConfigMap outside OpenShift, got %v", err)
+		})
+
+		It("creates the dashboard ConfigMap on OpenShift even when the ServiceMonitor CRD is unavailable", func() {
+			scheme := runtime.NewScheme()
+			_ = corev1.AddToScheme(scheme)
+			rm := apimeta.NewDefaultRESTMapper([]schema.GroupVersion{consolePluginGVK.GroupVersion()})
+			rm.Add(consolePluginGVK, apimeta.RESTScopeRoot)
+			fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithRESTMapper(rm).Build()
+			fr := &MonitoringReconciler{Client: fakeClient, Scheme: scheme, Namespace: testNS}
+
+			req := reconcile.Request{NamespacedName: types.NamespacedName{Name: testNS}}
+			result, err := fr.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(monitoringReconcileInterval))
+
+			cm := &corev1.ConfigMap{}
+			Expect(fakeClient.Get(ctx, types.NamespacedName{
 				Name:      dashboardConfigMapName,
 				Namespace: dashboardConfigMapNamespace,
 			}, cm)).To(Succeed())

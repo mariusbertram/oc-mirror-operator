@@ -68,7 +68,7 @@ operator is namespace-scoped: informers are restricted to the operator namespace
 | `ImageSetReconciler` | ImageSet, MirrorTarget (to requeue its ImageSets), `*-images` ConfigMaps | Catalog-build Jobs, gated on the ImageSet being fully mirrored and pinned to the catalog digest stored with the state; the `CatalogReady` condition; `catalog-build-*` bookkeeping annotations. |
 | `MirrorExportReconciler` | MirrorExport, owned Job/ConfigMap/RBAC | Export ServiceAccount/Role scoped to one ConfigMap, the artifacts ConfigMap, the export-build Job; `Ready` condition and `status.totalImages`. |
 | `ConsolePluginReconciler` | The `ConsolePlugin` CR (cluster-scoped, OpenShift only) | Plugin Deployment, Service, RBAC, the `ConsolePlugin` CR with a cleanup finalizer. Skipped when the CRD or `PLUGIN_IMAGE` is absent. |
-| `MonitoringReconciler` | timer (10 min) | `oc-mirror-controller` and `oc-mirror-manager` ServiceMonitors, the `PrometheusRule`, the Grafana/console dashboard ConfigMap. Skipped without prometheus-operator CRDs. |
+| `MonitoringReconciler` | timer (10 min) | `oc-mirror-controller` and `oc-mirror-manager` ServiceMonitors, the `PrometheusRule`, the Grafana/console dashboard ConfigMap. ServiceMonitors/PrometheusRule are skipped without prometheus-operator CRDs, the dashboard outside OpenShift. |
 
 Conditions are written through one helper (`setCondition`) that only bumps
 `lastTransitionTime` when the status flips and always records `observedGeneration`.

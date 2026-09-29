@@ -67,6 +67,16 @@ var prometheusRuleGVK = schema.GroupVersionKind{
 	Kind:    "PrometheusRule",
 }
 
+// consolePluginGVK is the OpenShift console's plugin API. Its presence is the
+// signal that an OpenShift console (and with it openshift-config-managed, where
+// the dashboard ConfigMap lives) exists — the same check ConsolePluginReconciler
+// uses to skip itself on plain Kubernetes.
+var consolePluginGVK = schema.GroupVersionKind{
+	Group:   "console.openshift.io",
+	Version: "v1",
+	Kind:    "ConsolePlugin",
+}
+
 // MonitoringReconciler is a singleton controller that automatically manages
 // ServiceMonitor, PrometheusRule, and the Grafana dashboard ConfigMap whenever
 // the prometheus-operator CRDs are available on the cluster. It requires no
@@ -83,8 +93,14 @@ type MonitoringReconciler struct {
 func (r *MonitoringReconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
 	l := log.FromContext(ctx)
 
-	// The dashboard ConfigMap is a plain corev1.ConfigMap — always reconcile it.
-	if err := r.ensureDashboardConfigMap(ctx); err != nil {
+	// The dashboard ConfigMap lives in openshift-config-managed and is only
+	// shown by the OpenShift console. On plain Kubernetes that namespace does
+	// not exist, and creating the ConfigMap failed on every reconcile, making
+	// oc_mirror_reconcile_errors_total (and the OCMirrorReconcileErrors
+	// alert) permanently non-zero (#188).
+	if _, err := r.RESTMapper().RESTMapping(consolePluginGVK.GroupKind(), consolePluginGVK.Version); err != nil {
+		l.Info("OpenShift console API unavailable, skipping the dashboard ConfigMap (non-OpenShift cluster)")
+	} else if err := r.ensureDashboardConfigMap(ctx); err != nil {
 		return reconcile.Result{}, err
 	}
 
