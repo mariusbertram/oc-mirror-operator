@@ -20,12 +20,14 @@ import (
 	"github.com/regclient/regclient/types/descriptor"
 	"github.com/regclient/regclient/types/manifest"
 	"github.com/regclient/regclient/types/ref"
-	helmchart "helm.sh/helm/v3/pkg/chart"
-	"helm.sh/helm/v3/pkg/chart/loader"
-	"helm.sh/helm/v3/pkg/chartutil"
-	"helm.sh/helm/v3/pkg/engine"
-	"helm.sh/helm/v3/pkg/releaseutil"
-	helmrepo "helm.sh/helm/v3/pkg/repo"
+	"helm.sh/helm/v4/pkg/chart/common"
+	commonutil "helm.sh/helm/v4/pkg/chart/common/util"
+	helmchart "helm.sh/helm/v4/pkg/chart/v2"
+	"helm.sh/helm/v4/pkg/chart/v2/loader"
+	chartutil "helm.sh/helm/v4/pkg/chart/v2/util"
+	"helm.sh/helm/v4/pkg/engine"
+	releaseutil "helm.sh/helm/v4/pkg/release/v1/util"
+	helmrepo "helm.sh/helm/v4/pkg/repo/v1"
 	"k8s.io/client-go/util/jsonpath"
 	"sigs.k8s.io/yaml"
 
@@ -280,8 +282,8 @@ func renderChart(ch *helmchart.Chart) (string, error) {
 		return "", fmt.Errorf("process dependencies: %w", err)
 	}
 
-	caps := chartutil.DefaultCapabilities
-	renderVals, err := chartutil.ToRenderValues(ch, valueOpts, chartutil.ReleaseOptions{}, caps)
+	caps := common.DefaultCapabilities
+	renderVals, err := commonutil.ToRenderValues(ch, valueOpts, common.ReleaseOptions{}, caps)
 	if err != nil {
 		return "", fmt.Errorf("compose render values: %w", err)
 	}

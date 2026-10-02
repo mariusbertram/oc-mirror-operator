@@ -3,8 +3,8 @@
   "@id": "https://github.com/mariusbertram/oc-mirror-operator/vex/oc-mirror-operator",
   "author": "oc-mirror-operator maintainers",
   "role": "Document Creator",
-  "timestamp": "2026-09-29T00:00:00Z",
-  "version": 3,
+  "timestamp": "2026-10-02T19:52:46Z",
+  "version": 4,
   "statements": [
     {
       "vulnerability": {
@@ -24,7 +24,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "This CVE is in containerd's CRI (Container Runtime Interface) checkpoint/restore plugin. oc-mirror-operator depends on github.com/containerd/containerd only transitively, via helm.sh/helm/v3's OCI registry client (pkg/mirror/helm -> helm.sh/helm/v3/pkg/repo -> pkg/getter -> pkg/registry -> containerd/containerd/remotes), which uses only generic OCI artifact pull/push primitives for oci:// Helm chart repos. No binary in this project (controller, manager, worker) runs a CRI server, registers a CRI plugin, or performs checkpoint/restore operations, so the vulnerable code path is never reached. No fixed version exists for the github.com/containerd/containerd v1 module line as of triage date (re-verified 2026-09-29 against v1.7.36, the latest v1 release); the fix landed only in the unrelated github.com/containerd/containerd/v2 module, which this project does not depend on."
+      "impact_statement": "This CVE is in containerd's CRI checkpoint/restore plugin. In historical Helm 3 builds, containerd v1 was imported transitively through Helm's OCI registry client, but no operator binary ran a CRI server or checkpoint/restore operations. With the Helm 4.3.0 migration on 2026-10-02, github.com/containerd/containerd packages are absent from go list -deps ./... and are no longer built into any operator binary. The module remains in the module graph only through operator-registry's own image package tests (go mod why -m github.com/containerd/containerd), which are not part of this operator's binaries. These versioned VEX products are retained for historical builds and module-level scanners."
     },
     {
       "vulnerability": {
@@ -44,7 +44,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "Same reasoning as CVE-2026-53492 in this document: this CVE is in containerd's CRI checkpoint-import path, reachable only through a CRI server. oc-mirror-operator only uses containerd transitively through Helm's generic OCI registry client, and no binary in this project runs a CRI server or performs checkpoint/restore. No fixed version exists for the github.com/containerd/containerd v1 module line as of triage date (re-verified 2026-09-29 against v1.7.36, the latest v1 release); the fix landed only in the unrelated github.com/containerd/containerd/v2 module, which this project does not depend on."
+      "impact_statement": "This CVE is in containerd's CRI checkpoint-import path. Historical Helm 3 builds used only generic OCI client code and never ran a CRI server or checkpoint/restore operations. Since the Helm 4.3.0 migration on 2026-10-02, no github.com/containerd/containerd packages are in the operator binaries' dependency graph (go list -deps ./...). The module remains only through operator-registry's own tests, not operator production code. See the CVE-2026-53492 statement for the module-level dependency chain; versioned VEX products remain applicable to historical builds and module-level scanners."
     },
     {
       "vulnerability": {
@@ -64,7 +64,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "Same reasoning as CVE-2026-53492/CVE-2026-50195 in this document: this is an arbitrary-host-log-file-read-via-symlink vulnerability in containerd's CRI checkpoint restore path, reachable only through a CRI server. oc-mirror-operator only uses containerd transitively through Helm's generic OCI registry client, and no binary in this project runs a CRI server or performs checkpoint/restore. No fixed version exists for the github.com/containerd/containerd v1 module line as of triage date (re-verified 2026-09-29 against v1.7.36, the latest v1 release); the fix landed only in the unrelated github.com/containerd/containerd/v2 module, which this project does not depend on."
+      "impact_statement": "This arbitrary-host-log-file-read-via-symlink vulnerability is in containerd's CRI checkpoint restore path. Historical Helm 3 builds used only generic OCI client code and never ran a CRI server or checkpoint/restore operations. Since the Helm 4.3.0 migration on 2026-10-02, no github.com/containerd/containerd packages are in the operator binaries' dependency graph (go list -deps ./...). The module remains only through operator-registry's own tests, not operator production code. See the CVE-2026-53492 statement for the module-level dependency chain; versioned VEX products remain applicable to historical builds and module-level scanners."
     },
     {
       "vulnerability": {
@@ -78,7 +78,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "This advisory flags golang.org/x/crypto/openpgp (and its packet/armor/clearsign/errors/elgamal/s2k subpackages) as unmaintained and unsafe by design - not a single patchable bug, so there is no fixed version. oc-mirror-operator depends on golang.org/x/crypto only transitively, via pkg/mirror/helm -> helm.sh/helm/v3/pkg/repo -> helm.sh/helm/v3/pkg/provenance (Helm's chart provenance/.prov PGP-signature verification feature). pkg/mirror/helm never calls into Helm's provenance package - grep across pkg/mirror/helm confirms no reference to it - so the openpgp code that gets linked into the binary as a byproduct of importing pkg/repo is never executed by any code path this operator exercises."
+      "impact_statement": "This advisory flags golang.org/x/crypto/openpgp and its subpackages as unmaintained and unsafe by design, with no fixed version. Historical Helm 3 builds imported these packages transitively through Helm's chart provenance feature, but the operator never called that feature. Since the Helm 4.3.0 migration on 2026-10-02, golang.org/x/crypto/openpgp and its subpackages are absent from go list -deps ./... and are no longer built into any operator binary. The versioned VEX product is retained for historical builds."
     }
   ]
 }

@@ -25,7 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Download the pinned Operator SDK and opm with checksum verification instead
   of silently using an older system installation.
 - Update Go dependencies to compatible current versions, including Kubernetes
-  0.37.1, controller-runtime 0.25.2, operator-registry 1.74.0, Helm 3.22.0,
+  0.37.1, controller-runtime 0.25.2, operator-registry 1.74.0, Helm 4.3.0,
   regclient 0.11.6, and sigstore 1.11.0. Keep kube-openapi at the revision
   required by Kubernetes 0.37.1; its newer development revision uses incompatible
   structured-merge-diff types. Keep cel-go at 0.31.0 because the next version
@@ -39,6 +39,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   display metadata.
 - Leave all console UI and browser smoke-test dependency versions unchanged;
   the UI dependency set is coupled to the OpenShift console runtime.
+- Migrate the Helm resolver to the Helm 4 SDK while retaining support for
+  v2 chart archives and the existing HTTP/OCI download paths. Neither
+  containerd v1 nor the unmaintained `golang.org/x/crypto/openpgp` packages
+  remain in the operator binaries' dependency graph. containerd v1 still
+  appears in the module graph through operator-registry's own tests, not
+  through production code. Retain the historical VEX product statements
+  and document this distinction.
 
 ## [v0.1.3] - 2026-09-29
 
