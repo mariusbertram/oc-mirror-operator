@@ -67,6 +67,14 @@ type Client interface {
 	GetDigest(ctx context.Context, image string) (string, error)
 }
 
+// BufferedCopier is implemented by clients that can copy an image with large
+// blobs buffered to local disk instead of streamed (see
+// mirrorclient.MirrorClient.CopyImageBuffered). The worker uses it for the
+// last copy attempt, after streaming failed.
+type BufferedCopier interface {
+	CopyImageBuffered(ctx context.Context, src, dest string) (string, error)
+}
+
 // NewMirrorClient builds a registry client for the registry host of
 // firstDest, using the Docker config at $DOCKER_CONFIG. With insecure, that
 // host is accessed without TLS verification.
@@ -163,19 +171,25 @@ func (w *Worker) RunBatch(ctx context.Context, items []BatchItem) (anyFailed boo
 
 // MirrorOne mirrors src→dest with up to CopyAttempts attempts, verifies the
 // digest at the destination, and reports the result to the manager. It
-// returns true on success.
+// returns true on success. Blobs are streamed; when c is a BufferedCopier,
+// the last attempt buffers large blobs to disk instead.
 func (w *Worker) MirrorOne(ctx context.Context, c Client, src, dest string) bool {
 	oclog.Printf("Starting mirror: %s -> %s\n", src, dest)
 
 	var effectiveDest string
 	var lastErr error
 	for attempt := 1; attempt <= CopyAttempts; attempt++ {
+		copyFn := c.CopyImage
 		if attempt > 1 {
 			oclog.Printf("Retry attempt %d/%d after %s...\n", attempt, CopyAttempts, w.RetryDelay)
 			time.Sleep(w.RetryDelay)
+			if bc, ok := c.(BufferedCopier); ok && attempt == CopyAttempts {
+				oclog.Println("Streaming copy failed, retrying with large blobs buffered to disk")
+				copyFn = bc.CopyImageBuffered
+			}
 		}
 		copyCtx, cancel := context.WithTimeout(ctx, CopyTimeout)
-		effectiveDest, lastErr = c.CopyImage(copyCtx, src, dest)
+		effectiveDest, lastErr = copyFn(copyCtx, src, dest)
 		cancel()
 		if lastErr == nil {
 			break

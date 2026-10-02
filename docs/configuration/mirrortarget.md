@@ -190,10 +190,15 @@ for registries (and proxies) with a private CA instead of `insecure: true`.
 
 ## Worker storage for large images
 
-Workers buffer layers above 100 MiB in `/tmp/blob-buffer` before uploading them, which
-avoids Quay upload-session timeouts on slow cross-registry transfers. The default buffer
-is a 10 GiB `emptyDir`. For images with individual layers larger than that (AI/ML models,
-virtual machine images) switch to a generic ephemeral PVC:
+Workers stream every layer directly from the source to the target registry. Layers above
+100 MiB are uploaded as a chunked upload (16 MiB `PATCH` requests), so no request stays
+open for long and a failed chunk is resent from memory — nothing is written to disk.
+
+Only if the streamed copy of an image fails does the worker's second attempt fall back to
+buffering layers above 100 MiB in `/tmp/blob-buffer` and pushing them with a single
+monolithic `PUT`. The default buffer is a 10 GiB `emptyDir`; it costs nothing unless that
+fallback runs. For images with individual layers larger than that (AI/ML models, virtual
+machine images) you can switch the fallback buffer to a generic ephemeral PVC:
 
 ```yaml
 spec:

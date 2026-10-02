@@ -112,9 +112,11 @@ order (see [Blob replication planning](#blob-replication-planning)), and for eac
 
 1. `GET /should-mirror?dest=…` — skip if the manager answers `410 Gone` (image removed
    from the spec or already mirrored).
-2. Copy with regclient (`ImageCopy` with referrers), buffering layers > 100 MiB on
-   `/tmp/blob-buffer` and using monolithic `PUT`s against the target. Two attempts, 20 min
-   each. Cosign `sha256-<digest>.sig` tags are copied best-effort.
+2. Copy with regclient (`ImageCopy` with referrers), streaming every layer from source to
+   target: layers ≤ 100 MiB with a monolithic `PUT`, larger ones as a chunked upload of
+   16 MiB `PATCH`es (bounded memory, no disk). Two attempts, 20 min each; the second
+   attempt falls back to buffering layers > 100 MiB on `/tmp/blob-buffer` and pushing
+   them with monolithic `PUT`s. Cosign `sha256-<digest>.sig` tags are copied best-effort.
 3. `HEAD` the pushed manifest to verify the digest.
 4. `POST /status` with the result (three attempts).
 

@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/mariusbertram/oc-mirror-operator/pkg/oclog"
 
@@ -23,6 +24,12 @@ import (
 type MirrorClient struct {
 	rc         *regclient.RegClient
 	rcFallback *regclient.RegClient // HTTPS (skip-verify) fallback for insecure hosts
+
+	// buffered is a sibling client configured for monolithic blob PUTs. It
+	// backs CopyImageBuffered and is built on first use (see bufferedClient).
+	buffered     *MirrorClient
+	bufferedOnce sync.Once
+	newBuffered  func() *MirrorClient
 }
 
 // withFallback runs call against the primary client and, if that fails and an
@@ -53,17 +60,51 @@ func fallbackError(primary, fallback error) error {
 	return fmt.Errorf("%w (insecure-registry fallback over HTTPS also failed: %w)", primary, fallback)
 }
 
-// largeBlobThreshold is the size above which blobs are pre-buffered to disk
-// before upload. This works around a Quay-specific issue where chunked uploads
-// (PATCH-based) lose the upload session before the final PUT, resulting in
-// BLOB_UPLOAD_UNKNOWN errors. By buffering to an ephemeral volume first, the
-// monolithic PUT streams data quickly from local disk instead of a slow
-// cross-registry pipe — without consuming large amounts of memory.
-const largeBlobThreshold = 100 * 1024 * 1024 // 100 MiB
+// Blob upload strategy for destination registries.
+//
+// Blobs up to largeBlobThreshold are pushed with a single monolithic PUT,
+// streamed straight from the source registry.
+//
+// Larger blobs are streamed as a chunked upload (PATCH requests of
+// streamChunkSize, then a final zero-length PUT). Streaming them as one long
+// monolithic PUT does not work reliably against Quay: if the PUT fails part
+// way — a proxy/route timeout, a dropped connection, a slow source — Quay
+// cancels the upload session (complete_when_uploaded), so regclient's
+// chunked fallback on the same session ends in BLOB_UPLOAD_UNKNOWN. A chunked
+// upload never holds a request open for long, each chunk is kept in memory so
+// a failed PATCH is simply resent, and Quay keeps the session across chunk
+// errors and resumes at the offset it reports. Memory use is bounded by
+// streamChunkSize per concurrent blob upload; nothing is written to disk.
+// streamChunkSize stays above S3's 5 MiB minimum multipart part size so Quay
+// can assemble the chunks server-side.
+//
+// CopyImageBuffered keeps the previous strategy — pre-buffer large blobs to
+// disk and push them with one monolithic PUT — as a fallback.
+var (
+	largeBlobThreshold int64 = 100 * 1024 * 1024 // 100 MiB
+	streamChunkSize    int64 = 16 * 1024 * 1024  // 16 MiB
+)
 
-// blobBufferDir is the directory used for temporary blob buffer files.
-// Worker pods mount an emptyDir volume here.
-const blobBufferDir = "/tmp/blob-buffer"
+// blobBufferDir is the directory used for temporary blob buffer files by
+// CopyImageBuffered. Worker pods mount an emptyDir volume here.
+var blobBufferDir = "/tmp/blob-buffer"
+
+// destHostConfig returns the regclient host settings for a destination or
+// insecure registry. monolithic disables chunked uploads (BlobMax=-1), which
+// is only used by the disk-buffered client.
+func destHostConfig(name string, tls config.TLSConf, monolithic bool) config.Host {
+	h := config.Host{
+		Name:      name,
+		TLS:       tls,
+		BlobMax:   largeBlobThreshold,
+		BlobChunk: streamChunkSize,
+	}
+	if monolithic {
+		h.BlobMax = -1
+		h.BlobChunk = 0
+	}
+	return h
+}
 
 // NewMirrorClient creates a new MirrorClient.
 // insecureHosts: registry hostnames where TLS verification is skipped. The
@@ -72,23 +113,24 @@ const blobBufferDir = "/tmp/blob-buffer"
 // ~60s per request on a TLS handshake that can never succeed. The fallback client
 // uses HTTPS without certificate validation (TLSInsecure) for registries that have
 // a self-signed certificate.
-// destHosts: registry hostnames of destination registries; configured with BlobMax=-1
-// to always use monolithic PUT (fast when blobs are pre-buffered by the reader hook).
+// destHosts: registry hostnames of destination registries; configured to stream
+// blobs above largeBlobThreshold as chunked uploads (see destHostConfig).
 // authConfigPath: path to a Docker credential store directory (mounted secret).
 func NewMirrorClient(insecureHosts []string, authConfigPath string, destHosts ...string) *MirrorClient {
-	opts := []regclient.Opt{}
+	mc := newMirrorClient(insecureHosts, authConfigPath, destHosts, false)
+	mc.newBuffered = func() *MirrorClient {
+		return newMirrorClient(insecureHosts, authConfigPath, destHosts, true)
+	}
+	return mc
+}
 
+func newMirrorClient(insecureHosts []string, authConfigPath string, destHosts []string, monolithic bool) *MirrorClient {
 	hostMap := make(map[string]config.Host)
-
-	// Add destination hosts with BlobMax=-1 (monolithic PUT for all blob sizes).
 	for _, h := range destHosts {
 		if h == "" {
 			continue
 		}
-		hostMap[h] = config.Host{
-			Name:    h,
-			BlobMax: -1,
-		}
+		hostMap[h] = destHostConfig(h, config.TLSUndefined, monolithic)
 	}
 	// Primary: plain HTTP for insecure hosts. An HTTP request to an HTTPS-only
 	// server fails immediately (TLS alert / connection reset), so the fallback
@@ -98,32 +140,11 @@ func NewMirrorClient(insecureHosts []string, authConfigPath string, destHosts ..
 		if h == "" {
 			continue
 		}
-		hostMap[h] = config.Host{
-			Name:    h,
-			TLS:     config.TLSDisabled,
-			BlobMax: -1,
-		}
-	}
-
-	hostConfigs := make([]config.Host, 0, len(hostMap))
-	for _, hc := range hostMap {
-		hostConfigs = append(hostConfigs, hc)
-	}
-
-	// Add auth config path if provided (e.g. DOCKER_CONFIG or mounted secret)
-	if authConfigPath != "" {
-		configFile := authConfigPath + "/config.json"
-		opts = append(opts, regclient.WithDockerCredsFile(configFile))
-	} else {
-		opts = append(opts, regclient.WithDockerCreds())
-	}
-
-	if len(hostConfigs) > 0 {
-		opts = append(opts, regclient.WithConfigHost(hostConfigs...))
+		hostMap[h] = destHostConfig(h, config.TLSDisabled, monolithic)
 	}
 
 	mc := &MirrorClient{
-		rc: regclient.New(opts...),
+		rc: newRegClient(authConfigPath, hostMap),
 	}
 
 	// Fallback: HTTPS skip-verify (TLSInsecure) for insecure hosts that have a
@@ -137,28 +158,31 @@ func NewMirrorClient(insecureHosts []string, authConfigPath string, destHosts ..
 			if h == "" {
 				continue
 			}
-			fallbackHostMap[h] = config.Host{
-				Name:    h,
-				TLS:     config.TLSInsecure,
-				BlobMax: -1,
-			}
+			fallbackHostMap[h] = destHostConfig(h, config.TLSInsecure, monolithic)
 		}
-		fallbackConfigs := make([]config.Host, 0, len(fallbackHostMap))
-		for _, hc := range fallbackHostMap {
-			fallbackConfigs = append(fallbackConfigs, hc)
-		}
-		fallbackOpts := []regclient.Opt{}
-		if authConfigPath != "" {
-			configFile := authConfigPath + "/config.json"
-			fallbackOpts = append(fallbackOpts, regclient.WithDockerCredsFile(configFile))
-		} else {
-			fallbackOpts = append(fallbackOpts, regclient.WithDockerCreds())
-		}
-		fallbackOpts = append(fallbackOpts, regclient.WithConfigHost(fallbackConfigs...))
-		mc.rcFallback = regclient.New(fallbackOpts...)
+		mc.rcFallback = newRegClient(authConfigPath, fallbackHostMap)
 	}
 
 	return mc
+}
+
+// newRegClient builds a regclient with the given host settings and the Docker
+// credentials at authConfigPath (or the default Docker config when empty).
+func newRegClient(authConfigPath string, hostMap map[string]config.Host) *regclient.RegClient {
+	var opts []regclient.Opt
+	if authConfigPath != "" {
+		opts = append(opts, regclient.WithDockerCredsFile(authConfigPath+"/config.json"))
+	} else {
+		opts = append(opts, regclient.WithDockerCreds())
+	}
+	if len(hostMap) > 0 {
+		hostConfigs := make([]config.Host, 0, len(hostMap))
+		for _, hc := range hostMap {
+			hostConfigs = append(hostConfigs, hc)
+		}
+		opts = append(opts, regclient.WithConfigHost(hostConfigs...))
+	}
+	return regclient.New(opts...)
 }
 
 // DownloadToOCILayout copies a remote image into a local OCI directory layout.
@@ -196,9 +220,38 @@ func (c *MirrorClient) DownloadToOCILayout(ctx context.Context, src string, ociD
 // CopyImage copies an image from source to destination, including signatures.
 // It returns the effective destination reference that was actually pushed (which may
 // differ from dest when src is a digest-only reference and a tag is synthesized).
+//
+// All blobs are streamed from the source to the destination registry without
+// touching local disk; blobs above largeBlobThreshold use a chunked upload
+// (see destHostConfig).
 func (c *MirrorClient) CopyImage(ctx context.Context, src, dest string) (string, error) {
+	return c.copyImage(ctx, src, dest)
+}
+
+// CopyImageBuffered is CopyImage with the disk-buffered upload strategy: blobs
+// above largeBlobThreshold are first written to blobBufferDir and then pushed
+// with a single monolithic PUT. It is the fallback for registries that reject
+// the streamed chunked upload of CopyImage.
+func (c *MirrorClient) CopyImageBuffered(ctx context.Context, src, dest string) (string, error) {
+	return c.bufferedClient().copyImage(ctx, src, dest, regclient.ImageWithBlobReaderHook(bufferLargeBlobs))
+}
+
+// bufferedClient returns the monolithic-PUT sibling client, building it on
+// first use. Clients not built by NewMirrorClient fall back to themselves.
+func (c *MirrorClient) bufferedClient() *MirrorClient {
+	c.bufferedOnce.Do(func() {
+		if c.newBuffered != nil {
+			c.buffered = c.newBuffered()
+		} else {
+			c.buffered = c
+		}
+	})
+	return c.buffered
+}
+
+func (c *MirrorClient) copyImage(ctx context.Context, src, dest string, opts ...regclient.ImageOpts) (string, error) {
 	return withFallback(ctx, c, func(rc *regclient.RegClient) (string, error) {
-		effectiveDest, err := c.copyImageWith(ctx, rc, src, dest)
+		effectiveDest, err := c.copyImageWith(ctx, rc, src, dest, opts...)
 		if err != nil && rc == c.rc && c.rcFallback != nil && ctx.Err() == nil {
 			oclog.Printf("HTTP failed for %s, falling back to HTTPS (skip-verify): %v\n", dest, err)
 		}
@@ -206,7 +259,7 @@ func (c *MirrorClient) CopyImage(ctx context.Context, src, dest string) (string,
 	})
 }
 
-func (c *MirrorClient) copyImageWith(ctx context.Context, rc *regclient.RegClient, src, dest string) (string, error) {
+func (c *MirrorClient) copyImageWith(ctx context.Context, rc *regclient.RegClient, src, dest string, opts ...regclient.ImageOpts) (string, error) {
 	srcRef, err := ref.New(src)
 	if err != nil {
 		return "", fmt.Errorf("failed to parse source reference %s: %w", src, err)
@@ -224,8 +277,7 @@ func (c *MirrorClient) copyImageWith(ctx context.Context, rc *regclient.RegClien
 	}
 
 	err = rc.ImageCopy(ctx, srcRef, destRef,
-		regclient.ImageWithReferrers(),
-		regclient.ImageWithBlobReaderHook(bufferLargeBlobs),
+		append([]regclient.ImageOpts{regclient.ImageWithReferrers()}, opts...)...,
 	)
 	if err != nil {
 		return "", fmt.Errorf("failed to copy image %s to %s: %w", src, dest, err)
@@ -365,10 +417,10 @@ func (c *MirrorClient) BlobPut(ctx context.Context, r ref.Ref, d descriptor.Desc
 }
 
 // BlobCopy copies a blob from src to dst, using cross-repo mount when possible.
-// Large blobs are pre-buffered to disk via the reader hook to avoid upload timeouts.
+// The blob is streamed; blobs above largeBlobThreshold use a chunked upload.
 func (c *MirrorClient) BlobCopy(ctx context.Context, src, dst ref.Ref, d descriptor.Descriptor) error {
 	_, err := withFallback(ctx, c, func(rc *regclient.RegClient) (struct{}, error) {
-		return struct{}{}, rc.BlobCopy(ctx, src, dst, d, regclient.BlobWithReaderHook(bufferLargeBlobs))
+		return struct{}{}, rc.BlobCopy(ctx, src, dst, d)
 	})
 	return err
 }
@@ -434,17 +486,11 @@ func (r *tempFileReader) Close() error {
 	return err
 }
 
-// bufferLargeBlobs is a regclient BlobReaderHook that pre-buffers large blobs
-// to disk before they are pushed to the destination.
-//
-// Without this hook, regclient streams large blobs directly from the source
-// registry HTTP response into the destination upload. For very large blobs
-// (>100 MiB) this can take minutes, causing Quay to expire the upload session
-// before the final PUT completes → BLOB_UPLOAD_UNKNOWN.
-//
-// By writing the blob to a temp file on an ephemeral volume first, the
-// subsequent monolithic PUT (BlobMax=-1) streams from local disk, completing
-// quickly without consuming large amounts of memory.
+// bufferLargeBlobs is a regclient BlobReaderHook used by CopyImageBuffered
+// that pre-buffers large blobs to disk before they are pushed to the
+// destination with a single monolithic PUT (BlobMax=-1) streaming from local
+// disk. It is the fallback for registries that reject the streamed chunked
+// upload used by CopyImage.
 func bufferLargeBlobs(br *blob.BReader) (*blob.BReader, error) {
 	d := br.GetDescriptor()
 	if d.Size > 0 && d.Size <= largeBlobThreshold {

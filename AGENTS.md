@@ -61,7 +61,7 @@ Additional entrypoints: `cmd/worker/main.go cleanup` subcommand (deletes orphane
 
 | Package | Purpose |
 |---------|---------|
-| `pkg/mirror/client/` | OCI registry operations via regclient; blob buffering for large layers |
+| `pkg/mirror/client/` | OCI registry operations via regclient; streamed blob uploads (chunked above 100 MiB) with a disk-buffered fallback |
 | `pkg/mirror/collector.go` | Gathers target images from releases, operators, and additional images |
 | `pkg/mirror/release/` | Cincinnati graph resolution, version ranges, shortest-path computation |
 | `pkg/mirror/catalog/` | OLM FBC parsing, package filtering, transitive dependency resolution |
