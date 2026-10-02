@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.1.4] - 2026-10-03
+
 ### Changed
 - **Workers stream large image layers instead of buffering them to disk**:
   layers above 100 MiB used to be written to `/tmp/blob-buffer` before a
@@ -46,6 +48,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   appears in the module graph through operator-registry's own tests, not
   through production code. Retain the historical VEX product statements
   and document this distinction.
+
+---
 
 ## [v0.1.3] - 2026-09-29
 
@@ -901,7 +905,17 @@ v0.0.13; its entries are merged into this section.
 - **E2E test suite**: Ginkgo/Gomega end-to-end tests for a KinD cluster
   covering the full mirroring lifecycle.
 
-[Unreleased]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.0.15...HEAD
+[Unreleased]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.1.4...HEAD
+[v0.1.4]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.1.3...v0.1.4
+[v0.1.3]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.1.2...v0.1.3
+[v0.1.2]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.1.0...v0.1.2
+[v0.1.0]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.0.47...v0.1.0
+[v0.0.47]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.0.46...v0.0.47
+[v0.0.46]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.0.45...v0.0.46
+[v0.0.45]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.0.44...v0.0.45
+[v0.0.44]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.0.40...v0.0.44
+[v0.0.40]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.0.39...v0.0.40
+[v0.0.39]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.0.38...v0.0.39
 [v0.0.15]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.0.13...v0.0.15
 [v0.0.13]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.1.0...v0.0.13
 [v0.0.11]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.0.10...v0.0.11
