@@ -22,6 +22,11 @@ linters:
     - unparam
     - unused
   settings:
+    goconst:
+      # Keep declarative resource and fixture literals inline with the new AST analyzer.
+      exclude-types:
+        - Call
+        - CompositeLit
     lll:
       # Increased to accommodate long Go function signatures with multiple parameters.
       line-length: 250

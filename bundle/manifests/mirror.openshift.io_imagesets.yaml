@@ -2,7 +2,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.18.0
+    controller-gen.kubebuilder.io/version: v0.22.0
   creationTimestamp: null
   name: imagesets.mirror.openshift.io
 spec:
@@ -180,6 +180,29 @@ spec:
                             description: IncludePackage contains a name (required)
                               and channels and/or versions (optional).
                             properties:
+                              bundles:
+                                description: |-
+                                  Bundles selects individual bundles of the package by name (e.g.
+                                  "web-terminal.v1.11.0"). Only these bundles are mirrored (plus their
+                                  dependencies), and the filtered catalog contains them in every channel
+                                  they belong to. Cannot be combined with channels, minVersion,
+                                  maxVersion or previousVersions.
+                                items:
+                                  description: SelectedBundle names a single bundle
+                                    of an operator package.
+                                  properties:
+                                    name:
+                                      description: Name of the bundle as listed in
+                                        the catalog (olm.bundle name).
+                                      minLength: 1
+                                      type: string
+                                  required:
+                                  - name
+                                  type: object
+                                type: array
+                                x-kubernetes-list-map-keys:
+                                - name
+                                x-kubernetes-list-type: map
                               channels:
                                 description: Channels to include.
                                 items:
@@ -220,7 +243,57 @@ spec:
                             required:
                             - name
                             type: object
+                            x-kubernetes-validations:
+                            - message: bundles cannot be combined with channels, minVersion,
+                                maxVersion or previousVersions
+                              rule: '!has(self.bundles) || size(self.bundles) == 0
+                                || ((!has(self.channels) || size(self.channels) ==
+                                0) && (!has(self.minVersion) || size(self.minVersion)
+                                == 0) && (!has(self.maxVersion) || size(self.maxVersion)
+                                == 0) && (!has(self.previousVersions) || self.previousVersions
+                                == 0))'
                           type: array
+                        signatureVerification:
+                          description: |-
+                            SignatureVerification, when set, requires the catalog image to carry a
+                            valid cosign/sigstore signature verifiable against the referenced
+                            public key before it is resolved. Unlike OpenShift release payloads
+                            (which are always verified against embedded Red Hat keys), there is no
+                            single trusted signer for third-party operator catalogs, so
+                            verification here is opt-in and the key is supplied per-catalog.
+                            Unset (the default) means no verification is performed, matching
+                            pre-existing behavior.
+                          properties:
+                            publicKeySecretRef:
+                              description: |-
+                                PublicKeySecretRef references a key within a Secret, in the same
+                                namespace as the ImageSet, whose value is a PEM-encoded cosign public
+                                key used to verify the image's signature.
+                              properties:
+                                key:
+                                  description: The key of the secret to select from.  Must
+                                    be a valid secret key.
+                                  type: string
+                                name:
+                                  default: ""
+                                  description: |-
+                                    Name of the referent.
+                                    This field is effectively required, but due to backwards compatibility is
+                                    allowed to be empty. Instances of this type with an empty value here are
+                                    almost certainly wrong.
+                                    More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                  type: string
+                                optional:
+                                  description: Specify whether the Secret or its key
+                                    must be defined
+                                  type: boolean
+                              required:
+                              - key
+                              type: object
+                              x-kubernetes-map-type: atomic
+                          required:
+                          - publicKeySecretRef
+                          type: object
                         skipDependencies:
                           description: SkipDependencies will not include dependencies
                             if true.
@@ -281,6 +354,19 @@ spec:
                                 ShortestPath mode calculates the shortest path
                                 between the min and mav version
                               type: boolean
+                            skipSignatureVerification:
+                              description: |-
+                                SkipSignatureVerification disables cryptographic verification of the
+                                release payload's GPG signature against the embedded Red Hat release
+                                signing keys before mirroring. Verification is enabled by default;
+                                only disable this for test environments mirroring unpublished or
+                                unsigned release payloads (e.g. CI/nightly builds without a matching
+                                trusted key). Release nodes whose signature cannot be downloaded or
+                                fails verification are skipped (not mirrored) unless this is set.
+                                Signature lookup only queries the official Red Hat release mirror, so
+                                this must be set to true for Type: okd channels and any OCP channel
+                                mirroring unpublished CI/nightly payloads.
+                              type: boolean
                             type:
                               default: ocp
                               description: |-
@@ -311,6 +397,24 @@ spec:
                           to copy from a release location on disk
                         type: string
                     type: object
+                  requireSignedImages:
+                    description: |-
+                      RequireSignedImages requires every image mirrored for this ImageSet —
+                      release components, operator bundles, additional images, and Helm
+                      images alike — to carry a cosign signature. This is a presence/shape
+                      check: it confirms a well-formed cosign signature exists for the
+                      image's digest (and, when the signature embeds a certificate via the
+                      keyless/Fulcio flow, that the signature cryptographically matches that
+                      embedded certificate's key), but does not verify the image was signed
+                      by any particular trusted key or identity. Unlike
+                      ReleaseChannel.SkipSignatureVerification (checked once against the
+                      source before mirroring) and Operator.SignatureVerification (checked
+                      once against a specific public key), this is re-checked periodically
+                      against the mirrored destination as part of the manager's drift check,
+                      so an image that loses its signature (or never had one) after being
+                      mirrored is caught. Use Operator.SignatureVerification instead when a
+                      specific trusted public key must be enforced.
+                    type: boolean
                   samples:
                     description: |-
                       Samples defines the configuration for Sample content types.

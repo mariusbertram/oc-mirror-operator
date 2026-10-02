@@ -141,7 +141,3 @@ type MirrorExportList struct {
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []MirrorExport `json:"items"`
 }
-
-func init() {
-	SchemeBuilder.Register(&MirrorExport{}, &MirrorExportList{})
-}

@@ -19,11 +19,12 @@ on the console plugin. For the contribution process (tests, lint, CI, releases) 
 
 | Tool | Version | Notes |
 |---|---|---|
-| Go | ≥ 1.25 (`go.mod`) | |
+| Go | >= 1.27.1 (`go.mod`) | container builds and the devcontainer use the same pinned toolchain |
 | podman or docker | recent | `CONTAINER_TOOL=podman` is the Makefile default; pass `CONTAINER_TOOL=docker` to override |
 | kubectl / oc | ≥ 1.29 | |
 | Kind | ≥ 0.25 | local clusters and e2e |
-| operator-sdk, opm | ≥ 1.37 | only for bundles/catalogs; `make operator-sdk opm` downloads pinned versions |
+| operator-sdk | 1.42.3 | `make operator-sdk` downloads and checksum-verifies the pinned version, independent of a system installation |
+| opm | 1.74.0 | only for catalogs; `make opm` downloads and checksum-verifies the pinned version |
 | Node.js 20 + npm | | console plugin only |
 | controller-gen, kustomize, golangci-lint, setup-envtest | pinned | downloaded into `bin/` by the Makefile on demand |
 
@@ -61,6 +62,18 @@ make catalog-build catalog-push                 # FBC catalog image containing t
 
 Never edit `bundle/` by hand; change `config/manifests/bases/oc-mirror.clusterserviceversion.yaml`
 and regenerate.
+
+Before submitting to OperatorHub.io or the OpenShift community catalog, publish
+the versioned component images and regenerate the release bundle with
+`USE_IMAGE_DIGESTS=true` (the default). This resolves the runtime images to digests
+and populates `spec.relatedImages` for disconnected mirroring. A local bundle
+generated with `USE_IMAGE_DIGESTS=false` is only a development artifact, not the
+catalog submission.
+
+```bash
+make bundle VERSION=<release-version> IMAGE_TAG_BASE=<public-registry>/<image-base>
+bin/operator-sdk bundle validate ./bundle --select-optional suite=operatorframework
+```
 
 ## Run against a cluster
 

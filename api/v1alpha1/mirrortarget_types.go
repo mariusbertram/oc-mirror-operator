@@ -386,7 +386,3 @@ type MirrorTargetList struct {
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []MirrorTarget `json:"items"`
 }
-
-func init() {
-	SchemeBuilder.Register(&MirrorTarget{}, &MirrorTargetList{})
-}

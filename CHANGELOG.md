@@ -19,6 +19,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   streamed monolithic `PUT`. The worker's second copy attempt falls back to
   the previous disk-buffered strategy (`MirrorClient.CopyImageBuffered`), so
   `spec.workerStorage` remains meaningful as fallback scratch space.
+- Prepare the toolchain for OperatorHub.io and the OpenShift community catalog:
+  Go 1.27.1 (including digest-pinned builder and devcontainer images), Operator
+  SDK 1.42.3, opm 1.74.0, controller-gen 0.22.0, and kustomize 5.8.2.
+- Download the pinned Operator SDK and opm with checksum verification instead
+  of silently using an older system installation.
+- Update Go dependencies to compatible current versions, including Kubernetes
+  0.37.1, controller-runtime 0.25.2, operator-registry 1.74.0, Helm 3.22.0,
+  regclient 0.11.6, and sigstore 1.11.0. Keep kube-openapi at the revision
+  required by Kubernetes 0.37.1; its newer development revision uses incompatible
+  structured-merge-diff types. Keep cel-go at 0.31.0 because the next version
+  changes its module path.
+- Use golangci-lint 2.14.0 locally and in CI for Go 1.27 support, preserving
+  inline Kubernetes resource and test-fixture literals with the new goconst
+  analyzer. Replace controller-runtime's deprecated API scheme builder with
+  Kubernetes runtime registration.
+- Regenerate CRDs, the bundle, and scorecard configuration with the updated
+  tooling, including the previously missing MirrorExport bundle CRD and its
+  display metadata.
+- Leave all console UI and browser smoke-test dependency versions unchanged;
+  the UI dependency set is coupled to the OpenShift console runtime.
 
 ## [v0.1.3] - 2026-09-29
 
