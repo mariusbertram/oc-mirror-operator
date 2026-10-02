@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **Workers stream large image layers instead of buffering them to disk**:
+  layers above 100 MiB used to be written to `/tmp/blob-buffer` before a
+  monolithic `PUT`, because streaming them as one long `PUT` failed against
+  Quay — once that request was cut off, Quay cancelled the upload session
+  and regclient's chunked fallback on it ended in `BLOB_UPLOAD_UNKNOWN`.
+  They are now streamed source → target as a chunked upload of 16 MiB
+  `PATCH` requests (bounded memory, no disk I/O, failed chunks are resent and
+  resumed at the offset the registry reports). Layers ≤ 100 MiB keep using a
+  streamed monolithic `PUT`. The worker's second copy attempt falls back to
+  the previous disk-buffered strategy (`MirrorClient.CopyImageBuffered`), so
+  `spec.workerStorage` remains meaningful as fallback scratch space.
+
 ## [v0.1.3] - 2026-09-29
 
 ### Changed

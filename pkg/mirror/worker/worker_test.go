@@ -234,6 +234,64 @@ func TestRunBatch(t *testing.T) {
 	}
 }
 
+const (
+	callStream   = "stream"
+	callBuffered = "buffered"
+)
+
+// bufferedFakeClient additionally implements BufferedCopier and records
+// which copy strategy each attempt used.
+type bufferedFakeClient struct {
+	fakeClient
+	calls []string
+}
+
+func (c *bufferedFakeClient) CopyImage(ctx context.Context, src, dest string) (string, error) {
+	c.calls = append(c.calls, callStream)
+	return c.fakeClient.CopyImage(ctx, src, dest)
+}
+
+func (c *bufferedFakeClient) CopyImageBuffered(ctx context.Context, src, dest string) (string, error) {
+	c.calls = append(c.calls, callBuffered)
+	return c.fakeClient.CopyImage(ctx, src, dest)
+}
+
+func TestMirrorOne_FallsBackToBufferedCopy(t *testing.T) {
+	tests := []struct {
+		name      string
+		errs      []error
+		wantCalls []string
+		wantOK    bool
+	}{
+		{name: "stream succeeds", errs: nil, wantCalls: []string{callStream}, wantOK: true},
+		{name: "buffered after failed stream", errs: []error{errors.New("BLOB_UPLOAD_UNKNOWN")}, wantCalls: []string{callStream, callBuffered}, wantOK: true},
+		{name: "both fail", errs: []error{errors.New("a"), errors.New("b")}, wantCalls: []string{callStream, callBuffered}, wantOK: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fm := newFakeManager(t)
+			w := &Worker{Status: fm.status()}
+			var copied []string
+			c := &bufferedFakeClient{fakeClient: fakeClient{
+				copyErrs:  map[string][]error{"reg/0": tt.errs},
+				digestErr: map[string]error{},
+				copied:    &copied,
+			}}
+			if got := w.MirrorOne(context.Background(), c, "src/0", "reg/0"); got != tt.wantOK {
+				t.Fatalf("MirrorOne = %v, want %v", got, tt.wantOK)
+			}
+			if len(c.calls) != len(tt.wantCalls) {
+				t.Fatalf("calls = %v, want %v", c.calls, tt.wantCalls)
+			}
+			for i := range tt.wantCalls {
+				if c.calls[i] != tt.wantCalls[i] {
+					t.Fatalf("calls = %v, want %v", c.calls, tt.wantCalls)
+				}
+			}
+		})
+	}
+}
+
 func TestRunBatch_UsesPlannedOrder(t *testing.T) {
 	h := newHarness(t)
 	h.w.Plan = func(_ context.Context, _ Client, s, d []string) ([]string, []string) {

@@ -13,7 +13,7 @@ This directory contains a set of shared libraries used by oc-mirror-operator's t
 
 ### `client.MirrorClient` (427 LOC)
 Wraps `regclient` to provide OCI registry operations with oc-mirror-operator-specific configuration:
-- Blob buffering for large layers
+- Streamed blob uploads: chunked for layers above 100 MiB, disk-buffered fallback (`CopyImageBuffered`)
 - Insecure/HTTP registry support
 - Configurable blob size limits per destination host
 
