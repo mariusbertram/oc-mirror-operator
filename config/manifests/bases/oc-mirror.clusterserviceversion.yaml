@@ -51,6 +51,13 @@ spec:
       name: imagesets.mirror.openshift.io
       version: v1alpha1
     - description: |
+        A MirrorExport defines a one-shot export of selected release, operator,
+        and additional image content to an external registry.
+      displayName: Mirror Export
+      kind: MirrorExport
+      name: mirrorexports.mirror.openshift.io
+      version: v1alpha1
+    - description: |
         A MirrorTarget defines a destination registry for one or more ImageSets.
         It owns the manager Deployment that orchestrates per-image worker pods
         and exposes aggregated mirroring progress (Total/Mirrored/Pending/Failed).

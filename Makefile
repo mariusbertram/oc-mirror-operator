@@ -45,9 +45,8 @@ ifeq ($(USE_IMAGE_DIGESTS), true)
 	BUNDLE_GEN_FLAGS += --use-image-digests
 endif
 
-# Set the Operator SDK version to use. By default, what is installed on the system is used.
-# This is useful for CI or a project to utilize a specific version of the operator-sdk toolkit.
-OPERATOR_SDK_VERSION ?= v1.42.2
+# Pin the Operator SDK used locally and in CI; OPERATOR_SDK can override the binary.
+OPERATOR_SDK_VERSION ?= v1.42.3
 # Image URLs to use for building/pushing image targets.
 # Derived from IMAGE_TAG_BASE and VERSION so that 'VERSION=x.y.z make bundle'
 # resolves the correct images on ghcr.io without extra overrides.
@@ -482,13 +481,13 @@ ENVTEST ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
 
 ## Tool Versions
-KUSTOMIZE_VERSION ?= v5.6.0
-CONTROLLER_TOOLS_VERSION ?= v0.18.0
+KUSTOMIZE_VERSION ?= v5.8.2
+CONTROLLER_TOOLS_VERSION ?= v0.22.0
 #ENVTEST_VERSION is the version of controller-runtime release branch to fetch the envtest setup script (i.e. release-0.20)
 ENVTEST_VERSION ?= $(shell go list -m -f "{{ .Version }}" sigs.k8s.io/controller-runtime | awk -F'[v.]' '{printf "release-%d.%d", $$2, $$3}')
 #ENVTEST_K8S_VERSION is the version of Kubernetes to use for setting up ENVTEST binaries (i.e. 1.31)
 ENVTEST_K8S_VERSION ?= $(shell go list -m -f "{{ .Version }}" k8s.io/api | awk -F'[v.]' '{printf "1.%d", $$3}')
-GOLANGCI_LINT_VERSION ?= v2.1.0
+GOLANGCI_LINT_VERSION ?= v2.14.0
 
 .PHONY: kustomize
 kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary.
@@ -536,20 +535,21 @@ endef
 
 .PHONY: operator-sdk
 OPERATOR_SDK ?= $(LOCALBIN)/operator-sdk
-operator-sdk: ## Download operator-sdk locally if necessary.
-ifeq (,$(wildcard $(OPERATOR_SDK)))
-ifeq (, $(shell which operator-sdk 2>/dev/null))
+operator-sdk: ## Download the pinned operator-sdk locally if necessary.
 	@{ \
 	set -e ;\
-	mkdir -p $(dir $(OPERATOR_SDK)) ;\
+	if [ -x "$(OPERATOR_SDK)" ] && "$(OPERATOR_SDK)" version | grep -Fq 'version: "$(OPERATOR_SDK_VERSION)"'; then exit 0; fi ;\
+	mkdir -p "$(dir $(OPERATOR_SDK))" ;\
 	OS=$(shell go env GOOS) && ARCH=$(shell go env GOARCH) && \
-	curl -sSLo $(OPERATOR_SDK) https://github.com/operator-framework/operator-sdk/releases/download/$(OPERATOR_SDK_VERSION)/operator-sdk_$${OS}_$${ARCH} ;\
-	chmod +x $(OPERATOR_SDK) ;\
+	ASSET=operator-sdk_$${OS}_$${ARCH} ;\
+	TMP=$$(mktemp -d) ;\
+	trap 'rm -rf "$$TMP"' EXIT ;\
+	curl -fsSL -o "$$TMP/$$ASSET" https://github.com/operator-framework/operator-sdk/releases/download/$(OPERATOR_SDK_VERSION)/$$ASSET ;\
+	curl -fsSL -o "$$TMP/checksums.txt" https://github.com/operator-framework/operator-sdk/releases/download/$(OPERATOR_SDK_VERSION)/checksums.txt ;\
+	(cd "$$TMP" && grep " $$ASSET$$" checksums.txt | sha256sum --check --strict) ;\
+	chmod +x "$$TMP/$$ASSET" ;\
+	mv "$$TMP/$$ASSET" "$(OPERATOR_SDK)" ;\
 	}
-else
-OPERATOR_SDK = $(shell which operator-sdk)
-endif
-endif
 
 ##@ Bundle/Catalog
 
@@ -574,21 +574,23 @@ bundle-push: ## Push the bundle image.
 	$(MAKE) docker-push IMG=$(BUNDLE_IMG)
 
 .PHONY: opm
-OPM = $(LOCALBIN)/opm
-opm: ## Download opm locally if necessary.
-ifeq (,$(wildcard $(OPM)))
-ifeq (,$(shell which opm 2>/dev/null))
+OPM_VERSION ?= v1.74.0
+OPM ?= $(LOCALBIN)/opm
+opm: ## Download the pinned opm locally if necessary.
 	@{ \
 	set -e ;\
-	mkdir -p $(dir $(OPM)) ;\
+	if [ -x "$(OPM)" ] && "$(OPM)" version | grep -Fq '"$(OPM_VERSION)"'; then exit 0; fi ;\
+	mkdir -p "$(dir $(OPM))" ;\
 	OS=$(shell go env GOOS) && ARCH=$(shell go env GOARCH) && \
-	curl -sSLo $(OPM) https://github.com/operator-framework/operator-registry/releases/download/v1.55.0/$${OS}-$${ARCH}-opm ;\
-	chmod +x $(OPM) ;\
+	ASSET=$${OS}-$${ARCH}-opm ;\
+	TMP=$$(mktemp -d) ;\
+	trap 'rm -rf "$$TMP"' EXIT ;\
+	curl -fsSL -o "$$TMP/$$ASSET" https://github.com/operator-framework/operator-registry/releases/download/$(OPM_VERSION)/$$ASSET ;\
+	curl -fsSL -o "$$TMP/checksums.txt" https://github.com/operator-framework/operator-registry/releases/download/$(OPM_VERSION)/checksums.txt ;\
+	(cd "$$TMP" && grep " $$ASSET$$" checksums.txt | sha256sum --check --strict) ;\
+	chmod +x "$$TMP/$$ASSET" ;\
+	mv "$$TMP/$$ASSET" "$(OPM)" ;\
 	}
-else
-OPM = $(shell which opm)
-endif
-endif
 
 # A comma-separated list of bundle images (e.g. make catalog-build BUNDLE_IMGS=example.com/operator-bundle:v0.1.0,example.com/operator-bundle:v0.2.0).
 # These images MUST exist in a registry and be pull-able.

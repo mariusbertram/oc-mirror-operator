@@ -14,7 +14,82 @@ metadata:
             },
             "name": "imageset-sample"
           },
-          "spec": null
+          "spec": {
+            "mirror": {
+              "operators": [
+                {
+                  "catalog": "\u003cregistry\u003e/redhat/redhat-operator-index:v4.14",
+                  "packages": [
+                    {
+                      "name": "web-terminal"
+                    },
+                    {
+                      "channels": [
+                        {
+                          "name": "stable-v1"
+                        }
+                      ],
+                      "name": "cert-manager"
+                    }
+                  ]
+                }
+              ],
+              "platform": {
+                "architectures": [
+                  "amd64"
+                ],
+                "channels": [
+                  {
+                    "maxVersion": "4.14.35",
+                    "minVersion": "4.14.30",
+                    "name": "stable-4.14",
+                    "shortestPath": true
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "apiVersion": "mirror.openshift.io/v1alpha1",
+          "kind": "MirrorExport",
+          "metadata": {
+            "labels": {
+              "app.kubernetes.io/managed-by": "kustomize",
+              "app.kubernetes.io/name": "oc-mirror"
+            },
+            "name": "mirrorexport-sample"
+          },
+          "spec": {
+            "destination": {
+              "registry": "registry.example.com/mirror"
+            },
+            "mirror": {
+              "operators": [
+                {
+                  "catalog": "\u003cregistry\u003e/redhat/redhat-operator-index:v4.14",
+                  "packages": [
+                    {
+                      "name": "web-terminal"
+                    }
+                  ]
+                }
+              ],
+              "platform": {
+                "architectures": [
+                  "amd64"
+                ],
+                "channels": [
+                  {
+                    "maxVersion": "4.14.35",
+                    "minVersion": "4.14.30",
+                    "name": "stable-4.14",
+                    "shortestPath": true
+                  }
+                ]
+              }
+            }
+          }
         },
         {
           "apiVersion": "mirror.openshift.io/v1alpha1",
@@ -26,18 +101,25 @@ metadata:
             },
             "name": "mirrortarget-sample"
           },
-          "spec": null
+          "spec": {
+            "authSecret": "registry-credentials",
+            "imageSets": [
+              "imageset-sample"
+            ],
+            "insecure": false,
+            "registry": "registry.example.com/mirror"
+          }
         }
       ]
     capabilities: Basic Install
     categories: OpenShift Optional, Integration & Delivery
     containerImage: ghcr.io/mariusbertram/oc-mirror-operator-controller:v0.0.2
-    createdAt: "2026-07-04T13:26:53Z"
+    createdAt: "2026-10-02T19:43:06Z"
     oc-mirror-manager-image: ghcr.io/mariusbertram/oc-mirror-operator-manager:v0.0.2
     oc-mirror-plugin-image: ghcr.io/mariusbertram/oc-mirror-operator-plugin:v0.0.2
     oc-mirror-worker-image: ghcr.io/mariusbertram/oc-mirror-operator-worker:v0.0.2
     operatorframework.io/suggested-namespace: oc-mirror-operator
-    operators.operatorframework.io/builder: operator-sdk-v1.42.2
+    operators.operatorframework.io/builder: operator-sdk-v1.42.3
     operators.operatorframework.io/project_layout: go.kubebuilder.io/v4
     repository: https://github.com/mariusbertram/oc-mirror-operator
     support: Marius Bertram
@@ -53,6 +135,13 @@ spec:
       displayName: Image Set
       kind: ImageSet
       name: imagesets.mirror.openshift.io
+      version: v1alpha1
+    - description: |
+        A MirrorExport defines a one-shot export of selected release, operator,
+        and additional image content to an external registry.
+      displayName: Mirror Export
+      kind: MirrorExport
+      name: mirrorexports.mirror.openshift.io
       version: v1alpha1
     - description: |
         A MirrorTarget defines a destination registry for one or more ImageSets.
@@ -159,6 +248,22 @@ spec:
                 app.kubernetes.io/name: oc-mirror
                 control-plane: controller-manager
             spec:
+              affinity:
+                nodeAffinity:
+                  requiredDuringSchedulingIgnoredDuringExecution:
+                    nodeSelectorTerms:
+                    - matchExpressions:
+                      - key: kubernetes.io/arch
+                        operator: In
+                        values:
+                        - amd64
+                        - arm64
+                        - ppc64le
+                        - s390x
+                      - key: kubernetes.io/os
+                        operator: In
+                        values:
+                        - linux
               containers:
               - args:
                 - --metrics-bind-address=:8443
@@ -317,9 +422,22 @@ spec:
           - update
           - watch
         - apiGroups:
+          - gateway.networking.k8s.io
+          resources:
+          - httproutes
+          verbs:
+          - create
+          - delete
+          - get
+          - list
+          - patch
+          - update
+          - watch
+        - apiGroups:
           - mirror.openshift.io
           resources:
           - imagesets
+          - mirrorexports
           - mirrortargets
           verbs:
           - create
@@ -333,6 +451,7 @@ spec:
           - mirror.openshift.io
           resources:
           - imagesets/finalizers
+          - mirrorexports/finalizers
           - mirrortargets/finalizers
           verbs:
           - update
@@ -349,6 +468,7 @@ spec:
         - apiGroups:
           - mirror.openshift.io
           resources:
+          - mirrorexports/status
           - mirrortargets/status
           verbs:
           - get
