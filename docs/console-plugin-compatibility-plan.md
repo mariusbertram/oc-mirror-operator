@@ -109,6 +109,25 @@ version-specific names.
 - Mock actions acknowledge writes; they do not mutate persisted cluster/sample
   data. The real-console smoke harness separately tests actual authorized writes.
 
+## Follow-up design consideration: minc
+
+Evaluated minc/MicroShift as an optional cluster beneath a separately installed
+Console. Retain the existing matching-version real Console bridge smoke matrix
+on Kind: it already exercises actual federation. Mock mode is only a standalone
+development aid and cannot prove Console federation compatibility.
+
+MicroShift's ingress router/service CA could provide useful additional
+routing/certificate coverage. However, adding a standalone Console does not
+establish the full OCP console-operator, ClusterOperator version lifecycle,
+automatic plugin registration, or authentication integrations. Those require
+full OpenShift coverage, not manually supplied compatibility resources. No minc
+benchmark or new cluster installation was performed for this design review,
+and no CI replacement is authorized or made.
+
+Before adopting minc in CI, identify a concrete uncovered integration, validate
+the required components and versions, and compare reliability and cost with the
+existing smoke suite. See the developer guide's test-environment discussion.
+
 ## Resume checklist
 
 1. Read this plan and `git status`; preserve the feature branch and existing work.

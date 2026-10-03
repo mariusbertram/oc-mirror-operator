@@ -222,6 +222,34 @@ CI additionally runs each profile against a matching real
 `origin-console` bridge in Kind (`hack/plugin-smoke/`) — the only check that catches
 runtime mismatches between what the plugin bundles and what the console federates.
 
+### Kind, minc, and full OpenShift coverage
+
+The standalone mock harness checks page layout and simulated API flows, but it
+does **not** load the Console's federated dependencies. It cannot establish
+Console compatibility. Browser smoke tests against the matching real
+`origin-console` bridge remain required for every supported profile.
+
+[minc](https://github.com/minc-org/minc) runs MicroShift in a container and is a
+reasonable optional integration environment. MicroShift's ingress router and
+service CA can add coverage for OpenShift-specific routing and serving
+certificates that vanilla Kind does not provide. Installing a standalone Console
+on minc would still exercise the same real Console frontend as the existing
+Kind/bridge smoke matrix; changing the cluster alone does not improve federation
+coverage.
+
+MicroShift is a minimal OpenShift distribution, not a full OpenShift cluster.
+Do not assume that adding a Console Deployment also provides console-operator
+reconciliation, the `console` ClusterOperator/version lifecycle, automatic
+ConsolePlugin registration, or the full OpenShift authentication integrations.
+Manually supplying these resources only exercises the supplied fixture, not
+those absent integrations. Use full OpenShift for end-to-end coverage of those
+operator-managed flows.
+
+Keep the current Kind smoke matrix. Consider an additional minc integration
+suite only for a specific routing/certificate gap, and measure reproducibility,
+version availability, startup cost, and coverage before replacing existing CI.
+This is a design consideration, not a validated minc replacement.
+
 To load the plugin into a real console shell, run the OpenShift console `bridge` binary
 with `--plugin=oc-mirror-operator=https://localhost:9443` (see the console repository
 for the off-cluster flags).
