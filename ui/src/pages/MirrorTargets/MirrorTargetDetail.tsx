@@ -15,7 +15,6 @@ import {
   Flex,
   FlexItem,
   Label,
-  PageSection,
   Spinner,
   Switch,
   Tab,
@@ -34,6 +33,7 @@ import { StatusPill, computeStatus } from '../../components/StatusPill';
 import { ProgressBar } from '../../components/ProgressBar';
 import { ResourcesView } from '../../components/ResourcesView';
 import '../../components/plugin-styles.css';
+import { PageSection } from '../../components/ThemePageSection';
 
 export const MirrorTargetDetail: React.FC = () => {
   const params = useParams<{ name: string }>();

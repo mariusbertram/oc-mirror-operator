@@ -3,7 +3,6 @@ import {
   Alert,
   Button,
   Checkbox,
-  PageSection,
   SearchInput,
   Spinner,
   TextInput,
@@ -16,6 +15,7 @@ import { Link, useParams } from '@router';
 import { getOcpChannels, getReleases, patchReleases } from '../../api/client';
 import type { OcpChannelEntry, ReleaseChannel, ReleaseSpec } from '../../api/types';
 import '../../components/plugin-styles.css';
+import { PageSection } from '../../components/ThemePageSection';
 
 type ReleaseBrowserParams = {
   targetName?: string;
@@ -221,7 +221,7 @@ export const ReleaseBrowser: React.FC = () => {
                           size="sm"
                           isDisabled={added}
                           onClick={() => addChannel(ch.name, ch.type)}
-                          style={{ fontSize: 12, color: added ? '#6a6e73' : '#0066cc' }}
+                          style={{ fontSize: 12, color: added ? 'var(--pf-v6-global--Color--200)' : 'var(--pf-v6-global--primary-color--100)' }}
                         >
                           {added ? 'added' : '+ Add'}
                         </Button>
@@ -229,7 +229,7 @@ export const ReleaseBrowser: React.FC = () => {
                     );
                   })}
                   {filteredAvailable.length === 0 && (
-                    <div style={{ padding: 12, color: '#6a6e73', fontSize: 13 }}>No channels match.</div>
+                    <div style={{ padding: 12, color: 'var(--pf-v6-global--Color--200)', fontSize: 13 }}>No channels match.</div>
                   )}
                 </>
               )}
@@ -262,7 +262,7 @@ export const ReleaseBrowser: React.FC = () => {
             </div>
             <div className="mirror-dual-pane__body">
               {channels.length === 0 && (
-                <div style={{ padding: 16, color: '#6a6e73', fontSize: 13 }}>
+                <div style={{ padding: 16, color: 'var(--pf-v6-global--Color--200)', fontSize: 13 }}>
                   No channels added yet. Use the left pane to add channels.
                 </div>
               )}
@@ -276,6 +276,7 @@ export const ReleaseBrowser: React.FC = () => {
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <strong style={{ fontSize: 13, flex: 1 }}>{ch.name}</strong>
                     <select
+                      className="mirror-native-select"
                       value={ch.type ?? 'ocp'}
                       onChange={(e) => updateChannel(ch.name, 'type', e.target.value)}
                       style={{ fontSize: 12, padding: '1px 4px' }}
@@ -287,7 +288,7 @@ export const ReleaseBrowser: React.FC = () => {
                       variant="plain"
                       size="sm"
                       onClick={() => removeChannel(ch.name)}
-                      style={{ fontSize: 14, color: '#c9190b', padding: '0 4px' }}
+                      style={{ fontSize: 14, color: 'var(--pf-v6-global--danger-color--100)', padding: '0 4px' }}
                       aria-label={`Remove ${ch.name}`}
                     >
                       ×

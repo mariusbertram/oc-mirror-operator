@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Button,
-  PageSection,
   SearchInput,
   Spinner,
   Title,
@@ -17,6 +16,7 @@ import {
 } from '../../api/client';
 import type { CatalogPackage, CatalogSummary } from '../../api/types';
 import '../../components/plugin-styles.css';
+import { PageSection } from '../../components/ThemePageSection';
 
 type CatalogBrowserParams = {
   targetName?: string;
@@ -582,7 +582,7 @@ export const CatalogBrowser: React.FC = () => {
                         <div className="mirror-dual-row__name">
                           {p.name}
                           {isImported && (
-                            <span className="mirror-tag" style={{ marginLeft: 6, color: 'var(--pf-v6-global--success-color--100)', borderColor: 'var(--pf-v6-global--success-color--100)' }}>
+                            <span className="mirror-tag" style={{ marginLeft: 6, borderColor: 'var(--pf-v6-global--success-color--100)' }}>
                               imported
                             </span>
                           )}

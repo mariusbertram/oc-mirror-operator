@@ -222,6 +222,31 @@ CI additionally runs each profile against a matching real
 `origin-console` bridge in Kind (`hack/plugin-smoke/`) — the only check that catches
 runtime mismatches between what the plugin bundles and what the console federates.
 
+### Theme regression coverage
+
+Each of the five Console smoke jobs exercises **Light and Dark** through the
+Console's **User Preferences → General → Theme** control. The browser emulates
+the opposite OS preference and reloads before checking the persisted Console
+preference, real PF5/PF6 dark classes, and resolved theme tokens. Changing only
+`prefers-color-scheme` or injecting a dark class does not establish coverage.
+
+Plugin-local compatibility variables map legacy references to PF6 semantic
+tokens or PF5 fallbacks inside `ThemePageSection`; they do not redefine the
+Console's root theme. Native selects follow the selected Console theme even
+when it differs from the OS. The smoke measures rendered text contrast,
+selected-row indicators, pane backgrounds/borders, select/option colors,
+dialogs, and filter/Refresh controls, including hover and narrow layouts.
+Screenshots and measurements are saved under each artifact's `light/` and
+`dark/` directories.
+
+Run this harness only against a dedicated test cluster: it recreates its named
+fixtures in `oc-mirror-demo` between themes and confirms destructive actions.
+Native popup styling is browser/OS-dependent; headless Chromium verifies
+computed option colors and `color-scheme`, not the pixels of every OS-rendered
+popup. Decorative border colors are checked against the theme tokens, not
+treated as independent 3:1 control indicators. These checks are regression
+coverage, not a complete accessibility audit.
+
 ### Kind, minc, and full OpenShift coverage
 
 The standalone mock harness checks page layout and simulated API flows, but it

@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- Cover Light and Dark through the real Console theme preference for all five
+  plugin profiles. Use plugin-scoped PF5/PF6 semantic color mappings, correct
+  native-select theme overrides and measured contrast regressions, and capture
+  theme-specific browser screenshots and contrast evidence.
 - Rename the pending-and-failed image page to **Pending & Failed Images**, preserving
   existing `/failed` and `/failures` URLs and state-specific **Failed** labels.
 - Build five Console plugin images for OpenShift **4.18–4.22**, each with pinned

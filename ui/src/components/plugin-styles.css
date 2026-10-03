@@ -1,55 +1,49 @@
 /* oc-mirror Console Plugin — supplementary styles.
    PatternFly base.css covers layout primitives; these fill the gaps. */
 
-/* Keep these existing plugin styles themed on Console releases that still use PF5. */
-html[class*="pf-v5-"] {
-  --pf-v6-global--Color--200: var(--pf-v5-global--Color--200, #6a6e73);
-  --pf-v6-global--BorderColor--100: var(--pf-v5-global--BorderColor--100, #d2d2d2);
-  --pf-v6-global--BorderColor--200: var(--pf-v5-global--BorderColor--200, #b8bbbe);
-  --pf-v6-global--BackgroundColor--100: var(--pf-v5-global--BackgroundColor--100, transparent);
-  --pf-v6-global--BackgroundColor--200: var(--pf-v5-global--BackgroundColor--200, transparent);
-  --pf-v6-global--primary-color--100: var(--pf-v5-global--primary-color--100, #0066cc);
-  --pf-v6-global--success-color--100: var(--pf-v5-global--success-color--100, #3e8635);
-  --pf-v6-global--warning-color--100: var(--pf-v5-global--warning-color--100, #f0ab00);
-  --pf-v6-global--danger-color--100: var(--pf-v5-global--danger-color--100, #c9190b);
-  --pf-v6-global--spacer--sm: var(--pf-v5-global--spacer--sm, 8px);
-  --pf-v6-global--spacer--md: var(--pf-v5-global--spacer--md, 16px);
+/* Resolve legacy plugin references without overriding the Console's theme. */
+.mirror-ui {
+  --pf-v6-global--Color--100: var(--pf-t--global--text--color--regular, var(--pf-v5-global--Color--100, #151515));
+  --pf-v6-global--Color--200: var(--pf-t--global--text--color--subtle, var(--pf-v5-global--Color--200, #6a6e73));
+  --pf-v6-global--BorderColor--100: var(--pf-t--global--border--color--default, var(--pf-v5-global--BorderColor--100, #d2d2d2));
+  --pf-v6-global--BorderColor--200: var(--pf-t--global--border--color--default, var(--pf-v5-global--BorderColor--200, #b8bbbe));
+  --pf-v6-global--BackgroundColor--100: var(--pf-t--global--background--color--primary--default, var(--pf-v5-global--BackgroundColor--100, #ffffff));
+  --pf-v6-global--BackgroundColor--200: var(--pf-t--global--background--color--secondary--default, var(--pf-v5-global--BackgroundColor--200, #f0f0f0));
+  --pf-v6-global--primary-color--100: var(--pf-t--global--text--color--link--default, var(--pf-v5-global--primary-color--100, #0066cc));
+  --pf-v6-global--success-color--100: var(--pf-t--global--text--color--status--success--default, var(--pf-v5-global--success-color--100, #3e8635));
+  --pf-v6-global--warning-color--100: var(--pf-t--global--color--status--warning--500, var(--pf-v5-global--warning-color--200, #795600));
+  --pf-v6-global--danger-color--100: var(--pf-t--global--text--color--status--danger--default, var(--pf-v5-global--danger-color--100, #c9190b));
+  --pf-v6-global--spacer--sm: var(--pf-t--global--spacer--sm, var(--pf-v5-global--spacer--sm, 8px));
+  --pf-v6-global--spacer--md: var(--pf-t--global--spacer--md, var(--pf-v5-global--spacer--md, 16px));
+  --mirror-action-hover: var(--pf-t--global--background--color--action--plain--hover, var(--pf-v5-global--BackgroundColor--200, #f0f0f0));
+}
+
+/* Early PF6 Consoles use a low-contrast yellow for their light warning text token. */
+html.pf-v6-theme-dark .mirror-ui,
+html.pf-v5-theme-dark .mirror-ui {
+  --pf-v6-global--warning-color--100: var(--pf-t--global--text--color--status--warning--default, var(--pf-v5-global--warning-color--200, #795600));
 }
 
 /* ── Compact inline selects (version / catalog / imageset switchers) ── */
-/* Chrome renders the native popup with a white background regardless of
-   color-scheme; option text must be explicitly dark to stay readable.
-   The closed select box follows the page theme (light or dark). */
+.mirror-ui .mirror-native-select,
+.mirror-ui .mirror-native-select option {
+  background-color: var(--pf-v6-global--BackgroundColor--100);
+  color: var(--pf-v6-global--Color--100);
+}
+.mirror-ui .mirror-native-select {
+  border-color: var(--pf-v6-global--BorderColor--100);
+  color-scheme: light;
+}
 .mirror-native-select {
   font-size: 12px;
   padding: 1px 4px;
   border-radius: 2px;
-  border: 1px solid #d2d2d2;
-}
-.mirror-native-select option {
-  background: #ffffff;
-  color: #151515;
-}
-.pf-v6-theme-dark .mirror-native-select,
-html[class*="pf-v6-theme-dark"] .mirror-native-select,
-.pf-v5-theme-dark .mirror-native-select,
-html[class*="pf-v5-theme-dark"] .mirror-native-select {
-  background: #1b1d21;
-  color: #e0e0e0;
-  border-color: #4a4e54;
+  border: 1px solid var(--pf-v6-global--BorderColor--100);
 }
 
-/* ── Native <select> dark-mode fix (all other selects) ───────── */
-.pf-v6-theme-dark select,
-html[class*="pf-v6-theme-dark"] select,
-.pf-v5-theme-dark select,
-html[class*="pf-v5-theme-dark"] select {
+html.pf-v6-theme-dark .mirror-ui .mirror-native-select,
+html.pf-v5-theme-dark .mirror-ui .mirror-native-select {
   color-scheme: dark;
-}
-@media (prefers-color-scheme: dark) {
-  select {
-    color-scheme: dark;
-  }
 }
 
 /* ── Progress bar meta row ───────────────────────────────────── */
@@ -99,7 +93,7 @@ html[class*="pf-v5-theme-dark"] select {
 .mirror-yaml .ys { color: #a5d6ff; }
 .mirror-yaml .yn { color: #ffb86c; }
 .mirror-yaml .yb { color: #ff7b72; }
-.mirror-yaml .yc { color: #6a737d; font-style: italic; }
+.mirror-yaml .yc { color: #9e9e9e; font-style: italic; }
 
 /* ── Dual-pane catalog browser ───────────────────────────────── */
 .mirror-dual {
@@ -157,7 +151,7 @@ html[class*="pf-v5-theme-dark"] select {
 }
 .mirror-dual-row:hover { background: var(--pf-v6-global--BackgroundColor--200, rgba(0,0,0,0.05)); }
 .mirror-dual-row--selected {
-  background: rgba(0, 102, 204, 0.18) !important;
+  background: var(--mirror-action-hover) !important;
   box-shadow: inset 2px 0 0 var(--pf-v6-global--primary-color--100, #0066cc);
 }
 .mirror-dual-row--selected .mirror-dual-row__name,
@@ -208,8 +202,8 @@ html[class*="pf-v5-theme-dark"] select {
   transition: background 100ms, color 100ms;
 }
 .mirror-dual-action-btn:hover {
-  background: var(--pf-v6-global--primary-color--100, #0066cc);
-  color: #fff;
+  background: var(--mirror-action-hover);
+  color: var(--pf-v6-global--Color--100);
   border-color: var(--pf-v6-global--primary-color--100, #0066cc);
 }
 .mirror-dual-action-btn:disabled {
