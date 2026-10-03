@@ -22,6 +22,29 @@ content are intentionally retained.
 | 4: Delivery and runtime matrix | Dockerfile, Makefile, Kustomize, CSV, CI/release workflows and smoke harness | Five image/env/relatedImage mappings render correctly. Bundle regenerated/validated through existing tooling. Release waits for all five variants and asserts digest/env alignment. Actual matching Console 4.18-4.22 browser runs all passed with optimized production assets. |
 | 5: Handoff and PR | Developer guide, changelog, this plan and branch delivery | Documentation reflects verified behavior and platform limits. Implementation commit `26d061e` pushed to the feature branch; [PR #197](https://github.com/mariusbertram/oc-mirror-operator/pull/197) opened. |
 
+### Follow-up: light and dark theme regressions
+
+Completed the same five-version real Console matrix in both Light and Dark:
+90 page checks, 10,120 rendered-text contrast samples, and 280 screenshots.
+The harness chooses the supported Console preference in the Preferences UI,
+reloads, and proves persistence/classes/tokens while the emulated OS preference
+is deliberately opposite. Fixtures are recreated between themes so confirmed
+Delete and Force Resync actions cannot contaminate the second run.
+
+Plugin-page-scoped token mapping now uses actual PF6 semantic tokens and PF5
+fallbacks without redefining Console root variables. Native selects/options,
+catalog panes/selected rows/hover actions, status text, borders/backgrounds,
+dialogs, and filter/Refresh toolbars were exercised in both themes. Measured
+low-contrast light-mode warning text and hovered imported-package text were
+corrected. All five optimized builds and actual-adapter typechecks passed.
+
+Normal rendered text is checked at 4.5:1, large text at 3:1, and meaningful
+selected-row indicators at 3:1. Decorative borders are checked for correct
+token resolution rather than forced to 3:1. Headless Chromium cannot establish
+the pixel contrast of every browser/OS-native popup; computed select/option
+styles and `color-scheme` are checked instead. Disabled controls are exempt
+from the rendered-text measurements. This is not a complete accessibility audit.
+
 ## Validation record
 
 Executed on 2026-10-03 using isolated container-local dependency/source trees:
@@ -63,6 +86,7 @@ or differs from its matching deployment environment value.
 - [x] Actual Router and PatternFly adapters type-check.
 - [x] Five isolated optimized production builds succeed.
 - [x] Five matching real Console browser runs succeed, including dialogs/actions.
+- [x] Both Console-selected Light/Dark themes pass for all five versions while overriding opposite OS preferences.
 - [x] Clean default local mock mode works on Windows without cluster access.
 - [x] Version-selection, upgrade, cleanup and failure-path Go tests pass.
 - [x] Generated RBAC grants cluster-wide ClusterOperator access.

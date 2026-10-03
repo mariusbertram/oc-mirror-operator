@@ -5,7 +5,6 @@ import {
   EmptyState,
   EmptyStateBody,
   EmptyStateVariant,
-  PageSection,
   SearchInput,
   Spinner,
   Title,
@@ -20,6 +19,7 @@ import type { TargetSummary } from '../../api/types';
 import { StatusPill, computeStatus } from '../../components/StatusPill';
 import { ProgressBar } from '../../components/ProgressBar';
 import '../../components/plugin-styles.css';
+import { PageSection } from '../../components/ThemePageSection';
 
 export const MirrorTargetList: React.FC = () => {
   const [targets, setTargets] = useState<TargetSummary[]>([]);

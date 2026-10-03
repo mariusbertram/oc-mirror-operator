@@ -10,7 +10,6 @@ import {
   FormSelect,
   FormSelectOption,
   Label,
-  PageSection,
   SearchInput,
   Spinner,
   Title,
@@ -25,6 +24,7 @@ import type { ImageSetSummary, TargetSummary } from '../../api/types';
 import { StatusPill, computeStatus } from '../../components/StatusPill';
 import { ProgressBar } from '../../components/ProgressBar';
 import '../../components/plugin-styles.css';
+import { PageSection } from '../../components/ThemePageSection';
 
 interface ImageSetRow extends ImageSetSummary {
   targetName: string;

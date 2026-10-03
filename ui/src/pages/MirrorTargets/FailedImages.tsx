@@ -5,7 +5,6 @@ import {
   Flex,
   FlexItem,
   Label,
-  PageSection,
   SearchInput,
   Spinner,
   Title,
@@ -18,6 +17,7 @@ import { Link, useParams } from '@router';
 import { getImageFailures, listTargets } from '../../api/client';
 import type { FailedImageDetail } from '../../api/types';
 import '../../components/plugin-styles.css';
+import { PageSection } from '../../components/ThemePageSection';
 
 interface FailedImageRow extends FailedImageDetail {
   targetName?: string;

@@ -395,7 +395,7 @@ jobs:
   # webpack/TypeScript compile) and to the `e2e` job above (plain Kubernetes,
   # no console.openshift.io CRDs, so ConsolePluginReconciler skips itself).
   plugin-smoke-test:
-    name: Console plugin smoke test (OpenShift ${{ matrix.console-version }})
+    name: Console plugin light/dark smoke (OpenShift ${{ matrix.console-version }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -501,7 +501,7 @@ jobs:
           done
           curl -fsS http://localhost:9000/ > /dev/null
 
-      - name: Run headless-browser smoke test
+      - name: Run light and dark headless-browser smoke test (opposite OS preferences)
         env:
           CONSOLE_VERSION: ${{ matrix.console-version }}
           SMOKE_BEARER_TOKEN: ${{ steps.kube.outputs.token }}
