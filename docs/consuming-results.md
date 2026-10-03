@@ -99,7 +99,8 @@ side is a reasonable automation.
 
 On OpenShift the controller deploys a console plugin (`oc-mirror-plugin` Deployment,
 `ConsolePlugin` CR `oc-mirror-operator`) automatically when the `ConsolePlugin` CRD
-exists and `PLUGIN_IMAGE` is set. It appears as a navigation entry in the web console
+exists, the Console release is supported (4.18-4.22), and its matching
+`RELATED_IMAGE_PLUGIN_4_*` is set. It appears as a navigation entry in the web console
 and needs no Route: the console proxies to the plugin backend, which acts on the API
 with **your** console token, so cluster RBAC decides what you may edit.
 
@@ -108,7 +109,12 @@ with **your** console token, so cluster RBAC decides what you may edit.
 | **MirrorTargets** | Progress per target and ImageSet; **Settings** tab to edit registry, credentials, concurrency, batch size and intervals |
 | **ImageSet detail** | Counters and conditions; per-tab editing of **Operators** (catalog list), **Catalogs** (package/channel/version filters via the catalog browser), **Releases**, **Helm**, **Additional Images**, **Blocked Images**; the `requireSignedImages` switch; **Recollect** and **Force Resync** buttons; download links for IDMS/ITMS/CatalogSource |
 | **Catalog browser** | Upstream packages and channels on the left, your selection on the right; add whole packages or single channels, set `minVersion`/`maxVersion` per channel, save |
-| **Failed images** | `Failed` and permanently failed images with the registry error, retry count and owning ImageSet |
+| **Unmirrored Images** | Images not yet mirrored: pending work and failed images, with their state, registry error (if any), retry count and owning ImageSet |
+
+The cross-target page is **Unmirrored Images**; a target-scoped page is
+**Unmirrored Images — &lt;target&gt;**. The existing `/oc-mirror/failed` and
+`/oc-mirror/targets/<target>/failures` URLs remain unchanged for bookmarked links.
+State-specific **Failed** labels still identify genuinely failed images.
 
 The plugin is removed together with its resources when the operator is uninstalled
 (finalizer `mirror.openshift.io/plugin-cleanup` on the `ConsolePlugin` CR).

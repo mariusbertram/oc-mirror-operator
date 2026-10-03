@@ -36,7 +36,7 @@ const extensions: Extension[] = [
     type: 'console.navigation/href',
     properties: {
       id: 'oc-mirror-failed',
-      name: 'Failed Images',
+      name: 'Unmirrored Images',
       href: '/oc-mirror/failed',
       section: 'oc-mirror',
       perspective: 'admin',

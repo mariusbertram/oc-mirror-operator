@@ -51,7 +51,7 @@ function App() {
               ImageSets
             </NavLink>
             <NavLink to="/oc-mirror/failed" style={navStyle}>
-              Failed Images
+              Unmirrored Images
             </NavLink>
           </nav>
           <main style={{ flex: 1, overflow: 'auto' }}>
