@@ -208,14 +208,17 @@ jobs:
         run: |
           # make bundle regenerates bundle/ from config/ and runs the default
           # `operator-sdk bundle validate`; the operatorframework suite adds the
-          # OperatorHub, good-practices and deprecated-API checks on top.
+          # OperatorHub (v2), good-practices and deprecated-API checks on top.
+          # NB: the suite's legacy `operatorhub` validator is deprecated in
+          # favour of operatorhub/v2 + the standard capability/category checks.
           IMG_CONTROLLER=example.com/oc-mirror-controller:v0.0.1 \
           IMG_MANAGER=example.com/oc-mirror-manager:v0.0.1 \
           IMG_WORKER=example.com/oc-mirror-worker:v0.0.1 \
           IMG_PLUGIN=example.com/oc-mirror-plugin:v0.0.1 \
           USE_IMAGE_DIGESTS=false \
             make bundle
-          bin/operator-sdk bundle validate ./bundle --select-optional suite=operatorframework
+          bin/operator-sdk bundle validate ./bundle --select-optional suite=operatorframework \
+            && bin/operator-sdk bundle validate ./bundle --select-optional 'name in (operatorhubv2,capabilities,categories)'
 
       - uses: docker/setup-buildx-action@v4
 
