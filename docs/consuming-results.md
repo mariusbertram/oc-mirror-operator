@@ -109,10 +109,10 @@ with **your** console token, so cluster RBAC decides what you may edit.
 | **MirrorTargets** | Progress per target and ImageSet; **Settings** tab to edit registry, credentials, concurrency, batch size and intervals |
 | **ImageSet detail** | Counters and conditions; per-tab editing of **Operators** (catalog list), **Catalogs** (package/channel/version filters via the catalog browser), **Releases**, **Helm**, **Additional Images**, **Blocked Images**; the `requireSignedImages` switch; **Recollect** and **Force Resync** buttons; download links for IDMS/ITMS/CatalogSource |
 | **Catalog browser** | Upstream packages and channels on the left, your selection on the right; add whole packages or single channels, set `minVersion`/`maxVersion` per channel, save |
-| **Unmirrored Images** | Images not yet mirrored: pending work and failed images, with their state, registry error (if any), retry count and owning ImageSet |
+| **Pending & Failed Images** | Pending and failed images, including permanently failed images that are not actively queued, with their state, registry error (if any), retry count and owning ImageSet |
 
-The cross-target page is **Unmirrored Images**; a target-scoped page is
-**Unmirrored Images — &lt;target&gt;**. The existing `/oc-mirror/failed` and
+The cross-target page is **Pending & Failed Images**; a target-scoped page is
+**Pending & Failed Images — &lt;target&gt;**. The existing `/oc-mirror/failed` and
 `/oc-mirror/targets/<target>/failures` URLs remain unchanged for bookmarked links.
 State-specific **Failed** labels still identify genuinely failed images.
 

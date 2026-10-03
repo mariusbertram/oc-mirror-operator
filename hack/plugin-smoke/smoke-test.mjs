@@ -57,8 +57,8 @@ async function dialog(page, { opener, title, body, action, confirm = false }) {
 const PAGES = [
   { path: '/oc-mirror/targets', title: 'Mirror Targets', body: 'demo-target' },
   { path: '/oc-mirror/imagesets', title: 'ImageSets', body: 'demo-imageset' },
-  { path: '/oc-mirror/failed', title: 'Unmirrored Images', body: 'Smoke fixture registry unavailable' },
-  { path: `${PREFIX}/failures`, title: 'Unmirrored Images — demo-target', body: 'Smoke fixture registry unavailable' },
+  { path: '/oc-mirror/failed', title: 'Pending & Failed Images', body: 'Smoke fixture registry unavailable' },
+  { path: `${PREFIX}/failures`, title: 'Pending & Failed Images — demo-target', body: 'Smoke fixture registry unavailable' },
   {
     path: PREFIX, title: 'demo-target', body: 'registry.example.com/mirror',
     interact: async (page) => {
