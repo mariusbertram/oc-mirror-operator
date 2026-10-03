@@ -80,7 +80,7 @@ export const MirrorTargetList: React.FC = () => {
       </div>
 
       <Toolbar>
-        <ToolbarContent>
+        <ToolbarContent className="mirror-filter-toolbar">
           <ToolbarItem>
             <SearchInput
               placeholder="Filter by name or registry…"

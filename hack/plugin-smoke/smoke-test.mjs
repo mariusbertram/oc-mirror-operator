@@ -15,6 +15,27 @@ const visible = (locator) => locator.waitFor({ state: 'visible', timeout: 30_000
 const text = async (page, value) => visible(page.getByText(value, { exact: false }).first());
 const button = (page, name) => page.getByRole('button', { name, exact: true });
 
+async function toolbarSpacing(page) {
+  const section = page.locator('.mirror-filter-toolbar > [class*="toolbar__content-section"]');
+  await visible(section);
+  const spacing = await section.evaluate((element) => {
+    const styles = getComputedStyle(element);
+    return { column: parseFloat(styles.columnGap), row: parseFloat(styles.rowGap), wrap: styles.flexWrap };
+  });
+  assert(spacing.column >= 16, 'Filter toolbar needs at least 16px horizontal spacing');
+  assert(spacing.row >= 8, 'Wrapped filter toolbar needs at least 8px vertical spacing');
+  assert.equal(spacing.wrap, 'wrap', 'Filter toolbar must allow responsive wrapping');
+  const items = section.locator(':scope > [class*="toolbar__item"]');
+  const first = await items.nth(0).boundingBox();
+  const next = await items.nth(1).boundingBox();
+  assert(first && next, 'Filter toolbar controls must be visible');
+  if (next.y < first.y + first.height && first.y < next.y + next.height) {
+    assert(next.x - first.x - first.width >= 15.5, 'Adjacent filter toolbar controls are too close');
+  } else {
+    assert(next.y - first.y - first.height >= 7.5, 'Wrapped filter toolbar controls are too close');
+  }
+}
+
 async function tabs(page, names) {
   for (const [name, content] of names) {
     const tab = page.getByRole('tab', { name });
@@ -55,10 +76,10 @@ async function dialog(page, { opener, title, body, action, confirm = false }) {
 }
 
 const PAGES = [
-  { path: '/oc-mirror/targets', title: 'Mirror Targets', body: 'demo-target' },
-  { path: '/oc-mirror/imagesets', title: 'ImageSets', body: 'demo-imageset' },
-  { path: '/oc-mirror/failed', title: 'Pending & Failed Images', body: 'Smoke fixture registry unavailable' },
-  { path: `${PREFIX}/failures`, title: 'Pending & Failed Images — demo-target', body: 'Smoke fixture registry unavailable' },
+  { path: '/oc-mirror/targets', title: 'Mirror Targets', body: 'demo-target', toolbar: true },
+  { path: '/oc-mirror/imagesets', title: 'ImageSets', body: 'demo-imageset', toolbar: true },
+  { path: '/oc-mirror/failed', title: 'Pending & Failed Images', body: 'Smoke fixture registry unavailable', toolbar: true },
+  { path: `${PREFIX}/failures`, title: 'Pending & Failed Images — demo-target', body: 'Smoke fixture registry unavailable', toolbar: true },
   {
     path: PREFIX, title: 'demo-target', body: 'registry.example.com/mirror',
     interact: async (page) => {
@@ -157,6 +178,7 @@ async function checkPage(browser, spec) {
     if (await skipTour.isVisible()) await skipTour.click();
     await visible(heading);
     await text(page, spec.body);
+    if (spec.toolbar) await toolbarSpacing(page);
     if (spec.interact) await spec.interact(page);
     await page.waitForTimeout(500);
   } catch (err) {

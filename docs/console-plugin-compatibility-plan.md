@@ -45,6 +45,11 @@ Executed on 2026-10-03 using isolated container-local dependency/source trees:
   digest-pinned CSV assertions passed.
 - A clean default Windows npm install, lint (zero errors; three existing hook
   dependency warnings), TypeScript, and live mock browser checks passed.
+- Follow-up toolbar spacing uses shared PF5/PF6 horizontal/vertical gaps with
+  responsive wrapping on Mirror Targets, ImageSets, and Pending & Failed Images.
+  Both PF5 and PF6 mock browsers passed layout measurements at 1280, 640, and
+  480 pixels; screenshots were reviewed. Real-Console smoke assertions now guard
+  the same spacing and wrapping.
 
 Published release images/digests are intentionally not created by this feature
 branch. The tag-triggered release workflow resolves published image tags through
