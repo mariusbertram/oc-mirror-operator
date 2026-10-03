@@ -115,6 +115,7 @@ export const FailedImages: React.FC<FailedImagesProps> = ({ crossTarget }) => {
 
       <Flex
         alignItems={{ default: 'alignItemsFlexStart' }}
+        gap={{ default: 'gapMd' }}
         style={{ marginBottom: 'var(--pf-v6-global--spacer--md)' }}
       >
         <FlexItem grow={{ default: 'grow' }}>
@@ -148,7 +149,7 @@ export const FailedImages: React.FC<FailedImagesProps> = ({ crossTarget }) => {
       )}
 
       <Toolbar>
-        <ToolbarContent>
+        <ToolbarContent className="mirror-filter-toolbar">
           <ToolbarItem>
             <SearchInput
               placeholder="Filter by image, error, or ImageSet…"

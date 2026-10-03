@@ -91,7 +91,7 @@ export const ImageSetList: React.FC = () => {
 
   return (
     <PageSection>
-      <Flex alignItems={{ default: 'alignItemsFlexStart' }} style={{ marginBottom: 'var(--pf-v6-global--spacer--md)' }}>
+      <Flex alignItems={{ default: 'alignItemsFlexStart' }} gap={{ default: 'gapMd' }} style={{ marginBottom: 'var(--pf-v6-global--spacer--md)' }}>
         <FlexItem grow={{ default: 'grow' }}>
           <div>
             <Title headingLevel="h1">ImageSets</Title>
@@ -106,7 +106,7 @@ export const ImageSetList: React.FC = () => {
       </Flex>
 
       <Toolbar>
-        <ToolbarContent>
+        <ToolbarContent className="mirror-filter-toolbar">
           <ToolbarItem>
             <SearchInput
               placeholder="Filter by name…"

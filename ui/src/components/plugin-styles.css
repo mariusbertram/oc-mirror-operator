@@ -68,6 +68,13 @@ html[class*="pf-v5-theme-dark"] select {
   margin-inline-start: auto;
 }
 
+.mirror-filter-toolbar > .pf-v5-c-toolbar__content-section,
+.mirror-filter-toolbar > .pf-v6-c-toolbar__content-section {
+  flex-wrap: wrap;
+  column-gap: var(--pf-v6-global--spacer--md, var(--pf-v5-global--spacer--md, 16px));
+  row-gap: var(--pf-v6-global--spacer--sm, var(--pf-v5-global--spacer--sm, 8px));
+}
+
 .mirror-modal-actions {
   display: flex;
   justify-content: flex-end;
