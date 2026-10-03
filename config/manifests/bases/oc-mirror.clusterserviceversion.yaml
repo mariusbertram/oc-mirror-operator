@@ -31,6 +31,10 @@ metadata:
     capabilities: Basic Install
     categories: OpenShift Optional, Integration & Delivery
     containerImage: controller:latest
+    description: Mirrors OpenShift releases, operator catalogs, Helm charts and
+      additional images into private registries behind air-gapped or restricted
+      networks, with declarative ImageSets, drift healing and generated IDMS/ITMS
+      resources.
     oc-mirror-manager-image: manager:latest
     oc-mirror-worker-image: worker:latest
     operatorframework.io/suggested-namespace: oc-mirror-operator
