@@ -130,8 +130,9 @@ existing smoke suite. See the developer guide's test-environment discussion.
 
 ## Resume checklist
 
-The pending-and-failed image page is now named **Unmirrored Images**, or
-**Unmirrored Images - &lt;target&gt;** when scoped (the UI uses an em dash).
+The pending-and-failed image page is now named **Pending & Failed Images**, or
+**Pending & Failed Images - &lt;target&gt;** when scoped (the UI uses an em dash).
+This includes permanently failed images that are not actively queued.
 Navigation, manifests, standalone harness, descriptions, documentation and smoke
 expectations use this terminology. Existing `/failed` and `/failures` URLs and
 internal exposed-module names are retained; genuine **Failed** state labels and
