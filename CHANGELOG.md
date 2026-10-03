@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.1.5] - 2026-10-03
+
 ### Changed
 - Cover Light and Dark through the real Console theme preference for all five
   plugin profiles. Use plugin-scoped PF5/PF6 semantic color mappings, correct
@@ -23,6 +25,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Make action labels and feedback consistent, distinguish Recollect from Force
   Resync, clarify target-image references and partial failures, and add a standalone
   mock UI workflow without a cluster or backend.
+- Build and scan controller, manager, and worker release images in parallel.
+  Aggregate their manifest-list digests only after successful scans and
+  attestations, before publishing the bundle and GitHub release.
+- Scan all five Console plugin variants in CI with Syft SBOMs and Grype.
+  Release scans separately cover the `linux/amd64` and `linux/arm64` child
+  digests for components, plugin variants, and the bundle; attach keyless
+  cosign SBOM and supplied OpenVEX attestations to the exact scanned digests.
+  Apply the existing reviewed VEX statements to plugin scans and retain
+  SBOMs, JSON/SARIF findings, and scanned-image metadata for 30 days.
+  Embedded webpack dependencies may not be identifiable in final-image
+  scans, so clean results do not establish complete frontend CVE coverage.
 
 ## [v0.1.4] - 2026-10-03
 
