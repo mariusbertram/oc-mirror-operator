@@ -46,8 +46,8 @@ jobs:
           make test
 
   # ── 2. Build & push component images (multi-arch) ──────────────────────────
-  build-operator:
-    name: Build component images
+  build-component:
+    name: Build and scan ${{ matrix.component }}
     runs-on: ubuntu-latest
     needs: test
     permissions:
@@ -55,12 +55,10 @@ jobs:
       packages: write
       id-token: write      # cosign keyless (OIDC) SBOM attestation
       security-events: write # upload Grype SARIF to the Security tab
-    outputs:
-      controller_digest: ${{ steps.build-controller.outputs.digest }}
-      manager_digest: ${{ steps.build-manager.outputs.digest }}
-      worker_digest: ${{ steps.build-worker.outputs.digest }}
-      version: ${{ steps.meta.outputs.version }}
-      tag: ${{ steps.meta.outputs.tag }}
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [controller, manager, worker]
 
     steps:
       - uses: actions/checkout@v6
@@ -87,80 +85,92 @@ jobs:
       # Requires the job's id-token: write permission (granted above).
       - uses: sigstore/cosign-installer@v3
 
-      - name: Build and push controller image
-        id: build-controller
+      - name: Build and push component image
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: .
-          file: Dockerfile.controller
+          file: Dockerfile.${{ matrix.component }}
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            ${{ env.CONTROLLER_IMAGE }}:${{ steps.meta.outputs.tag }}
-            ${{ env.CONTROLLER_IMAGE }}:latest
+            ${{ env.REGISTRY }}/${{ github.repository }}-${{ matrix.component }}:${{ steps.meta.outputs.tag }}
+            ${{ env.REGISTRY }}/${{ github.repository }}-${{ matrix.component }}:latest
           labels: |
-            org.opencontainers.image.title=oc-mirror-operator-controller
+            org.opencontainers.image.title=oc-mirror-operator-${{ matrix.component }}
             org.opencontainers.image.version=${{ steps.meta.outputs.version }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
 
-      - name: SBOM + vulnerability scan + attestation (controller)
+      - name: SBOM + vulnerability scan + attestation (amd64)
         uses: ./.github/actions/sbom-scan-attest
         with:
-          image-ref: ${{ env.CONTROLLER_IMAGE }}@${{ steps.build-controller.outputs.digest }}
-          artifact-name: controller
-          sarif-category: controller-image
+          image-ref: ${{ env.REGISTRY }}/${{ github.repository }}-${{ matrix.component }}@${{ steps.build.outputs.digest }}
+          platform: linux/amd64
+          artifact-name: ${{ matrix.component }}-amd64
+          sarif-category: ${{ matrix.component }}-image-amd64
           vex-files: vex/oc-mirror-operator.openvex.json
 
-      - name: Build and push manager image
-        id: build-manager
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: Dockerfile.manager
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: |
-            ${{ env.MANAGER_IMAGE }}:${{ steps.meta.outputs.tag }}
-            ${{ env.MANAGER_IMAGE }}:latest
-          labels: |
-            org.opencontainers.image.title=oc-mirror-operator-manager
-            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
-
-      - name: SBOM + vulnerability scan + attestation (manager)
+      - name: SBOM + vulnerability scan + attestation (arm64)
         uses: ./.github/actions/sbom-scan-attest
         with:
-          image-ref: ${{ env.MANAGER_IMAGE }}@${{ steps.build-manager.outputs.digest }}
-          artifact-name: manager
-          sarif-category: manager-image
+          image-ref: ${{ env.REGISTRY }}/${{ github.repository }}-${{ matrix.component }}@${{ steps.build.outputs.digest }}
+          platform: linux/arm64
+          artifact-name: ${{ matrix.component }}-arm64
+          sarif-category: ${{ matrix.component }}-image-arm64
           vex-files: vex/oc-mirror-operator.openvex.json
 
-      - name: Build and push worker image
-        id: build-worker
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: Dockerfile.worker
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: |
-            ${{ env.WORKER_IMAGE }}:${{ steps.meta.outputs.tag }}
-            ${{ env.WORKER_IMAGE }}:latest
-          labels: |
-            org.opencontainers.image.title=oc-mirror-operator-worker
-            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
+      # Digest handoff occurs only after both platform scans and attestations succeed.
+      # Matrix job outputs are last-writer-wins; use distinct artifacts instead.
+      - name: Record component manifest-list digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          COMPONENT: ${{ matrix.component }}
+        run: |
+          set -euo pipefail
+          [[ "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+          mkdir -p component-digests
+          printf '%s\n' "$DIGEST" > "component-digests/${COMPONENT}.txt"
 
-      - name: SBOM + vulnerability scan + attestation (worker)
-        uses: ./.github/actions/sbom-scan-attest
+      - uses: actions/upload-artifact@v7
         with:
-          image-ref: ${{ env.WORKER_IMAGE }}@${{ steps.build-worker.outputs.digest }}
-          artifact-name: worker
-          sarif-category: worker-image
-          vex-files: vex/oc-mirror-operator.openvex.json
+          name: release-digest-${{ matrix.component }}
+          path: component-digests/${{ matrix.component }}.txt
+          retention-days: 7
+          if-no-files-found: error
+
+  # Preserve the downstream output contract only after every matrix leg passes.
+  build-operator:
+    name: Collect scanned component digests
+    runs-on: ubuntu-latest
+    needs: build-component
+    permissions:
+      contents: read
+    outputs:
+      controller_digest: ${{ steps.digests.outputs.controller_digest }}
+      manager_digest: ${{ steps.digests.outputs.manager_digest }}
+      worker_digest: ${{ steps.digests.outputs.worker_digest }}
+      version: ${{ steps.digests.outputs.version }}
+      tag: ${{ steps.digests.outputs.tag }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: release-digest-*
+          path: component-digests
+          merge-multiple: true
+
+      - name: Emit component digests and release metadata
+        id: digests
+        run: |
+          set -euo pipefail
+          for component in controller manager worker; do
+            digest="$(cat "component-digests/${component}.txt")"
+            [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]] \
+              || { echo "::error::Invalid digest for $component"; exit 1; }
+            echo "${component}_digest=$digest" >> "$GITHUB_OUTPUT"
+          done
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          echo "tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
 
   # Each plugin image uses the SDK, React and PatternFly versions federated by
   # the corresponding OpenShift console release.
@@ -212,12 +222,23 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
             io.openshift.console.version=${{ matrix.console-version }}
 
-      - name: SBOM + vulnerability scan + attestation
+      - name: SBOM + vulnerability scan + attestation (amd64)
         uses: ./.github/actions/sbom-scan-attest
         with:
           image-ref: ${{ env.PLUGIN_IMAGE }}@${{ steps.build-plugin.outputs.digest }}
-          artifact-name: plugin-ocp-${{ matrix.console-version }}
-          sarif-category: plugin-ocp-${{ matrix.console-version }}
+          platform: linux/amd64
+          artifact-name: plugin-ocp-${{ matrix.console-version }}-amd64
+          sarif-category: plugin-ocp-${{ matrix.console-version }}-amd64
+          vex-files: vex/oc-mirror-operator.openvex.json
+
+      - name: SBOM + vulnerability scan + attestation (arm64)
+        uses: ./.github/actions/sbom-scan-attest
+        with:
+          image-ref: ${{ env.PLUGIN_IMAGE }}@${{ steps.build-plugin.outputs.digest }}
+          platform: linux/arm64
+          artifact-name: plugin-ocp-${{ matrix.console-version }}-arm64
+          sarif-category: plugin-ocp-${{ matrix.console-version }}-arm64
+          vex-files: vex/oc-mirror-operator.openvex.json
 
   # ── 3. Build & push bundle image (multi-arch) ────────────────────────────
   build-bundle:
@@ -311,12 +332,21 @@ jobs:
             ${{ env.BUNDLE_IMAGE }}:${{ needs.build-operator.outputs.version }}
             ${{ env.BUNDLE_IMAGE }}:latest
 
-      - name: SBOM + vulnerability scan + attestation (bundle)
+      - name: SBOM + vulnerability scan + attestation (bundle amd64)
         uses: ./.github/actions/sbom-scan-attest
         with:
           image-ref: ${{ env.BUNDLE_IMAGE }}@${{ steps.build.outputs.digest }}
-          artifact-name: bundle
-          sarif-category: bundle-image
+          platform: linux/amd64
+          artifact-name: bundle-amd64
+          sarif-category: bundle-image-amd64
+
+      - name: SBOM + vulnerability scan + attestation (bundle arm64)
+        uses: ./.github/actions/sbom-scan-attest
+        with:
+          image-ref: ${{ env.BUNDLE_IMAGE }}@${{ steps.build.outputs.digest }}
+          platform: linux/arm64
+          artifact-name: bundle-arm64
+          sarif-category: bundle-image-arm64
 
       - name: Emit bundle image ref
         id: bundle-ref

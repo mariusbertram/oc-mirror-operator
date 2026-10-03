@@ -13,6 +13,7 @@ releases. Build and deployment mechanics are in the [Developer guide](developer-
 - [Generated files](#generated-files)
 - [CI](#ci)
 - [Releases](#releases)
+- [Supply-chain evidence](#supply-chain-evidence)
 - [Code style](#code-style)
 - [Submitting changes](#submitting-changes)
 
@@ -97,21 +98,71 @@ CI fails on any golangci-lint finding, including `prealloc` and `lll` in test fi
 
 | Workflow | Trigger | Jobs |
 |---|---|---|
-| `ci.yml` | push, PR | unit tests → build component images (artifact) → e2e on Kind → console plugin smoke test → multi-arch build check → bundle validate (`operator-sdk bundle validate`, operatorframework suite) + bundle image build check → grype |
+| `ci.yml` | push, PR | unit tests; component image build + scans → e2e on Kind; five-version plugin scan matrix; console plugin smoke matrix; multi-arch build check; bundle validation + image build check |
 | `lint.yml` | push, PR | golangci-lint + gofmt ("Run on Ubuntu"), UI lint + type-check ("Run on UI") |
 | `dependency-review.yml` | PR | dependency review |
-| `release.yml` | tag `v*` | multi-arch images → GHCR, bundle, GitHub release, PR against `brtrm-dev-catalog` |
+| `release.yml` | tag `v*` | tests → parallel multi-arch component/plugin builds + platform scans/attestations → bundle + scans/attestations → GitHub release and catalog PR |
 
-Every job declares least-privilege permissions; images are built once and reused via
-artifacts.
+Every job declares least-privilege permissions. The e2e job reuses the component
+images and default 4.19 plugin exported by the `build` job; the independent plugin
+scan matrix builds each supported console profile without changing that tar-artifact
+contract. CI image scans cover `linux/amd64` and report findings without blocking on
+severity. Scanner/tool failures still fail their jobs.
 
 ## Releases
 
 1. Update `config/manifests/bases/oc-mirror.clusterserviceversion.yaml` (version,
    `replaces`, permissions) and `CHANGELOG.md`.
 2. `git tag vX.Y.Z && git push origin vX.Y.Z`.
-3. `release.yml` builds and pushes `ghcr.io/mariusbertram/oc-mirror-operator-{controller,manager,worker,plugin,bundle}:vX.Y.Z`,
-   creates the GitHub release and opens the catalog PR.
+3. `release.yml` builds and pushes controller, manager and worker images tagged
+   `vX.Y.Z`, five plugin images tagged `vX.Y.Z-ocp4.18` through `vX.Y.Z-ocp4.22`,
+   and the bundle tagged `X.Y.Z`, under `ghcr.io/mariusbertram/oc-mirror-operator-*`.
+   It creates the GitHub release and opens the catalog PR after scanning succeeds.
+
+Controller, manager and worker use parallel matrix jobs; the five plugin profiles
+also build and scan in parallel. Each component records its manifest-index digest
+in a distinct artifact only after both platform scans and attestations succeed.
+The `build-operator` aggregation job preserves the downstream component-digest,
+version and tag outputs without relying on last-writer-wins matrix job outputs.
+The bundle waits for all component and plugin jobs.
+
+## Supply-chain evidence
+
+`.github/actions/sbom-scan-attest` generates an SPDX JSON SBOM with Syft and scans
+the same image subject with Grype, producing a human-readable log, reusable JSON
+and SARIF. Release scans gate on Critical findings after applying the reviewed
+`vex/oc-mirror-operator.openvex.json` statements to component and plugin images;
+the workflow does not generate new VEX justifications automatically. Keep VEX
+statements narrowly scoped to the affected package/version and supported by
+evidence, rather than adding broad ignores.
+Downstream scanners must retrieve and explicitly apply the attested VEX;
+publishing an attestation does not itself make a scanner consume it automatically.
+
+For every release component, plugin variant and bundle, the action resolves the
+`linux/amd64` and `linux/arm64` child digests from the published manifest index and
+scans each separately. Keyless cosign SPDX SBOM and, where supplied, OpenVEX
+attestations attach to those exact child digests, not the index. Consumers looking
+up attestations must resolve the appropriate platform digest first; one index-level
+scan must not be interpreted as coverage of both architectures. Images are pushed
+before scanning so registry attestations can be written; a failed release scan
+blocks downstream bundle/release publication but does not remove already-pushed
+image tags.
+
+Each `sbom-scan-*` workflow artifact retains the SPDX SBOM, Grype JSON/SARIF,
+scanned-subject metadata, resolved manifest index (for release scans), and applied
+VEX for 30 days. Artifacts are uploaded even after a scan failure, preserving
+whatever evidence was produced. SARIF is also submitted to GitHub code scanning;
+use workflow artifacts for tag-triggered releases, whose findings are not shown
+like default-branch/PR results in the Security tab.
+
+These are full final-image scans, not scans limited to the plugin Go binary: Syft
+and Grype can discover recognizable OS packages and Go module/build metadata.
+However, the final plugin image contains optimized webpack assets, not the UI's
+`node_modules` or lockfiles, so bundled JavaScript dependencies may not be
+identifiable by image catalogers. A clean image scan is not proof that every
+React/PatternFly/npm dependency was examined; PR dependency review remains a
+separate source-level check. Local scanner results can also differ from CI with
+different scanner versions or vulnerability-database snapshots.
 
 ## Code style
 
