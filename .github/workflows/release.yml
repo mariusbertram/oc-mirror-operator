@@ -283,12 +283,13 @@ jobs:
           echo "spec.relatedImages:"
           yq '.spec.relatedImages' "$CSV"
 
-          yq '.spec.relatedImages[].image' "$CSV" | grep -q "oc-mirror-operator-controller@sha256:" \
-            || { echo "ERROR: controller not in spec.relatedImages"; exit 1; }
-          yq '.spec.relatedImages[].image' "$CSV" | grep -q "oc-mirror-operator-manager@sha256:" \
-            || { echo "ERROR: manager not in spec.relatedImages"; exit 1; }
-          yq '.spec.relatedImages[].image' "$CSV" | grep -q "oc-mirror-operator-worker@sha256:" \
-            || { echo "ERROR: worker not in spec.relatedImages"; exit 1; }
+          # Read the complete output: grep -q can close the pipe early and
+          # make yq fail with SIGPIPE under pipefail even when the image exists.
+          related_images="$(yq '.spec.relatedImages[].image' "$CSV")"
+          for component in controller manager worker; do
+            [[ "$related_images" == *"oc-mirror-operator-${component}@sha256:"* ]] \
+              || { echo "ERROR: $component not in spec.relatedImages"; exit 1; }
+          done
           for minor in 4.18 4.19 4.20 4.21 4.22; do
             name="plugin-${minor/./-}"
             image="$(NAME="$name" yq '.spec.relatedImages[] | select(.name == strenv(NAME)) | .image' "$CSV")"
