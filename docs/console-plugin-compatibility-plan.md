@@ -20,7 +20,7 @@ content are intentionally retained.
 | 2: Rendering and local development | UI pages, styles, PatternFly adapters, webpack and mock harness | PF5 uses legacy Modal title/actions; PF6 uses ModalHeader/Body/Footer. All five optimized production builds pass. Windows default/mock mode renders all eight routes and supports dialog/write-action acknowledgements without a cluster. |
 | 3: Operator selection and permissions | ConsolePlugin reconciler/tests, entrypoints and generated RBAC | Selects only 4.18-4.22, handles upgrades and missing/unsupported versions/images, preserves deployments on transient API errors, retries cleanup, and watches ClusterOperator changes. Focused controller specs and complete `make test` passed; controller coverage was 91.2%. |
 | 4: Delivery and runtime matrix | Dockerfile, Makefile, Kustomize, CSV, CI/release workflows and smoke harness | Five image/env/relatedImage mappings render correctly. Bundle regenerated/validated through existing tooling. Release waits for all five variants and asserts digest/env alignment. Actual matching Console 4.18-4.22 browser runs all passed with optimized production assets. |
-| 5: Handoff and PR | Developer guide, changelog, this plan and branch delivery | Documentation reflects verified behavior and platform limits. Final scoped commit and pull request are the delivery step. |
+| 5: Handoff and PR | Developer guide, changelog, this plan and branch delivery | Documentation reflects verified behavior and platform limits. Implementation commit `26d061e` pushed to the feature branch; [PR #197](https://github.com/mariusbertram/oc-mirror-operator/pull/197) opened. |
 
 ## Validation record
 
@@ -64,7 +64,7 @@ or differs from its matching deployment environment value.
 - [x] Kustomize and regenerated bundle preserve image/env references.
 - [x] Release workflow enforces digest pinning and corresponding env alignment.
 - [x] Documentation covers supported versions, overrides, failures and startup.
-- [ ] Scoped commit pushed and pull request created.
+- [x] Scoped commit pushed and [PR #197](https://github.com/mariusbertram/oc-mirror-operator/pull/197) created.
 
 ## Reusable validation commands
 
