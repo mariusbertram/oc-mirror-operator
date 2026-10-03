@@ -12,12 +12,16 @@ import {
   ToolbarContent,
   ToolbarItem,
 } from '@patternfly/react-core';
-import { Link, useParams } from 'react-router-dom-v5-compat';
+import { Link, useParams } from '@router';
 import { getOcpChannels, getReleases, patchReleases } from '../../api/client';
 import type { OcpChannelEntry, ReleaseChannel, ReleaseSpec } from '../../api/types';
 import '../../components/plugin-styles.css';
 
-type ReleaseBrowserParams = 'targetName' | 'namespace' | 'imageSetName';
+type ReleaseBrowserParams = {
+  targetName?: string;
+  namespace?: string;
+  imageSetName?: string;
+};
 
 // Built-in fallback for when the /api/v1/releases/channels endpoint is unreachable.
 const FALLBACK_CHANNELS: OcpChannelEntry[] = (() => {
@@ -144,7 +148,7 @@ export const ReleaseBrowser: React.FC = () => {
                 ← Back to ImageSet
               </Link>
             </ToolbarItem>
-            <ToolbarItem align={{ default: 'alignEnd' }}>
+            <ToolbarItem className="mirror-toolbar-pagination">
               {dirty && (
                 <Button variant="primary" size="sm" isLoading={saving} onClick={handleSave}>
                   Save

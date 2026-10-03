@@ -18,9 +18,12 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/blang/semver/v4"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -44,6 +47,7 @@ import (
 
 const (
 	consolePluginCRName     = "oc-mirror-operator"
+	consoleClusterOperator  = "console"
 	pluginSAName            = "oc-mirror-plugin"
 	pluginDeploymentName    = "oc-mirror-plugin"
 	pluginServiceName       = "oc-mirror-plugin"
@@ -63,28 +67,32 @@ const (
 	legacyDashboardServiceName = "oc-mirror-dashboard"
 )
 
+var supportedConsolePluginMinors = map[string]struct{}{
+	"4.18": {},
+	"4.19": {},
+	"4.20": {},
+	"4.21": {},
+	"4.22": {},
+}
+
 // ConsolePluginReconciler is a singleton controller that automatically manages
 // the ConsolePlugin and its supporting resources whenever the ConsolePlugin CRD
 // is available (OpenShift clusters). It requires no user-facing CRD.
 type ConsolePluginReconciler struct {
 	client.Client
-	Scheme      *runtime.Scheme
-	Namespace   string // operator namespace
-	PluginImage string // PLUGIN_IMAGE env var
+	Scheme       *runtime.Scheme
+	Namespace    string // operator namespace
+	PluginImages map[string]string
 }
 
 // +kubebuilder:rbac:groups="",resources=serviceaccounts;services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=console.openshift.io,resources=consoleplugins,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=config.openshift.io,resources=clusteroperators,verbs=get;list;watch
 
 func (r *ConsolePluginReconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
 	l := log.FromContext(ctx)
-
-	if r.PluginImage == "" {
-		l.Info("PLUGIN_IMAGE not configured, skipping ConsolePlugin reconciliation")
-		return reconcile.Result{RequeueAfter: pluginReconcileInterval}, nil
-	}
 
 	consolePluginGVK := schema.GroupVersionKind{
 		Group:   "console.openshift.io",
@@ -92,6 +100,9 @@ func (r *ConsolePluginReconciler) Reconcile(ctx context.Context, req reconcile.R
 		Kind:    "ConsolePlugin",
 	}
 	if _, err := r.RESTMapper().RESTMapping(consolePluginGVK.GroupKind(), consolePluginGVK.Version); err != nil {
+		if !apimeta.IsNoMatchError(err) {
+			return reconcile.Result{}, fmt.Errorf("discover ConsolePlugin API: %w", err)
+		}
 		l.Info("ConsolePlugin CRD unavailable, skipping (non-OpenShift cluster)")
 		return reconcile.Result{RequeueAfter: pluginReconcileInterval}, nil
 	}
@@ -104,13 +115,45 @@ func (r *ConsolePluginReconciler) Reconcile(ctx context.Context, req reconcile.R
 	if err := r.Get(ctx, client.ObjectKey{Name: consolePluginCRName}, existing); err == nil {
 		if !existing.GetDeletionTimestamp().IsZero() {
 			l.Info("ConsolePlugin CR is being deleted, cleaning up plugin resources")
-			r.deletePluginResources(ctx)
+			if err := r.deletePluginResources(ctx); err != nil {
+				return reconcile.Result{}, fmt.Errorf("delete plugin resources while finalizing ConsolePlugin: %w", err)
+			}
 			controllerutil.RemoveFinalizer(existing, pluginCleanupFinalizer)
 			if err := r.Update(ctx, existing); err != nil {
 				return reconcile.Result{}, fmt.Errorf("remove plugin-cleanup finalizer: %w", err)
 			}
 			return reconcile.Result{}, nil
 		}
+	} else if client.IgnoreNotFound(err) != nil {
+		return reconcile.Result{}, fmt.Errorf("get ConsolePlugin resource: %w", err)
+	}
+
+	release, reason, err := r.consoleReleaseMinor(ctx)
+	if err != nil {
+		return reconcile.Result{}, err
+	}
+	if reason != "" {
+		l.Error(errors.New(reason), "cannot select ConsolePlugin image; unregistering plugin")
+		if err := r.unregisterConsolePlugin(ctx, consolePluginGVK); err != nil {
+			return reconcile.Result{}, err
+		}
+		return reconcile.Result{RequeueAfter: pluginReconcileInterval}, nil
+	}
+	if _, supported := supportedConsolePluginMinors[release]; !supported {
+		l.Info("OpenShift release is not supported by this ConsolePlugin; unregistering plugin", "release", release)
+		if err := r.unregisterConsolePlugin(ctx, consolePluginGVK); err != nil {
+			return reconcile.Result{}, err
+		}
+		return reconcile.Result{RequeueAfter: pluginReconcileInterval}, nil
+	}
+	pluginImage := r.PluginImages[release]
+	if pluginImage == "" {
+		l.Error(fmt.Errorf("environment variable %s is empty", pluginImageEnvironmentVariable(release)),
+			"ConsolePlugin image is not configured for supported OpenShift release; unregistering plugin", "release", release)
+		if err := r.unregisterConsolePlugin(ctx, consolePluginGVK); err != nil {
+			return reconcile.Result{}, err
+		}
+		return reconcile.Result{RequeueAfter: pluginReconcileInterval}, nil
 	}
 
 	if err := r.ensureServiceAccount(ctx); err != nil {
@@ -119,7 +162,7 @@ func (r *ConsolePluginReconciler) Reconcile(ctx context.Context, req reconcile.R
 	if err := r.ensureRBAC(ctx); err != nil {
 		return reconcile.Result{}, err
 	}
-	if err := r.ensureDeployment(ctx); err != nil {
+	if err := r.ensureDeployment(ctx, pluginImage); err != nil {
 		return reconcile.Result{}, err
 	}
 	if err := r.ensureService(ctx); err != nil {
@@ -132,6 +175,55 @@ func (r *ConsolePluginReconciler) Reconcile(ctx context.Context, req reconcile.R
 
 	l.Info("successfully reconciled ConsolePlugin resources")
 	return reconcile.Result{RequeueAfter: pluginReconcileInterval}, nil
+}
+
+func (r *ConsolePluginReconciler) consoleReleaseMinor(ctx context.Context) (string, string, error) {
+	clusterOperatorGVK := schema.GroupVersionKind{
+		Group:   "config.openshift.io",
+		Version: "v1",
+		Kind:    "ClusterOperator",
+	}
+	operator := &unstructured.Unstructured{}
+	operator.SetGroupVersionKind(clusterOperatorGVK)
+	if err := r.Get(ctx, client.ObjectKey{Name: consoleClusterOperator}, operator); err != nil {
+		if apimeta.IsNoMatchError(err) {
+			return "", "ClusterOperator API is unavailable", nil
+		}
+		if client.IgnoreNotFound(err) == nil {
+			return "", "ClusterOperator console was not found", nil
+		}
+		return "", "", fmt.Errorf("get ClusterOperator console: %w", err)
+	}
+
+	versions, found, err := unstructured.NestedSlice(operator.Object, "status", "versions")
+	if err != nil {
+		return "", fmt.Sprintf("ClusterOperator console has malformed status.versions: %v", err), nil
+	}
+	if !found {
+		return "", "ClusterOperator console status.versions is missing", nil
+	}
+
+	for _, entry := range versions {
+		versionEntry, ok := entry.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		name, _, _ := unstructured.NestedString(versionEntry, "name")
+		if name != "operator" {
+			continue
+		}
+		version, _, _ := unstructured.NestedString(versionEntry, "version")
+		parsed, err := semver.Parse(version)
+		if err != nil {
+			return "", fmt.Sprintf("ClusterOperator console operator version %q is malformed", version), nil
+		}
+		return fmt.Sprintf("%d.%d", parsed.Major, parsed.Minor), "", nil
+	}
+	return "", "ClusterOperator console status.versions has no operator version", nil
+}
+
+func pluginImageEnvironmentVariable(minor string) string {
+	return "RELATED_IMAGE_PLUGIN_" + strings.ReplaceAll(minor, ".", "_")
 }
 
 // cleanupLegacyDashboard removes stale Service and Route resources from the old
@@ -236,7 +328,7 @@ func (r *ConsolePluginReconciler) ensureRBAC(ctx context.Context) error {
 	return nil
 }
 
-func (r *ConsolePluginReconciler) ensureDeployment(ctx context.Context) error {
+func (r *ConsolePluginReconciler) ensureDeployment(ctx context.Context, pluginImage string) error {
 	replicas := int32(1)
 	dep := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -259,7 +351,7 @@ func (r *ConsolePluginReconciler) ensureDeployment(ctx context.Context) error {
 				Containers: []corev1.Container{
 					{
 						Name:    "plugin",
-						Image:   r.PluginImage,
+						Image:   pluginImage,
 						Command: []string{"/plugin"},
 						Args: []string{
 							fmt.Sprintf("--bind-address=:%d", pluginPort),
@@ -327,6 +419,39 @@ func (r *ConsolePluginReconciler) ensureDeployment(ctx context.Context) error {
 		return nil
 	})
 	return err
+}
+
+func (r *ConsolePluginReconciler) unregisterConsolePlugin(ctx context.Context, pluginGVK schema.GroupVersionKind) error {
+	l := log.FromContext(ctx)
+	plugin := &unstructured.Unstructured{}
+	plugin.SetGroupVersionKind(pluginGVK)
+	if err := r.Get(ctx, client.ObjectKey{Name: consolePluginCRName}, plugin); err != nil {
+		if client.IgnoreNotFound(err) != nil {
+			return fmt.Errorf("get ConsolePlugin resource for cleanup: %w", err)
+		}
+		if err := r.deletePluginResources(ctx); err != nil {
+			return fmt.Errorf("delete supporting resources for unregistered ConsolePlugin: %w", err)
+		}
+		return nil
+	}
+
+	if err := r.deletePluginResources(ctx); err != nil {
+		return fmt.Errorf("delete supporting resources for unsupported ConsolePlugin: %w", err)
+	}
+	if controllerutil.ContainsFinalizer(plugin, pluginCleanupFinalizer) {
+		controllerutil.RemoveFinalizer(plugin, pluginCleanupFinalizer)
+		if err := r.Update(ctx, plugin); err != nil {
+			return fmt.Errorf("remove plugin-cleanup finalizer while unregistering ConsolePlugin: %w", err)
+		}
+	}
+	if !plugin.GetDeletionTimestamp().IsZero() {
+		return nil
+	}
+	if err := r.Delete(ctx, plugin); err != nil && client.IgnoreNotFound(err) != nil {
+		return fmt.Errorf("delete unsupported ConsolePlugin resource: %w", err)
+	}
+	l.Info("unregistered ConsolePlugin and removed its supporting resources")
+	return nil
 }
 
 func (r *ConsolePluginReconciler) ensureService(ctx context.Context) error {
@@ -425,17 +550,18 @@ func (r *ConsolePluginReconciler) ensureConsolePlugin(ctx context.Context) error
 }
 
 // deletePluginResources removes all namespace-scoped resources that were created
-// by the ConsolePlugin reconciler. Called when the ConsolePlugin CR is being
-// deleted so that these resources do not linger after the operator is removed.
-// Errors are logged but not returned so that the finalizer is always removed.
-func (r *ConsolePluginReconciler) deletePluginResources(ctx context.Context) {
+// by the ConsolePlugin reconciler. Errors are returned so the ConsolePlugin
+// cleanup finalizer remains until all resources have been removed.
+func (r *ConsolePluginReconciler) deletePluginResources(ctx context.Context) error {
 	l := log.FromContext(ctx)
+	var errs []error
 
 	dep := &appsv1.Deployment{}
 	dep.Name = pluginDeploymentName
 	dep.Namespace = r.Namespace
 	if err := r.Delete(ctx, dep); client.IgnoreNotFound(err) != nil {
 		l.Error(err, "failed to delete plugin Deployment")
+		errs = append(errs, fmt.Errorf("delete plugin Deployment: %w", err))
 	}
 
 	svc := &corev1.Service{}
@@ -443,6 +569,7 @@ func (r *ConsolePluginReconciler) deletePluginResources(ctx context.Context) {
 	svc.Namespace = r.Namespace
 	if err := r.Delete(ctx, svc); client.IgnoreNotFound(err) != nil {
 		l.Error(err, "failed to delete plugin Service")
+		errs = append(errs, fmt.Errorf("delete plugin Service: %w", err))
 	}
 
 	sa := &corev1.ServiceAccount{}
@@ -450,6 +577,7 @@ func (r *ConsolePluginReconciler) deletePluginResources(ctx context.Context) {
 	sa.Namespace = r.Namespace
 	if err := r.Delete(ctx, sa); client.IgnoreNotFound(err) != nil {
 		l.Error(err, "failed to delete plugin ServiceAccount")
+		errs = append(errs, fmt.Errorf("delete plugin ServiceAccount: %w", err))
 	}
 
 	rb := &rbacv1.RoleBinding{}
@@ -457,6 +585,7 @@ func (r *ConsolePluginReconciler) deletePluginResources(ctx context.Context) {
 	rb.Namespace = r.Namespace
 	if err := r.Delete(ctx, rb); client.IgnoreNotFound(err) != nil {
 		l.Error(err, "failed to delete plugin RoleBinding")
+		errs = append(errs, fmt.Errorf("delete plugin RoleBinding: %w", err))
 	}
 
 	role := &rbacv1.Role{}
@@ -464,7 +593,9 @@ func (r *ConsolePluginReconciler) deletePluginResources(ctx context.Context) {
 	role.Namespace = r.Namespace
 	if err := r.Delete(ctx, role); client.IgnoreNotFound(err) != nil {
 		l.Error(err, "failed to delete plugin Role")
+		errs = append(errs, fmt.Errorf("delete plugin Role: %w", err))
 	}
+	return errors.Join(errs...)
 }
 
 // SetupWithManager registers the ConsolePluginReconciler.
@@ -491,6 +622,20 @@ func (r *ConsolePluginReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		consolePluginObj := &unstructured.Unstructured{}
 		consolePluginObj.SetGroupVersionKind(consolePluginGVK)
 		bld = bld.Watches(consolePluginObj, handler.EnqueueRequestsFromMapFunc(r.enqueueForConsolePlugin))
+	} else if !apimeta.IsNoMatchError(err) {
+		return fmt.Errorf("discover ConsolePlugin API for watch: %w", err)
+	}
+	clusterOperatorGVK := schema.GroupVersionKind{
+		Group:   "config.openshift.io",
+		Version: "v1",
+		Kind:    "ClusterOperator",
+	}
+	if _, err := mgr.GetRESTMapper().RESTMapping(clusterOperatorGVK.GroupKind(), clusterOperatorGVK.Version); err == nil {
+		clusterOperatorObj := &unstructured.Unstructured{}
+		clusterOperatorObj.SetGroupVersionKind(clusterOperatorGVK)
+		bld = bld.Watches(clusterOperatorObj, handler.EnqueueRequestsFromMapFunc(r.enqueueForConsoleClusterOperator))
+	} else if !apimeta.IsNoMatchError(err) {
+		return fmt.Errorf("discover ClusterOperator API for watch: %w", err)
 	}
 
 	return bld.Complete(r)
@@ -512,6 +657,15 @@ func (r *ConsolePluginReconciler) enqueueForPluginDeployment(_ context.Context, 
 // the singleton. Only events for the well-known plugin name trigger reconciliation.
 func (r *ConsolePluginReconciler) enqueueForConsolePlugin(_ context.Context, obj client.Object) []reconcile.Request {
 	if obj.GetName() != consolePluginCRName {
+		return nil
+	}
+	return []reconcile.Request{
+		{NamespacedName: types.NamespacedName{Name: r.Namespace}},
+	}
+}
+
+func (r *ConsolePluginReconciler) enqueueForConsoleClusterOperator(_ context.Context, obj client.Object) []reconcile.Request {
+	if obj.GetName() != consoleClusterOperator {
 		return nil
 	}
 	return []reconcile.Request{

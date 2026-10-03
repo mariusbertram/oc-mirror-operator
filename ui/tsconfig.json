@@ -12,11 +12,13 @@
     "skipLibCheck": true,
     "baseUrl": ".",
     "paths": {
-      "@/*": ["src/*"]
+      "@/*": ["src/*"],
+      "@router": ["src/router/legacy.ts"],
+      "@compat": ["src/compat/modern.tsx"]
     }
   },
   "include": ["src"],
-  "exclude": ["node_modules", "dist"],
+  "exclude": ["node_modules", "dist", "src/router/modern.ts", "src/compat/legacy.tsx"],
   "ts-node": {
     "files": true,
     "transpileOnly": true,

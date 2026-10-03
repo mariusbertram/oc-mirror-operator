@@ -35,14 +35,53 @@ replacements:
 - source:
     kind: Deployment
     name: controller-manager
-    fieldPath: spec.template.metadata.annotations.oc-mirror-plugin-image
+    fieldPath: spec.template.metadata.annotations.oc-mirror-plugin-image-4-18
   targets:
   - select:
       kind: ClusterServiceVersion
     fieldPaths:
-    - spec.relatedImages.[name=plugin].image
-    - metadata.annotations.oc-mirror-plugin-image
-    - spec.install.spec.deployments.[name=controller-manager].spec.template.spec.containers.[name=manager].env.[name=PLUGIN_IMAGE].value
+    - spec.relatedImages.[name=plugin-4-18].image
+    - spec.install.spec.deployments.[name=controller-manager].spec.template.spec.containers.[name=manager].env.[name=RELATED_IMAGE_PLUGIN_4_18].value
+- source:
+    kind: Deployment
+    name: controller-manager
+    fieldPath: spec.template.metadata.annotations.oc-mirror-plugin-image-4-19
+  targets:
+  - select:
+      kind: ClusterServiceVersion
+    fieldPaths:
+    - spec.relatedImages.[name=plugin-4-19].image
+    - spec.install.spec.deployments.[name=controller-manager].spec.template.spec.containers.[name=manager].env.[name=RELATED_IMAGE_PLUGIN_4_19].value
+- source:
+    kind: Deployment
+    name: controller-manager
+    fieldPath: spec.template.metadata.annotations.oc-mirror-plugin-image-4-20
+  targets:
+  - select:
+      kind: ClusterServiceVersion
+    fieldPaths:
+    - spec.relatedImages.[name=plugin-4-20].image
+    - spec.install.spec.deployments.[name=controller-manager].spec.template.spec.containers.[name=manager].env.[name=RELATED_IMAGE_PLUGIN_4_20].value
+- source:
+    kind: Deployment
+    name: controller-manager
+    fieldPath: spec.template.metadata.annotations.oc-mirror-plugin-image-4-21
+  targets:
+  - select:
+      kind: ClusterServiceVersion
+    fieldPaths:
+    - spec.relatedImages.[name=plugin-4-21].image
+    - spec.install.spec.deployments.[name=controller-manager].spec.template.spec.containers.[name=manager].env.[name=RELATED_IMAGE_PLUGIN_4_21].value
+- source:
+    kind: Deployment
+    name: controller-manager
+    fieldPath: spec.template.metadata.annotations.oc-mirror-plugin-image-4-22
+  targets:
+  - select:
+      kind: ClusterServiceVersion
+    fieldPaths:
+    - spec.relatedImages.[name=plugin-4-22].image
+    - spec.install.spec.deployments.[name=controller-manager].spec.template.spec.containers.[name=manager].env.[name=RELATED_IMAGE_PLUGIN_4_22].value
 - source:
     kind: Deployment
     name: controller-manager

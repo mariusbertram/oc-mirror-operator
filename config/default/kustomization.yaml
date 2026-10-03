@@ -83,13 +83,53 @@ replacements:
 - source:
     kind: Deployment
     name: controller-manager
-    fieldPath: spec.template.metadata.annotations.oc-mirror-plugin-image
+    fieldPath: spec.template.metadata.annotations.oc-mirror-plugin-image-4-18
   targets:
   - select:
       kind: Deployment
       name: controller-manager
     fieldPaths:
-    - spec.template.spec.containers.[name=manager].env.[name=PLUGIN_IMAGE].value
+    - spec.template.spec.containers.[name=manager].env.[name=RELATED_IMAGE_PLUGIN_4_18].value
+- source:
+    kind: Deployment
+    name: controller-manager
+    fieldPath: spec.template.metadata.annotations.oc-mirror-plugin-image-4-19
+  targets:
+  - select:
+      kind: Deployment
+      name: controller-manager
+    fieldPaths:
+    - spec.template.spec.containers.[name=manager].env.[name=RELATED_IMAGE_PLUGIN_4_19].value
+- source:
+    kind: Deployment
+    name: controller-manager
+    fieldPath: spec.template.metadata.annotations.oc-mirror-plugin-image-4-20
+  targets:
+  - select:
+      kind: Deployment
+      name: controller-manager
+    fieldPaths:
+    - spec.template.spec.containers.[name=manager].env.[name=RELATED_IMAGE_PLUGIN_4_20].value
+- source:
+    kind: Deployment
+    name: controller-manager
+    fieldPath: spec.template.metadata.annotations.oc-mirror-plugin-image-4-21
+  targets:
+  - select:
+      kind: Deployment
+      name: controller-manager
+    fieldPaths:
+    - spec.template.spec.containers.[name=manager].env.[name=RELATED_IMAGE_PLUGIN_4_21].value
+- source:
+    kind: Deployment
+    name: controller-manager
+    fieldPath: spec.template.metadata.annotations.oc-mirror-plugin-image-4-22
+  targets:
+  - select:
+      kind: Deployment
+      name: controller-manager
+    fieldPaths:
+    - spec.template.spec.containers.[name=manager].env.[name=RELATED_IMAGE_PLUGIN_4_22].value
 
 # Image overrides for container references
 images:
@@ -102,9 +142,21 @@ images:
 - name: worker
   newName: ghcr.io/mariusbertram/oc-mirror-operator-worker
   newTag: latest
-- name: plugin
+- name: plugin-4-18
   newName: ghcr.io/mariusbertram/oc-mirror-operator-plugin
-  newTag: latest
+  newTag: latest-ocp4.18
+- name: plugin-4-19
+  newName: ghcr.io/mariusbertram/oc-mirror-operator-plugin
+  newTag: latest-ocp4.19
+- name: plugin-4-20
+  newName: ghcr.io/mariusbertram/oc-mirror-operator-plugin
+  newTag: latest-ocp4.20
+- name: plugin-4-21
+  newName: ghcr.io/mariusbertram/oc-mirror-operator-plugin
+  newTag: latest-ocp4.21
+- name: plugin-4-22
+  newName: ghcr.io/mariusbertram/oc-mirror-operator-plugin
+  newTag: latest-ocp4.22
 
 # Uncomment the patches line if you enable Metrics and CertManager
 # [METRICS-WITH-CERTS] To enable metrics protected with certManager, uncomment the following line.

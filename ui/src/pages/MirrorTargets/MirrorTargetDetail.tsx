@@ -8,7 +8,6 @@ import {
   CardBody,
   CardHeader,
   CardTitle,
-  Content,
   DescriptionList,
   DescriptionListDescription,
   DescriptionListGroup,
@@ -16,11 +15,6 @@ import {
   Flex,
   FlexItem,
   Label,
-  Modal,
-  ModalBody,
-  ModalFooter,
-  ModalHeader,
-  ModalVariant,
   PageSection,
   Spinner,
   Switch,
@@ -32,7 +26,8 @@ import {
 } from '@patternfly/react-core';
 import { Table, Thead, Tr, Th, Tbody, Td } from '@patternfly/react-table';
 import { DatabaseIcon } from '@patternfly/react-icons';
-import { Link, useParams } from 'react-router-dom-v5-compat';
+import { Link, useParams } from '@router';
+import { ConfirmationModal } from '@compat';
 import { getTarget, triggerRecollect, deleteImageSet, getMirrorTargetSpec, patchMirrorTargetSpec } from '../../api/client';
 import type { TargetDetail, MirrorTargetSpecWire } from '../../api/types';
 import { StatusPill, computeStatus } from '../../components/StatusPill';
@@ -49,6 +44,8 @@ export const MirrorTargetDetail: React.FC = () => {
   const [target, setTarget] = useState<TargetDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionSuccess, setActionSuccess] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<string | number>('overview');
   const [deleteCandidate, setDeleteCandidate] = useState<{ ns: string; name: string } | null>(null);
 
@@ -72,21 +69,27 @@ export const MirrorTargetDetail: React.FC = () => {
   }, [name, pollInterval]);
 
   const handleRecollect = async (namespace: string, isName: string) => {
+    setActionError(null);
+    setActionSuccess(null);
     try {
       await triggerRecollect(namespace, isName);
-    } catch (e) {
-      alert(`Failed: ${(e as Error).message}`);
+      setActionSuccess(`Recollect requested for ImageSet "${isName}". Failed images will be retried; already mirrored images will not be force-transferred.`);
+    } catch (e: unknown) {
+      setActionError(`Failed to recollect ImageSet "${isName}": ${e instanceof Error ? e.message : String(e)}`);
     }
   };
 
   const confirmDelete = async () => {
     if (!deleteCandidate) return;
+    setActionError(null);
+    setActionSuccess(null);
     try {
       await deleteImageSet(deleteCandidate.ns, deleteCandidate.name);
+      setActionSuccess(`ImageSet "${deleteCandidate.name}" deleted.`);
       setDeleteCandidate(null);
       load();
-    } catch (e) {
-      alert(`Failed: ${(e as Error).message}`);
+    } catch (e: unknown) {
+      setActionError(`Failed to delete ImageSet "${deleteCandidate.name}": ${e instanceof Error ? e.message : String(e)}`);
     }
   };
 
@@ -97,7 +100,7 @@ export const MirrorTargetDetail: React.FC = () => {
   if (error) {
     return (
       <PageSection>
-        <Alert variant="danger" title="Failed to load MirrorTarget" isInline>{error}</Alert>
+        <Alert variant="danger" title="Failed to load Mirror Target" isInline>{error}</Alert>
       </PageSection>
     );
   }
@@ -110,7 +113,7 @@ export const MirrorTargetDetail: React.FC = () => {
     <>
       <PageSection>
         <Breadcrumb style={{ marginBottom: 'var(--pf-v6-global--spacer--md)' }}>
-          <BreadcrumbItem><Link to="/oc-mirror/targets">MirrorTargets</Link></BreadcrumbItem>
+          <BreadcrumbItem><Link to="/oc-mirror/targets">Mirror Targets</Link></BreadcrumbItem>
           <BreadcrumbItem isActive>{name}</BreadcrumbItem>
         </Breadcrumb>
 
@@ -132,6 +135,16 @@ export const MirrorTargetDetail: React.FC = () => {
             </Flex>
           </FlexItem>
         </Flex>
+        {actionError && (
+          <Alert variant="danger" title="Action failed" isInline style={{ marginTop: 12 }}>
+            {actionError}
+          </Alert>
+        )}
+        {actionSuccess && (
+          <Alert variant="success" title="Action completed" isInline style={{ marginTop: 12 }}>
+            {actionSuccess}
+          </Alert>
+        )}
       </PageSection>
 
       <PageSection padding={{ default: 'noPadding' }}>
@@ -174,24 +187,22 @@ export const MirrorTargetDetail: React.FC = () => {
         )}
       </PageSection>
 
-      <Modal
-        variant={ModalVariant.small}
+      <ConfirmationModal
         isOpen={deleteCandidate !== null}
         onClose={() => setDeleteCandidate(null)}
-        aria-label="Delete ImageSet"
+        title="Delete ImageSet?"
+        footer={
+          <div className="mirror-modal-actions">
+            <Button variant="danger" onClick={confirmDelete}>Delete</Button>
+            <Button variant="link" onClick={() => setDeleteCandidate(null)}>Cancel</Button>
+          </div>
+        }
       >
-        <ModalHeader title="Delete ImageSet?" titleIconVariant="warning" />
-        <ModalBody>
-          <p>
-            Are you sure you want to delete <strong>{deleteCandidate?.name}</strong>?
-            This will remove the ImageSet and all associated mirroring state.
-          </p>
-        </ModalBody>
-        <ModalFooter>
-          <Button variant="danger" onClick={confirmDelete}>Delete</Button>
-          <Button variant="link" onClick={() => setDeleteCandidate(null)}>Cancel</Button>
-        </ModalFooter>
-      </Modal>
+        <p>
+          Are you sure you want to delete <strong>{deleteCandidate?.name}</strong>?
+          This will remove the ImageSet and all associated mirroring state.
+        </p>
+      </ConfirmationModal>
     </>
   );
 };
@@ -343,7 +354,7 @@ const ResourcesTab: React.FC<{ target: TargetDetail }> = ({ target }) => {
 
 const CatalogsTab: React.FC<{ target: TargetDetail }> = ({ target }) => {
   if (target.catalogs.length === 0) {
-    return <div className="mirror-empty-body">No operator catalogs tracked by this MirrorTarget.</div>;
+    return <div className="mirror-empty-body">No operator catalogs tracked by this Mirror Target.</div>;
   }
 
   const allResources = [
@@ -410,9 +421,9 @@ const CatalogsTab: React.FC<{ target: TargetDetail }> = ({ target }) => {
 
                 {catalogResources.length > 0 && (
                   <>
-                    <Content component="h4" style={{ marginBottom: 'var(--pf-v6-global--spacer--sm)' }}>
+                    <h4 style={{ marginBottom: 'var(--pf-v6-global--spacer--sm)' }}>
                       Generated resources
-                    </Content>
+                    </h4>
                     <ResourcesView resources={catalogResources} />
                   </>
                 )}
@@ -495,10 +506,10 @@ const SettingsTab: React.FC<{ target: TargetDetail }> = ({ target }) => {
     <Card>
       <CardTitle>Settings</CardTitle>
       <CardBody>
-        <Content component="p">
+        <p>
           Fields not shown here (expose, proxy, CA bundle, worker storage, pod
           resources/tolerations) remain editable via <code className="mirror-mono">kubectl</code> only.
-        </Content>
+        </p>
         {error && (
           <Alert variant="danger" title="Failed to load or save settings" isInline style={{ marginBottom: 16 }}>
             {error}

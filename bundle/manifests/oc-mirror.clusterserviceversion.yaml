@@ -114,9 +114,8 @@ metadata:
     capabilities: Basic Install
     categories: OpenShift Optional, Integration & Delivery
     containerImage: ghcr.io/mariusbertram/oc-mirror-operator-controller:v0.0.2
-    createdAt: "2026-10-02T19:43:06Z"
+    createdAt: "2026-10-02T23:13:42Z"
     oc-mirror-manager-image: ghcr.io/mariusbertram/oc-mirror-operator-manager:v0.0.2
-    oc-mirror-plugin-image: ghcr.io/mariusbertram/oc-mirror-operator-plugin:v0.0.2
     oc-mirror-worker-image: ghcr.io/mariusbertram/oc-mirror-operator-worker:v0.0.2
     operatorframework.io/suggested-namespace: oc-mirror-operator
     operators.operatorframework.io/builder: operator-sdk-v1.42.3
@@ -212,6 +211,14 @@ spec:
           - update
           - watch
         - apiGroups:
+          - config.openshift.io
+          resources:
+          - clusteroperators
+          verbs:
+          - get
+          - list
+          - watch
+        - apiGroups:
           - authentication.k8s.io
           resources:
           - tokenreviews
@@ -242,7 +249,11 @@ spec:
               annotations:
                 kubectl.kubernetes.io/default-container: manager
                 oc-mirror-manager-image: ghcr.io/mariusbertram/oc-mirror-operator-manager:v0.0.2
-                oc-mirror-plugin-image: ghcr.io/mariusbertram/oc-mirror-operator-plugin:v0.0.2
+                oc-mirror-plugin-image-4-18: ghcr.io/mariusbertram/oc-mirror-operator-plugin:latest-ocp4.18
+                oc-mirror-plugin-image-4-19: ghcr.io/mariusbertram/oc-mirror-operator-plugin:latest-ocp4.19
+                oc-mirror-plugin-image-4-20: ghcr.io/mariusbertram/oc-mirror-operator-plugin:latest-ocp4.20
+                oc-mirror-plugin-image-4-21: ghcr.io/mariusbertram/oc-mirror-operator-plugin:latest-ocp4.21
+                oc-mirror-plugin-image-4-22: ghcr.io/mariusbertram/oc-mirror-operator-plugin:latest-ocp4.22
                 oc-mirror-worker-image: ghcr.io/mariusbertram/oc-mirror-operator-worker:v0.0.2
               labels:
                 app.kubernetes.io/name: oc-mirror
@@ -278,8 +289,16 @@ spec:
                   value: ghcr.io/mariusbertram/oc-mirror-operator-manager:v0.0.2
                 - name: WORKER_IMAGE
                   value: ghcr.io/mariusbertram/oc-mirror-operator-worker:v0.0.2
-                - name: PLUGIN_IMAGE
-                  value: ghcr.io/mariusbertram/oc-mirror-operator-plugin:v0.0.2
+                - name: RELATED_IMAGE_PLUGIN_4_18
+                  value: ghcr.io/mariusbertram/oc-mirror-operator-plugin:latest-ocp4.18
+                - name: RELATED_IMAGE_PLUGIN_4_19
+                  value: ghcr.io/mariusbertram/oc-mirror-operator-plugin:latest-ocp4.19
+                - name: RELATED_IMAGE_PLUGIN_4_20
+                  value: ghcr.io/mariusbertram/oc-mirror-operator-plugin:latest-ocp4.20
+                - name: RELATED_IMAGE_PLUGIN_4_21
+                  value: ghcr.io/mariusbertram/oc-mirror-operator-plugin:latest-ocp4.21
+                - name: RELATED_IMAGE_PLUGIN_4_22
+                  value: ghcr.io/mariusbertram/oc-mirror-operator-plugin:latest-ocp4.22
                 - name: OPERATOR_NAMESPACE
                   valueFrom:
                     fieldRef:
@@ -408,6 +427,14 @@ spec:
           - list
           - patch
           - update
+          - watch
+        - apiGroups:
+          - config.openshift.io
+          resources:
+          - clusteroperators
+          verbs:
+          - get
+          - list
           - watch
         - apiGroups:
           - console.openshift.io
@@ -564,4 +591,15 @@ spec:
   provider:
     name: Marius Bertram
     url: github.com/mariusbertram/oc-mirror-operator
+  relatedImages:
+  - image: ghcr.io/mariusbertram/oc-mirror-operator-plugin:latest-ocp4.18
+    name: plugin-4-18
+  - image: ghcr.io/mariusbertram/oc-mirror-operator-plugin:latest-ocp4.19
+    name: plugin-4-19
+  - image: ghcr.io/mariusbertram/oc-mirror-operator-plugin:latest-ocp4.20
+    name: plugin-4-20
+  - image: ghcr.io/mariusbertram/oc-mirror-operator-plugin:latest-ocp4.21
+    name: plugin-4-21
+  - image: ghcr.io/mariusbertram/oc-mirror-operator-plugin:latest-ocp4.22
+    name: plugin-4-22
   version: 0.0.2

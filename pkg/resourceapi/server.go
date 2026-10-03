@@ -33,7 +33,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
 )
 
-//go:embed plugin
+// Include webpack chunks whose generated names begin with an underscore.
+//
+//go:embed all:plugin
 var pluginFS embed.FS
 
 type tokenClientEntry struct {

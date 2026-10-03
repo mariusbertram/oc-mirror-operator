@@ -4,6 +4,7 @@
 #
 # Cluster-scoped resources managed by this operator:
 #   - consoleplugins.console.openshift.io  (ConsolePlugin CR, OpenShift-specific)
+#   - clusteroperators.config.openshift.io (detect the Console version for plugin image selection)
 #   - namespaces (list/watch required for ConsolePluginReconciler and MonitoringReconciler
 #                 namespace trigger — cache informer is always cluster-scoped)
 #
@@ -50,6 +51,14 @@ rules:
   - list
   - patch
   - update
+  - watch
+- apiGroups:
+  - config.openshift.io
+  resources:
+  - clusteroperators
+  verbs:
+  - get
+  - list
   - watch
 ---
 apiVersion: rbac.authorization.k8s.io/v1

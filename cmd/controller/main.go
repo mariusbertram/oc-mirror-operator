@@ -211,8 +211,8 @@ func main() {
 		// namespaces each maintain their own independent leader election lease.
 		LeaderElectionNamespace: operatorNamespace,
 		// DefaultNamespaces restricts all namespace-scoped informers to the operator namespace.
-		// Cluster-scoped resources (ConsolePlugin, ClusterRole, ClusterRoleBinding) are always
-		// watched cluster-wide and are unaffected by this setting.
+		// Cluster-scoped resources (ConsolePlugin, ClusterOperator, ClusterRole,
+		// ClusterRoleBinding) are always watched cluster-wide and are unaffected by this setting.
 		// SyncPeriod ensures all watched resources are periodically re-reconciled.
 		// This makes poll-based image collection durable across operator restarts —
 		// the actual poll decision is gated on LastSuccessfulPollTime in the ImageSet status.
@@ -265,12 +265,18 @@ func main() {
 		os.Exit(1)
 	}
 
-	pluginImage := os.Getenv("PLUGIN_IMAGE")
+	pluginImages := map[string]string{
+		"4.18": os.Getenv("RELATED_IMAGE_PLUGIN_4_18"),
+		"4.19": os.Getenv("RELATED_IMAGE_PLUGIN_4_19"),
+		"4.20": os.Getenv("RELATED_IMAGE_PLUGIN_4_20"),
+		"4.21": os.Getenv("RELATED_IMAGE_PLUGIN_4_21"),
+		"4.22": os.Getenv("RELATED_IMAGE_PLUGIN_4_22"),
+	}
 	if err := (&controller.ConsolePluginReconciler{
-		Client:      mgr.GetClient(),
-		Scheme:      mgr.GetScheme(),
-		Namespace:   operatorNamespace,
-		PluginImage: pluginImage,
+		Client:       mgr.GetClient(),
+		Scheme:       mgr.GetScheme(),
+		Namespace:    operatorNamespace,
+		PluginImages: pluginImages,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ConsolePlugin")
 		os.Exit(1)

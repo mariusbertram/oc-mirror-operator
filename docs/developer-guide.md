@@ -25,7 +25,7 @@ on the console plugin. For the contribution process (tests, lint, CI, releases) 
 | Kind | ≥ 0.25 | local clusters and e2e |
 | operator-sdk | 1.42.3 | `make operator-sdk` downloads and checksum-verifies the pinned version, independent of a system installation |
 | opm | 1.74.0 | only for catalogs; `make opm` downloads and checksum-verifies the pinned version |
-| Node.js 20 + npm | | console plugin only |
+| Node.js 22.12+ + npm | | console plugin only; container builds use Node.js 26 |
 | controller-gen, kustomize, golangci-lint, setup-envtest | pinned | downloaded into `bin/` by the Makefile on demand |
 
 ## Build
@@ -39,18 +39,21 @@ make generate manifests      # after changing api/v1alpha1 or RBAC markers
 
 ### Images
 
-Five images: controller, manager, worker, plugin, and the bundle.
+Nine images: controller, manager, worker, five versioned plugins, and the bundle.
 
 ```bash
 export IMAGE_TAG_BASE=quay.io/<you>/oc-mirror-operator VERSION=dev
 
-make docker-build-all docker-push-all       # controller, manager, worker, plugin
-make docker-build-controller                # or one at a time: -manager, -worker, -plugin
+make build-images push-images              # controller, manager, worker, all five plugins
+make docker-build-plugin CONSOLE_VERSION=4.18  # one matching plugin
 make docker-buildx                          # multi-arch (linux/amd64, linux/arm64) via buildx
 ```
 
 This produces `${IMAGE_TAG_BASE}-controller:v${VERSION}` etc. (`IMG_CONTROLLER`,
-`IMG_MANAGER`, `IMG_WORKER`, `IMG_PLUGIN` override individual references).
+`IMG_MANAGER`, `IMG_WORKER` override individual references). Plugin tags are
+`${IMAGE_TAG_BASE}-plugin:v${VERSION}-ocp4.18` through `-ocp4.22`.
+`IMG_PLUGIN_4_18` through `IMG_PLUGIN_4_22` override the install/bundle references;
+`IMG_PLUGIN` overrides only the single `docker-build-plugin`/`docker-push-plugin` target.
 
 ### OLM bundle and catalog
 
@@ -81,7 +84,9 @@ bin/operator-sdk bundle validate ./bundle --select-optional suite=operatorframew
 
 ```bash
 make install                                  # CRDs
-MANAGER_IMAGE=... WORKER_IMAGE=... PLUGIN_IMAGE=... OPERATOR_IMAGE=... \
+MANAGER_IMAGE=... WORKER_IMAGE=... OPERATOR_IMAGE=... \
+RELATED_IMAGE_PLUGIN_4_18=... RELATED_IMAGE_PLUGIN_4_19=... \
+RELATED_IMAGE_PLUGIN_4_20=... RELATED_IMAGE_PLUGIN_4_21=... RELATED_IMAGE_PLUGIN_4_22=... \
 OPERATOR_NAMESPACE=oc-mirror-operator make run
 ```
 
@@ -94,7 +99,7 @@ the images must be pullable there.
 ```bash
 kind create cluster --name oc-mirror-e2e
 make docker-build-all IMAGE_TAG_BASE=localhost/oc-mirror-operator VERSION=dev
-for c in controller manager worker plugin; do
+for c in controller manager worker; do
   kind load docker-image localhost/oc-mirror-operator-$c:vdev --name oc-mirror-e2e    # podman: kind load image-archive
 done
 make install deploy IMG=localhost/oc-mirror-operator-controller:vdev
@@ -124,8 +129,9 @@ deploys through a CatalogSource.
 ## Iterate on a single component under OLM
 
 With the operator installed by OLM you do not need a new bundle to test one changed
-component. The controller reads `MANAGER_IMAGE`, `WORKER_IMAGE`, `PLUGIN_IMAGE` and
-`OPERATOR_IMAGE` from its environment, and OLM merges `Subscription.spec.config.env`
+component. The controller reads `MANAGER_IMAGE`, `WORKER_IMAGE`, `OPERATOR_IMAGE`,
+and `RELATED_IMAGE_PLUGIN_4_18` through `RELATED_IMAGE_PLUGIN_4_22`
+from its environment, and OLM merges `Subscription.spec.config.env`
 into the controller Deployment:
 
 ```bash
@@ -144,7 +150,7 @@ Then make the controller recreate the children that use the image:
 | Manager | The controller updates the manager Deployment on its next reconcile (≤ 10 min) — or touch the MirrorTarget (`kubectl annotate mirrortarget <name> dev=$(date +%s) --overwrite`). |
 | Worker | New worker pods use the new image automatically. |
 | Catalog builder (`OPERATOR_IMAGE`) | The image is part of the build signature; catalogs rebuild on the next reconcile once nothing is pending. |
-| Plugin | `oc delete deployment oc-mirror-plugin -n oc-mirror-operator` — recreated immediately. |
+| Plugin | Override the `RELATED_IMAGE_PLUGIN_4_*` variable matching the Console release, then `oc delete deployment oc-mirror-plugin -n oc-mirror-operator` to reconcile immediately. Do not substitute a different release's plugin. |
 
 Remove the override with `-p '{"spec":{"config":{"env":[]}}}'` to return to the bundle images.
 
@@ -160,14 +166,49 @@ Browser ─▶ http://localhost:9002   webpack dev server (hot reload)
 ```
 
 ```bash
-npm --prefix ui install
+npm --prefix ui ci
 make dev-certs                     # self-signed cert for the backend (dev-certs/, git-ignored)
 make run-plugin                    # backend on :9443 using your kubeconfig (OPERATOR_NAMESPACE=... to change ns)
 npm --prefix ui run dev            # frontend on :9002, proxies /api to :9443 (API_URL=... to change)
 ```
 
-No cluster at hand: `make run-plugin-mock` serves the UI with in-process mock data,
-including the write endpoints (they answer `204`).
+No cluster at hand: run `npm --prefix ui run dev:mock` (or `make run-plugin-mock`)
+to serve the UI at `http://localhost:9002` with in-process mock data. No backend,
+OpenShift cluster, or kubeconfig is needed; mock write endpoints respond locally
+so the edit and action flows can be exercised without changing cluster resources.
+Mock writes acknowledge actions without persisting changes to the sample data. After installing
+a production profile, run `npm --prefix ui ci` to restore the default standalone
+React 17 / Router 5 harness before starting mock mode.
+
+### Versioned production builds
+
+The supported Console minors are **4.18, 4.19, 4.20, 4.21, and 4.22**.
+`ui/console-compatibility.json` pins each release's SDK, React, Router, and
+PatternFly dependencies. The operator reads the `operator` version in the
+`console` ClusterOperator's `status.versions`, not the cluster-wide upgrade
+version. It updates the plugin Deployment when that Console version changes.
+An unsupported release, missing/malformed Console version, or missing matching
+image unregisters the plugin and removes its workloads/RBAC; transient API
+errors retain the current deployment and retry. There is no cross-version
+fallback. Non-OpenShift clusters skip plugin deployment.
+
+Build plugin assets on Linux (the SDK's dynamic-module paths are not portable
+to Windows); Windows supports the standalone/mock workflow:
+
+```bash
+export CONSOLE_VERSION=4.18
+npm --prefix ui run install:console-profile
+npx --prefix ui tsc --noEmit -p ui/tsconfig.console.json
+npm --prefix ui run build:plugin
+# Or use a Linux container through Podman/Docker:
+make docker-build-plugin CONSOLE_VERSION=4.18
+```
+
+The installer resolves one complete profile without modifying the checked-in
+manifest or default lockfile. It records and checks installed versions, generates
+a git-ignored TypeScript config checking the real Router/PatternFly adapters,
+and rejects profile/build mismatches. Do not run installs concurrently or share
+`node_modules` between Windows and Linux containers.
 
 | Change | Needed |
 |---|---|
@@ -176,7 +217,8 @@ including the write endpoints (they answer `204`).
 | `api/v1alpha1` | `make generate manifests`, restart backend |
 
 Quality gates for the UI: `npm --prefix ui run lint`, `npx --prefix ui tsc --noEmit -p ui/tsconfig.json`,
-`npm --prefix ui run build:plugin`. CI additionally runs the plugin against a real
+and, after profile installation, the profile-specific typecheck/build above.
+CI additionally runs each profile against a matching real
 `origin-console` bridge in Kind (`hack/plugin-smoke/`) — the only check that catches
 runtime mismatches between what the plugin bundles and what the console federates.
 
@@ -188,7 +230,8 @@ for the off-cluster flags).
 
 | Variable | Read by | Meaning |
 |---|---|---|
-| `MANAGER_IMAGE`, `WORKER_IMAGE`, `PLUGIN_IMAGE`, `OPERATOR_IMAGE` | controller | Images for manager/resource-api, worker/cleanup, plugin, catalog/export builders. The controller refuses to start without the first three. |
+| `MANAGER_IMAGE`, `WORKER_IMAGE`, `OPERATOR_IMAGE` | controller | Images for manager/resource-api, worker/cleanup, catalog/export builders. |
+| `RELATED_IMAGE_PLUGIN_4_18` … `RELATED_IMAGE_PLUGIN_4_22` | controller | Matching Console plugin images (OLM may supply digest references). Missing matching image disables/unregisters the plugin, not the controller. |
 | `OPERATOR_NAMESPACE` / `POD_NAMESPACE` | controller, plugin backend | Namespace to watch. |
 | `WORKER_IMAGE`, `DOCKER_CONFIG` | manager | Worker image; credential directory (set from `authSecret`). |
 | `MIRROR_BATCH`, `MANAGER_URL`, `WORKER_TOKEN`, `POD_NAME` | worker | Injected by the manager. |

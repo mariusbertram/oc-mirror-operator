@@ -3,12 +3,29 @@ const MiniCssExtractPlugin = require('mini-css-extract-plugin');
 const ForkTsCheckerWebpackPlugin = require('fork-ts-checker-webpack-plugin');
 const { ConsoleRemotePlugin } = require('@openshift-console/dynamic-plugin-sdk-webpack');
 
+const compatibility = require('./console-compatibility.json');
+const consoleVersion = process.env.CONSOLE_VERSION || '4.19';
+const compatibilityProfile = compatibility[consoleVersion];
+if (!compatibilityProfile) {
+  throw new Error(`Unsupported console version ${consoleVersion}`);
+}
+
 const pluginMetadata = require('./src/plugin/plugin-manifest.json');
+pluginMetadata.dependencies['@console/pluginAPI'] = compatibilityProfile.pluginAPI;
 const { extensions } = require('./console-extensions.json');
 
-const isProd = process.env.NODE_ENV === 'production';
+const installed = require('./console-profile-installed.json');
+if (installed.consoleVersion !== consoleVersion) {
+  throw new Error(`Install console profile ${consoleVersion} before building (installed ${installed.consoleVersion})`);
+}
+for (const [name, expected] of Object.entries(installed.packages)) {
+  const actual = require(path.resolve(__dirname, 'node_modules', name, 'package.json')).version;
+  if (actual !== expected) {
+    throw new Error(`${name} changed after profile installation; reinstall console profile ${consoleVersion}`);
+  }
+}
 
-module.exports = {
+const configuration = (isProd) => ({
   mode: isProd ? 'production' : 'development',
   entry: {},
   context: path.resolve(__dirname, 'src'),
@@ -21,13 +38,17 @@ module.exports = {
   },
   resolve: {
     extensions: ['.tsx', '.ts', '.js', '.jsx'],
-    alias: { '@': path.resolve(__dirname, 'src') },
+    alias: {
+      '@': path.resolve(__dirname, 'src'),
+      '@router$': path.resolve(__dirname, `src/router/${compatibilityProfile.routerAPI}.ts`),
+      '@compat$': path.resolve(__dirname, `src/compat/${compatibilityProfile.patternflyCore.startsWith('5.') ? 'legacy' : 'modern'}.tsx`),
+    },
   },
   module: {
     rules: [
       {
         test: /\.(jsx?|tsx?)$/,
-        exclude: /\/node_modules\//,
+        exclude: /[\\/]node_modules[\\/]/,
         use: ['swc-loader'],
       },
       {
@@ -51,7 +72,7 @@ module.exports = {
     new MiniCssExtractPlugin({ filename: isProd ? 'plugin-[contenthash].css' : 'plugin.css' }),
     new ConsoleRemotePlugin({ pluginMetadata, extensions }),
     new ForkTsCheckerWebpackPlugin({
-      typescript: { configFile: path.resolve(__dirname, 'tsconfig.json') },
+      typescript: { configFile: path.resolve(__dirname, 'tsconfig.console.json') },
     }),
   ],
   devServer: {
@@ -67,4 +88,6 @@ module.exports = {
     minimize: isProd,
     splitChunks: { chunks: 'all' },
   },
-};
+});
+
+module.exports = (_env, argv) => configuration(argv.mode === 'production');

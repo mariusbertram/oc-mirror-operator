@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Button,
-  Content,
   EmptyState,
   EmptyStateBody,
   EmptyStateVariant,
@@ -20,7 +19,7 @@ import {
   ToolbarItem,
 } from '@patternfly/react-core';
 import { Table, Thead, Tr, Th, Tbody, Td } from '@patternfly/react-table';
-import { Link } from 'react-router-dom-v5-compat';
+import { Link } from '@router';
 import { listTargets, getTarget } from '../../api/client';
 import type { ImageSetSummary, TargetSummary } from '../../api/types';
 import { StatusPill, computeStatus } from '../../components/StatusPill';
@@ -94,12 +93,12 @@ export const ImageSetList: React.FC = () => {
     <PageSection>
       <Flex alignItems={{ default: 'alignItemsFlexStart' }} style={{ marginBottom: 'var(--pf-v6-global--spacer--md)' }}>
         <FlexItem grow={{ default: 'grow' }}>
-          <Content>
-            <Content component="h1">ImageSets</Content>
-            <Content component="p">
+          <div>
+            <Title headingLevel="h1">ImageSets</Title>
+            <p>
               An ImageSet declares a slice of releases, operator catalogs, and additional images to mirror.
-            </Content>
-          </Content>
+            </p>
+          </div>
         </FlexItem>
         <FlexItem>
           <Button variant="secondary" onClick={load} isDisabled={loading}>Refresh</Button>
@@ -120,7 +119,7 @@ export const ImageSetList: React.FC = () => {
             <FormSelect
               value={filterTarget}
               onChange={(_e, v) => setFilterTarget(v)}
-              aria-label="Filter by MirrorTarget"
+              aria-label="Filter by Mirror Target"
               style={{ minWidth: 220 }}
             >
               <FormSelectOption value="All" label="All targets" />
@@ -129,7 +128,7 @@ export const ImageSetList: React.FC = () => {
               ))}
             </FormSelect>
           </ToolbarItem>
-          <ToolbarItem align={{ default: 'alignEnd' }} variant="pagination">
+          <ToolbarItem className="mirror-toolbar-pagination" variant="pagination">
             <span className="mirror-toolbar-count">
               {filtered.length} of {rows.length}
             </span>
@@ -144,7 +143,7 @@ export const ImageSetList: React.FC = () => {
           </Title>
           <EmptyStateBody>
             {rows.length === 0
-              ? 'Create an ImageSet and assign it to a MirrorTarget to start mirroring.'
+              ? 'Create an ImageSet and assign it to a Mirror Target to start mirroring.'
               : 'Clear the filter to see all ImageSets.'}
           </EmptyStateBody>
         </EmptyState>
@@ -153,7 +152,7 @@ export const ImageSetList: React.FC = () => {
           <Thead>
             <Tr>
               <Th>Name</Th>
-              <Th>MirrorTarget</Th>
+              <Th>Mirror Target</Th>
               <Th>Status</Th>
               <Th style={{ minWidth: 220 }}>Progress</Th>
               <Th>Resources</Th>
@@ -169,7 +168,7 @@ export const ImageSetList: React.FC = () => {
                       {is.name}
                     </Link>
                   </Td>
-                  <Td dataLabel="MirrorTarget">
+                  <Td dataLabel="Mirror Target">
                     <Link to={`/oc-mirror/targets/${is.targetName}`}>
                       <Label isCompact color="grey">{is.targetName}</Label>
                     </Link>

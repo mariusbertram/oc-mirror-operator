@@ -10,10 +10,13 @@
 FROM --platform=$BUILDPLATFORM registry.access.redhat.com/hi/nodejs:26-builder AS ui-build
 USER root
 WORKDIR /app
+ARG CONSOLE_VERSION=4.19
+ENV CONSOLE_VERSION=${CONSOLE_VERSION}
 COPY ui/package.json ui/package-lock.json* ./ui/
 RUN npm --prefix ui ci --ignore-scripts
 
 COPY ui/ ./ui/
+RUN npm --prefix ui run install:console-profile
 # Build the OpenShift Console Plugin assets.
 RUN npm --prefix ui run build:plugin
 

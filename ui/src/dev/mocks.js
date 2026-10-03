@@ -323,6 +323,66 @@ const PACKAGE_CONSTRAINTS = [
   },
 ];
 
+const TARGET_SPECS = {
+  production: {
+    registry: 'registry.example.com/oc-mirror',
+    insecure: false,
+    authSecret: 'registry-credentials',
+    concurrency: 8,
+    batchSize: 10,
+    pollInterval: '24h0m0s',
+    checkExistInterval: '6h0m0s',
+  },
+};
+
+const IMAGESET_DATA = {
+  'release-4-14': {
+    releases: {
+      graph: false,
+      architectures: ['amd64', 'arm64'],
+      channels: [{ name: 'stable-4.14', type: 'ocp', minVersion: '4.14.0', maxVersion: '4.14.12' }],
+    },
+    helm: { repositories: [] },
+    blockedImages: { blockedImages: [] },
+    additionalImages: { additionalImages: [] },
+    operators: { operators: [] },
+    settings: { requireSignedImages: false },
+  },
+  'operators-stable': {
+    releases: { graph: false, architectures: [], channels: [] },
+    helm: { repositories: [] },
+    blockedImages: { blockedImages: [] },
+    additionalImages: { additionalImages: [] },
+    operators: {
+      operators: [
+        {
+          catalog: 'registry.redhat.io/redhat/redhat-operator-index:v4.14',
+          targetCatalog: 'redhat-operators',
+          targetTag: 'v4.14',
+          full: false,
+          skipDependencies: false,
+          packagesConfigured: true,
+        },
+      ],
+    },
+    settings: { requireSignedImages: true },
+  },
+};
+
+const OCP_CHANNELS = [
+  { name: 'stable-4.14', type: 'ocp', version: '4.14' },
+  { name: 'eus-4.14', type: 'ocp', version: '4.14' },
+  { name: 'stable-4.16', type: 'ocp', version: '4.16' },
+  { name: 'eus-4.16', type: 'ocp', version: '4.16' },
+  { name: 'stable-4.18', type: 'ocp', version: '4.18' },
+  { name: 'eus-4.18', type: 'ocp', version: '4.18' },
+  { name: 'stable-4.19', type: 'ocp', version: '4.19' },
+  { name: 'stable-4.20', type: 'ocp', version: '4.20' },
+  { name: 'stable-4.21', type: 'ocp', version: '4.21' },
+  { name: 'stable-4.22', type: 'ocp', version: '4.22' },
+  { name: 'stable-4', type: 'okd', version: '4.22' },
+];
+
 // ── Raw YAML stubs ─────────────────────────────────────────────────────────
 
 const IDMS_YAML = `\
@@ -385,10 +445,20 @@ function registerMockHandlers(app) {
     json(res, detail);
   });
 
+  app.get('/api/v1/targets/:namespace/:mt/spec', (req, res) => {
+    const spec = TARGET_SPECS[req.params.mt];
+    if (!spec) return res.status(404).end();
+    json(res, spec);
+  });
+
+  app.patch('/api/v1/targets/:namespace/:mt/spec', (_req, res) => res.status(204).end());
+
   app.get('/api/v1/targets/:mt/image-failures', (req, res) => {
     const failures = IMAGE_FAILURES[req.params.mt] ?? { failed: [], pending: [] };
     json(res, failures);
   });
+
+  app.get('/api/v1/releases/channels', (_req, res) => json(res, OCP_CHANNELS));
 
   // Catalog packages (filtered = what is already mirrored)
   app.get('/api/v1/targets/:mt/catalogs/:slug/packages.json', (_req, res) =>
@@ -405,8 +475,37 @@ function registerMockHandlers(app) {
     json(res, PACKAGE_CONSTRAINTS),
   );
 
+  app.get('/api/v1/imagesets/:namespace/:name/releases', (req, res) =>
+    json(res, IMAGESET_DATA[req.params.name]?.releases ?? { graph: false, architectures: [], channels: [] }),
+  );
+  app.get('/api/v1/imagesets/:namespace/:name/helm', (req, res) =>
+    json(res, IMAGESET_DATA[req.params.name]?.helm ?? { repositories: [] }),
+  );
+  app.get('/api/v1/imagesets/:namespace/:name/blocked-images', (req, res) =>
+    json(res, IMAGESET_DATA[req.params.name]?.blockedImages ?? { blockedImages: [] }),
+  );
+  app.get('/api/v1/imagesets/:namespace/:name/additional-images', (req, res) =>
+    json(res, IMAGESET_DATA[req.params.name]?.additionalImages ?? { additionalImages: [] }),
+  );
+  app.get('/api/v1/imagesets/:namespace/:name/operators', (req, res) =>
+    json(res, IMAGESET_DATA[req.params.name]?.operators ?? { operators: [] }),
+  );
+  app.get('/api/v1/imagesets/:namespace/:name/settings', (req, res) =>
+    json(res, IMAGESET_DATA[req.params.name]?.settings ?? { requireSignedImages: false }),
+  );
+
+  app.patch('/api/v1/imagesets/:namespace/:name/releases', (_req, res) => res.status(204).end());
+  app.patch('/api/v1/imagesets/:namespace/:name/helm', (_req, res) => res.status(204).end());
+  app.patch('/api/v1/imagesets/:namespace/:name/blocked-images', (_req, res) => res.status(204).end());
+  app.patch('/api/v1/imagesets/:namespace/:name/additional-images', (_req, res) => res.status(204).end());
+  app.patch('/api/v1/imagesets/:namespace/:name/operators', (_req, res) => res.status(204).end());
+  app.patch('/api/v1/imagesets/:namespace/:name/settings', (_req, res) => res.status(204).end());
+
   // PATCH recollect — accept and respond 204
   app.patch('/api/v1/imagesets/:namespace/:name/recollect', (_req, res) =>
+    res.status(204).end(),
+  );
+  app.patch('/api/v1/imagesets/:namespace/:name/force-resync', (_req, res) =>
     res.status(204).end(),
   );
 
