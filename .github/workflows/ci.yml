@@ -98,7 +98,7 @@ jobs:
       # These images are only built locally for this job (never pushed to a
       # registry), so attest: false — SBOM/scan/SARIF only, no cosign step.
       # Unlike the release pipeline's scan (tag-triggered, so its SARIF only
-      # ever lands in the job log — see the composite action's description),
+      # lands in persistent artifacts — see the composite action's description),
       # this job runs on push/pull_request, so findings here DO show up in
       # the repo's Security tab.
       - name: SBOM + vulnerability scan (controller)
@@ -131,15 +131,6 @@ jobs:
           fail-build: "false"
           vex-files: vex/oc-mirror-operator.openvex.json
 
-      - name: SBOM + vulnerability scan (plugin)
-        uses: ./.github/actions/sbom-scan-attest
-        with:
-          image-ref: example.com/oc-mirror-plugin:v0.0.1
-          artifact-name: plugin-ci
-          sarif-category: plugin-image-ci
-          attest: "false"
-          fail-build: "false"
-
       - name: Export images to tar
         run: |
           set -x
@@ -161,6 +152,44 @@ jobs:
           name: operator-images
           path: operator-*-image.tar
           retention-days: 1
+
+  # Scan all console profiles independently of the default plugin tar used by
+  # e2e. CI scans local amd64 images; release scans both published architectures.
+  scan-plugin:
+    name: Scan console plugin for OpenShift ${{ matrix.console-version }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        console-version: ['4.18', '4.19', '4.20', '4.21', '4.22']
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build console-specific plugin image (amd64)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.plugin
+          platforms: linux/amd64
+          load: true
+          build-args: |
+            CONSOLE_VERSION=${{ matrix.console-version }}
+          tags: example.com/oc-mirror-plugin:v0.0.1-ocp${{ matrix.console-version }}
+
+      - name: SBOM + vulnerability scan (plugin)
+        uses: ./.github/actions/sbom-scan-attest
+        with:
+          image-ref: example.com/oc-mirror-plugin:v0.0.1-ocp${{ matrix.console-version }}
+          artifact-name: plugin-ci-ocp-${{ matrix.console-version }}-amd64
+          sarif-category: plugin-image-ci-ocp-${{ matrix.console-version }}-amd64
+          attest: "false"
+          fail-build: "false"
+          vex-files: vex/oc-mirror-operator.openvex.json
 
   # ── 3. Bundle validation + image build check ───────────────────────────────
   build-bundle-check:

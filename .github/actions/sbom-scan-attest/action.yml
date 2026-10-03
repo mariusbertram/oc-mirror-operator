@@ -4,18 +4,18 @@ description: >
   Grype (failing only on Critical severity; all severities are uploaded to
   the GitHub Security tab as SARIF — visible there only for scans of the
   default branch or a pull request; a tag-triggered run's findings are only
-  in the job log, per GitHub's code scanning ref model), and, when attest is
-  true, attests the SBOM to the image via keyless (OIDC) cosign. Requires the
-  calling job to grant security-events: write (for the SARIF upload) and,
+  in persistent workflow artifacts, per GitHub's code scanning ref model),
+  and, when attest is true, attests the SBOM to the image via keyless (OIDC)
+  cosign. Requires the calling job to grant security-events: write (for the SARIF upload) and,
   when attest is true, id-token: write (for cosign) plus already being
   authenticated to the image's registry (e.g. docker/login-action) with
   sigstore/cosign-installer having already run. Grype auto-detects the
   repo-root .grype.yaml ignore list, so a triaged exception there applies
   here without any extra input. For exceptions with a formal not_affected
   justification, prefer vex-files over .grype.yaml — it's the same
-  suppression applied to both scan steps here, plus (when attest is true) an
-  attestation on the image itself so downstream consumers scanning the
-  pulled image see the same statement.
+  suppression applied to all scan steps here, plus (when attest is true) an
+  attestation on the scanned image subject so downstream consumers can
+  retrieve and apply the same statement to their scans.
 
 inputs:
   image-ref:
@@ -28,14 +28,23 @@ inputs:
       a registry push), since no attestation step needs to reach a registry.
     required: true
   artifact-name:
-    description: Short slug identifying the image (e.g. "controller"), used to name the SBOM file.
+    description: Unique slug identifying the image and platform, used to name files and the persistent scan artifact.
     required: true
+  platform:
+    description: >
+      Optional platform (linux/amd64 or linux/arm64). Resolves exactly one
+      child manifest from a pushed, digest-pinned multi-arch index, then
+      scans and attests that child digest, not the index. Call once per
+      supported platform with distinct artifact-name and sarif-category.
+      Requires Docker Buildx and jq (available on GitHub's Ubuntu runners).
+    required: false
+    default: ""
   sarif-category:
     description: Unique category for the SARIF upload, so results from different images don't overwrite each other in the Security tab.
     required: true
   attest:
     description: >
-      Whether to attest the SBOM to image-ref via keyless cosign. Set false
+      Whether to attest the SBOM to the scanned image subject via keyless cosign. Set false
       for images that were only built locally and never pushed to a registry
       (e.g. CI build-verification images) — there is nothing for cosign to
       attach an attestation to.
@@ -52,13 +61,13 @@ inputs:
     default: "true"
   vex-files:
     description: >
-      OpenVEX document path(s) passed to both Grype scan steps below via
+      One OpenVEX document path passed to all Grype scan steps below via
       their vex input, so a not_affected statement suppresses the
       corresponding finding here (human-readable log and the blocking gate
       alike) — the same source of truth instead of a parallel .grype.yaml
-      entry. When attest is true, each file is also attested to image-ref
-      via cosign (--type openvex), so anyone pulling and scanning the image
-      sees the same statement. Despite anchore/scan-action's own docs
+      entry. When attest is true, the document is also attested to the
+      scanned subject via cosign (--type openvex), so downstream consumers
+      can retrieve it and supply it to their scanner. Despite anchore/scan-action's own docs
       describing this as newline-separated, a multi-line value is passed
       to grype as a single broken --vex argument (confirmed: "VEX document
       ... not found") — pass exactly one file. Put multiple statements in
@@ -70,24 +79,54 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Resolve scanned image subject
+      id: subject
+      shell: bash
+      env:
+        IMAGE_REF: ${{ inputs.image-ref }}
+        PLATFORM: ${{ inputs.platform }}
+        ATTEST: ${{ inputs.attest }}
+        ARTIFACT_NAME: ${{ inputs.artifact-name }}
+      run: |
+        set -euo pipefail
+        if [[ "$ATTEST" == "true" || -n "$PLATFORM" ]]; then
+          [[ "$IMAGE_REF" =~ ^.+@sha256:[a-f0-9]{64}$ ]] \
+            || { echo "::error::Attestation/platform resolution requires a digest-pinned registry image"; exit 1; }
+        fi
+        if [[ -n "$PLATFORM" ]]; then
+          [[ "$PLATFORM" == "linux/amd64" || "$PLATFORM" == "linux/arm64" ]] \
+            || { echo "::error::Unsupported scan platform: $PLATFORM"; exit 1; }
+          docker buildx imagetools inspect "$IMAGE_REF" --raw > "index-${ARTIFACT_NAME}.json"
+          digest="$(jq -er --arg platform "$PLATFORM" '
+            [.manifests[] | select((.platform.os + "/" + .platform.architecture) == $platform) | .digest]
+            | if length == 1 then .[0] else error("Expected exactly one manifest for " + $platform) end
+          ' "index-${ARTIFACT_NAME}.json")"
+          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]] \
+            || { echo "::error::Invalid platform manifest digest: $digest"; exit 1; }
+          IMAGE_REF="${IMAGE_REF%@*}@${digest}"
+        fi
+        echo "image-ref=$IMAGE_REF" >> "$GITHUB_OUTPUT"
+        jq -n --arg image "$IMAGE_REF" --arg platform "$PLATFORM" \
+          '{image: $image, platform: $platform}' > "subject-${ARTIFACT_NAME}.json"
+
     - name: Generate SBOM (Syft)
       uses: anchore/sbom-action@v0
       with:
-        image: ${{ inputs.image-ref }}
+        image: ${{ steps.subject.outputs.image-ref }}
         format: spdx-json
         output-file: sbom-${{ inputs.artifact-name }}.spdx.json
         upload-artifact: false
+        upload-release-assets: false
 
     # Human-readable findings in the job log itself — output-format: sarif
     # below writes only a SARIF file (uploaded to the Security tab, not
-    # printed), so without this a failure here is otherwise only
-    # diagnosable by re-running the scan or reading the Security tab.
+    # printed), so this also makes failures diagnosable directly in the log.
     # Never fails the job itself; the step below is what enforces the gate.
     - name: Scan for vulnerabilities (Grype, human-readable log)
       continue-on-error: true
       uses: anchore/scan-action@v6
       with:
-        image: ${{ inputs.image-ref }}
+        image: ${{ steps.subject.outputs.image-ref }}
         fail-build: false
         output-format: table
         vex: ${{ inputs.vex-files }}
@@ -99,25 +138,51 @@ runs:
         # pre-fix grype version would report findings as if no VEX applied.
         grype-version: v0.116.1
 
-    - name: Scan for vulnerabilities (Grype)
+    - name: Scan for vulnerabilities (Grype, reusable JSON)
+      uses: anchore/scan-action@v6
+      with:
+        image: ${{ steps.subject.outputs.image-ref }}
+        fail-build: false
+        output-format: json
+        output-file: grype-${{ inputs.artifact-name }}.json
+        vex: ${{ inputs.vex-files }}
+        grype-version: v0.116.1
+
+    - name: Scan for vulnerabilities (Grype, blocking gate)
       id: scan
       uses: anchore/scan-action@v6
       with:
-        image: ${{ inputs.image-ref }}
+        image: ${{ steps.subject.outputs.image-ref }}
         fail-build: ${{ inputs.fail-build }}
         severity-cutoff: critical
         output-format: sarif
+        output-file: grype-${{ inputs.artifact-name }}.sarif
         vex: ${{ inputs.vex-files }}
         grype-version: v0.116.1
 
     # Runs even if the scan step above failed the build on a Critical
     # finding, so those findings still show up in the Security tab.
     - name: Upload vulnerability scan results
-      if: always()
+      if: always() && steps.scan.outputs.sarif != ''
       uses: github/codeql-action/upload-sarif@v4
       with:
         sarif_file: ${{ steps.scan.outputs.sarif }}
         category: ${{ inputs.sarif-category }}
+
+    - name: Preserve SBOM and vulnerability scan evidence
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: sbom-scan-${{ inputs.artifact-name }}
+        path: |
+          sbom-${{ inputs.artifact-name }}.spdx.json
+          grype-${{ inputs.artifact-name }}.json
+          grype-${{ inputs.artifact-name }}.sarif
+          subject-${{ inputs.artifact-name }}.json
+          index-${{ inputs.artifact-name }}.json
+          ${{ inputs.vex-files }}
+        retention-days: 30
+        if-no-files-found: error
 
     - name: Attest SBOM to image (keyless cosign)
       if: inputs.attest == 'true'
@@ -127,7 +192,7 @@ runs:
         cosign attest --yes \
           --predicate "sbom-${{ inputs.artifact-name }}.spdx.json" \
           --type spdxjson \
-          "${{ inputs.image-ref }}"
+          "${{ steps.subject.outputs.image-ref }}"
 
     - name: Attest VEX document to image (keyless cosign)
       if: inputs.attest == 'true' && inputs.vex-files != ''
@@ -137,4 +202,4 @@ runs:
         cosign attest --yes \
           --predicate "${{ inputs.vex-files }}" \
           --type openvex \
-          "${{ inputs.image-ref }}"
+          "${{ steps.subject.outputs.image-ref }}"
