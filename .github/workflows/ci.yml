@@ -218,9 +218,7 @@ jobs:
           USE_IMAGE_DIGESTS=false \
             make bundle
           bin/operator-sdk bundle validate ./bundle --select-optional suite=operatorframework \
-            && bin/operator-sdk bundle validate ./bundle --select-optional name=operatorhubv2 \
-            && bin/operator-sdk bundle validate ./bundle --select-optional name=capabilities \
-            && bin/operator-sdk bundle validate ./bundle --select-optional name=categories
+            && bin/operator-sdk bundle validate ./bundle --select-optional 'name in (operatorhubv2,capabilities,categories)'
 
       - uses: docker/setup-buildx-action@v4
 
