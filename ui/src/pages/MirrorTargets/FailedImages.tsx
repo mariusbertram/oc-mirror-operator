@@ -88,7 +88,7 @@ export const FailedImages: React.FC<FailedImagesProps> = ({ crossTarget }) => {
   if (error) {
     return (
       <PageSection>
-        <Alert variant="danger" title="Failed to load image failures" isInline>{error}</Alert>
+        <Alert variant="danger" title="Failed to load unmirrored images" isInline>{error}</Alert>
       </PageSection>
     );
   }
@@ -120,10 +120,11 @@ export const FailedImages: React.FC<FailedImagesProps> = ({ crossTarget }) => {
         <FlexItem grow={{ default: 'grow' }}>
           <div>
             <Title headingLevel="h1">
-              {crossTarget ? 'Failed Images' : `Image Failures — ${name}`}
+              {crossTarget ? 'Unmirrored Images' : `Unmirrored Images — ${name}`}
             </Title>
             <p>
-              Failed images can be retried with Recollect on their ImageSet; pending retries resume automatically.
+              Images not yet mirrored, including pending and failed images.
+              Failed images can be retried with Recollect on their ImageSet; pending work and retries resume automatically.
               Refresh updates this list only.
             </p>
           </div>
@@ -138,7 +139,7 @@ export const FailedImages: React.FC<FailedImagesProps> = ({ crossTarget }) => {
       {partialErrors.length > 0 && (
         <Alert
           variant="warning"
-          title={`Could not load image failures for ${partialErrors.length} Mirror Target${partialErrors.length === 1 ? '' : 's'}`}
+          title={`Could not load unmirrored images for ${partialErrors.length} Mirror Target${partialErrors.length === 1 ? '' : 's'}`}
           isInline
           style={{ marginBottom: 'var(--pf-v6-global--spacer--md)' }}
         >
@@ -180,12 +181,12 @@ export const FailedImages: React.FC<FailedImagesProps> = ({ crossTarget }) => {
         <div className="mirror-empty-center">
           {rows.length === 0
             ? partialErrors.length > 0
-              ? 'Image failure data is unavailable for targets listed above.'
-              : 'No failed or pending images.'
+              ? 'Unmirrored image data is unavailable for targets listed above.'
+              : 'No unmirrored images.'
             : 'No items match the filter.'}
         </div>
       ) : (
-        <Table aria-label="Failed Images" variant="compact">
+        <Table aria-label="Unmirrored Images" variant="compact">
           <Thead>
             <Tr>
               <Th>Status</Th>

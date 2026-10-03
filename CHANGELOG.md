@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- Rename the pending-and-failed image page to **Unmirrored Images**, preserving
+  existing `/failed` and `/failures` URLs and state-specific **Failed** labels.
 - Build five Console plugin images for OpenShift **4.18–4.22**, each with pinned
   matching SDK, React, Router, and PatternFly dependencies. Select the image from
   the Console ClusterOperator version and remove incompatible plugin deployments.
