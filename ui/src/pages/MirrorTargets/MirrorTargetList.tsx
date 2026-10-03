@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Button,
-  Content,
   EmptyState,
   EmptyStateBody,
   EmptyStateVariant,
@@ -15,7 +14,7 @@ import {
   ToolbarItem,
 } from '@patternfly/react-core';
 import { Table, Thead, Tr, Th, Tbody, Td } from '@patternfly/react-table';
-import { Link } from 'react-router-dom-v5-compat';
+import { Link } from '@router';
 import { listTargets } from '../../api/client';
 import type { TargetSummary } from '../../api/types';
 import { StatusPill, computeStatus } from '../../components/StatusPill';
@@ -64,7 +63,7 @@ export const MirrorTargetList: React.FC = () => {
   if (error) {
     return (
       <PageSection>
-        <Alert variant="danger" title="Failed to load MirrorTargets" isInline>
+        <Alert variant="danger" title="Failed to load Mirror Targets" isInline>
           {error}
         </Alert>
       </PageSection>
@@ -73,12 +72,12 @@ export const MirrorTargetList: React.FC = () => {
 
   return (
     <PageSection>
-      <Content style={{ marginBottom: 'var(--pf-v6-global--spacer--md)' }}>
-        <Content component="h1">MirrorTargets</Content>
-        <Content component="p">
-          Each MirrorTarget defines a destination registry and the set of ImageSets to mirror into it.
-        </Content>
-      </Content>
+      <div style={{ marginBottom: 'var(--pf-v6-global--spacer--md)' }}>
+        <Title headingLevel="h1">Mirror Targets</Title>
+        <p>
+          Each Mirror Target defines a destination registry and the set of ImageSets to mirror into it.
+        </p>
+      </div>
 
       <Toolbar>
         <ToolbarContent>
@@ -95,7 +94,7 @@ export const MirrorTargetList: React.FC = () => {
               {loading ? <Spinner size="sm" /> : 'Refresh'}
             </Button>
           </ToolbarItem>
-          <ToolbarItem align={{ default: 'alignEnd' }} variant="pagination">
+          <ToolbarItem className="mirror-toolbar-pagination" variant="pagination">
             <span className="mirror-toolbar-count">
               {filtered.length} of {targets.length}
             </span>
@@ -106,16 +105,16 @@ export const MirrorTargetList: React.FC = () => {
       {filtered.length === 0 ? (
         <EmptyState variant={EmptyStateVariant.lg}>
           <Title headingLevel="h2">
-            {targets.length === 0 ? 'No MirrorTargets found' : 'No results match filter'}
+            {targets.length === 0 ? 'No Mirror Targets found' : 'No results match filter'}
           </Title>
           <EmptyStateBody>
             {targets.length === 0
-              ? 'Create a MirrorTarget to declare a destination registry and start mirroring.'
-              : 'Clear the filter to see all MirrorTargets.'}
+              ? 'Create a Mirror Target to declare a destination registry and start mirroring.'
+              : 'Clear the filter to see all Mirror Targets.'}
           </EmptyStateBody>
         </EmptyState>
       ) : (
-        <Table aria-label="MirrorTargets" variant="compact">
+        <Table aria-label="Mirror Targets" variant="compact">
           <Thead>
             <Tr>
               <Th>Name</Th>

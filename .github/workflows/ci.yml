@@ -75,7 +75,7 @@ jobs:
       - name: Build images (controller, manager, worker)
         run: |
           set -x
-          CONTAINER_TOOL=docker make docker-build-all \
+          CONTAINER_TOOL=docker make docker-build-controller docker-build-manager docker-build-worker \
             IMG_CONTROLLER=example.com/oc-mirror-controller:v0.0.1 \
             IMG_MANAGER=example.com/oc-mirror-manager:v0.0.1 \
             IMG_WORKER=example.com/oc-mirror-worker:v0.0.1
@@ -395,8 +395,12 @@ jobs:
   # webpack/TypeScript compile) and to the `e2e` job above (plain Kubernetes,
   # no console.openshift.io CRDs, so ConsolePluginReconciler skips itself).
   plugin-smoke-test:
-    name: Console plugin smoke test
+    name: Console plugin smoke test (OpenShift ${{ matrix.console-version }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        console-version: ['4.18', '4.19', '4.20', '4.21', '4.22']
     permissions:
       contents: read
     steps:
@@ -411,13 +415,17 @@ jobs:
           node-version: 22
 
       - name: Build plugin UI assets and embed them into the Go binary
+        env:
+          CONSOLE_VERSION: ${{ matrix.console-version }}
         run: |
           set -x
           npm --prefix ui ci
+          npm --prefix ui run install:console-profile
           npm --prefix ui run build:plugin
           rm -rf pkg/resourceapi/plugin
           cp -r ui/dist/plugin pkg/resourceapi/plugin
-          go build -o /tmp/plugin ./cmd/dashboard
+          mkdir -p .runtime-smoke
+          go build -o .runtime-smoke/plugin ./cmd/dashboard
 
       - name: Install Kind v0.29.0
         run: |
@@ -433,50 +441,24 @@ jobs:
           set -x
           make install
           kubectl create namespace oc-mirror-demo
-          cat <<'EOF' | kubectl apply -n oc-mirror-demo -f -
-          apiVersion: mirror.openshift.io/v1alpha1
-          kind: ImageSet
-          metadata:
-            name: demo-imageset
-          spec:
-            mirror:
-              additionalImages:
-                - name: registry.example.com/demo/pause:latest
-          ---
-          apiVersion: mirror.openshift.io/v1alpha1
-          kind: MirrorTarget
-          metadata:
-            name: demo-target
-          spec:
-            registry: registry.example.com/mirror
-            imageSets:
-              - demo-imageset
-          EOF
-          kubectl patch mirrortarget demo-target -n oc-mirror-demo --subresource=status --type=merge -p '{
-            "status": {
-              "totalImages": 42,
-              "mirroredImages": 30,
-              "pendingImages": 10,
-              "failedImages": 2,
-              "imageSetStatuses": [
-                {"name": "demo-imageset", "found": true, "total": 42, "mirrored": 30, "pending": 10, "failed": 2}
-              ]
-            }
-          }'
+          node hack/plugin-smoke/seed.mjs | kubectl apply -f -
+          kubectl patch mirrortarget demo-target -n oc-mirror-demo --subresource=status \
+            --type=merge -p "$(node hack/plugin-smoke/seed.mjs --status)"
 
       - name: Start plugin resource-API server (off-cluster, same binary the Dockerfile.plugin image runs)
         run: |
           set -x
-          openssl req -x509 -newkey rsa:2048 -keyout /tmp/tls.key -out /tmp/tls.crt \
+          openssl req -x509 -newkey rsa:2048 -keyout .runtime-smoke/tls.key -out .runtime-smoke/tls.crt \
             -days 1 -nodes -subj "/CN=localhost"
           KUBECONFIG="$HOME/.kube/config" POD_NAMESPACE=oc-mirror-demo \
-            /tmp/plugin --bind-address=:9001 --cert-file=/tmp/tls.crt --key-file=/tmp/tls.key \
-            > /tmp/plugin.log 2>&1 &
-          echo $! > /tmp/plugin.pid
+            .runtime-smoke/plugin --bind-address=:9001 --cert-file=.runtime-smoke/tls.crt --key-file=.runtime-smoke/tls.key \
+            > .runtime-smoke/plugin.log 2>&1 &
+          echo $! > .runtime-smoke/plugin.pid
           for i in $(seq 1 30); do
-            curl -sSk https://localhost:9001/api/v1/targets && break
+            curl -fsSk https://localhost:9001/api/v1/targets && break
             sleep 1
           done
+          curl -fsSk https://localhost:9001/api/v1/targets > /dev/null
 
       - name: Relay the plugin's HTTPS port to plain HTTP for bridge
         # bridge's --plugins / --plugin-proxy flags dial the plugin endpoint directly
@@ -485,18 +467,21 @@ jobs:
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq socat
           socat TCP-LISTEN:9002,fork,reuseaddr OPENSSL:localhost:9001,verify=0 &
-          echo $! > /tmp/socat.pid
+          echo $! > .runtime-smoke/socat.pid
           sleep 1
+          curl -fsS http://localhost:9002/plugin-manifest.json > /dev/null
 
       - name: Mint a bearer token for bridge's off-cluster K8s access
         id: kube
         run: |
           kubectl create serviceaccount console-viewer -n default
           kubectl create clusterrolebinding console-viewer --clusterrole=cluster-admin --serviceaccount=default:console-viewer
-          echo "token=$(kubectl create token console-viewer --duration=1h)" >> "$GITHUB_OUTPUT"
+          token="$(kubectl create token console-viewer --duration=1h)"
+          echo "::add-mask::$token"
+          echo "token=$token" >> "$GITHUB_OUTPUT"
           echo "api_server=$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')" >> "$GITHUB_OUTPUT"
 
-      - name: Start OpenShift console (real console.openshift.io frontend/bridge, pinned to 4.19)
+      - name: Start OpenShift console (real console.openshift.io frontend/bridge)
         run: |
           docker run -d --name console --network host \
             -e BRIDGE_USER_AUTH=disabled \
@@ -509,25 +494,29 @@ jobs:
             -e BRIDGE_BASE_ADDRESS=http://localhost:9000 \
             -e BRIDGE_PLUGINS=oc-mirror-operator=http://localhost:9002 \
             -e BRIDGE_PLUGIN_PROXY='{"services":[{"consoleAPIPath":"/api/proxy/plugin/oc-mirror-operator/resourceapi/","endpoint":"http://localhost:9002","authorize":false}]}' \
-            quay.io/openshift/origin-console:4.19
+            quay.io/openshift/origin-console:${{ matrix.console-version }}
           for i in $(seq 1 60); do
             curl -sSf http://localhost:9000/ -o /dev/null && break
             sleep 2
           done
+          curl -fsS http://localhost:9000/ > /dev/null
 
       - name: Run headless-browser smoke test
+        env:
+          CONSOLE_VERSION: ${{ matrix.console-version }}
+          SMOKE_BEARER_TOKEN: ${{ steps.kube.outputs.token }}
         run: |
           cd hack/plugin-smoke
           npm install
           npx playwright install --with-deps chromium
           node smoke-test.mjs
 
-      - name: Upload screenshots on failure
-        if: failure()
+      - name: Upload browser evidence
+        if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: plugin-smoke-screenshots
-          path: /tmp/plugin-smoke-*.png
+          name: plugin-smoke-screenshots-ocp-${{ matrix.console-version }}
+          path: hack/plugin-smoke/artifacts/
           retention-days: 7
           if-no-files-found: ignore
 
@@ -535,7 +524,7 @@ jobs:
         if: failure()
         run: |
           echo "=== Plugin server log ==="
-          cat /tmp/plugin.log || true
+          cat .runtime-smoke/plugin.log || true
           echo "=== Console container logs ==="
           docker logs console || true
           echo "=== Demo MirrorTarget/ImageSet ==="
@@ -544,7 +533,7 @@ jobs:
       - name: Cleanup
         if: always()
         run: |
-          [ -f /tmp/plugin.pid ] && kill "$(cat /tmp/plugin.pid)" 2>/dev/null || true
-          [ -f /tmp/socat.pid ] && kill "$(cat /tmp/socat.pid)" 2>/dev/null || true
+          [ -f .runtime-smoke/plugin.pid ] && kill "$(cat .runtime-smoke/plugin.pid)" 2>/dev/null || true
+          [ -f .runtime-smoke/socat.pid ] && kill "$(cat .runtime-smoke/socat.pid)" 2>/dev/null || true
           docker rm -f console 2>/dev/null || true
           kind delete cluster --name plugin-smoke 2>/dev/null || true

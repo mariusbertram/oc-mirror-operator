@@ -44,6 +44,8 @@ ui/node_modules/
 ui/dist/
 ui/.eslintcache
 ui/*.tsbuildinfo
+ui/console-profile-installed.json
+ui/tsconfig.console.json
 
 # Local TLS certificates for plugin dev server
 dev-certs/

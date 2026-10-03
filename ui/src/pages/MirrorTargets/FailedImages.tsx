@@ -2,7 +2,6 @@ import React, { useEffect, useState } from 'react';
 import {
   Alert,
   Button,
-  Content,
   Flex,
   FlexItem,
   Label,
@@ -15,7 +14,7 @@ import {
   ToolbarItem,
 } from '@patternfly/react-core';
 import { Table, Thead, Tr, Th, Tbody, Td } from '@patternfly/react-table';
-import { Link, useParams } from 'react-router-dom-v5-compat';
+import { Link, useParams } from '@router';
 import { getImageFailures, listTargets } from '../../api/client';
 import type { FailedImageDetail } from '../../api/types';
 import '../../components/plugin-styles.css';
@@ -38,11 +37,13 @@ export const FailedImages: React.FC<FailedImagesProps> = ({ crossTarget }) => {
   const [rows, setRows] = useState<FailedImageRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [partialErrors, setPartialErrors] = useState<string[]>([]);
   const [search, setSearch] = useState('');
 
   const load = async () => {
     setLoading(true);
     setError(null);
+    setPartialErrors([]);
     try {
       if (crossTarget || !name) {
         const targets = await listTargets();
@@ -50,14 +51,18 @@ export const FailedImages: React.FC<FailedImagesProps> = ({ crossTarget }) => {
           targets.map((t) => getImageFailures(t.name).then((r) => ({ target: t.name, r }))),
         );
         const all: FailedImageRow[] = [];
-        for (const res of results) {
+        const failedTargets: string[] = [];
+        for (const [index, res] of results.entries()) {
           if (res.status === 'fulfilled') {
             const { target: tName, r } = res.value;
             all.push(...(r.failed || []).map((f) => ({ ...f, targetName: tName, isPermanent: true })));
             all.push(...(r.pending || []).map((f) => ({ ...f, targetName: tName, isPermanent: false })));
+          } else {
+            failedTargets.push(targets[index].name);
           }
         }
         setRows(all);
+        setPartialErrors(failedTargets);
       } else {
         const r = await getImageFailures(name);
         setRows([
@@ -113,14 +118,15 @@ export const FailedImages: React.FC<FailedImagesProps> = ({ crossTarget }) => {
         style={{ marginBottom: 'var(--pf-v6-global--spacer--md)' }}
       >
         <FlexItem grow={{ default: 'grow' }}>
-          <Content>
+          <div>
             <Title headingLevel="h1">
               {crossTarget ? 'Failed Images' : `Image Failures — ${name}`}
             </Title>
-            <Content component="p">
-              Images that exhausted all retries. Fix the upstream error or spec, then trigger a re-poll.
-            </Content>
-          </Content>
+            <p>
+              Failed images can be retried with Recollect on their ImageSet; pending retries resume automatically.
+              Refresh updates this list only.
+            </p>
+          </div>
         </FlexItem>
         <FlexItem>
           <Button variant="secondary" onClick={load} isDisabled={loading}>
@@ -128,6 +134,17 @@ export const FailedImages: React.FC<FailedImagesProps> = ({ crossTarget }) => {
           </Button>
         </FlexItem>
       </Flex>
+
+      {partialErrors.length > 0 && (
+        <Alert
+          variant="warning"
+          title={`Could not load image failures for ${partialErrors.length} Mirror Target${partialErrors.length === 1 ? '' : 's'}`}
+          isInline
+          style={{ marginBottom: 'var(--pf-v6-global--spacer--md)' }}
+        >
+          {partialErrors.join(', ')}
+        </Alert>
+      )}
 
       <Toolbar>
         <ToolbarContent>
@@ -139,7 +156,7 @@ export const FailedImages: React.FC<FailedImagesProps> = ({ crossTarget }) => {
               onClear={() => setSearch('')}
             />
           </ToolbarItem>
-          <ToolbarItem align={{ default: 'alignEnd' }} variant="pagination">
+          <ToolbarItem className="mirror-toolbar-pagination" variant="pagination">
             <Flex gap={{ default: 'gapSm' }} alignItems={{ default: 'alignItemsCenter' }}>
               <FlexItem>
                 <span className="mirror-toolbar-count">{filtered.length} items</span>
@@ -161,16 +178,20 @@ export const FailedImages: React.FC<FailedImagesProps> = ({ crossTarget }) => {
 
       {filtered.length === 0 ? (
         <div className="mirror-empty-center">
-          {rows.length === 0 ? 'No failed or pending images.' : 'No items match the filter.'}
+          {rows.length === 0
+            ? partialErrors.length > 0
+              ? 'Image failure data is unavailable for targets listed above.'
+              : 'No failed or pending images.'
+            : 'No items match the filter.'}
         </div>
       ) : (
         <Table aria-label="Failed Images" variant="compact">
           <Thead>
             <Tr>
               <Th>Status</Th>
-              <Th>Source image</Th>
+              <Th>Destination image</Th>
               <Th>ImageSet</Th>
-              {crossTarget && <Th>Target</Th>}
+              {crossTarget && <Th>Mirror Target</Th>}
               <Th>Error</Th>
               <Th>Retries</Th>
             </Tr>
@@ -183,7 +204,7 @@ export const FailedImages: React.FC<FailedImagesProps> = ({ crossTarget }) => {
                     {f.isPermanent ? 'Failed' : 'Pending'}
                   </Label>
                 </Td>
-                <Td dataLabel="Source image">
+                <Td dataLabel="Destination image">
                   <code className="mirror-mono" style={{ fontSize: 11, wordBreak: 'break-all' }}>
                     {f.destination}
                   </code>
@@ -193,7 +214,7 @@ export const FailedImages: React.FC<FailedImagesProps> = ({ crossTarget }) => {
                   <Label isCompact color="grey">{f.imageSet}</Label>
                 </Td>
                 {crossTarget && (
-                  <Td dataLabel="Target">
+                  <Td dataLabel="Mirror Target">
                     {f.targetName ? (
                       <Link to={`/oc-mirror/targets/${f.targetName}`}>{f.targetName}</Link>
                     ) : '—'}

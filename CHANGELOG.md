@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Build five Console plugin images for OpenShift **4.18–4.22**, each with pinned
+  matching SDK, React, Router, and PatternFly dependencies. Select the image from
+  the Console ClusterOperator version and remove incompatible plugin deployments.
+- Exercise all plugin routes, detail tabs, dialogs, and write actions against each
+  matching real Console in CI; include underscore-prefixed webpack chunks in the
+  embedded plugin assets.
+- Make action labels and feedback consistent, distinguish Recollect from Force
+  Resync, clarify target-image references and partial failures, and add a standalone
+  mock UI workflow without a cluster or backend.
+
 ## [v0.1.4] - 2026-10-03
 
 ### Changed

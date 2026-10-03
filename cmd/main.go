@@ -333,12 +333,18 @@ func runController() {
 	if legacyNamespace == "" {
 		legacyNamespace = os.Getenv("POD_NAMESPACE")
 	}
-	pluginImageLegacy := os.Getenv("PLUGIN_IMAGE")
+	pluginImagesLegacy := map[string]string{
+		"4.18": os.Getenv("RELATED_IMAGE_PLUGIN_4_18"),
+		"4.19": os.Getenv("RELATED_IMAGE_PLUGIN_4_19"),
+		"4.20": os.Getenv("RELATED_IMAGE_PLUGIN_4_20"),
+		"4.21": os.Getenv("RELATED_IMAGE_PLUGIN_4_21"),
+		"4.22": os.Getenv("RELATED_IMAGE_PLUGIN_4_22"),
+	}
 	if err := (&controller.ConsolePluginReconciler{
-		Client:      mgr.GetClient(),
-		Scheme:      mgr.GetScheme(),
-		Namespace:   legacyNamespace,
-		PluginImage: pluginImageLegacy,
+		Client:       mgr.GetClient(),
+		Scheme:       mgr.GetScheme(),
+		Namespace:    legacyNamespace,
+		PluginImages: pluginImagesLegacy,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ConsolePlugin")
 		os.Exit(1)

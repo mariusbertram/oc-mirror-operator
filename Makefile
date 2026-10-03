@@ -54,7 +54,19 @@ IMG ?= $(IMAGE_TAG_BASE):v$(VERSION)
 IMG_CONTROLLER ?= $(IMAGE_TAG_BASE)-controller:v$(VERSION)
 IMG_MANAGER ?= $(IMAGE_TAG_BASE)-manager:v$(VERSION)
 IMG_WORKER ?= $(IMAGE_TAG_BASE)-worker:v$(VERSION)
-IMG_PLUGIN ?= $(IMAGE_TAG_BASE)-plugin:v$(VERSION)
+CONSOLE_VERSION ?= 4.19
+IMG_PLUGIN ?= $(IMAGE_TAG_BASE)-plugin:v$(VERSION)-ocp$(CONSOLE_VERSION)
+IMG_PLUGIN_4_18 ?= $(IMAGE_TAG_BASE)-plugin:v$(VERSION)-ocp4.18
+IMG_PLUGIN_4_19 ?= $(IMAGE_TAG_BASE)-plugin:v$(VERSION)-ocp4.19
+IMG_PLUGIN_4_20 ?= $(IMAGE_TAG_BASE)-plugin:v$(VERSION)-ocp4.20
+IMG_PLUGIN_4_21 ?= $(IMAGE_TAG_BASE)-plugin:v$(VERSION)-ocp4.21
+IMG_PLUGIN_4_22 ?= $(IMAGE_TAG_BASE)-plugin:v$(VERSION)-ocp4.22
+PLUGIN_IMAGE_TRANSFORMS = \
+	plugin-4-18=$(IMG_PLUGIN_4_18) \
+	plugin-4-19=$(IMG_PLUGIN_4_19) \
+	plugin-4-20=$(IMG_PLUGIN_4_20) \
+	plugin-4-21=$(IMG_PLUGIN_4_21) \
+	plugin-4-22=$(IMG_PLUGIN_4_22)
 
 # Test/OLM deployment variables
 OPERATOR_NAMESPACE ?= oc-mirror-operator
@@ -250,9 +262,10 @@ build: manifests generate fmt vet ## Build manager binary.
 	go build -o bin/manager cmd/main.go
 
 .PHONY: build-ui
-build-ui: ## Build the React Console Plugin assets.
+build-ui: ## Build React Console Plugin assets for CONSOLE_VERSION (Linux).
 	npm --prefix ui ci --ignore-scripts
-	npm --prefix ui run build:plugin
+	CONSOLE_VERSION=$(CONSOLE_VERSION) npm --prefix ui run install:console-profile
+	CONSOLE_VERSION=$(CONSOLE_VERSION) npm --prefix ui run build:plugin
 
 DEV_CERT_DIR ?= dev-certs
 
@@ -273,7 +286,7 @@ dev-certs: ## Generate a self-signed TLS cert for the local plugin dev server (s
 
 .PHONY: run-plugin-mock
 run-plugin-mock: ## Start the Console Plugin UI with mock data — no cluster or backend needed.
-	MOCK=true npm --prefix ui run dev
+	npm --prefix ui run dev:mock
 
 .PHONY: run-plugin
 run-plugin: dev-certs ## Run the Console Plugin backend locally (port 9443). Run 'npm --prefix ui run dev' in a second terminal.
@@ -311,11 +324,19 @@ docker-build-worker: ## Build docker image with the worker (cleanup runs as a su
 	$(CONTAINER_TOOL) build -t ${IMG_WORKER} -f Dockerfile.worker .
 
 .PHONY: docker-build-plugin
-docker-build-plugin: ## Build docker image for the Console Plugin (includes React UI build).
-	$(CONTAINER_TOOL) build -t ${IMG_PLUGIN} -f Dockerfile.plugin .
+docker-build-plugin: ## Build a Console Plugin image for CONSOLE_VERSION (includes the matching UI profile).
+	$(CONTAINER_TOOL) build --build-arg CONSOLE_VERSION=$(CONSOLE_VERSION) -t ${IMG_PLUGIN} -f Dockerfile.plugin .
+
+.PHONY: docker-build-plugins
+docker-build-plugins: ## Build Console Plugin images for all supported Console profiles (4.18-4.22).
+	$(CONTAINER_TOOL) build --build-arg CONSOLE_VERSION=4.18 -t $(IMG_PLUGIN_4_18) -f Dockerfile.plugin .
+	$(CONTAINER_TOOL) build --build-arg CONSOLE_VERSION=4.19 -t $(IMG_PLUGIN_4_19) -f Dockerfile.plugin .
+	$(CONTAINER_TOOL) build --build-arg CONSOLE_VERSION=4.20 -t $(IMG_PLUGIN_4_20) -f Dockerfile.plugin .
+	$(CONTAINER_TOOL) build --build-arg CONSOLE_VERSION=4.21 -t $(IMG_PLUGIN_4_21) -f Dockerfile.plugin .
+	$(CONTAINER_TOOL) build --build-arg CONSOLE_VERSION=4.22 -t $(IMG_PLUGIN_4_22) -f Dockerfile.plugin .
 
 .PHONY: docker-build-all
-docker-build-all: docker-build-controller docker-build-manager docker-build-worker docker-build-plugin ## (deprecated) Build all modular images. Use build-images instead.
+docker-build-all: docker-build-controller docker-build-manager docker-build-worker docker-build-plugins ## (deprecated) Build all modular images. Use build-images instead.
 
 .PHONY: docker-push-controller
 docker-push-controller: ## Push controller image.
@@ -333,8 +354,16 @@ docker-push-worker: ## Push worker image.
 docker-push-plugin: ## Push plugin image.
 	$(CONTAINER_TOOL) push ${IMG_PLUGIN}
 
+.PHONY: docker-push-plugins
+docker-push-plugins: ## Push Console Plugin images for all supported OpenShift releases.
+	$(CONTAINER_TOOL) push $(IMG_PLUGIN_4_18)
+	$(CONTAINER_TOOL) push $(IMG_PLUGIN_4_19)
+	$(CONTAINER_TOOL) push $(IMG_PLUGIN_4_20)
+	$(CONTAINER_TOOL) push $(IMG_PLUGIN_4_21)
+	$(CONTAINER_TOOL) push $(IMG_PLUGIN_4_22)
+
 .PHONY: docker-push-all
-docker-push-all: docker-push-controller docker-push-manager docker-push-worker docker-push-plugin ## (deprecated) Push all modular images. Use push-images instead.
+docker-push-all: docker-push-controller docker-push-manager docker-push-worker docker-push-plugins ## (deprecated) Push all modular images. Use push-images instead.
 
 # PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
 # architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:
@@ -384,24 +413,24 @@ build-installer: manifests generate kustomize ## Generate a consolidated YAML wi
 		controller=${IMG_CONTROLLER} \
 		manager=${IMG_MANAGER} \
 		worker=${IMG_WORKER} \
-		plugin=${IMG_PLUGIN}
+		$(PLUGIN_IMAGE_TRANSFORMS)
 	$(KUSTOMIZE) build config/default > dist/install.yaml
 
 ##@ Images
 
 .PHONY: build-images
-build-images: ## Build all operator images (controller, manager, worker, plugin).
+build-images: ## Build all operator images (controller, manager, worker, and versioned plugins).
 	$(CONTAINER_TOOL) build -t $(IMG_CONTROLLER) -f Dockerfile.controller .
 	$(CONTAINER_TOOL) build -t $(IMG_MANAGER) -f Dockerfile.manager .
 	$(CONTAINER_TOOL) build -t $(IMG_WORKER) -f Dockerfile.worker .
-	$(CONTAINER_TOOL) build -t $(IMG_PLUGIN) -f Dockerfile.plugin .
+	$(MAKE) docker-build-plugins
 
 .PHONY: push-images
 push-images: ## Push all operator images to registry.
 	$(CONTAINER_TOOL) push $(IMG_CONTROLLER)
 	$(CONTAINER_TOOL) push $(IMG_MANAGER)
 	$(CONTAINER_TOOL) push $(IMG_WORKER)
-	$(CONTAINER_TOOL) push $(IMG_PLUGIN)
+	$(MAKE) docker-push-plugins
 
 .PHONY: build-push-images
 build-push-images: build-images push-images ## Build and push all operator images.
@@ -426,7 +455,7 @@ deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in
 		controller=${IMG_CONTROLLER} \
 		manager=${IMG_MANAGER} \
 		worker=${IMG_WORKER} \
-		plugin=${IMG_PLUGIN}
+		$(PLUGIN_IMAGE_TRANSFORMS)
 	$(KUSTOMIZE) build config/default | $(KUBECTL) apply -f -
 
 .PHONY: undeploy
@@ -560,7 +589,7 @@ bundle: manifests kustomize operator-sdk ## Generate bundle manifests and metada
 		controller=$(IMG_CONTROLLER) \
 		manager=$(IMG_MANAGER) \
 		worker=$(IMG_WORKER) \
-		plugin=$(IMG_PLUGIN)
+		$(PLUGIN_IMAGE_TRANSFORMS)
 	$(KUSTOMIZE) build config/manifests | $(OPERATOR_SDK) generate bundle $(BUNDLE_GEN_FLAGS)
 	$(OPERATOR_SDK) bundle validate ./bundle
 

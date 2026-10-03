@@ -7,7 +7,6 @@ import {
   Card,
   CardBody,
   CardTitle,
-  Content,
   DescriptionList,
   DescriptionListDescription,
   DescriptionListGroup,
@@ -15,11 +14,6 @@ import {
   Flex,
   FlexItem,
   Label,
-  Modal,
-  ModalBody,
-  ModalFooter,
-  ModalHeader,
-  ModalVariant,
   PageSection,
   Spinner,
   Switch,
@@ -30,7 +24,8 @@ import {
   Title,
 } from '@patternfly/react-core';
 import { Table, Thead, Tr, Th, Tbody, Td } from '@patternfly/react-table';
-import { Link, useParams } from 'react-router-dom-v5-compat';
+import { Link, useParams } from '@router';
+import { ConfirmationModal } from '@compat';
 import {
   getHelmRepositories,
   getBlockedImages,
@@ -58,7 +53,10 @@ import { ProgressBar } from '../../components/ProgressBar';
 import { ResourcesView } from '../../components/ResourcesView';
 import '../../components/plugin-styles.css';
 
-type ImageSetDetailParams = 'targetName' | 'imageSetName';
+type ImageSetDetailParams = {
+  targetName?: string;
+  imageSetName?: string;
+};
 
 const StatBox: React.FC<{ label: string; value: number; color?: string }> = ({ label, value, color }) => (
   <div>
@@ -114,6 +112,10 @@ export const ImageSetDetail: React.FC = () => {
   const [settingsError, setSettingsError] = useState<string | null>(null);
 
   const [forceResyncOpen, setForceResyncOpen] = useState(false);
+  const [forceResyncing, setForceResyncing] = useState(false);
+  const [recollecting, setRecollecting] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionSuccess, setActionSuccess] = useState<string | null>(null);
 
   const load = () => {
     if (!targetName) return;
@@ -132,12 +134,33 @@ export const ImageSetDetail: React.FC = () => {
 
   const confirmForceResync = async () => {
     if (!target?.namespace || !imageSetName) return;
+    setForceResyncing(true);
+    setActionError(null);
+    setActionSuccess(null);
     try {
       await triggerForceResync(target.namespace, imageSetName);
-    } catch (e) {
-      alert(`Failed: ${(e as Error).message}`);
-    } finally {
+      setActionSuccess('Force resync requested. All images will be re-verified and transferred, including images already marked as mirrored.');
       setForceResyncOpen(false);
+    } catch (e: unknown) {
+      setActionError(`Failed to force resync: ${e instanceof Error ? e.message : String(e)}`);
+      setForceResyncOpen(false);
+    } finally {
+      setForceResyncing(false);
+    }
+  };
+
+  const handleRecollect = async () => {
+    if (!target?.namespace || !imageSetName) return;
+    setRecollecting(true);
+    setActionError(null);
+    setActionSuccess(null);
+    try {
+      await triggerRecollect(target.namespace, imageSetName);
+      setActionSuccess('Recollect requested. Upstream content will be re-resolved and failed images retried; already mirrored images will not be force-transferred.');
+    } catch (e: unknown) {
+      setActionError(`Failed to recollect ImageSet: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setRecollecting(false);
     }
   };
 
@@ -411,13 +434,23 @@ export const ImageSetDetail: React.FC = () => {
                 <Button
                   variant="secondary"
                   size="sm"
-                  onClick={() => triggerRecollect(target.namespace, imageSetName!).catch(console.error)}
+                  onClick={handleRecollect}
+                  isDisabled={recollecting}
+                  isLoading={recollecting}
                 >
                   Recollect
                 </Button>
               </FlexItem>
               <FlexItem>
-                <Button variant="secondary" size="sm" onClick={() => setForceResyncOpen(true)}>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => {
+                    setActionError(null);
+                    setActionSuccess(null);
+                    setForceResyncOpen(true);
+                  }}
+                >
                   Force Resync
                 </Button>
               </FlexItem>
@@ -429,6 +462,16 @@ export const ImageSetDetail: React.FC = () => {
             </Flex>
           </FlexItem>
         </Flex>
+        {actionError && (
+          <Alert variant="danger" title="Action failed" isInline style={{ marginTop: 12 }}>
+            {actionError}
+          </Alert>
+        )}
+        {actionSuccess && (
+          <Alert variant="success" title="Action requested" isInline style={{ marginTop: 12 }}>
+            {actionSuccess}
+          </Alert>
+        )}
       </PageSection>
 
       <PageSection padding={{ default: 'noPadding' }}>
@@ -476,7 +519,7 @@ export const ImageSetDetail: React.FC = () => {
                     <DescriptionListDescription>{is.name}</DescriptionListDescription>
                   </DescriptionListGroup>
                   <DescriptionListGroup>
-                    <DescriptionListTerm>MirrorTarget</DescriptionListTerm>
+                    <DescriptionListTerm>Mirror Target</DescriptionListTerm>
                     <DescriptionListDescription>
                       <Link to={`/oc-mirror/targets/${targetName}`}>
                         <Label isCompact color="grey">{targetName}</Label>
@@ -559,12 +602,12 @@ export const ImageSetDetail: React.FC = () => {
           <Card>
             <CardTitle>Operator catalogs (spec)</CardTitle>
             <CardBody>
-              <Content component="p">
+              <p>
                 Catalogs to mirror. Package filters for an already-resolved catalog
                 are edited from the <strong>Catalogs</strong> tab once it appears there;
                 adding a catalog here starts with no filters (mirrors everything) until
                 one is configured. Cosign signature verification is kubectl-only.
-              </Content>
+              </p>
               {operatorsError && (
                 <Alert variant="danger" title="Failed to load or save operators" isInline style={{ marginBottom: 16 }}>
                   {operatorsError}
@@ -672,11 +715,11 @@ export const ImageSetDetail: React.FC = () => {
           <Card>
             <CardTitle>Helm chart repositories</CardTitle>
             <CardBody>
-              <Content component="p">
+              <p>
                 Charts are downloaded, rendered, and scanned for container image
                 references (default paths plus any custom <code className="mirror-mono">imagePaths</code>).
                 Leave chart version empty to resolve the latest.
-              </Content>
+              </p>
               {helmError && (
                 <Alert variant="danger" title="Failed to load or save Helm repositories" isInline style={{ marginBottom: 16 }}>
                   {helmError}
@@ -756,7 +799,7 @@ export const ImageSetDetail: React.FC = () => {
                   ))}
 
                   {helmRepos.length === 0 && (
-                    <Content component="p">No Helm repositories configured yet.</Content>
+                    <p>No Helm repositories configured yet.</p>
                   )}
 
                   <Flex style={{ marginTop: 8 }}>
@@ -786,12 +829,12 @@ export const ImageSetDetail: React.FC = () => {
           <Card>
             <CardTitle>Additional images</CardTitle>
             <CardBody>
-              <Content component="p">
+              <p>
                 Individual images mirrored as-is, in addition to releases and operator
                 catalogs. <code className="mirror-mono">Target repo</code> and{' '}
                 <code className="mirror-mono">target tag</code> are optional overrides for
                 where the image lands in the target registry.
-              </Content>
+              </p>
               {additionalError && (
                 <Alert variant="danger" title="Failed to load or save additional images" isInline style={{ marginBottom: 16 }}>
                   {additionalError}
@@ -872,12 +915,12 @@ export const ImageSetDetail: React.FC = () => {
           <Card>
             <CardTitle>Blocked images</CardTitle>
             <CardBody>
-              <Content component="p">
+              <p>
                 Images matching a blocked name are excluded from mirroring across all
                 content types (releases, operator catalogs, additional images).
                 Matching is done on the repository path, ignoring registry host and tag
                 (e.g. <code className="mirror-mono">redhat/postgresql-operator-bundle</code>).
-              </Content>
+              </p>
               {blockedError && (
                 <Alert variant="danger" title="Failed to load or save blocked images" isInline style={{ marginBottom: 16 }}>
                   {blockedError}
@@ -941,27 +984,28 @@ export const ImageSetDetail: React.FC = () => {
         )}
       </PageSection>
 
-      <Modal
-        variant={ModalVariant.small}
+      <ConfirmationModal
         isOpen={forceResyncOpen}
         onClose={() => setForceResyncOpen(false)}
-        aria-label="Force Resync ImageSet"
+        title="Force resync this ImageSet?"
+        footer={
+          <div className="mirror-modal-actions">
+            <Button variant="warning" onClick={confirmForceResync} isLoading={forceResyncing}>
+              Force Resync
+            </Button>
+            <Button variant="link" onClick={() => setForceResyncOpen(false)}>Cancel</Button>
+          </div>
+        }
       >
-        <ModalHeader title="Force resync this ImageSet?" titleIconVariant="warning" />
-        <ModalBody>
-          <p>
-            This resets every image in <strong>{imageSetName}</strong> back to Pending —
-            including ones already mirrored — so all of them are re-verified and
-            re-transferred to the target registry, regardless of their current state.
-            Use this to recover from target-registry data loss or suspected corruption
-            of already-mirrored content.
-          </p>
-        </ModalBody>
-        <ModalFooter>
-          <Button variant="warning" onClick={confirmForceResync}>Force Resync</Button>
-          <Button variant="link" onClick={() => setForceResyncOpen(false)}>Cancel</Button>
-        </ModalFooter>
-      </Modal>
+        <p>
+          This resets every image in <strong>{imageSetName}</strong> back to Pending —
+          including ones already mirrored — so all of them are re-verified and
+          re-transferred to the target registry, regardless of their current state.
+          Unlike Recollect, this also transfers images already marked as mirrored.
+          Use it to recover from target-registry data loss or suspected corruption
+          of mirrored content.
+        </p>
+      </ConfirmationModal>
     </>
   );
 };

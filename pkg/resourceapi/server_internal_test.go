@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -111,16 +113,30 @@ var _ = Describe("writeJSON", func() {
 })
 
 var _ = Describe("RegisterPluginStaticRoutes", func() {
-	It("registers a catch-all handler that serves the embedded plugin assets without panicking", func() {
+	It("serves every emitted plugin asset, including underscore-prefixed chunks", func() {
 		r := mux.NewRouter()
 		Expect(func() { RegisterPluginStaticRoutes(r) }).NotTo(Panic())
-
-		req := httptest.NewRequest("GET", "/plugin-manifest.json", nil)
-		rr := httptest.NewRecorder()
-		r.ServeHTTP(rr, req)
-		// Whatever the embedded FS actually contains, serving it must not panic
-		// and must produce *some* HTTP response.
-		Expect(rr.Code).To(BeNumerically(">=", 200))
+		Expect(fs.WalkDir(os.DirFS("plugin"), ".", func(path string, entry fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if entry.IsDir() {
+				return nil
+			}
+			expected, err := os.ReadFile("plugin/" + path)
+			if err != nil {
+				return err
+			}
+			rr := httptest.NewRecorder()
+			url := "/" + path
+			if entry.Name() == "index.html" {
+				url = url[:len(url)-len("index.html")]
+			}
+			r.ServeHTTP(rr, httptest.NewRequest("GET", url, nil))
+			Expect(rr.Code).To(Equal(http.StatusOK), path)
+			Expect(rr.Body.String()).To(Equal(string(expected)), path)
+			return nil
+		})).To(Succeed())
 	})
 })
 

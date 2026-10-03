@@ -7,7 +7,7 @@ import {
   Spinner,
   Title,
 } from '@patternfly/react-core';
-import { Link, useParams } from 'react-router-dom-v5-compat';
+import { Link, useParams } from '@router';
 import {
   getFilteredPackages,
   getPackageConstraints,
@@ -18,7 +18,12 @@ import {
 import type { CatalogPackage, CatalogSummary } from '../../api/types';
 import '../../components/plugin-styles.css';
 
-type CatalogBrowserParams = 'targetName' | 'slug' | 'namespace' | 'imageSetName';
+type CatalogBrowserParams = {
+  targetName?: string;
+  slug?: string;
+  namespace?: string;
+  imageSetName?: string;
+};
 
 type VersionConstraint = { minVersion: string; maxVersion: string };
 

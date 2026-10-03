@@ -5,7 +5,6 @@ import {
   CardBody,
   CardHeader,
   CardTitle,
-  Content,
   EmptyState,
   EmptyStateBody,
   Flex,
@@ -225,7 +224,7 @@ const ResourceGroupCard: React.FC<ResourceGroupCardProps> = ({ group }) => (
             </FlexItem>
           )}
         </Flex>
-        <Content component="small">{group.description}</Content>
+        <small>{group.description}</small>
       </CardTitle>
     </CardHeader>
     <CardBody style={{ paddingTop: 0 }}>

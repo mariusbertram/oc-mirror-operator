@@ -11,9 +11,21 @@ images:
 - name: manager
   newName: ghcr.io/mariusbertram/oc-mirror-operator-manager
   newTag: v0.0.2
-- name: plugin
+- name: plugin-4-18
   newName: ghcr.io/mariusbertram/oc-mirror-operator-plugin
-  newTag: v0.0.2
+  newTag: latest-ocp4.18
+- name: plugin-4-19
+  newName: ghcr.io/mariusbertram/oc-mirror-operator-plugin
+  newTag: latest-ocp4.19
+- name: plugin-4-20
+  newName: ghcr.io/mariusbertram/oc-mirror-operator-plugin
+  newTag: latest-ocp4.20
+- name: plugin-4-21
+  newName: ghcr.io/mariusbertram/oc-mirror-operator-plugin
+  newTag: latest-ocp4.21
+- name: plugin-4-22
+  newName: ghcr.io/mariusbertram/oc-mirror-operator-plugin
+  newTag: latest-ocp4.22
 - name: worker
   newName: ghcr.io/mariusbertram/oc-mirror-operator-worker
   newTag: v0.0.2

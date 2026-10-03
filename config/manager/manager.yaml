@@ -28,7 +28,11 @@ spec:
         kubectl.kubernetes.io/default-container: manager
         oc-mirror-manager-image: manager:latest
         oc-mirror-worker-image: worker:latest
-        oc-mirror-plugin-image: plugin:latest
+        oc-mirror-plugin-image-4-18: plugin-4-18:latest-ocp4.18
+        oc-mirror-plugin-image-4-19: plugin-4-19:latest-ocp4.19
+        oc-mirror-plugin-image-4-20: plugin-4-20:latest-ocp4.20
+        oc-mirror-plugin-image-4-21: plugin-4-21:latest-ocp4.21
+        oc-mirror-plugin-image-4-22: plugin-4-22:latest-ocp4.22
       labels:
         control-plane: controller-manager
         app.kubernetes.io/name: oc-mirror
@@ -71,8 +75,16 @@ spec:
           value: manager:latest
         - name: WORKER_IMAGE
           value: worker:latest
-        - name: PLUGIN_IMAGE
-          value: plugin:latest
+        - name: RELATED_IMAGE_PLUGIN_4_18
+          value: plugin-4-18:latest-ocp4.18
+        - name: RELATED_IMAGE_PLUGIN_4_19
+          value: plugin-4-19:latest-ocp4.19
+        - name: RELATED_IMAGE_PLUGIN_4_20
+          value: plugin-4-20:latest-ocp4.20
+        - name: RELATED_IMAGE_PLUGIN_4_21
+          value: plugin-4-21:latest-ocp4.21
+        - name: RELATED_IMAGE_PLUGIN_4_22
+          value: plugin-4-22:latest-ocp4.22
         - name: OPERATOR_NAMESPACE
           valueFrom:
             fieldRef:

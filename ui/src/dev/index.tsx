@@ -8,8 +8,7 @@
  */
 import React from 'react';
 import ReactDOM from 'react-dom';
-import { BrowserRouter } from 'react-router-dom';
-import { CompatRouter, Navigate, NavLink, Route, Routes } from 'react-router-dom-v5-compat';
+import { BrowserRouter, NavLink, Redirect, Route, Switch } from 'react-router-dom';
 
 // PatternFly base CSS — provides global custom properties for colour, spacing, typography.
 import '@patternfly/react-core/dist/styles/base.css';
@@ -26,7 +25,7 @@ import { ReleaseBrowser } from '../pages/ReleaseBrowser/ReleaseBrowser';
 // requests go to the same origin — the webpack dev server proxies them to :9443.
 // No setFetchImpl / setApiBaseUrl overrides are needed here.
 
-function navStyle({ isActive }: { isActive: boolean }): React.CSSProperties {
+function navStyle(isActive: boolean): React.CSSProperties {
   return {
     display: 'block',
     padding: '8px 16px',
@@ -40,13 +39,12 @@ function navStyle({ isActive }: { isActive: boolean }): React.CSSProperties {
 function App() {
   return (
     <BrowserRouter>
-      <CompatRouter>
         <div style={{ display: 'flex', height: '100vh' }}>
           <nav style={{ width: 200, background: '#212427', padding: '16px 0', flexShrink: 0 }}>
             <div style={{ padding: '8px 16px 20px', color: '#fff', fontWeight: 700, fontSize: 15 }}>
               OC Mirror — Dev
             </div>
-            <NavLink to="/oc-mirror/targets" style={navStyle} end>
+            <NavLink to="/oc-mirror/targets" style={navStyle} exact>
               Mirror Targets
             </NavLink>
             <NavLink to="/oc-mirror/imagesets" style={navStyle}>
@@ -57,29 +55,28 @@ function App() {
             </NavLink>
           </nav>
           <main style={{ flex: 1, overflow: 'auto' }}>
-            <Routes>
-              <Route path="/" element={<Navigate to="/oc-mirror/targets" replace />} />
-              <Route path="/oc-mirror/targets" element={<MirrorTargetList />} />
-              <Route path="/oc-mirror/targets/:name/failures" element={<FailedImages />} />
+            <Switch>
+              <Route exact path="/" render={() => <Redirect to="/oc-mirror/targets" />} />
+              <Route exact path="/oc-mirror/targets" component={MirrorTargetList} />
+              <Route path="/oc-mirror/targets/:name/failures" component={FailedImages} />
               <Route
                 path="/oc-mirror/targets/:targetName/namespaces/:namespace/imagesets/:imageSetName/releases"
-                element={<ReleaseBrowser />}
+                component={ReleaseBrowser}
               />
               <Route
                 path="/oc-mirror/targets/:targetName/namespaces/:namespace/imagesets/:imageSetName/catalogs/:slug"
-                element={<CatalogBrowser />}
+                component={CatalogBrowser}
               />
               <Route
                 path="/oc-mirror/targets/:targetName/imagesets/:imageSetName"
-                element={<ImageSetDetail />}
+                component={ImageSetDetail}
               />
-              <Route path="/oc-mirror/targets/:name" element={<MirrorTargetDetail />} />
-              <Route path="/oc-mirror/imagesets" element={<ImageSetList />} />
-              <Route path="/oc-mirror/failed" element={<FailedImages crossTarget />} />
-            </Routes>
+              <Route path="/oc-mirror/targets/:name" component={MirrorTargetDetail} />
+              <Route path="/oc-mirror/imagesets" component={ImageSetList} />
+              <Route render={() => <FailedImages crossTarget />} />
+            </Switch>
           </main>
         </div>
-      </CompatRouter>
     </BrowserRouter>
   );
 }
