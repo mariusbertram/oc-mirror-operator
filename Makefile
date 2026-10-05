@@ -591,6 +591,13 @@ bundle: manifests kustomize operator-sdk ## Generate bundle manifests and metada
 		worker=$(IMG_WORKER) \
 		$(PLUGIN_IMAGE_TRANSFORMS)
 	$(KUSTOMIZE) build config/manifests | $(OPERATOR_SDK) generate bundle $(BUNDLE_GEN_FLAGS)
+	# Keep the certified OCP range in the bundle metadata: the Red Hat
+	# community-operators pipeline reads com.redhat.openshift.versions from
+	# metadata/annotations.yaml (not from the CSV) to decide which OCP
+	# catalogs receive the bundle. A single version would restrict
+	# distribution to that release only.
+	$(Q)grep -q 'com.redhat.openshift.versions' bundle/metadata/annotations.yaml || \
+		sed -i '/operators.operatorframework.io.bundle.channels.v1:/a\  com.redhat.openshift.versions: v4.18-v4.22' bundle/metadata/annotations.yaml
 	$(OPERATOR_SDK) bundle validate ./bundle
 
 .PHONY: bundle-build

@@ -30,11 +30,11 @@ metadata:
       ]
     capabilities: Basic Install
     categories: OpenShift Optional, Integration & Delivery
+    com.redhat.openshift.versions: v4.18-v4.22
     containerImage: controller:latest
-    description: Mirrors OpenShift releases, operator catalogs, Helm charts and
-      additional images into private registries behind air-gapped or restricted
-      networks, with declarative ImageSets, drift healing and generated IDMS/ITMS
-      resources.
+    description: Mirrors OpenShift releases, operator catalogs, Helm charts and additional
+      images into private registries behind air-gapped or restricted networks, with
+      declarative ImageSets, drift healing and generated IDMS/ITMS resources.
     oc-mirror-manager-image: manager:latest
     oc-mirror-worker-image: worker:latest
     operatorframework.io/suggested-namespace: oc-mirror-operator
@@ -95,6 +95,17 @@ spec:
     mediatype: image/svg+xml
   install:
     spec:
+      clusterPermissions:
+      - rules:
+        - apiGroups:
+          - config.openshift.io
+          resources:
+          - clusteroperators
+          verbs:
+          - get
+          - list
+          - watch
+        serviceAccountName: controller-manager
       deployments:
       - name: controller-manager
         spec:
@@ -203,17 +214,6 @@ spec:
           - get
           - list
         serviceAccountName: oc-mirror-manager
-      clusterPermissions:
-      - rules:
-        - apiGroups:
-          - config.openshift.io
-          resources:
-          - clusteroperators
-          verbs:
-          - get
-          - list
-          - watch
-        serviceAccountName: controller-manager
     strategy: deployment
   installModes:
   - supported: true
