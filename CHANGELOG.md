@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.1.6] - 2026-10-05
+
+### Added
+- CSV now carries a `metadata.annotations.description`, satisfying the
+  community-operators `check_required_fields` static check.
+
+### Changed
+- CI validates bundles with the `operatorhubv2`, `capabilities` and
+  `categories` validators (single set-based selector) instead of the
+  deprecated `operatorhub` validator, per the Red Hat operator-pipelines
+  recommendation.
+
 ## [v0.1.5] - 2026-10-03
 
 ### Changed
