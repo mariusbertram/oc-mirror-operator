@@ -285,14 +285,14 @@ func TestGet_EmptyBody(t *testing.T) {
 	}
 }
 
-func TestResolveChartURL_InvalidIndexYAML(t *testing.T) {
+func TestDownloadChartArchive_InvalidIndexYAML(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("this is not yaml: [unclosed\n"))
 	}))
 	defer srv.Close()
 
 	r := New()
-	_, err := r.resolveChartURL(context.Background(), srv.URL, "mychart", "1.0.0")
+	_, _, err := r.DownloadChartArchive(context.Background(), srv.URL, mirrorv1alpha1.Chart{Name: "mychart", Version: "1.0.0"})
 	if err == nil {
 		t.Fatal("expected an error for a malformed index.yaml")
 	}
@@ -301,7 +301,7 @@ func TestResolveChartURL_InvalidIndexYAML(t *testing.T) {
 	}
 }
 
-func TestResolveChartURL_NoDownloadURL(t *testing.T) {
+func TestDownloadChartArchive_NoDownloadURL(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`apiVersion: v1
 entries:
@@ -314,7 +314,7 @@ entries:
 	defer srv.Close()
 
 	r := New()
-	_, err := r.resolveChartURL(context.Background(), srv.URL, "mychart", "1.0.0")
+	_, _, err := r.DownloadChartArchive(context.Background(), srv.URL, mirrorv1alpha1.Chart{Name: "mychart", Version: "1.0.0"})
 	if err == nil {
 		t.Fatal("expected an error when the index entry has no download URL")
 	}

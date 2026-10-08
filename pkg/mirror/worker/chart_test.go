@@ -1,6 +1,9 @@
 package worker
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -8,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror"
+	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/chartmirror"
 	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
 )
 
@@ -40,6 +44,47 @@ func chartRepoAndRegistry(t *testing.T, archive []byte) string {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return strings.TrimPrefix(srv.URL, "http://")
+}
+
+// buildChartArchive builds a minimal valid Helm chart .tgz.
+func buildChartArchive(t *testing.T) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gzw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gzw)
+
+	files := map[string]string{
+		"mychart/Chart.yaml": "apiVersion: v2\nname: mychart\nversion: 1.0.0\n",
+	}
+	for name, content := range files {
+		if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(content))}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write([]byte(content)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gzw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func TestMirrorChart_FullPath(t *testing.T) {
+	host := chartRepoAndRegistry(t, buildChartArchive(t))
+	c := mirrorclient.NewMirrorClient([]string{host}, "", host)
+	src := mirror.HelmChartSource("http://"+host, "mychart", "1.0.0")
+	dest := chartmirror.ChartDestination(host, "test-repo", "mychart", "1.0.0")
+	pushed, err := MirrorChart(context.Background(), c, src, dest)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if pushed != dest {
+		t.Errorf("pushed = %q, want %q", pushed, dest)
+	}
 }
 
 func TestMirrorChart_InvalidSource(t *testing.T) {

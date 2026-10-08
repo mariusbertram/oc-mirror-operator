@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/opencontainers/go-digest"
+
 	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
 )
 

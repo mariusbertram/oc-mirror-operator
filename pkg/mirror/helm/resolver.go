@@ -201,21 +201,6 @@ func (r *Resolver) resolveChartVersion(ctx context.Context, repoURL, name, versi
 	return cv, nil
 }
 
-// resolveChartURL fetches the repository index and returns the absolute
-// download URL for the requested chart name/version.
-func (r *Resolver) resolveChartURL(ctx context.Context, repoURL, name, version string) (string, error) {
-	cv, err := r.resolveChartVersion(ctx, repoURL, name, version)
-	if err != nil {
-		return "", err
-	}
-	chartURL := cv.URLs[0]
-	if !strings.Contains(chartURL, "://") {
-		chartURL = strings.TrimSuffix(repoURL, "/") + "/" + strings.TrimPrefix(chartURL, "/")
-	}
-	return chartURL, nil
-}
-
-
 // pullOCIChart pulls the chart archive layer of the OCI artifact at chartURL
 // (oci://<registry>/<repo>:<tag> or @<digest>).
 func (r *Resolver) pullOCIChart(ctx context.Context, chartURL string) ([]byte, error) {

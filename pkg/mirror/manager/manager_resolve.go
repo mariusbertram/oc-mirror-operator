@@ -241,9 +241,7 @@ func (m *MirrorManager) resolveImageSet(ctx context.Context, is *mirrorv1alpha1.
 	// The chart archives themselves are also mirrored into the target registry
 	// as OCI artifacts by the worker pods, through imagestate entries with
 	// origin helm-chart (see resolveHelmCharts).
-	if err := m.resolveHelmCharts(ctx, collector, is, mt, currentState, newState); err != nil {
-		return nil, false, false, fmt.Errorf("collect helm images: %w", err)
-	}
+	m.resolveHelmCharts(ctx, collector, is, mt, currentState, newState)
 
 	if m.resolveGraphImage(ctx, is, mt, newAnnotations, recollect) {
 		annotationsChanged = true
@@ -345,7 +343,7 @@ func (m *MirrorManager) resolveHelmCharts(
 	mt *mirrorv1alpha1.MirrorTarget,
 	currentState imagestate.ImageState,
 	newState imagestate.ImageState,
-) error {
+) {
 	for _, repo := range is.Spec.Mirror.Helm.Repositories {
 		for _, chart := range repo.Charts {
 			archive, version, err := collector.ResolveHelmChartArchive(ctx, repo.URL, chart)
@@ -382,7 +380,6 @@ func (m *MirrorManager) resolveHelmCharts(
 			mergeIntoStateWithSig(newState, []mirror.TargetImage{{Source: source, Destination: dest}}, imagestate.OriginHelmChart, sig, fmt.Sprintf("helm %s/%s:%s", repo.Name, chart.Name, version), currentState)
 		}
 	}
-	return nil
 }
 
 // resolveGraphImage builds and pushes the Cincinnati graph-data image (see

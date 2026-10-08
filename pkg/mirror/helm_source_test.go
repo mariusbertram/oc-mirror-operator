@@ -42,6 +42,11 @@ func TestParseHelmChartSourceInvalid(t *testing.T) {
 		if _, _, _, ok := ParseHelmChartSource(src); ok {
 			t.Errorf("ParseHelmChartSource(%q) ok, want invalid", src)
 		}
+	}
+	// IsChartSource is a prefix check only; malformed helm:// references
+	// are still routed to the chart copier, which rejects them with a
+	// clear error via ParseHelmChartSource.
+	for _, src := range []string{"", "quay.io/foo/bar:latest"} {
 		if IsChartSource(src) {
 			t.Errorf("IsChartSource(%q) = true, want false", src)
 		}

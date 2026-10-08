@@ -46,12 +46,15 @@ func ChartDestination(registry, repoName, chartName, chartVersion string) string
 // registry may contain a port and/or a repository path prefix (e.g.
 // "registry.example.com:5000/mirror/charts/bitnami/nginx:15.5.1").
 func ParseChartDestination(dest string) (registry, repoName, chartName, chartVersion string, err error) {
-	ref := dest
-	if i := strings.LastIndex(ref, ":"); i >= 0 && !strings.Contains(ref[i+1:], "/") {
-		chartVersion = ref[i+1:]
-		ref = ref[:i]
+	rest := dest
+	if i := strings.LastIndex(rest, ":"); i >= 0 && !strings.Contains(rest[i+1:], "/") {
+		chartVersion = rest[i+1:]
+		rest = rest[:i]
 	}
-	parts := strings.Split(ref, "/")
+	if chartVersion == "" {
+		return "", "", "", "", fmt.Errorf("invalid chart destination %q: no chart version", dest)
+	}
+	parts := strings.Split(rest, "/")
 	for idx := 1; idx+2 < len(parts); idx++ {
 		if parts[idx] == chartRepoPrefix {
 			return strings.Join(parts[:idx], "/"), parts[idx+1], parts[idx+2], chartVersion, nil
