@@ -383,6 +383,16 @@ func (c *Collector) CollectHelm(ctx context.Context, spec *mirrorv1alpha1.ImageS
 	return results, nil
 }
 
+// ResolveHelmChartArchive downloads the named chart's raw .tgz archive from
+// its repository and returns the archive bytes plus the version the
+// reference resolved to (chart.Version, or the latest non-prerelease version
+// picked from the repository index when chart.Version was empty). The
+// manager uses it to mirror the chart itself into the target registry in
+// addition to extracting its component images.
+func (c *Collector) ResolveHelmChartArchive(ctx context.Context, repoURL string, chart mirrorv1alpha1.Chart) ([]byte, string, error) {
+	return c.helmResolver.DownloadChartArchive(ctx, repoURL, chart)
+}
+
 func (c *Collector) toTargetImage(src, dest string, meta *state.Metadata) TargetImage {
 	s := "Pending"
 	if meta != nil && meta.MirroredImages[dest] != "" {

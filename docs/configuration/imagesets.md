@@ -318,6 +318,24 @@ then scanned for images at the default JSONPath locations
 (`containers[*].image`, `initContainers[*].image`, in pod and pod-template specs) plus
 any `imagePaths` you add. Images are mirrored under their full source reference.
 
+In addition to the images, **the chart archives themselves are mirrored** into the target
+registry as OCI artifacts, in the layout `helm push` produces:
+
+```
+<registry>/charts/<repository-name>/<chart>:<version>
+```
+
+For the example above (repository name `bitnami`, chart `nginx`, version `15.5.1`) the chart
+lands at `<registry>/charts/bitnami/nginx:15.5.1` and can be installed from the mirror
+with `helm install nginx oci://<registry>/charts/bitnami --version 15.5.1`. An empty
+`version` (latest) resolves per poll and is pushed under the resolved version tag.
+
+Charts are mirrored by the same worker pods that mirror images — each chart is tracked as a
+state entry with the same Pending → Mirrored → Failed lifecycle, batching, retries and
+drift checks as regular images. The pushed artifact uses the standard Helm media types
+(`application/vnd.cncf.helm.chart.content.v1.tar+gzip`), so any OCI-capable registry and
+Helm ≥ 3.8 can consume it.
+
 Charts are re-rendered on every poll; there is no per-chart digest cache. Local charts
 (`helm.local`) are **not** supported — the manager pod has no host filesystem.
 

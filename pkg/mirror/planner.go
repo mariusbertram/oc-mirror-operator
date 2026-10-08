@@ -32,13 +32,19 @@ func PlanMirrorOrder(ctx context.Context, client *mirrorclient.MirrorClient, sou
 		return sources, dests
 	}
 
-	// Phase 1: fetch manifests and collect blob digests per image.
+	// Phase 1: fetch manifests and collect blob digests per image. Helm chart
+	// sources (helm://, see HelmChartSource) are not container images and
+	// contribute no blobs; they keep their position in the batch.
 	infos := make([]imageBlobInfo, n)
 	for i := 0; i < n; i++ {
-		blobs, err := extractBlobDigests(ctx, client, sources[i])
-		if err != nil {
-			oclog.Printf("Planner: could not inspect %s: %v\n", sources[i], err)
-			blobs = map[string]struct{}{}
+		blobs := map[string]struct{}{}
+		if !IsChartSource(sources[i]) {
+			var err error
+			blobs, err = extractBlobDigests(ctx, client, sources[i])
+			if err != nil {
+				oclog.Printf("Planner: could not inspect %s: %v\n", sources[i], err)
+				blobs = map[string]struct{}{}
+			}
 		}
 		infos[i] = imageBlobInfo{index: i, blobs: blobs}
 	}

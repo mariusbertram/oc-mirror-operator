@@ -44,6 +44,13 @@ const (
 	// OriginHelm marks images extracted from rendered Helm charts
 	// (mirror.helm.repositories[].charts[]).
 	OriginHelm ImageOrigin = "helm"
+	// OriginHelmChart marks the Helm chart archives themselves that are
+	// mirrored into the target registry as OCI artifacts
+	// (mirror.helm.repositories[].charts[]). The entry's Source is the
+	// chart's download URL (https:// .tgz or oci:// artifact) and its
+	// Destination the target OCI reference
+	// <registry>/charts/<repo>/<chart>:<version>.
+	OriginHelmChart ImageOrigin = "helm-chart"
 )
 
 // ImageEntry tracks the mirroring state of a single image within one

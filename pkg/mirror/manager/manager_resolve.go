@@ -20,6 +20,8 @@ import (
 
 	"github.com/mariusbertram/oc-mirror-operator/pkg/oclog"
 
+	"github.com/opencontainers/go-digest"
+
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -31,9 +33,11 @@ import (
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/catalog"
+	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/chartmirror"
 	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/cosign"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/graph"
+	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/helm"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/imagestate"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/release"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/resources"
@@ -197,7 +201,7 @@ func (m *MirrorManager) resolveImageSet(ctx context.Context, is *mirrorv1alpha1.
 			continue
 		}
 		switch entry.Origin {
-		case imagestate.OriginRelease, imagestate.OriginOperator, imagestate.OriginAdditional, imagestate.OriginHelm:
+		case imagestate.OriginRelease, imagestate.OriginOperator, imagestate.OriginAdditional, imagestate.OriginHelm, imagestate.OriginHelmChart:
 			// owned — handled below
 		default:
 			cp := *entry
@@ -234,11 +238,12 @@ func (m *MirrorManager) resolveImageSet(ctx context.Context, is *mirrorv1alpha1.
 	// unlike releases/operators) — chart downloads + template rendering are
 	// comparatively cheap and this whole method already only runs on the
 	// shouldResolve cadence (spec change or pollInterval), not every reconcile tick.
-	helmImages, err := collector.CollectHelm(ctx, &is.Spec, mt, nil)
-	if err != nil {
+	// The chart archives themselves are also mirrored into the target registry
+	// as OCI artifacts by the worker pods, through imagestate entries with
+	// origin helm-chart (see resolveHelmCharts).
+	if err := m.resolveHelmCharts(ctx, collector, is, mt, currentState, newState); err != nil {
 		return nil, false, false, fmt.Errorf("collect helm images: %w", err)
 	}
-	mergeIntoStateWithSig(newState, helmImages, imagestate.OriginHelm, "", "helm", currentState)
 
 	if m.resolveGraphImage(ctx, is, mt, newAnnotations, recollect) {
 		annotationsChanged = true
@@ -320,6 +325,62 @@ func (m *MirrorManager) setTargetInsecureHosts(hosts []string) {
 func (m *MirrorManager) targetInsecureHosts() []string {
 	if p := m.insecureHosts.Load(); p != nil {
 		return *p
+	}
+	return nil
+}
+
+// resolveHelmCharts resolves every chart listed in spec.mirror.helm.repositories:
+// it downloads each chart once, extracts the component images from its
+// rendered templates (merged into newState, origin helm), and records the
+// chart archive itself as an imagestate entry (origin helm-chart) so a worker
+// pod mirrors it into the target registry as a Helm OCI artifact at
+// <registry>/charts/<repoName>/<chart>:<version> — the same
+// Pending/Mirrored/Failed lifecycle, batching, retry and drift handling as
+// every other entry. The manager never pushes registry content itself; that
+// is exclusively the workers' job (see pkg/mirror/worker).
+func (m *MirrorManager) resolveHelmCharts(
+	ctx context.Context,
+	collector *mirror.Collector,
+	is *mirrorv1alpha1.ImageSet,
+	mt *mirrorv1alpha1.MirrorTarget,
+	currentState imagestate.ImageState,
+	newState imagestate.ImageState,
+) error {
+	for _, repo := range is.Spec.Mirror.Helm.Repositories {
+		for _, chart := range repo.Charts {
+			archive, version, err := collector.ResolveHelmChartArchive(ctx, repo.URL, chart)
+			if err != nil {
+				oclog.Printf("Warning: failed to resolve helm chart %s/%s: %v\n", repo.Name, chart.Name, err)
+				continue
+			}
+
+			ch, err := helm.LoadChartArchive(archive)
+			if err != nil {
+				oclog.Printf("Warning: failed to load helm chart %s/%s: %v\n", repo.Name, chart.Name, err)
+				continue
+			}
+
+			images, err := helm.ImagesFromChart(ch, chart.ImagePaths...)
+			if err != nil {
+				oclog.Printf("Warning: failed to render helm chart %s/%s: %v\n", repo.Name, chart.Name, err)
+				continue
+			}
+			for _, img := range images {
+				dest := fmt.Sprintf("%s/%s", mt.Spec.Registry, img)
+				mergeIntoStateWithSig(newState, []mirror.TargetImage{{Source: img, Destination: dest}}, imagestate.OriginHelm, "", fmt.Sprintf("helm %s/%s", repo.Name, chart.Name), currentState)
+			}
+
+			// Queue the chart archive itself for mirroring by a worker pod.
+			// Source is a self-describing helm:// reference encoding the
+			// repository URL, chart name and the version the reference
+			// resolved to; the worker's chart copier understands it. The
+			// EntrySig includes the archive digest so a changed upstream
+			// chart yields a fresh Pending entry.
+			source := mirror.HelmChartSource(repo.URL, chart.Name, version)
+			dest := chartmirror.ChartDestination(mt.Spec.Registry, repo.Name, chart.Name, version)
+			sig := mirror.HelmChartSignature(repo.Name, chart.Name, version, digest.FromBytes(archive).String())
+			mergeIntoStateWithSig(newState, []mirror.TargetImage{{Source: source, Destination: dest}}, imagestate.OriginHelmChart, sig, fmt.Sprintf("helm %s/%s:%s", repo.Name, chart.Name, version), currentState)
+		}
 	}
 	return nil
 }
