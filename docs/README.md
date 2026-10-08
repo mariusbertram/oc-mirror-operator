@@ -4,6 +4,18 @@ The documentation is organised as one path from installation to day-2 operation,
 followed by reference material. Read it top to bottom the first time; jump to the
 reference pages afterwards.
 
+## Quick Start Guides
+
+New to oc-mirror-operator? Start with these **scenario-based quick start guides** to get up and running in minutes:
+
+| Guide | Time | Use Case |
+|---|---|---|
+| [Quick Start Overview](quickstart.md) | 2 min | Choose your scenario |
+| [Mirror a Single Operator](quickstart-operator.md) | 5 min | Mirror one operator package |
+| [Mirror OpenShift Releases](quickstart-release.md) | 8 min | Mirror OpenShift release images |
+| [Mirror Helm Charts](quickstart-helm.md) | 7 min | Mirror Helm charts and their images |
+| [Full Disconnected Cluster](quickstart-disconnected.md) | 15 min | Complete air-gapped setup |
+
 ## Guides
 
 | # | Page | What it answers |
