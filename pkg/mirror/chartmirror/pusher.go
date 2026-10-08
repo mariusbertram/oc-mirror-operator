@@ -42,6 +42,9 @@ func ChartDestination(registry, repoName, chartName, chartVersion string) string
 
 // ParseChartDestination splits a reference produced by ChartDestination
 // back into its registry, repository name, chart name and chart version.
+// The charts/ namespace segment is located by name (not position), so the
+// registry may contain a port and/or a repository path prefix (e.g.
+// "registry.example.com:5000/mirror/charts/bitnami/nginx:15.5.1").
 func ParseChartDestination(dest string) (registry, repoName, chartName, chartVersion string, err error) {
 	ref := dest
 	if i := strings.LastIndex(ref, ":"); i >= 0 && !strings.Contains(ref[i+1:], "/") {
@@ -49,10 +52,12 @@ func ParseChartDestination(dest string) (registry, repoName, chartName, chartVer
 		ref = ref[:i]
 	}
 	parts := strings.Split(ref, "/")
-	if len(parts) < 4 || parts[1] != chartRepoPrefix || chartVersion == "" {
-		return "", "", "", "", fmt.Errorf("invalid chart destination %q", dest)
+	for idx := 1; idx+2 < len(parts); idx++ {
+		if parts[idx] == chartRepoPrefix {
+			return strings.Join(parts[:idx], "/"), parts[idx+1], parts[idx+2], chartVersion, nil
+		}
 	}
-	return parts[0], parts[2], parts[3], chartVersion, nil
+	return "", "", "", "", fmt.Errorf("invalid chart destination %q", dest)
 }
 
 // Pusher pushes chart archives into the target registry as OCI artifacts.

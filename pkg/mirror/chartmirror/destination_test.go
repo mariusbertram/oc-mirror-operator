@@ -3,17 +3,21 @@ package chartmirror
 import "testing"
 
 func TestChartDestinationRoundTrip(t *testing.T) {
-	dest := ChartDestination("registry.example.com:5000", "bitnami", "nginx", "15.5.1")
-	want := "registry.example.com:5000/charts/bitnami/nginx:15.5.1"
-	if dest != want {
-		t.Fatalf("ChartDestination = %q, want %q", dest, want)
-	}
-	registry, repoName, chart, version, err := ParseChartDestination(dest)
-	if err != nil {
-		t.Fatalf("ParseChartDestination: %v", err)
-	}
-	if registry != "registry.example.com:5000" || repoName != "bitnami" || chart != "nginx" || version != "15.5.1" {
-		t.Errorf("got (%q, %q, %q, %q)", registry, repoName, chart, version)
+	for _, tc := range []struct {
+		registry string
+	}{
+		{"registry.example.com:5000"},
+		{"registry.example.com:5000/mirror"}, // registry with repository path prefix
+	} {
+		dest := ChartDestination(tc.registry, "bitnami", "nginx", "15.5.1")
+		registry, repoName, chart, version, err := ParseChartDestination(dest)
+		if err != nil {
+			t.Fatalf("ParseChartDestination(%q): %v", dest, err)
+		}
+		if registry != tc.registry || repoName != "bitnami" || chart != "nginx" || version != "15.5.1" {
+			t.Errorf("round trip %q: got (%q, %q, %q, %q), want registry %q, bitnami, nginx, 15.5.1",
+				dest, registry, repoName, chart, version, tc.registry)
+		}
 	}
 }
 

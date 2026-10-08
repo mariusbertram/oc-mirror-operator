@@ -358,7 +358,11 @@ func TestDownloadChart_InvalidArchive(t *testing.T) {
 	defer srv.Close()
 
 	r := New()
-	_, err := r.downloadChart(context.Background(), srv.URL)
+	data, err := r.get(context.Background(), srv.URL)
+	if err != nil {
+		t.Fatalf("unexpected download error: %v", err)
+	}
+	_, err = LoadChartArchive(data)
 	if err == nil {
 		t.Fatal("expected an error for an invalid chart archive")
 	}
