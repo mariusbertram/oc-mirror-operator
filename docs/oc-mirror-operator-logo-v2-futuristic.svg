@@ -1,0 +1,134 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <!-- Background Gradient -->
+    <radialGradient id="bgGrad" cx="50%" cy="50%" r="50%" fx="50%" fy="50%">
+      <stop offset="0%" stop-color="#0A0E23" />
+      <stop offset="100%" stop-color="#020617" />
+    </radialGradient>
+
+    <!-- Source Gradient (Neon Red) -->
+    <linearGradient id="sourceGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FF0055" />
+      <stop offset="100%" stop-color="#991B1B" />
+    </linearGradient>
+
+    <!-- Target Gradient (Neon Blue) -->
+    <linearGradient id="targetGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00D4FF" />
+      <stop offset="100%" stop-color="#0369A1" />
+    </linearGradient>
+
+    <!-- Sync Gradient (Neon Purple to Cyan) -->
+    <linearGradient id="syncGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FF00FF" />
+      <stop offset="50%" stop-color="#8B5CF6" />
+      <stop offset="100%" stop-color="#00D4FF" />
+    </linearGradient>
+
+    <!-- Strong Glow Filter -->
+    <filter id="neonGlow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="4" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+
+    <!-- Pulse Glow -->
+    <filter id="pulseGlow" x="-100%" y="-100%" width="300%" height="300%">
+      <feGaussianBlur stdDeviation="6" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+
+    <!-- Hexagon Shape -->
+    <path id="hexagon" d="M 0,-16 L 14,-8 L 14,8 L 0,16 L -14,8 L -14,-8 Z" />
+  </defs>
+
+  <!-- Background -->
+  <rect width="256" height="256" rx="48" fill="url(#bgGrad)" />
+
+  <!-- Outer Dual Rings -->
+  <g transform="translate(128, 128)">
+    <circle cx="0" cy="0" r="85" fill="none" stroke="url(#syncGrad)" stroke-width="2" opacity="0.3" stroke-dasharray="5,5">
+      <animateTransform attributeName="transform" type="rotate" from="0" to="-360" dur="6s" repeatCount="indefinite" />
+    </circle>
+    <circle cx="0" cy="0" r="75" fill="none" stroke="url(#syncGrad)" stroke-width="2" opacity="0.5" stroke-dasharray="10,3">
+      <animateTransform attributeName="transform" type="rotate" from="0" to="360" dur="4s" repeatCount="indefinite" />
+    </circle>
+  </g>
+
+  <!-- Source Hexagon (Left) -->
+  <g transform="translate(80, 128)">
+    <use href="#hexagon" fill="none" stroke="url(#sourceGrad)" stroke-width="2" filter="url(#neonGlow)" />
+    <use href="#hexagon" fill="none" stroke="url(#sourceGrad)" stroke-width="1" opacity="0.5" filter="url(#neonGlow)">
+      <animate attributeName="r" values="16;18;16" dur="2s" repeatCount="indefinite" />
+    </use>
+    <circle cx="0" cy="0" r="6" fill="url(#sourceGrad)" filter="url(#pulseGlow)" opacity="0.7">
+      <animate attributeName="r" values="6;8;6" dur="2s" repeatCount="indefinite" />
+      <animate attributeName="opacity" values="0.7;0.9;0.7" dur="2s" repeatCount="indefinite" />
+    </circle>
+  </g>
+
+  <!-- Target Hexagon (Right) -->
+  <g transform="translate(176, 128)">
+    <use href="#hexagon" fill="none" stroke="url(#targetGrad)" stroke-width="2" filter="url(#neonGlow)" />
+    <use href="#hexagon" fill="none" stroke="url(#targetGrad)" stroke-width="1" opacity="0.5" filter="url(#neonGlow)">
+      <animate attributeName="r" values="16;18;16" dur="2s" begin="1s" repeatCount="indefinite" />
+    </use>
+    <circle cx="0" cy="0" r="6" fill="url(#targetGrad)" filter="url(#pulseGlow)" opacity="0.7">
+      <animate attributeName="r" values="6;8;6" dur="2s" begin="1s" repeatCount="indefinite" />
+      <animate attributeName="opacity" values="0.7;0.9;0.7" dur="2s" begin="1s" repeatCount="indefinite" />
+    </circle>
+  </g>
+
+  <!-- Sync Beams -->
+  <g transform="translate(128, 128)" opacity="0.8">
+    <path d="M -70,0 Q -35,-20 0,0 Q 35,20 70,0" fill="none" stroke="url(#syncGrad)" stroke-width="3" stroke-linecap="round" filter="url(#neonGlow)">
+      <animate attributeName="stroke-dasharray" values="0,200; 200,0" dur="2s" repeatCount="indefinite" />
+    </path>
+    <path d="M -70,0 Q -35,20 0,0 Q 35,-20 70,0" fill="none" stroke="url(#syncGrad)" stroke-width="2" stroke-linecap="round" filter="url(#neonGlow)">
+      <animate attributeName="stroke-dasharray" values="0,200; 200,0" dur="2s" begin="1s" repeatCount="indefinite" />
+    </path>
+  </g>
+
+  <!-- Animated Data Particles -->
+  <g filter="url(#neonGlow)">
+    <!-- Particles from Source to Target -->
+    <circle cx="80" cy="128" r="2" fill="#FF00FF">
+      <animateMotion path="M 0,0 Q 64,-32 152,0" dur="2s" repeatCount="indefinite" />
+      <animate attributeName="r" values="2;3;2" dur="2s" repeatCount="indefinite" />
+      <animate attributeName="opacity" values="0;1;0" dur="2s" repeatCount="indefinite" />
+    </circle>
+    <circle cx="80" cy="128" r="2" fill="#00D4FF">
+      <animateMotion path="M 0,0 Q 64,32 152,0" dur="2.5s" begin="0.5s" repeatCount="indefinite" />
+      <animate attributeName="r" values="2;3;2" dur="2.5s" begin="0.5s" repeatCount="indefinite" />
+      <animate attributeName="opacity" values="0;1;0" dur="2.5s" begin="0.5s" repeatCount="indefinite" />
+    </circle>
+    
+    <!-- Particles from Target to Source -->
+    <circle cx="176" cy="128" r="2" fill="#00D4FF">
+      <animateMotion path="M 0,0 Q -64,-32 -152,0" dur="2s" repeatCount="indefinite" />
+      <animate attributeName="r" values="2;3;2" dur="2s" repeatCount="indefinite" />
+      <animate attributeName="opacity" values="0;1;0" dur="2s" repeatCount="indefinite" />
+    </circle>
+    <circle cx="176" cy="128" r="2" fill="#FF00FF">
+      <animateMotion path="M 0,0 Q -64,32 -152,0" dur="2.5s" begin="0.5s" repeatCount="indefinite" />
+      <animate attributeName="r" values="2;3;2" dur="2.5s" begin="0.5s" repeatCount="indefinite" />
+      <animate attributeName="opacity" values="0;1;0" dur="2.5s" begin="0.5s" repeatCount="indefinite" />
+    </circle>
+  </g>
+
+  <!-- Center Connection Node -->
+  <g transform="translate(128, 128)">
+    <circle cx="0" cy="0" r="8" fill="none" stroke="url(#syncGrad)" stroke-width="2" filter="url(#pulseGlow)" opacity="0.8">
+      <animate attributeName="r" values="8;12;8" dur="3s" repeatCount="indefinite" />
+      <animate attributeName="opacity" values="0.8;1;0.8" dur="3s" repeatCount="indefinite" />
+    </circle>
+    <circle cx="0" cy="0" r="4" fill="url(#syncGrad)" filter="url(#neonGlow)" opacity="0.9" />
+  </g>
+
+  <!-- Title Text (Futuristic) -->
+  <g transform="translate(128, 220)" text-anchor="middle" font-family="'SF Mono', Consolas, 'Courier New', monospace" font-weight="600">
+    <text x="0" y="0" font-size="16" fill="#FFFFFF" letter-spacing="2">
+      <tspan fill="#FF0055">oc</tspan><tspan fill="#FFFFFF">-</tspan><tspan fill="#00D4FF">mirror</tspan>
+    </text>
+    <text x="0" y="14" font-size="8" fill="#646cff" letter-spacing="3" opacity="0.8">OPERATOR</text>
+  </g>
+</svg>
