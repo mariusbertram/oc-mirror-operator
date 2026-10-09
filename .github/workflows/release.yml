@@ -5,9 +5,11 @@ name: Release
 # Release, and opens a PR in the brtrm-dev-catalog repo to register the
 # new bundle version.
 #
-# Required secrets:
-#   CATALOG_PAT  – Personal Access Token with repo write access to
-#                  mariusbertram/brtrm-dev-catalog (Contents + Pull requests)
+# Required secrets / variables:
+#   CATALOG_APP_ID (var)       – App ID of the GitHub App used for catalog PRs
+#   CATALOG_APP_PRIVATE_KEY (secret) – Private key of that GitHub App.
+#   The App needs write access to mariusbertram/brtrm-dev-catalog
+#   (Contents + Pull requests).
 
 on:
   push:
@@ -423,9 +425,17 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Generate GitHub App token for catalog repo
+        uses: actions/create-github-app-token@v2
+        id: catalog-token
+        with:
+          app-id: ${{ vars.CATALOG_APP_ID }}
+          private-key: ${{ secrets.CATALOG_APP_PRIVATE_KEY }}
+          repositories: brtrm-dev-catalog
+
       - name: Create catalog PR
         env:
-          GH_TOKEN: ${{ secrets.CATALOG_PAT }}
+          GH_TOKEN: ${{ steps.catalog-token.outputs.token }}
           VERSION: ${{ needs.build-operator.outputs.version }}
           BUNDLE_REF: ${{ needs.build-bundle.outputs.bundle_image }}
           BUNDLE_DIGEST: ${{ needs.build-bundle.outputs.bundle_digest }}
@@ -437,7 +447,8 @@ jobs:
           BUNDLE_DIGEST_REF="${{ env.BUNDLE_IMAGE }}@${BUNDLE_DIGEST}"
 
           # ── Clone catalog repo ──────────────────────────────────────────
-          git clone "https://x-access-token:${GH_TOKEN}@github.com/${CATALOG_REPO}.git" /tmp/catalog
+          gh auth setup-git
+          git clone "https://github.com/${CATALOG_REPO}.git" /tmp/catalog
           cd /tmp/catalog
 
           git config user.name  "github-actions[bot]"
