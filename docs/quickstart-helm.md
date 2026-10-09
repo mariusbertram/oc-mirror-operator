@@ -241,23 +241,6 @@ repositories:
         maxVersion: "15.5.1"
 ```
 
-### Exclude Specific Versions
-
-Use `blockedImages` to exclude specific images:
-
-```yaml
-spec:
-  mirror:
-    helm:
-      repositories:
-        - name: bitnami
-          url: https://charts.bitnami.com/bitnami
-          charts:
-            - name: nginx
-    blockedImages:
-      - name: docker.io/bitnami/nginx:15.0.0  # Exclude this specific version
-```
-
 ---
 
 ## Troubleshooting

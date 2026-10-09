@@ -49,6 +49,8 @@ kubectl create secret generic registry-creds \
 kubectl get secret registry-creds -n oc-mirror-operator
 ```
 
+**Note:** For details on the four required registry hosts, see [Credentials Configuration](configuration/credentials.md).
+
 ---
 
 ## Step 3: Create a Comprehensive ImageSet
@@ -71,8 +73,8 @@ spec:
         - name: stable-4.16
           minVersion: "4.16.0"
           maxVersion: "4.16.30"
-      kubeVirtContainer: true  # For OpenShift Virtualization
       graph: true  # For OSUS graph data
+      kubeVirtContainer: true  # For OpenShift Virtualization
     
     # Operator catalogs
     operators:
