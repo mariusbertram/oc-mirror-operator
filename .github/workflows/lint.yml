@@ -4,6 +4,11 @@ on:
   push:
   pull_request:
 
+# Cancel superseded runs for the same branch/PR.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 # Deny all permissions by default; each job grants only what it needs.
 permissions: {}
 
@@ -11,6 +16,7 @@ jobs:
   lint:
     name: Run on Ubuntu
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
@@ -30,6 +36,7 @@ jobs:
   ui-lint:
     name: Run on UI
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:

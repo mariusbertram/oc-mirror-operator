@@ -13,16 +13,72 @@ on:
       - main
       - 'feature/**'
       - 'fix/**'
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
+      - '**/CODEOWNERS'
+      - '.github/dependabot.yml'
   pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
+      - '**/CODEOWNERS'
+      - '.github/dependabot.yml'
+
+# Cancel superseded runs for the same branch/PR.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 # Deny all permissions by default; each job grants only what it needs.
 permissions: {}
 
 jobs:
+  # ── 0. Detect changed areas ────────────────────────────────
+  # Workflow-config changes always run everything (self-check rule).
+  changes:
+    name: Detect changed areas
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    outputs:
+      go: ${{ steps.filter.outputs.go }}
+      ui: ${{ steps.filter.outputs.ui }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            go:
+              - 'go.mod'
+              - 'go.sum'
+              - '**.go'
+              - 'Makefile'
+              - 'api/**'
+              - 'cmd/**'
+              - 'internal/**'
+              - 'pkg/**'
+              - 'test/**'
+              - 'bundle/**'
+              - 'Dockerfile*'
+              - '.github/workflows/**'
+            ui:
+              - 'ui/**'
+              - '.github/workflows/**'
+
   # ── 1. Unit tests ──────────────────────────────────────────────────────────
   test:
     name: Unit tests
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
@@ -63,7 +119,10 @@ jobs:
   # ── 2. Build component images and export as artifacts ────────────────────────
   build:
     name: Build component images
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
       security-events: write # upload Grype SARIF to the Security tab
@@ -157,7 +216,10 @@ jobs:
   # e2e. CI scans local amd64 images; release scans both published architectures.
   scan-plugin:
     name: Scan console plugin for OpenShift ${{ matrix.console-version }}
+    needs: changes
+    if: needs.changes.outputs.ui == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
       security-events: write
@@ -194,7 +256,10 @@ jobs:
   # ── 3. Bundle validation + image build check ───────────────────────────────
   build-bundle-check:
     name: Build bundle image check
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
@@ -233,7 +298,10 @@ jobs:
   # ── 4. Multi-arch component build check ────────────────────────────────────
   build-multiarch-check:
     name: Multi-arch build check
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -279,8 +347,10 @@ jobs:
   # Single Kind cluster; operator deployed via make deploy.
   e2e:
     name: E2E tests
-    runs-on: ubuntu-latest
     needs: build
+    if: needs.changes.outputs.go == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
     permissions:
       contents: read
     steps:
@@ -428,7 +498,10 @@ jobs:
   # no console.openshift.io CRDs, so ConsolePluginReconciler skips itself).
   plugin-smoke-test:
     name: Console plugin light/dark smoke (OpenShift ${{ matrix.console-version }})
+    needs: changes
+    if: needs.changes.outputs.ui == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
