@@ -227,7 +227,7 @@ URL=https://$(kubectl get route my-registry-resources -n oc-mirror-operator -o j
 curl -sk $URL/api/v1/targets/my-registry/imagesets/single-operator/catalogsource.yaml
 
 # Or directly from the ConfigMap
-kubectl get cm oc-mirror-my-registry-resources -n oc-mirror-operator -o jsonpath='{.data.catalogsource-redhat-operator-index-v4-16\.yaml}'
+kubectl get cm oc-mirror-my-registry-resources -n oc-mirror-operator -o jsonpath='{.data.catalogsource-redhat-operator-index-v4.16\.yaml}'
 ```
 
 ### Apply to Disconnected Cluster
@@ -260,7 +260,7 @@ metadata:
 spec:
   name: web-terminal
   channel: stable
-  source: redhat-operator-index-v4-16
+  source: my-registry-redhat-operator-index-v4.16
   sourceNamespace: openshift-marketplace
 EOT
 ```

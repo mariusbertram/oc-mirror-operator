@@ -28,7 +28,7 @@ Run this quick check before starting any guide:
 
 ```bash
 # Check Kubernetes version
-kubectl version --short | grep Server
+kubectl version --client=false | grep Server
 
 # Check if OLM is available (for OLM-based installation)
 kubectl get crd catalogsources.operators.coreos.com &>/dev/null && echo "✅ OLM installed" || echo "⚠️  OLM not found"

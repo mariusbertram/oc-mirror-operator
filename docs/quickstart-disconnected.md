@@ -204,8 +204,11 @@ skopeo list-tags docker://registry.example.com/disconnected/openshift/release-im
 # Check operator catalog
 skopeo list-tags docker://registry.example.com/disconnected/redhat/redhat-operator-index
 
-# Check Helm chart images
-skopeo list-tags docker://registry.example.com/disconnected/bitnami
+# Check Helm chart images (container images referenced by charts)
+skopeo list-tags docker://registry.example.com/disconnected/docker.io/bitnami/nginx
+
+# Check Helm chart packages (OCI artifacts)
+skopeo list-tags docker://registry.example.com/disconnected/charts/bitnami/nginx
 ```
 
 ---
@@ -445,7 +448,7 @@ metadata:
 spec:
   name: web-terminal
   channel: stable
-  source: redhat-operator-index-v4-16
+  source: disconnected-registry-redhat-operator-index-v4.16
   sourceNamespace: openshift-marketplace
 EOT
 ```
@@ -473,7 +476,7 @@ The operator provides Prometheus metrics. Set up monitoring:
 kubectl get servicemonitors -n oc-mirror-operator
 
 # View metrics
-kubectl get --raw /api/v1/namespaces/oc-mirror-operator/services/oc-mirror-operator-controller-manager:9090/proxy/metrics
+kubectl get --raw /api/v1/namespaces/oc-mirror-operator/services/disconnected-registry-manager:9090/proxy/metrics
 ```
 
 ---

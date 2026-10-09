@@ -186,7 +186,7 @@ Once mirroring is complete, verify the release images in your registry:
 skopeo list-tags docker://registry.example.com/ocp-mirror/openshift/release-images
 
 # Check a specific release
-skopeo list-tags docker://registry.example.com/ocp-mirror/openshift/release-images:4.16.20-x86_64
+skopeo inspect --raw docker://registry.example.com/ocp-mirror/openshift/release-images:4.16.20-x86_64
 
 # List component images
 skopeo list-tags docker://registry.example.com/ocp-mirror/openshift/release
@@ -264,8 +264,9 @@ curl -sk $URL/api/v1/targets/my-registry/signatures.yaml | kubectl apply -f -
 
 ### Configure Cluster to Use Mirror
 
+For OpenShift 4.12+, use **IDMS/ITMS** (already applied above). For OpenShift 4.10-4.11, you can use **ImageContentSourcePolicy** as a legacy mechanism:
+
 ```bash
-# 1. Create ImageContentSourcePolicy (for OpenShift 4.11+)
 cat <<EOT | kubectl apply -f -
 apiVersion: operator.openshift.io/v1alpha1
 kind: ImageContentSourcePolicy
@@ -277,8 +278,6 @@ spec:
         - registry.example.com/ocp-mirror
       source: registry.redhat.io
 EOT
-
-# 2. For OpenShift 4.10 and earlier, use IDMS/ITMS (already applied above)
 ```
 
 ---

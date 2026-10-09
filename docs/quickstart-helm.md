@@ -152,9 +152,12 @@ skopeo list-tags docker://registry.example.com/helm-mirror
 
 # Check specific chart images
 skopeo list-tags docker://registry.example.com/helm-mirror/bitnami/nginx
+
+# Check Helm chart packages (OCI artifacts)
+skopeo list-tags docker://registry.example.com/helm-mirror/charts/bitnami/nginx
 ```
 
-**Note:** The operator mirrors the **container images referenced by the Helm charts**, not the Helm chart packages themselves. The charts are downloaded and rendered to extract the image references.
+**Note:** The operator mirrors both the **container images referenced by the Helm charts** and the **Helm chart packages themselves** as OCI artifacts to `registry/helm-mirror/charts/repo/chart:version`.
 
 ---
 
@@ -177,23 +180,13 @@ helm install my-nginx bitnami/nginx \
   --set image.tag=15.5.1
 ```
 
-### Option B: Mirror the Chart Package (Advanced)
+### Option B: Install from Mirrored Charts
 
-The operator doesn't currently mirror the Helm chart packages themselves (`.tgz` files). To do this manually:
+The operator automatically mirrors the Helm chart packages as OCI artifacts. You can install directly from the mirror:
 
 ```bash
-# Download the chart
-helm pull bitnami/nginx --version 15.5.1
-
-# Upload to your chart repository
-helm push nginx-15.5.1.tgz oci://registry.example.com/helm-charts
-
-# Add your local repository
-helm repo add my-repo oci://registry.example.com/helm-charts
-helm repo update
-
-# Install from your repository
-helm install my-nginx my-repo/nginx --version 15.5.1
+# Install directly from the mirrored OCI repository
+helm install my-nginx oci://registry.example.com/helm-mirror/charts/bitnami --version 15.5.1
 ```
 
 ### Option C: Use ImageDigestMirrorSet
@@ -213,23 +206,9 @@ curl -sk $URL/api/v1/targets/my-registry/imagesets/helm-charts/idms.yaml | kubec
 
 ## 8. Advanced Configuration
 
-### Mirror All Charts from a Repository
+### Mirror Specific Chart Versions
 
-To mirror all charts from a repository (not recommended for large repos like Bitnami):
-
-```yaml
-repositories:
-  - name: my-repo
-    url: https://my-repo.example.com
-    charts:
-      - name: "*"  # All charts
-```
-
-**Warning:** This will mirror **all versions** of all charts, which can be a very large number of images.
-
-### Filter by Chart Version
-
-Use semantic version constraints:
+List desired versions explicitly:
 
 ```yaml
 repositories:
@@ -237,9 +216,12 @@ repositories:
     url: https://charts.bitnami.com/bitnami
     charts:
       - name: nginx
-        minVersion: "15.0.0"
-        maxVersion: "15.5.1"
+        version: "15.5.0"
+      - name: nginx
+        version: "15.5.1"
 ```
+
+**Tip:** For HTTP/HTTPS repositories, omit `version:` to mirror the latest non-prerelease version.
 
 ---
 
@@ -263,9 +245,10 @@ For more troubleshooting, see [Troubleshooting Guide](troubleshooting.md).
 | Scenario | Recommendation |
 |---|---|
 | **Large Helm repositories** | Mirror specific charts/versions, not all charts |
-| **Many chart versions** | Use `minVersion`/`maxVersion` to limit the range |
+| **Many chart versions** | List desired versions explicitly to limit the range |
 | **Slow chart downloads** | The operator downloads and renders each chart, which can be slow for complex charts |
-| **Private Helm repos** | Currently not supported. Use public repos or mirror the charts manually first. |
+| **Private HTTP/HTTPS repos** | Currently not supported. Use public repos or mirror the charts manually first. |
+| **Private OCI repos** | Supported via the MirrorTarget's `authSecret` credentials. |
 
 ---
 
