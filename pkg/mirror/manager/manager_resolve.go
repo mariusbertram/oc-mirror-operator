@@ -37,7 +37,6 @@ import (
 	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/cosign"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/graph"
-	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/helm"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/imagestate"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/release"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/resources"
@@ -241,7 +240,8 @@ func (m *MirrorManager) resolveImageSet(ctx context.Context, is *mirrorv1alpha1.
 	// The chart archives themselves are also mirrored into the target registry
 	// as OCI artifacts by the worker pods, through imagestate entries with
 	// origin helm-chart (see resolveHelmCharts).
-	m.resolveHelmCharts(ctx, collector, is, mt, currentState, newState)
+	helmHadError := m.resolveHelmCharts(ctx, collector, is, mt, currentState, newState)
+	hadError = hadError || helmHadError
 
 	if m.resolveGraphImage(ctx, is, mt, newAnnotations, recollect) {
 		annotationsChanged = true
@@ -343,43 +343,73 @@ func (m *MirrorManager) resolveHelmCharts(
 	mt *mirrorv1alpha1.MirrorTarget,
 	currentState imagestate.ImageState,
 	newState imagestate.ImageState,
-) {
+) (hadError bool) {
 	for _, repo := range is.Spec.Mirror.Helm.Repositories {
 		for _, chart := range repo.Charts {
-			archive, version, err := collector.ResolveHelmChartArchive(ctx, repo.URL, chart)
-			if err != nil {
-				oclog.Printf("Warning: failed to resolve helm chart %s/%s: %v\n", repo.Name, chart.Name, err)
-				continue
-			}
-
-			ch, err := helm.LoadChartArchive(archive)
-			if err != nil {
-				oclog.Printf("Warning: failed to load helm chart %s/%s: %v\n", repo.Name, chart.Name, err)
-				continue
-			}
-
-			images, err := helm.ImagesFromChart(ch, chart.ImagePaths...)
-			if err != nil {
-				oclog.Printf("Warning: failed to render helm chart %s/%s: %v\n", repo.Name, chart.Name, err)
-				continue
-			}
-			for _, img := range images {
-				dest := fmt.Sprintf("%s/%s", mt.Spec.Registry, img)
-				mergeIntoStateWithSig(newState, []mirror.TargetImage{{Source: img, Destination: dest}}, imagestate.OriginHelm, "", fmt.Sprintf("helm %s/%s", repo.Name, chart.Name), currentState)
-			}
-
-			// Queue the chart archive itself for mirroring by a worker pod.
-			// Source is a self-describing helm:// reference encoding the
-			// repository URL, chart name and the version the reference
-			// resolved to; the worker's chart copier understands it. The
-			// EntrySig includes the archive digest so a changed upstream
-			// chart yields a fresh Pending entry.
-			source := mirror.HelmChartSource(repo.URL, chart.Name, version)
-			dest := chartmirror.ChartDestination(mt.Spec.Registry, repo.Name, chart.Name, version)
-			sig := mirror.HelmChartSignature(repo.Name, chart.Name, version, digest.FromBytes(archive).String())
-			mergeIntoStateWithSig(newState, []mirror.TargetImage{{Source: source, Destination: dest}}, imagestate.OriginHelmChart, sig, fmt.Sprintf("helm %s/%s:%s", repo.Name, chart.Name, version), currentState)
+			hadError = m.resolveHelmChart(ctx, collector, mt, currentState, newState, repo, chart) || hadError
 		}
 	}
+	return hadError
+}
+
+// resolveHelmChart resolves a single chart entry: it downloads the chart
+// once, extracts the component images from its rendered templates (merged
+// into newState, origin helm), and records the chart archive itself as an
+// imagestate entry (origin helm-chart) for a worker pod to mirror as a Helm
+// OCI artifact.
+//
+// On any resolve failure the chart's previous entries are carried over from
+// currentState unchanged (via carryOverByOriginAndSig) and hadError is
+// returned as true — the same transient-failure contract as the release and
+// operator sections. Without the carry-over, a transient repository outage
+// would drop the chart's entries from newState and orphan them in the merge,
+// so (with cleanup-policy=Delete) the cleanup Job would delete already
+// mirrored content from the target registry; without hadError, the poll
+// timestamp would advance and the retry would wait a full pollInterval.
+func (m *MirrorManager) resolveHelmChart(
+	ctx context.Context,
+	collector *mirror.Collector,
+	mt *mirrorv1alpha1.MirrorTarget,
+	currentState imagestate.ImageState,
+	newState imagestate.ImageState,
+	repo mirrorv1alpha1.Repository,
+	chart mirrorv1alpha1.Chart,
+) (hadError bool) {
+	// Carry this chart's previous entries over unchanged. Both the
+	// extracted-image entries (origin helm) and the chart artifact entry
+	// (origin helm-chart) are scoped by their OriginRef label
+	// ("helm <repo>/<chart>[":<version>]"), which is stable across
+	// resolves even when the version pin or the upstream archive digest
+	// changes; the EntrySig is deliberately NOT compared here, since a
+	// resolve failure must not alter any mirrored-state bookkeeping.
+	carryOver := func() {
+		originRef := fmt.Sprintf("helm %s/%s", repo.Name, chart.Name)
+		carryOverHelmEntries(currentState, newState, imagestate.OriginHelm, originRef)
+		carryOverHelmEntries(currentState, newState, imagestate.OriginHelmChart, originRef)
+	}
+
+	res, err := collector.EnumerateHelmChart(ctx, repo.URL, chart)
+	if err != nil {
+		oclog.Printf("Warning: failed to resolve helm chart %s/%s: %v\n", repo.Name, chart.Name, err)
+		carryOver()
+		return true
+	}
+	for _, img := range res.Images {
+		dest := fmt.Sprintf("%s/%s", mt.Spec.Registry, img)
+		mergeIntoStateWithSig(newState, []mirror.TargetImage{{Source: img, Destination: dest}}, imagestate.OriginHelm, "", fmt.Sprintf("helm %s/%s", repo.Name, chart.Name), currentState)
+	}
+
+	// Queue the chart archive itself for mirroring by a worker pod.
+	// Source is a self-describing helm:// reference encoding the
+	// repository URL, chart name and the version the reference resolved
+	// to; the worker's chart copier understands it. The EntrySig includes
+	// the archive digest, and mergeIntoStateWithSig re-queues a Mirrored
+	// entry whose EntrySig changed (re-published upstream content).
+	source := mirror.HelmChartSource(repo.URL, chart.Name, res.Version)
+	dest := chartmirror.ChartDestination(mt.Spec.Registry, repo.Name, chart.Name, res.Version)
+	sig := mirror.HelmChartSignature(repo.Name, chart.Name, res.Version, digest.FromBytes(res.Archive).String())
+	mergeIntoStateWithSig(newState, []mirror.TargetImage{{Source: source, Destination: dest}}, imagestate.OriginHelmChart, sig, fmt.Sprintf("helm %s/%s:%s", repo.Name, chart.Name, res.Version), currentState)
+	return false
 }
 
 // resolveGraphImage builds and pushes the Cincinnati graph-data image (see
@@ -799,13 +829,49 @@ func mergeIntoStateWithSig(dst imagestate.ImageState, images []mirror.TargetImag
 			// Pending so they get a fresh attempt whenever the spec changes
 			// or recollect is triggered. Cache-hits bypass this function and
 			// go through carryOverByOriginAndSig which preserves all states.
-			if existing.State == "Mirrored" {
+			//
+			// Helm chart entries are content-addressed by their EntrySig (the
+			// archive digest): when the same destination was mirrored against
+			// a different upstream archive (a re-published chart version), the
+			// mirrored artifact is stale and MUST be re-queued instead of being
+			// carried over as Mirrored — otherwise the registry keeps serving
+			// outdated chart content forever.
+			sigChanged := origin == imagestate.OriginHelmChart && existing.EntrySig != "" && existing.EntrySig != sig
+			if existing.State == "Mirrored" && !sigChanged {
 				entry.State = existing.State
 				entry.RetryCount = existing.RetryCount
 				entry.LastError = existing.LastError
 			}
 		}
 		dst[img.Destination] = entry
+	}
+}
+
+// carryOverHelmEntries copies the entries of the given Helm origin whose
+// OriginRef label matches the originRef prefix ("helm <repo>/<chart>") from
+// src into dst. Helm entries carry no usable EntrySig scope (images have an
+// empty one, the chart artifact's embeds the archive digest), so the label
+// is the only stable per-chart scope; entries with an empty OriginRef
+// (written by older versions) are carried over unconditionally so they are
+// not dropped. Used when a chart fails to resolve, so a transient repository
+// outage neither orphans its already-mirrored entries (the cleanup Job would
+// delete them from the target registry) nor resets their state.
+func carryOverHelmEntries(src, dst imagestate.ImageState, origin imagestate.ImageOrigin, originRef string) {
+	for dest, entry := range src {
+		if entry == nil || entry.Origin != origin {
+			continue
+		}
+		if entry.OriginRef != "" && !strings.HasPrefix(entry.OriginRef, originRef) {
+			continue
+		}
+		if _, exists := dst[dest]; exists {
+			continue
+		}
+		cp := *entry
+		if cp.OriginRef == "" {
+			cp.OriginRef = originRef
+		}
+		dst[dest] = &cp
 	}
 }
 

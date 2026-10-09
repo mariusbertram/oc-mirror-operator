@@ -56,8 +56,15 @@ func ParseChartDestination(dest string) (registry, repoName, chartName, chartVer
 	}
 	parts := strings.Split(rest, "/")
 	for idx := 1; idx+2 < len(parts); idx++ {
-		if parts[idx] == chartRepoPrefix {
-			return strings.Join(parts[:idx], "/"), parts[idx+1], parts[idx+2], chartVersion, nil
+		if parts[idx] != chartRepoPrefix {
+			continue
+		}
+		registry, repoName, chartName := strings.Join(parts[:idx], "/"), parts[idx+1], parts[idx+2]
+		// Guard against a registry path that itself contains a charts/
+		// segment: only the LAST charts/ before the chart name yields a
+		// reference that ChartDestination reproduces verbatim.
+		if ChartDestination(registry, repoName, chartName, chartVersion) == dest {
+			return registry, repoName, chartName, chartVersion, nil
 		}
 	}
 	return "", "", "", "", fmt.Errorf("invalid chart destination %q", dest)
@@ -85,6 +92,12 @@ func (p *Pusher) PushChart(ctx context.Context, registry, repoName, chartName, c
 	}
 	if chartName == "" || chartVersion == "" {
 		return "", fmt.Errorf("push chart: name %q and version %q are required", chartName, chartVersion)
+	}
+	if repoName == "" {
+		return "", fmt.Errorf("push chart %s: repository name is required", chartName)
+	}
+	if registry == "" {
+		return "", fmt.Errorf("push chart %s: target registry is required", chartName)
 	}
 
 	dest := fmt.Sprintf("%s/%s/%s/%s:%s", registry, chartRepoPrefix, repoName, chartName, chartVersion)

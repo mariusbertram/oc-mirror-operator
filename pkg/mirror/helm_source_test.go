@@ -1,6 +1,9 @@
 package mirror
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestHelmChartSourceRoundTrip(t *testing.T) {
 	cases := []struct {
@@ -50,6 +53,31 @@ func TestParseHelmChartSourceInvalid(t *testing.T) {
 		if IsChartSource(src) {
 			t.Errorf("IsChartSource(%q) = true, want false", src)
 		}
+	}
+}
+
+func TestHelmChartSourceEscapesSpecialChars(t *testing.T) {
+	src := HelmChartSource("https://charts.example.com", "my?chart", "1.0.0+build#1")
+	repoURL, chart, version, ok := ParseHelmChartSource(src)
+	if !ok {
+		t.Fatalf("ParseHelmChartSource(%q) not ok", src)
+	}
+	if repoURL != "https://charts.example.com" || chart != "my?chart" || version != "1.0.0+build#1" {
+		t.Errorf("got (%q, %q, %q)", repoURL, chart, version)
+	}
+}
+
+func TestHelmChartSourceRedactsUserinfo(t *testing.T) {
+	src := HelmChartSource("https://user:secret@charts.example.com/charts", "mychart", "1.0.0")
+	if strings.Contains(src, "user") || strings.Contains(src, "secret") {
+		t.Errorf("source %q leaks credentials", src)
+	}
+	repoURL, _, _, ok := ParseHelmChartSource(src)
+	if !ok {
+		t.Fatalf("ParseHelmChartSource(%q) not ok", src)
+	}
+	if repoURL != "https://charts.example.com/charts" {
+		t.Errorf("repoURL = %q, want userinfo-stripped URL", repoURL)
 	}
 }
 

@@ -27,6 +27,12 @@ const ChartMirrorTimeout = 10 * time.Minute
 // client (DOCKER_CONFIG credentials, insecure-host handling) — matching how
 // images are copied. The manager only queues the entry; every registry push
 // happens here, in the worker. Returns the pushed destination reference.
+//
+// Note: like the manager's resolver, the registry client is configured for
+// the DESTINATION host (insecure via the MirrorTarget's spec.insecure). A
+// chart stored in an OCI registry that itself requires TLS-skip is not
+// supported for oci:// sources — only HTTP(S) chart repositories take
+// that path today.
 func MirrorChart(ctx context.Context, c *mirrorclient.MirrorClient, source, dest string) (string, error) {
 	repoURL, chartName, version, ok := mirror.ParseHelmChartSource(source)
 	if !ok {

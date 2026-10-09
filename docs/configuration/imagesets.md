@@ -336,6 +336,12 @@ drift checks as regular images. The pushed artifact uses the standard Helm media
 (`application/vnd.cncf.helm.chart.content.v1.tar+gzip`), so any OCI-capable registry and
 Helm ≥ 3.8 can consume it.
 
+A chart whose upstream archive changes under the same version tag (a re-published release)
+is detected by its content digest and re-mirrored automatically. Credentials embedded in
+the repository URL (`https://user:pass@…`) are stripped before the chart reference is
+stored. Chart archives are deliberately not subject to `blockedImages` — that list only
+matches container image references.
+
 Charts are re-rendered on every poll; there is no per-chart digest cache. Local charts
 (`helm.local`) are **not** supported — the manager pod has no host filesystem.
 

@@ -2,6 +2,7 @@ package mirror
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 )
 
@@ -16,9 +17,14 @@ const helmChartSourceScheme = "helm://"
 // HelmChartSource builds the Source reference of a chart imagestate entry:
 // helm://<repoURL>/<chartName>?version=<version>. repoURL may be an
 // https:// chart repository or an oci:// registry namespace; the version is
-// the version the chart reference resolved to (never empty).
+// the version the chart reference resolved to (never empty). Both the chart
+// name and the version are query-escaped so special characters (?, #, %)
+// cannot corrupt the reference, and userinfo embedded in repoURL (e.g.
+// https://user:pass@repo/) is stripped: the Source is persisted in the
+// imagestate ConfigMap and echoed in worker logs, where credentials must
+// never appear.
 func HelmChartSource(repoURL, chartName, version string) string {
-	return fmt.Sprintf("%s%s/%s?version=%s", helmChartSourceScheme, strings.TrimSuffix(repoURL, "/"), chartName, version)
+	return fmt.Sprintf("%s%s/%s?version=%s", helmChartSourceScheme, strings.TrimSuffix(redactURL(repoURL), "/"), url.QueryEscape(chartName), url.QueryEscape(version))
 }
 
 // ParseHelmChartSource splits a helm:// source reference back into its
@@ -29,21 +35,38 @@ func ParseHelmChartSource(source string) (repoURL, chartName, version string, ok
 		return "", "", "", false
 	}
 	rest := strings.TrimPrefix(source, helmChartSourceScheme)
-	chartName = rest
 	if i := strings.Index(rest, "?version="); i >= 0 {
-		chartName = rest[:i]
-		version = rest[i+len("?version="):]
+		var err error
+		version, err = url.QueryUnescape(rest[i+len("?version="):])
+		if err != nil || version == "" {
+			return "", "", "", false
+		}
+		rest = rest[:i]
 	}
-	i := strings.LastIndex(chartName, "/")
-	if i < 0 || i == len(chartName)-1 || version == "" {
+	i := strings.LastIndex(rest, "/")
+	if i < 0 || i == 0 || i == len(rest)-1 {
 		return "", "", "", false
 	}
-	repoURL = chartName[:i]
-	chartName = chartName[i+1:]
-	if repoURL == "" {
+	repoURL = rest[:i]
+	var err error
+	chartName, err = url.QueryUnescape(rest[i+1:])
+	if err != nil || chartName == "" || repoURL == "" || version == "" {
 		return "", "", "", false
 	}
 	return repoURL, chartName, version, true
+}
+
+// redactURL strips any userinfo (user:password@) from a URL so credentials
+// never reach the imagestate ConfigMap or worker logs. A URL without
+// userinfo, or one that cannot be parsed, is returned unchanged.
+func redactURL(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.User == nil {
+		return rawURL
+	}
+	redacted := *u
+	redacted.User = nil
+	return redacted.String()
 }
 
 // IsChartSource reports whether src is a helm:// chart source reference
