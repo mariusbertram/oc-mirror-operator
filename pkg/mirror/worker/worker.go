@@ -159,6 +159,12 @@ func (w *Worker) RunBatch(ctx context.Context, items []BatchItem) (anyFailed boo
 		if i > 0 && i%ClientRefreshInterval == 0 {
 			c = w.NewClient(dests[i])
 		}
+		if mirror.IsChartSource(sources[i]) {
+			if !w.MirrorChartOne(ctx, c, sources[i], dests[i]) {
+				anyFailed = true
+			}
+			continue
+		}
 		if !w.MirrorOne(ctx, c, sources[i], dests[i]) {
 			anyFailed = true
 		}
@@ -167,6 +173,59 @@ func (w *Worker) RunBatch(ctx context.Context, items []BatchItem) (anyFailed boo
 		oclog.Println("Batch completed with errors (see above)")
 	}
 	return anyFailed
+}
+
+// MirrorChartOne mirrors a single Helm chart archive (a helm:// source, see
+// mirror.HelmChartSource) into the target registry as a Helm OCI artifact,
+// with the same retry and status reporting as MirrorOne. It returns true on
+// success. Unlike images, a chart is re-downloaded from its repository on
+// every attempt — the archive is small (KB to a few MB) and not stored in a
+// registry the worker could copy from.
+func (w *Worker) MirrorChartOne(ctx context.Context, c Client, src, dest string) bool {
+	oclog.Printf("Starting chart mirror: %s -> %s\n", src, dest)
+	mc, ok := c.(*mirrorclient.MirrorClient)
+	if !ok {
+		err := fmt.Errorf("chart mirror requires a real registry client")
+		log.Error(err, "cannot mirror helm chart")
+		w.Status.Report(ctx, dest, "", err.Error())
+		return false
+	}
+
+	var lastErr error
+	for attempt := 1; attempt <= CopyAttempts; attempt++ {
+		if attempt > 1 {
+			oclog.Printf("Retry attempt %d/%d after %s...\n", attempt, CopyAttempts, w.RetryDelay)
+			time.Sleep(w.RetryDelay)
+		}
+		chartCtx, cancel := context.WithTimeout(ctx, ChartMirrorTimeout)
+		_, lastErr = MirrorChart(chartCtx, mc, src, dest)
+		cancel()
+		if lastErr == nil {
+			break
+		}
+		oclog.Printf("Attempt %d failed: %v\n", attempt, lastErr)
+	}
+	if lastErr != nil {
+		oclog.Printf("ERROR: failed to mirror chart %s: %v", src, lastErr)
+		log.Error(lastErr, "failed to mirror helm chart")
+		w.Status.Report(ctx, dest, "", lastErr.Error())
+		return false
+	}
+
+	verifyCtx, verifyCancel := context.WithTimeout(ctx, VerifyTimeout)
+	digest, err := mc.GetDigest(verifyCtx, dest)
+	verifyCancel()
+	if err != nil {
+		oclog.Printf("ERROR: failed to verify digest for chart %s: %v", src, err)
+		log.Error(err, "failed to verify mirrored chart digest")
+		w.Status.Report(ctx, dest, "", err.Error())
+		return false
+	}
+
+	oclog.Printf("Successfully mirrored %s -> %s (digest: %s)\n", src, dest, digest)
+	log.Info("successfully mirrored helm chart", "src", src, "dest", dest, "digest", digest)
+	w.Status.Report(ctx, dest, digest, "")
+	return true
 }
 
 // MirrorOne mirrors src→dest with up to CopyAttempts attempts, verifies the

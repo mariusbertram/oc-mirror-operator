@@ -4122,6 +4122,108 @@ var _ = Describe("Manager Coverage", func() {
 		})
 	})
 
+	Context("resolveHelmCharts", func() {
+		helmSpec := func(url string) *mirrorv1alpha1.ImageSet {
+			return &mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{Name: testImageSetName, Namespace: "default"},
+				Spec: mirrorv1alpha1.ImageSetSpec{
+					Mirror: mirrorv1alpha1.Mirror{
+						Helm: mirrorv1alpha1.Helm{
+							Repositories: []mirrorv1alpha1.Repository{{
+								Name: "repo",
+								URL:  url,
+								Charts: []mirrorv1alpha1.Chart{{
+									Name:    "mychart",
+									Version: "1.0.0",
+								}},
+							}},
+						},
+					},
+				},
+			}
+		}
+		It("reports no error when there are no helm entries", func() {
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com"},
+			}
+			is := &mirrorv1alpha1.ImageSet{ObjectMeta: metav1.ObjectMeta{Name: testImageSetName, Namespace: "default"}}
+			collector, _ := m.buildCollector(mt)
+			Expect(m.resolveHelmCharts(context.TODO(), collector, is, mt, nil, imagestate.ImageState{})).To(BeFalse())
+		})
+		It("carries over previous entries and reports hadError when the repository is unreachable", func() {
+			mt := &mirrorv1alpha1.MirrorTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+				Spec:       mirrorv1alpha1.MirrorTargetSpec{Registry: "reg.example.com"},
+			}
+			is := helmSpec("http://127.0.0.1:1/charts")
+
+			currentState := imagestate.ImageState{
+				"reg.example.com/redis:7": {Source: "docker.io/redis:7", State: stateMirrored, Origin: imagestate.OriginHelm, OriginRef: "helm repo/mychart"},
+				"reg.example.com/charts/repo/mychart:1.0.0": {
+					Source:    "helm://127.0.0.1:1/charts/mychart?version=1.0.0",
+					State:     stateMirrored,
+					Origin:    imagestate.OriginHelmChart,
+					EntrySig:  "chart:repo/mychart:1.0.0@sha256:old",
+					OriginRef: "helm repo/mychart:1.0.0",
+				},
+			}
+			newState := imagestate.ImageState{}
+			collector, _ := m.buildCollector(mt)
+			hadError := m.resolveHelmCharts(context.TODO(), collector, is, mt, currentState, newState)
+
+			Expect(hadError).To(BeTrue(), "a transient repository failure must be visible to the caller")
+			// The chart's previously mirrored entries must survive the failed
+			// resolve unchanged — otherwise the merge would orphan them and
+			// the cleanup Job could delete mirrored content.
+			Expect(newState).To(HaveKey("reg.example.com/redis:7"))
+			Expect(newState).To(HaveKey("reg.example.com/charts/repo/mychart:1.0.0"))
+			Expect(newState["reg.example.com/redis:7"].State).To(Equal(stateMirrored))
+			Expect(newState["reg.example.com/charts/repo/mychart:1.0.0"].State).To(Equal(stateMirrored))
+		})
+	})
+
+	Context("mergeIntoStateWithSig helm chart re-queue", func() {
+		It("re-queues a Mirrored chart entry whose EntrySig changed", func() {
+			dst := imagestate.ImageState{}
+			prev := imagestate.ImageState{
+				"reg.example.com/charts/repo/mychart:1.0.0": {
+					Source:   "helm://repo/mychart?version=1.0.0",
+					State:    stateMirrored,
+					Origin:   imagestate.OriginHelmChart,
+					EntrySig: "chart:repo/mychart:1.0.0@sha256:old-content",
+				},
+			}
+			mergeIntoStateWithSig(dst, []mirror.TargetImage{{
+				Source:      "helm://repo/mychart?version=1.0.0",
+				Destination: "reg.example.com/charts/repo/mychart:1.0.0",
+			}}, imagestate.OriginHelmChart, "chart:repo/mychart:1.0.0@sha256:new-content", "helm repo/mychart:1.0.0", prev)
+
+			entry := dst["reg.example.com/charts/repo/mychart:1.0.0"]
+			Expect(entry).NotTo(BeNil())
+			Expect(entry.State).To(Equal(statePending), "a re-published chart must be re-queued, not carried over as Mirrored")
+			Expect(entry.EntrySig).To(Equal("chart:repo/mychart:1.0.0@sha256:new-content"))
+		})
+		It("keeps a Mirrored chart entry whose EntrySig is unchanged", func() {
+			dst := imagestate.ImageState{}
+			prev := imagestate.ImageState{
+				"reg.example.com/charts/repo/mychart:1.0.0": {
+					Source:   "helm://repo/mychart?version=1.0.0",
+					State:    stateMirrored,
+					Origin:   imagestate.OriginHelmChart,
+					EntrySig: "chart:repo/mychart:1.0.0@sha256:same",
+				},
+			}
+			mergeIntoStateWithSig(dst, []mirror.TargetImage{{
+				Source:      "helm://repo/mychart?version=1.0.0",
+				Destination: "reg.example.com/charts/repo/mychart:1.0.0",
+			}}, imagestate.OriginHelmChart, "chart:repo/mychart:1.0.0@sha256:same", "helm repo/mychart:1.0.0", prev)
+
+			entry := dst["reg.example.com/charts/repo/mychart:1.0.0"]
+			Expect(entry.State).To(Equal(stateMirrored))
+		})
+	})
+
 	Context("runMetricsServer", func() {
 		It("serves on :9090 and returns once the context is cancelled", func() {
 			ctx, cancel := context.WithCancel(context.Background())

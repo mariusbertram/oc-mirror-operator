@@ -365,22 +365,64 @@ func (c *Collector) CollectAdditional(_ context.Context, spec *mirrorv1alpha1.Im
 // (including tag/digest), matching CollectAdditional's convention, since
 // Helm-templated image references are typically tag-based rather than
 // pre-resolved to a digest.
+// HelmChartResolution is the result of resolving a single chart entry: the
+// container images extracted from its rendered templates, plus the raw
+// archive and the version the reference resolved to (for mirroring the
+// chart itself).
+type HelmChartResolution struct {
+	Images  []string
+	Archive []byte
+	Version string
+}
+
+// EnumerateHelmChart resolves a single chart entry: it downloads the chart
+// from its repository once, extracts the component images from its rendered
+// templates, and returns both alongside the raw archive and the resolved
+// version. The single resolution path shared by CollectHelm (image-only
+// view, used by the one-shot collector and the Resource-API export) and the
+// manager's resolveHelmChart (which additionally mirrors the archive).
+func (c *Collector) EnumerateHelmChart(ctx context.Context, repoURL string, chart mirrorv1alpha1.Chart) (*HelmChartResolution, error) {
+	archive, version, err := c.ResolveHelmChartArchive(ctx, repoURL, chart)
+	if err != nil {
+		return nil, err
+	}
+	ch, err := helm.LoadChartArchive(archive)
+	if err != nil {
+		return nil, err
+	}
+	images, err := helm.ImagesFromChart(ch, chart.ImagePaths...)
+	if err != nil {
+		return nil, err
+	}
+	return &HelmChartResolution{Images: images, Archive: archive, Version: version}, nil
+}
+
 func (c *Collector) CollectHelm(ctx context.Context, spec *mirrorv1alpha1.ImageSetSpec, target *mirrorv1alpha1.MirrorTarget, meta *state.Metadata) ([]TargetImage, error) {
 	var results []TargetImage
 	for _, repo := range spec.Mirror.Helm.Repositories {
 		for _, chart := range repo.Charts {
-			images, err := c.helmResolver.ResolveChart(ctx, repo.URL, chart)
+			res, err := c.EnumerateHelmChart(ctx, repo.URL, chart)
 			if err != nil {
 				oclog.Printf("Warning: failed to resolve helm chart %s/%s: %v\n", repo.Name, chart.Name, err)
 				continue
 			}
-			for _, img := range images {
+			for _, img := range res.Images {
 				dest := fmt.Sprintf("%s/%s", target.Spec.Registry, img)
 				results = append(results, c.toTargetImage(img, dest, meta))
 			}
 		}
 	}
 	return results, nil
+}
+
+// ResolveHelmChartArchive downloads the named chart's raw .tgz archive from
+// its repository and returns the archive bytes plus the version the
+// reference resolved to (chart.Version, or the latest non-prerelease version
+// picked from the repository index when chart.Version was empty). The
+// manager uses it to mirror the chart itself into the target registry in
+// addition to extracting its component images.
+func (c *Collector) ResolveHelmChartArchive(ctx context.Context, repoURL string, chart mirrorv1alpha1.Chart) ([]byte, string, error) {
+	return c.helmResolver.DownloadChartArchive(ctx, repoURL, chart)
 }
 
 func (c *Collector) toTargetImage(src, dest string, meta *state.Metadata) TargetImage {

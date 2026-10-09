@@ -96,63 +96,52 @@ func NewWithOCI(oci OCIClient) *Resolver {
 // index.yaml; the chart is pulled from <repoURL>/<name>:<version>, so a
 // version is required.
 func (r *Resolver) ResolveChart(ctx context.Context, repoURL string, chart mirrorv1alpha1.Chart) ([]string, error) {
-	var chartURL string
-	if strings.HasPrefix(repoURL, ociScheme) {
-		if chart.Version == "" {
-			return nil, fmt.Errorf("chart %q: a version is required for OCI repository %s (there is no index to pick the latest from)", chart.Name, repoURL)
-		}
-		chartURL = strings.TrimSuffix(repoURL, "/") + "/" + chart.Name + ":" + chart.Version
-	} else {
-		var err error
-		chartURL, err = r.resolveChartURL(ctx, repoURL, chart.Name, chart.Version)
-		if err != nil {
-			return nil, fmt.Errorf("resolve chart URL: %w", err)
-		}
-	}
-
-	ch, err := r.downloadChart(ctx, chartURL)
+	ch, err := r.LoadChart(ctx, repoURL, chart)
 	if err != nil {
-		return nil, fmt.Errorf("download chart: %w", err)
+		return nil, err
 	}
-
 	return imagesFromChart(ch, chart.ImagePaths...)
 }
 
-// resolveChartURL fetches the repository index and returns the absolute
-// download URL for the requested chart name/version.
-func (r *Resolver) resolveChartURL(ctx context.Context, repoURL, name, version string) (string, error) {
-	base := strings.TrimSuffix(repoURL, "/")
-	data, err := r.get(ctx, base+"/index.yaml")
+// LoadChart downloads the named chart from the repository at repoURL (same
+// version resolution as ResolveChart) and returns the loaded chart. Use it
+// (instead of ResolveChart) when the chart's metadata — e.g. the version an
+// empty chart.Version resolved to, needed to tag the chart when mirroring
+// it into the target registry — is needed alongside the rendered images.
+func (r *Resolver) LoadChart(ctx context.Context, repoURL string, chart mirrorv1alpha1.Chart) (*helmchart.Chart, error) {
+	data, _, err := r.DownloadChartArchive(ctx, repoURL, chart)
 	if err != nil {
-		return "", fmt.Errorf("fetch repository index: %w", err)
+		return nil, err
 	}
-
-	var index helmrepo.IndexFile
-	if err := yaml.Unmarshal(data, &index); err != nil {
-		return "", fmt.Errorf("parse index.yaml: %w", err)
-	}
-	index.SortEntries()
-
-	cv, err := index.Get(name, version)
-	if err != nil {
-		return "", fmt.Errorf("chart %q (version %q) not found in repository index: %w", name, version, err)
-	}
-	if len(cv.URLs) == 0 {
-		return "", fmt.Errorf("chart %q has no download URL in repository index", name)
-	}
-
-	chartURL := cv.URLs[0]
-	if !strings.Contains(chartURL, "://") {
-		chartURL = base + "/" + strings.TrimPrefix(chartURL, "/")
-	}
-	return chartURL, nil
+	return LoadChartArchive(data)
 }
 
-// downloadChart fetches and loads a chart archive (.tgz) directly from an
-// in-memory buffer — chart archives are small enough (typically KB to a few
-// MB) that no temp file is needed. oci:// references are pulled from the
-// registry (#187); everything else over HTTP(S).
-func (r *Resolver) downloadChart(ctx context.Context, chartURL string) (*helmchart.Chart, error) {
+// DownloadChartArchive downloads the named chart's raw .tgz archive (same
+// version resolution as ResolveChart) and additionally returns the version
+// the reference resolved to — chart.Version when set, or the version picked
+// from the repository index for an empty chart.Version (always chart.Version
+// for oci:// repositories, where it is required). Callers that mirror the
+// chart itself into a registry need the resolved version to tag it.
+func (r *Resolver) DownloadChartArchive(ctx context.Context, repoURL string, chart mirrorv1alpha1.Chart) ([]byte, string, error) {
+	var chartURL, version string
+	if strings.HasPrefix(repoURL, ociScheme) {
+		if chart.Version == "" {
+			return nil, "", fmt.Errorf("chart %q: a version is required for OCI repository %s (there is no index to pick the latest from)", chart.Name, repoURL)
+		}
+		chartURL = strings.TrimSuffix(repoURL, "/") + "/" + chart.Name + ":" + chart.Version
+		version = chart.Version
+	} else {
+		cv, err := r.resolveChartVersion(ctx, repoURL, chart.Name, chart.Version)
+		if err != nil {
+			return nil, "", fmt.Errorf("resolve chart URL: %w", err)
+		}
+		chartURL = cv.URLs[0]
+		if !strings.Contains(chartURL, "://") {
+			chartURL = strings.TrimSuffix(repoURL, "/") + "/" + strings.TrimPrefix(chartURL, "/")
+		}
+		version = cv.Version
+	}
+
 	var (
 		data []byte
 		err  error
@@ -163,13 +152,53 @@ func (r *Resolver) downloadChart(ctx context.Context, chartURL string) (*helmcha
 		data, err = r.get(ctx, chartURL)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("fetch chart archive: %w", err)
+		return nil, "", fmt.Errorf("download chart: %w", err)
 	}
+	return data, version, nil
+}
+
+// LoadChartArchive loads a chart archive (.tgz) from an in-memory buffer.
+func LoadChartArchive(data []byte) (*helmchart.Chart, error) {
 	ch, err := loader.LoadArchive(bytes.NewReader(data))
 	if err != nil {
 		return nil, fmt.Errorf("load chart archive: %w", err)
 	}
 	return ch, nil
+}
+
+// ImagesFromChart renders ch's templates and returns every distinct container
+// image reference found at defaultImagePaths plus extraPaths. Exported so the
+// manager can reuse an already-downloaded archive for both image extraction
+// and chart mirroring without a second download.
+func ImagesFromChart(ch *helmchart.Chart, extraPaths ...string) ([]string, error) {
+	return imagesFromChart(ch, extraPaths...)
+}
+
+// resolveChartVersion fetches the repository index and returns the index
+// entry for the requested chart name/version. The entry's URLs[0] is the
+// download URL; its Version is the version the reference resolved to (which
+// may differ from the requested version when chart.Version was empty).
+func (r *Resolver) resolveChartVersion(ctx context.Context, repoURL, name, version string) (*helmrepo.ChartVersion, error) {
+	base := strings.TrimSuffix(repoURL, "/")
+	data, err := r.get(ctx, base+"/index.yaml")
+	if err != nil {
+		return nil, fmt.Errorf("fetch repository index: %w", err)
+	}
+
+	var index helmrepo.IndexFile
+	if err := yaml.Unmarshal(data, &index); err != nil {
+		return nil, fmt.Errorf("parse index.yaml: %w", err)
+	}
+	index.SortEntries()
+
+	cv, err := index.Get(name, version)
+	if err != nil {
+		return nil, fmt.Errorf("chart %q (version %q) not found in repository index: %w", name, version, err)
+	}
+	if len(cv.URLs) == 0 {
+		return nil, fmt.Errorf("chart %q has no download URL in repository index", name)
+	}
+	return cv, nil
 }
 
 // pullOCIChart pulls the chart archive layer of the OCI artifact at chartURL
