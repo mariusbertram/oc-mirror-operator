@@ -7,6 +7,7 @@ This page provides **focused, scenario-based quick start guides** to get you up 
 | Use Case | Guide |
 |---|---|
 | Mirror a single operator | [Single Operator](quickstart-operator.md) |
+| Install the operator itself in a disconnected cluster | [Bootstrap the Bootstrapper](quickstart-bootstrap-operator.md) |
 | Mirror OpenShift releases | [OpenShift Releases](quickstart-release.md) |
 | Mirror Helm charts | [Helm Charts](quickstart-helm.md) |
 | Full disconnected cluster setup | [Disconnected Cluster](quickstart-disconnected.md) |
