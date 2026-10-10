@@ -1,9 +1,9 @@
 # Build the worker binary (cleanup runs as a subcommand: /worker cleanup ...).
 # Base images are pinned by digest so that builds are deterministic and
 # supply-chain auditable. To refresh, run:
-#   podman pull docker.io/library/golang:1.27.1 && podman inspect docker.io/library/golang:1.27.1 --format '{{.Digest}}'
+#   podman pull docker.io/library/golang:1.27.2 && podman inspect docker.io/library/golang:1.27.2 --format '{{.Digest}}'
 #   podman pull gcr.io/distroless/static:nonroot && podman inspect gcr.io/distroless/static:nonroot --format '{{.Digest}}'
-FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.27.1@sha256:162be5298a40ed317005c8339c6de4d10d3eef336d66dc8e9259b03ab9d3a6d2 AS builder
+FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.27.2@sha256:5bc7f572bbaa98885a3a1fd9c0aa76b59e3e14e8628bfc316bbfd0c701e4818c AS builder
 ARG TARGETOS
 ARG TARGETARCH
 
