@@ -15,6 +15,7 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
@@ -31,10 +32,13 @@ permissions: {}
 jobs:
   # ── 1. Tests ──────────────────────────────────────────────────────────────
   test:
-    name: Test
+    name: Test (semver gate, lint, bundle validation)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
+    outputs:
+      semver-ok: ${{ steps.semver.outputs.ok }}
     steps:
       - uses: actions/checkout@v7
 
@@ -42,16 +46,42 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # Publishing steps depend on this gate: only strict semver tags
+      # (vX.Y.Z with optional pre-release/build suffix) may publish.
+      # Manual dispatch runs have no tag and never publish.
+      - name: Verify strict semver tag format
+        id: semver
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            if [[ "${GITHUB_REF_NAME}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?([+][0-9A-Za-z.-]+)?$ ]]; then
+              echo "ok=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "Tag '${GITHUB_REF_NAME}' is not strict semver (vX.Y.Z) - refusing to publish." >&2
+              echo "ok=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Run tests
         run: |
           go mod tidy
           make test
+
+      - name: Run linter
+        run: make lint
+
+      - name: Generate and validate bundle
+        run: |
+          make bundle
+          bin/operator-sdk bundle validate ./bundle --select-optional suite=operatorframework             && bin/operator-sdk bundle validate ./bundle --select-optional 'name in (operatorhubv2,capabilities,categories)'
 
   # ── 2. Build & push component images (multi-arch) ──────────────────────────
   build-component:
     name: Build and scan ${{ matrix.component }}
     runs-on: ubuntu-latest
     needs: test
+    if: needs.test.outputs.semver-ok == 'true'
     permissions:
       contents: read
       packages: write
@@ -180,6 +210,7 @@ jobs:
     name: Build console plugin for OpenShift ${{ matrix.console-version }}
     runs-on: ubuntu-latest
     needs: test
+    if: needs.test.outputs.semver-ok == 'true'
     permissions:
       contents: read
       packages: write
