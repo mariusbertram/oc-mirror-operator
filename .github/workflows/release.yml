@@ -613,10 +613,38 @@ jobs:
       needs.test.outputs.semver-ok == 'true'
       && !contains(needs.build-operator.outputs.version, '-')
       && !contains(needs.build-operator.outputs.version, '+')
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@v7
+
+      - name: Install crane
+        uses: imjasonh/setup-crane@v0.1
+
+      - name: Extract bundle content (manifests/, metadata/) from the bundle image
+        env:
+          BUNDLE_IMAGE: ${{ env.BUNDLE_IMAGE }}
+          BUNDLE_DIGEST: ${{ needs.build-bundle.outputs.bundle_digest }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/bundle-extract && cd /tmp/bundle-extract
+          # amd64-Layer des digest-gepinnten Bundles ziehen und entpacken
+          crane pull --platform linux/amd64 "${BUNDLE_IMAGE}@${BUNDLE_DIGEST}" bundle.tar
+          mkdir rootfs all && tar -xf bundle.tar -C rootfs
+          # OCI-save-Format: rootfs/ enthält manifest.json + N Layer-Tars;
+          # ALLE Layer extrahieren (scratch-Bundle verteilt den Content
+          # über mehrere Layer)
+          for layer in rootfs/*.tar.gz rootfs/*.tar; do
+            [ -f "$layer" ] || continue
+            tar -xf "$layer" -C all 2>/dev/null || true
+          done
+          MANIFEST=$(find all -name "*clusterserviceversion.yaml" | head -1)
+          test -n "$MANIFEST" || { echo "::error::no CSV in bundle image"; exit 1; }
+          BUNDLE_ROOT=$(readlink -f "$(dirname "$(dirname "$MANIFEST")")")
+          echo "BUNDLE_ROOT=$BUNDLE_ROOT" >> "$GITHUB_ENV"
+          test -d "$BUNDLE_ROOT/manifests" && test -d "$BUNDLE_ROOT/metadata"
+          echo "Bundle content verified at $BUNDLE_ROOT"
 
       - name: Generate GitHub App token for the community-operators repo
         uses: actions/create-github-app-token@v2
@@ -631,53 +659,78 @@ jobs:
           GH_TOKEN: ${{ steps.operatorhub-token.outputs.token }}
           VERSION: ${{ needs.build-operator.outputs.version }}
           BUNDLE_DIGEST: ${{ needs.build-bundle.outputs.bundle_digest }}
+          BUNDLE_ROOT: ${{ env.BUNDLE_ROOT }}
         run: |
           set -euo pipefail
 
           BUNDLE_DIGEST_REF="${{ env.BUNDLE_IMAGE }}@${BUNDLE_DIGEST}"
 
           gh auth setup-git
-          git clone "https://github.com/k8s-operatorhub/community-operators.git" /tmp/operatorhub
+          git clone --depth 1 "https://github.com/k8s-operatorhub/community-operators.git" /tmp/operatorhub
           cd /tmp/operatorhub
 
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           BRANCH="oc-mirror-operator-v${VERSION}"
+          git push origin --delete "$BRANCH" 2>/dev/null || true
           git checkout -b "$BRANCH"
 
-          OPERATOR_DIR="operators/oc-mirror-operator/${VERSION}"
+          # ── Bundle-Layout (Pflichtformat dieses Catalogs): ──
+          # operators/<pkg>/<version>/{manifests/,metadata/,bundle.Dockerfile}
+          # + package-level operators/<pkg>/{ci.yaml,logo/}
+          PACKAGE_DIR="operators/oc-mirror-operator"
+          OPERATOR_DIR="${PACKAGE_DIR}/${VERSION}"
           mkdir -p "${OPERATOR_DIR}"
 
-          # ── Write operator.yaml (olm.semver template) ──────
-          cat > "${OPERATOR_DIR}/operator.yaml" <<YAMLEOF
-          schema: olm.semver
-          GenerateMajorChannels: true
-          GenerateMinorChannels: true
-          Stable:
-            Bundles:
-              - Image: ${BUNDLE_DIGEST_REF}
-          YAMLEOF
+          cp -r "${BUNDLE_ROOT}/manifests" "${OPERATOR_DIR}/manifests"
+          cp -r "${BUNDLE_ROOT}/metadata" "${OPERATOR_DIR}/metadata"
 
-          # ── Copy logo ──────────────────────────────
-          LOGO_SRC="${GITHUB_WORKSPACE}/docs/oc-mirror-operator-logo.svg"
-          if [ -f "$LOGO_SRC" ]; then
-            mkdir -p "${OPERATOR_DIR}/logo"
-            cp "$LOGO_SRC" "${OPERATOR_DIR}/logo/oc-mirror-operator-logo.svg"
+          if [ -f "${BUNDLE_ROOT}/bundle.Dockerfile" ]; then
+            cp "${BUNDLE_ROOT}/bundle.Dockerfile" "${OPERATOR_DIR}/bundle.Dockerfile"
+          else
+            cat > "${OPERATOR_DIR}/bundle.Dockerfile" <<'DOCKEREOF'
+          FROM scratch
+
+          LABEL operators.operatorframework.io.bundle.mediatype.v1=registry+v1
+          LABEL operators.operatorframework.io.bundle.manifests.v1=manifests/
+          LABEL operators.operatorframework.io.bundle.metadata.v1=metadata/
+          LABEL operators.operatorframework.io.bundle.package.v1=oc-mirror
+          LABEL operators.operatorframework.io.bundle.channels.v1=alpha
+          LABEL com.redhat.openshift.versions=v4.18-v4.22
+
+          COPY manifests /manifests/
+          COPY metadata /metadata/
+          DOCKEREOF
           fi
 
-          # ── Commit & push ──────────────────────
-          git add "${OPERATOR_DIR}"
+          if [ ! -f "${PACKAGE_DIR}/ci.yaml" ]; then
+            cat > "${PACKAGE_DIR}/ci.yaml" <<'CIEOF'
+          ---
+          # Use `replaces-mode` or `semver-mode`. Once you switch to `semver-mode`, there is no easy way back.
+          updateGraph: replaces-mode
+          CIEOF
+          fi
+
+          LOGO_SRC="${GITHUB_WORKSPACE}/docs/oc-mirror-operator-logo.svg"
+          if [ -f "$LOGO_SRC" ] && [ ! -f "${PACKAGE_DIR}/logo/oc-mirror-operator-logo.svg" ]; then
+            mkdir -p "${PACKAGE_DIR}/logo"
+            cp "$LOGO_SRC" "${PACKAGE_DIR}/logo/oc-mirror-operator-logo.svg"
+          fi
+
+          # ── Commit & push in die BESTEHENDE Fork. Bewusst KEIN
+          # `gh repo fork`: die GitHub App darf keine Forks anlegen
+          # (403 "not accessible by integration") — die Fork muss vorab
+          # existieren und die App muss auf ihr installiert sein. ──
+          git add "$PACKAGE_DIR"
           git diff --cached --stat
           if git diff --cached --quiet; then
             echo "Nothing to commit — bundle already present."
             exit 0
           fi
           git commit -m "Add oc-mirror-operator v${VERSION} (${BUNDLE_DIGEST_REF})"
-          gh repo fork k8s-operatorhub/community-operators --clone=false >/dev/null
-          git push "https://github.com/${GITHUB_REPOSITORY_OWNER}/community-operators.git" "$BRANCH"
+          git push -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY_OWNER}/community-operators.git" "$BRANCH"
 
-          # ── Open PR against the upstream catalog repo ──────
           gh pr create \
             --repo "k8s-operatorhub/community-operators" \
             --base main \
@@ -688,18 +741,15 @@ jobs:
           This PR adds oc-mirror-operator to the operatorhub.io community-operators catalog.
 
           ### Bundle Image (multi-arch manifest list)
-          \`\`\`
+          \\\`\\\`\\\`
           ${BUNDLE_DIGEST_REF}
-          \`\`\`
+          \\\`\\\`\\\`
 
           The bundle passes the operatorhubv2, capabilities and categories validation suites (run in the operator CI).
 
           Opened automatically by the [release workflow](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."
 
-  # ── 7. PR to Red Hat community-operators-prod (OpenShift OperatorHub) ──
-  # Feeds the catalog that OpenShift OperatorHub consumes out of the box.
-  # Draft PR, manual merge — Red Hat reviewers still gate it.
-  # Only stable semver releases (no pre-release/build suffix) qualify.
+
   redhat-catalog-pr:
     name: Open community-operators-prod PR
     runs-on: ubuntu-latest
@@ -708,10 +758,33 @@ jobs:
       needs.test.outputs.semver-ok == 'true'
       && !contains(needs.build-operator.outputs.version, '-')
       && !contains(needs.build-operator.outputs.version, '+')
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@v7
+
+      - name: Install crane
+        uses: imjasonh/setup-crane@v0.1
+
+      - name: Extract bundle content (manifests/, metadata/) from the bundle image
+        env:
+          BUNDLE_IMAGE: ${{ env.BUNDLE_IMAGE }}
+          BUNDLE_DIGEST: ${{ needs.build-bundle.outputs.bundle_digest }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/bundle-extract && cd /tmp/bundle-extract
+          crane pull --platform linux/amd64 "${BUNDLE_IMAGE}@${BUNDLE_DIGEST}" bundle.tar
+          mkdir rootfs all && tar -xf bundle.tar -C rootfs
+          for layer in rootfs/*.tar.gz rootfs/*.tar; do
+            [ -f "$layer" ] || continue
+            tar -xf "$layer" -C all 2>/dev/null || true
+          done
+          MANIFEST=$(find all -name "*clusterserviceversion.yaml" | head -1)
+          test -n "$MANIFEST" || { echo "::error::no CSV in bundle image"; exit 1; }
+          BUNDLE_ROOT=$(readlink -f "$(dirname "$(dirname "$MANIFEST")")")
+          echo "BUNDLE_ROOT=$BUNDLE_ROOT" >> "$GITHUB_ENV"
+          test -d "$BUNDLE_ROOT/manifests" && test -d "$BUNDLE_ROOT/metadata"
 
       - name: Generate GitHub App token for the community-operators-prod repo
         uses: actions/create-github-app-token@v2
@@ -726,56 +799,77 @@ jobs:
           GH_TOKEN: ${{ steps.redhat-catalog-token.outputs.token }}
           VERSION: ${{ needs.build-operator.outputs.version }}
           BUNDLE_DIGEST: ${{ needs.build-bundle.outputs.bundle_digest }}
+          BUNDLE_ROOT: ${{ env.BUNDLE_ROOT }}
         run: |
           set -euo pipefail
 
           BUNDLE_DIGEST_REF="${{ env.BUNDLE_IMAGE }}@${BUNDLE_DIGEST}"
 
           gh auth setup-git
-          git clone "https://github.com/redhat-openshift-ecosystem/community-operators-prod.git" /tmp/redhat-catalog
+          git clone --depth 1 "https://github.com/redhat-openshift-ecosystem/community-operators-prod.git" /tmp/redhat-catalog
           cd /tmp/redhat-catalog
 
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           BRANCH="oc-mirror-operator-v${VERSION}"
+          git push origin --delete "$BRANCH" 2>/dev/null || true
           git checkout -b "$BRANCH"
 
-          # Red Hat catalog layout: community-operators/<package>/<version>/
-          OPERATOR_DIR="community-operators/oc-mirror-operator/${VERSION}"
+          # ── Red Hat catalog layout (Pflichtformat): operators/<pkg>/<version>/
+          # mit manifests/, metadata/, bundle.Dockerfile + package-level
+          # ci.yaml und logo/ — analog operatorhub.io, nur anderer Root. ──
+          PACKAGE_DIR="operators/oc-mirror-operator"
+          OPERATOR_DIR="${PACKAGE_DIR}/${VERSION}"
           mkdir -p "${OPERATOR_DIR}"
 
-          # ── Write operator.yaml (olm.semver template) ──────
-          cat > "${OPERATOR_DIR}/operator.yaml" <<YAMLEOF
-          schema: olm.semver
-          GenerateMajorChannels: true
-          GenerateMinorChannels: true
-          Stable:
-            Bundles:
-              - Image: ${BUNDLE_DIGEST_REF}
-          YAMLEOF
+          cp -r "${BUNDLE_ROOT}/manifests" "${OPERATOR_DIR}/manifests"
+          cp -r "${BUNDLE_ROOT}/metadata" "${OPERATOR_DIR}/metadata"
 
-          # ── Copy logo (warn if missing) ────────────────
+          if [ -f "${BUNDLE_ROOT}/bundle.Dockerfile" ]; then
+            cp "${BUNDLE_ROOT}/bundle.Dockerfile" "${OPERATOR_DIR}/bundle.Dockerfile"
+          else
+            cat > "${OPERATOR_DIR}/bundle.Dockerfile" <<'DOCKEREOF'
+          FROM scratch
+
+          LABEL operators.operatorframework.io.bundle.mediatype.v1=registry+v1
+          LABEL operators.operatorframework.io.bundle.manifests.v1=manifests/
+          LABEL operators.operatorframework.io.bundle.metadata.v1=metadata/
+          LABEL operators.operatorframework.io.bundle.package.v1=oc-mirror
+          LABEL operators.operatorframework.io.bundle.channels.v1=alpha
+          LABEL com.redhat.openshift.versions=v4.18-v4.22
+
+          COPY manifests /manifests/
+          COPY metadata /metadata/
+          DOCKEREOF
+          fi
+
+          if [ ! -f "${PACKAGE_DIR}/ci.yaml" ]; then
+            cat > "${PACKAGE_DIR}/ci.yaml" <<'CIEOF'
+          ---
+          # Use `replaces-mode` or `semver-mode`. Once you switch to `semver-mode`, there is no easy way back.
+          updateGraph: replaces-mode
+          CIEOF
+          fi
+
           LOGO_SRC="${GITHUB_WORKSPACE}/docs/oc-mirror-operator-logo.svg"
-          if [ -f "$LOGO_SRC" ]; then
-            mkdir -p "${OPERATOR_DIR}/logo"
-            cp "$LOGO_SRC" "${OPERATOR_DIR}/logo/oc-mirror-operator-logo.svg"
+          if [ -f "$LOGO_SRC" ] && [ ! -f "${PACKAGE_DIR}/logo/oc-mirror-operator-logo.svg" ]; then
+            mkdir -p "${PACKAGE_DIR}/logo"
+            cp "$LOGO_SRC" "${PACKAGE_DIR}/logo/oc-mirror-operator-logo.svg"
           else
             echo "::warning::Logo ${LOGO_SRC} not found — submitting without logo."
           fi
 
-          # ── Commit & push ──────────────────────────
-          git add "${OPERATOR_DIR}"
+          # ── Commit & push in die BESTEHENDE Fork (kein Fork-Create) ──
+          git add "$PACKAGE_DIR"
           git diff --cached --stat
           if git diff --cached --quiet; then
             echo "Nothing to commit — bundle already present."
             exit 0
           fi
           git commit -m "Add oc-mirror-operator v${VERSION} (${BUNDLE_DIGEST_REF})"
-          gh repo fork redhat-openshift-ecosystem/community-operators-prod --clone=false >/dev/null
-          git push "https://github.com/${GITHUB_REPOSITORY_OWNER}/community-operators-prod.git" "$BRANCH"
+          git push -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY_OWNER}/community-operators-prod.git" "$BRANCH"
 
-          # ── Open draft PR against the upstream catalog repo ────
           gh pr create \
             --draft \
             --repo "redhat-openshift-ecosystem/community-operators-prod" \
@@ -787,10 +881,11 @@ jobs:
           This PR adds oc-mirror-operator to the community-operators-prod catalog (OpenShift OperatorHub).
 
           ### Bundle Image (multi-arch manifest list)
-          \`\`\`
+          \\\`\\\`\\\`
           ${BUNDLE_DIGEST_REF}
-          \`\`\`
+          \\\`\\\`\\\`
 
           The bundle passes the operatorhubv2, capabilities and categories validation suites (run in the operator CI).
 
           Opened automatically by the [release workflow](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."
+
