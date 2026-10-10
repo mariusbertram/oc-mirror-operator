@@ -5,13 +5,13 @@
 
 ## 1. Install the Operator
 
-Follow the same installation steps as in [Quick Start: Single Operator](quickstart-operator.md#1-install-the-operator).
+Follow the canonical [Setup guide](setup.md#1-install-the-operator).
 
 ---
 
 ## 2. Prepare Registry Credentials
 
-Follow the same credential setup as in [Quick Start: Single Operator](quickstart-operator.md#2-prepare-registry-credentials).
+Follow [Prepare the Registry Credentials](setup.md#2-prepare-the-registry-credentials) in the Setup guide.
 
 **Note:** For Helm chart mirroring, you typically only need **push** credentials for your target registry, as Helm repositories are usually publicly accessible.
 

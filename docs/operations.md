@@ -22,7 +22,7 @@ images, changing specs, cleaning up, and monitoring.
 ### At a glance
 
 ```bash
-kubectl get mirrortarget,imageset -n mirror
+kubectl get mirrortarget,imageset -n oc-mirror-operator
 # NAME                 TOTAL   MIRRORED   PENDING   FAILED   AGE
 # internal-registry    4521    4519       0         2        2d
 # ocp-4-16-releases    192     192        0         0        2d
@@ -36,7 +36,7 @@ deduplicated across its `ImageSet`s.
 ### Conditions
 
 ```bash
-kubectl get imageset ocp-4-16-operators -n mirror -o jsonpath='{.status.conditions}' | jq
+kubectl get imageset ocp-4-16-operators -n oc-mirror-operator -o jsonpath='{.status.conditions}' | jq
 ```
 
 | Resource | Condition | Reason | Meaning |
@@ -62,17 +62,17 @@ spec without any upstream error, and `lastSuccessfulPollTime` is the poll clock.
 
 ```bash
 # manager log (resolve decisions, dispatch, drift checks)
-kubectl logs deployment/internal-registry-manager -n mirror -f
+kubectl logs deployment/internal-registry-manager -n oc-mirror-operator -f
 
 # worker pods and their logs
-kubectl get pods -n mirror -l app=oc-mirror-worker
-kubectl logs -n mirror -l app=oc-mirror-worker --tail=100
+kubectl get pods -n oc-mirror-operator -l app=oc-mirror-worker
+kubectl logs -n oc-mirror-operator -l app=oc-mirror-worker --tail=100
 
 # catalog-build / cleanup jobs
-kubectl get jobs -n mirror
+kubectl get jobs -n oc-mirror-operator
 
 # per-image state (dump the gzip JSON of an ImageSet's state ConfigMap)
-kubectl get cm ocp-4-16-operators-images -n mirror -o jsonpath='{.binaryData.images\.json\.gz}' \
+kubectl get cm ocp-4-16-operators-images -n oc-mirror-operator -o jsonpath='{.binaryData.images\.json\.gz}' \
   | base64 -d | gunzip | jq 'to_entries[] | select(.value.state != "Mirrored")'
 ```
 
@@ -88,7 +88,7 @@ it is still missing from the target, by a [recollect](#recollect) or
 [force-resync](#force-resync), or after a spec change touching its entry.
 
 ```bash
-kubectl get imageset ocp-4-16-operators -n mirror -o json | jq '.status.failedImageDetails'
+kubectl get imageset ocp-4-16-operators -n oc-mirror-operator -o json | jq '.status.failedImageDetails'
 ```
 
 ```json
@@ -116,7 +116,7 @@ After fixing the cause, run a [recollect](#recollect).
 ## Recollect
 
 ```bash
-kubectl annotate imageset ocp-4-16-operators -n mirror \
+kubectl annotate imageset ocp-4-16-operators -n oc-mirror-operator \
   mirror.openshift.io/recollect=$(date +%s) --overwrite
 ```
 
@@ -144,7 +144,7 @@ The console plugin exposes this as **Recollect** on the ImageSet page.
 ## Force resync
 
 ```bash
-kubectl annotate imageset ocp-4-16-operators -n mirror \
+kubectl annotate imageset ocp-4-16-operators -n oc-mirror-operator \
   mirror.openshift.io/force-resync=$(date +%s) --overwrite
 ```
 
@@ -176,7 +176,7 @@ ConfigMap is handed to the cleanup path.
 Cleanup is opt-in per `MirrorTarget`:
 
 ```bash
-kubectl annotate mirrortarget internal-registry -n mirror \
+kubectl annotate mirrortarget internal-registry -n oc-mirror-operator \
   mirror.openshift.io/cleanup-policy=Delete
 ```
 
@@ -210,7 +210,7 @@ annotation.
 
 ## Restarting components
 
-- **Manager:** `kubectl rollout restart deployment/<target>-manager -n mirror`. State is
+- **Manager:** `kubectl rollout restart deployment/<target>-manager -n oc-mirror-operator`. State is
   reloaded from the ConfigMaps; running workers are re-adopted from their pod
   annotations. A restart also triggers an immediate drift check. The Deployment reports
   ready once the manager's worker status API is listening.

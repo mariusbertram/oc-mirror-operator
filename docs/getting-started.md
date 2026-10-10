@@ -32,127 +32,14 @@ gzip-compressed ConfigMaps.
 
 ## 2. Install the operator
 
-### Option A: OLM (recommended)
-
-The operator is published in the `brtrm-dev-catalog` catalog (package `oc-mirror`).
-
-```bash
-# 1. Register the catalog (namespace: openshift-marketplace on OpenShift, olm elsewhere)
-cat <<EOT | kubectl apply -f -
-apiVersion: operators.coreos.com/v1alpha1
-kind: CatalogSource
-metadata:
-  name: brtrm-dev-catalog
-  namespace: openshift-marketplace
-spec:
-  sourceType: grpc
-  image: quay.io/mariusbertram/brtrm-dev-catalog:latest
-  displayName: brtrm Dev Catalog
-EOT
-
-# 2. Namespace, OperatorGroup and Subscription
-kubectl create namespace oc-mirror-operator
-cat <<EOT | kubectl apply -f -
-apiVersion: operators.coreos.com/v1
-kind: OperatorGroup
-metadata:
-  name: oc-mirror-operator
-  namespace: oc-mirror-operator
-spec:
-  targetNamespaces: [oc-mirror-operator]
----
-apiVersion: operators.coreos.com/v1alpha1
-kind: Subscription
-metadata:
-  name: oc-mirror
-  namespace: oc-mirror-operator
-spec:
-  name: oc-mirror
-  channel: alpha              # kubectl get packagemanifest oc-mirror -n openshift-marketplace -o jsonpath='{.status.channels[*].name}'
-  source: brtrm-dev-catalog
-  sourceNamespace: openshift-marketplace
-EOT
-
-# 3. Wait for the CSV
-kubectl get csv -n oc-mirror-operator -w
-```
-
-On OpenShift you can do the same through **Operators → OperatorHub** in the web
-console; search for *oc-mirror*.
-
-> The operator is **namespace-scoped**: it watches `MirrorTarget` and `ImageSet`
-> resources in its own namespace only. Create your mirror resources there, or install the
-> operator into the namespace you want to use. The examples below use the operator
-> namespace `oc-mirror-operator` as `mirror`; pick one and stay consistent.
-
-### Option B: Static release manifest (plain Kubernetes, 3 commands)
-
-Every release publishes a rendered, versioned install manifest — no Go
-toolchain, make or kustomize required. Works on vanilla Kubernetes and Kind.
-
-```bash
-# 1. Install the operator (namespace, CRDs, RBAC, deployments) in one shot
-kubectl apply -f https://github.com/mariusbertram/oc-mirror-operator/releases/download/v<version>/oc-mirror-operator.yaml
-
-# 2. Wait for it to roll out
-kubectl rollout status deployment/oc-mirror-controller-manager -n oc-mirror-system
-
-# 3. Verify the CRDs are registered
-kubectl get crd | grep mirror.openshift.io
-```
-
-> Note: the console plugin is OpenShift-only (it relies on the OpenShift
-> service CA and `console.openshift.io` CRDs); on vanilla Kubernetes the
-> operator runs without the plugin component.
-
-The manifest is generated with `make build-installer` (kustomize render of
-`config/default`) during each release and pinned to that release's
-multi-arch images on ghcr.io.
-
-### Option C: From source
-
-```bash
-git clone https://github.com/mariusbertram/oc-mirror-operator.git
-cd oc-mirror-operator
-make install                                   # CRDs
-make deploy IMG=ghcr.io/mariusbertram/oc-mirror-operator-controller:<version>
-```
-
-`make deploy` renders `config/default` with kustomize; the controller Deployment carries the
-`MANAGER_IMAGE`, `WORKER_IMAGE`, `PLUGIN_IMAGE` and `OPERATOR_IMAGE` environment variables
-that tell it which images to use for the pods and jobs it creates.
-
-### Verify
-
-```bash
-kubectl get pods -n oc-mirror-operator
-# NAME                                              READY   STATUS
-# oc-mirror-operator-controller-manager-...         1/1     Running
-kubectl get crd | grep mirror.openshift.io
-# imagesets.mirror.openshift.io
-# mirrorexports.mirror.openshift.io
-# mirrortargets.mirror.openshift.io
-```
+Follow the canonical [Setup guide](setup.md) — it covers OLM, the static
+release manifest for plain Kubernetes and installing from source.
 
 ## 3. Create the registry credentials
 
-One secret of type `kubernetes.io/dockerconfigjson` holds the credentials for **all**
-registries involved — the sources you pull from and the target you push to. The easiest
-way is to start from a Docker/Podman `config.json` that already contains them:
-
-```bash
-export NS=oc-mirror-operator
-
-podman login registry.redhat.io          # or docker login
-podman login registry.example.com        # the target
-
-kubectl create secret generic registry-creds \
-  --from-file=.dockerconfigjson=${XDG_RUNTIME_DIR}/containers/auth.json \
-  --type=kubernetes.io/dockerconfigjson -n $NS
-```
-
-Other ways to build the secret (OpenShift pull secret, username/password) are described in
-[Registry credentials](configuration/credentials.md).
+Follow [Prepare the Registry Credentials](setup.md#2-prepare-the-registry-credentials)
+in the Setup guide. All credential formats and the `hack/merge-auth.sh`
+helper are described in [Registry credentials](configuration/credentials.md).
 
 ## 4. Declare what to mirror: ImageSet
 

@@ -5,7 +5,7 @@
 
 ## 1. Install the Operator
 
-Follow the same installation steps as in [Quick Start: Single Operator](quickstart-operator.md#1-install-the-operator).
+Follow the canonical [Setup guide](setup.md#1-install-the-operator).
 
 Choose either:
 - [OLM (Recommended for OpenShift)](quickstart-operator.md#option-a-olm-recommended-for-openshift)
@@ -15,7 +15,7 @@ Choose either:
 
 ## 2. Prepare Registry Credentials
 
-Follow the same credential setup as in [Quick Start: Single Operator](quickstart-operator.md#2-prepare-registry-credentials).
+Follow [Prepare the Registry Credentials](setup.md#2-prepare-the-registry-credentials) in the Setup guide.
 
 **Important:** For OpenShift releases, your credentials must have access to:
 - `registry.redhat.io` (for pulling release images)

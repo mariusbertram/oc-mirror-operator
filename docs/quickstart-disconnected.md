@@ -27,7 +27,7 @@ This guide walks you through setting up a **complete mirror** for a disconnected
 
 ## Step 1: Install the Operator on the Connected Cluster
 
-Follow the installation steps from [Quick Start: Single Operator](quickstart-operator.md#1-install-the-operator).
+Follow the canonical [Setup guide](setup.md#1-install-the-operator).
 
 **Recommendation:** Use OLM installation for OpenShift, or plain manifests for Kubernetes.
 
@@ -35,21 +35,13 @@ Follow the installation steps from [Quick Start: Single Operator](quickstart-ope
 
 ## Step 2: Prepare Registry Credentials
 
-Create credentials for both **source registries** (registry.redhat.io, quay.io) and your **target registry**:
+Follow [Prepare the Registry Credentials](setup.md#2-prepare-the-registry-credentials)
+in the Setup guide. For a complete disconnected setup you need credentials
+for **source registries** (registry.redhat.io, quay.io) **and** your
+**target registry**, combined in one secret.
 
-```bash
-kubectl create namespace oc-mirror-operator
-
-# Create secret with all required credentials
-kubectl create secret generic registry-creds \
-  --from-file=.dockerconfigjson=${HOME}/.docker/config.json \
-  --type=kubernetes.io/dockerconfigjson -n oc-mirror-operator
-
-# Verify the secret
-kubectl get secret registry-creds -n oc-mirror-operator
-```
-
-**Note:** For details on the four required registry hosts, see [Credentials Configuration](configuration/credentials.md).
+**Note:** For details on the four required registry hosts, see
+[Credentials Configuration](configuration/credentials.md).
 
 ---
 

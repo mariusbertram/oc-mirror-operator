@@ -40,28 +40,13 @@ echo "Registry endpoint: ${REGISTRY:-not set}"
 
 ### Common Setup Steps
 
-All guides share these initial steps:
+All guides share the same initial steps — they live in the canonical
+[Setup guide](setup.md):
 
-1. **Install the operator** (choose one method):
-   - [OLM (Recommended)](getting-started.md#option-a-olm-recommended) - For OpenShift users
-   - [Plain manifests](getting-started.md#option-b-plain-manifests) - For Kubernetes users
-
-2. **Create namespace:**
-   ```bash
-   kubectl create namespace oc-mirror-operator
-   ```
-
-3. **Prepare registry credentials:**
-   ```bash
-   # For Docker/Podman users
-   kubectl create secret generic registry-creds \
-     --from-file=.dockerconfigjson=${HOME}/.docker/config.json \
-     --type=kubernetes.io/dockerconfigjson -n oc-mirror-operator
-   
-   # For OpenShift pull secret users
-   kubectl get secret/pull-secret -n openshift-config --export -o yaml | \
-     kubectl apply -n oc-mirror-operator -f -
-   ```
+1. **[Install the operator](setup.md#1-install-the-operator)** — OLM
+   (OpenShift), static release manifest (plain Kubernetes) or from source
+2. **[Prepare the registry credentials](setup.md#2-prepare-the-registry-credentials)** — one
+   combined dockerconfigjson secret for source pull and target push access
 
 ---
 

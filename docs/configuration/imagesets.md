@@ -26,7 +26,7 @@ apiVersion: mirror.openshift.io/v1alpha1
 kind: ImageSet
 metadata:
   name: ocp-4-16
-  namespace: mirror
+  namespace: oc-mirror-operator
 spec:
   mirror:
     platform: { ... }          # OpenShift / OKD releases
@@ -253,7 +253,7 @@ not verify is skipped on that resolution pass (its previously mirrored state is 
 retried on the next poll.
 
 ```bash
-kubectl create secret generic acme-catalog-key --from-file=cosign.pub=./acme.pub -n mirror
+kubectl create secret generic acme-catalog-key --from-file=cosign.pub=./acme.pub -n oc-mirror-operator
 ```
 
 ```yaml
