@@ -77,6 +77,31 @@ The resulting file looks like this (`auth` is `base64(user:password)`):
 
 Registries not listed are accessed anonymously.
 
+## Merging credentials with `hack/merge-auth.sh`
+
+Manual merging of multiple logins and secrets is error-prone — a missing
+registry surfaces much later as a generic `unauthorized` error in the worker
+logs or as `CreateContainerConfigError`. The helper script merges sources in
+order (later ones win) and can validate the result:
+
+```bash
+# Merge the cluster pull secret with the target registry login:
+hack/merge-auth.sh -n mirror -o registry-creds \
+  --from-secret pull-secret \
+  --login registry.example.com robot$mirror s3cr3t \
+  --validate --apply
+
+# Or merge local Docker/Podman auth.json files:
+hack/merge-auth.sh -n mirror -o registry-creds \
+  --from-file ~/.docker/config.json \
+  --from-file ${XDG_RUNTIME_DIR}/containers/auth.json \
+  --validate --apply
+```
+
+`--validate` checks every merged registry entry is non-empty and shaped like
+`base64(user:password)` and fails loudly otherwise; `--apply` creates or
+replaces the secret, without it the script prints the `kubectl` command.
+
 ## Reusing the OpenShift pull secret
 
 The cluster pull secret already contains `registry.redhat.io`, `quay.io` and
