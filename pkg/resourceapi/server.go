@@ -312,6 +312,7 @@ func (s *Server) RegisterAPIRoutes(r *mux.Router) {
 	api.HandleFunc("/targets", s.handleTargetsList).Methods("GET")
 	api.HandleFunc("/targets/{mt}", s.handleTargetDetail).Methods("GET")
 	api.HandleFunc("/targets/{mt}/image-failures", s.handleImageFailures).Methods("GET")
+	api.HandleFunc("/targets/{mt}/progress", s.handleTargetProgress).Methods("GET")
 	api.HandleFunc("/targets/{namespace}/{name}/spec", s.handleGetMirrorTargetSpec).Methods("GET")
 	api.HandleFunc("/targets/{namespace}/{name}/spec", s.handlePatchMirrorTargetSpec).Methods("PATCH")
 
@@ -707,6 +708,105 @@ func (s *Server) handleImageFailures(w http.ResponseWriter, r *http.Request) {
 }
 
 // --- Raw resource handlers ---
+
+// TargetProgress is the aggregated progress summary for a MirrorTarget.
+type TargetProgress struct {
+	ImageSets  []ImageSetProgress `json:"imageSets"`
+	Total      int                `json:"total"`
+	Mirrored   int                `json:"mirrored"`
+	Pending    int                `json:"pending"`
+	Failed     int                `json:"failed"`
+	Percent    float64            `json:"percent"`
+	EtaSeconds *float64           `json:"etaSeconds,omitempty"`
+	LastErrors []string           `json:"lastErrors,omitempty"`
+}
+
+// ImageSetProgress is the per-ImageSet contribution to TargetProgress.
+type ImageSetProgress struct {
+	Name     string  `json:"name"`
+	Total    int     `json:"total"`
+	Mirrored int     `json:"mirrored"`
+	Pending  int     `json:"pending"`
+	Failed   int     `json:"failed"`
+	Percent  float64 `json:"percent"`
+}
+
+// handleTargetProgress returns a single "how far along / what is failing
+// right now" view for long-running first mirrors — the summary a console
+// would show, exposed for vanilla-Kubernetes users via curl.
+func (s *Server) handleTargetProgress(w http.ResponseWriter, r *http.Request) {
+	c := s.clientForRequest(r)
+	vars := mux.Vars(r)
+	mt, err := s.LookupMirrorTarget(r.Context(), c, vars["mt"])
+	if err != nil {
+		if apierrors.IsForbidden(err) {
+			http.Error(w, "forbidden: insufficient permissions", http.StatusForbidden)
+		} else if apierrors.IsNotFound(err) {
+			http.Error(w, "MirrorTarget not found", http.StatusNotFound)
+		} else {
+			http.Error(w, fmt.Sprintf("failed to get MirrorTarget: %v", err), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	progress := TargetProgress{ImageSets: make([]ImageSetProgress, 0, len(mt.Spec.ImageSets))}
+	now := time.Now()
+	// Throughput baseline: the oldest ImageSet state ConfigMap creation time
+	// gives a rough "since when has this been running". Anchored at 0 the ETA
+	// would be nonsensical, so it is only computed with a positive baseline.
+	var oldestCreated *time.Time
+	for _, isName := range mt.Spec.ImageSets {
+		isp := ImageSetProgress{Name: isName}
+		state, err := imagestate.Load(r.Context(), c, mt.Namespace, isName)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Failed to load image state for imageset %s: %v", isName, err), http.StatusInternalServerError)
+			return
+		}
+		isp.Total, isp.Mirrored, isp.Pending, isp.Failed = imagestate.Counts(state)
+
+		cm := &corev1.ConfigMap{}
+		if err := c.Get(r.Context(), client.ObjectKey{Name: imagestate.ConfigMapName(isName), Namespace: mt.Namespace}, cm); err == nil {
+			created := cm.CreationTimestamp.Time
+			if !created.IsZero() && (oldestCreated == nil || created.Before(*oldestCreated)) {
+				oldestCreated = &created
+			}
+		}
+
+		if isp.Total > 0 {
+			isp.Percent = float64(isp.Mirrored) / float64(isp.Total) * 100
+		}
+		progress.ImageSets = append(progress.ImageSets, isp)
+		progress.Total += isp.Total
+		progress.Mirrored += isp.Mirrored
+		progress.Pending += isp.Pending
+		progress.Failed += isp.Failed
+
+		// Collect the most recent error message per ImageSet for the summary.
+		for _, entry := range state {
+			if entry != nil && entry.LastError != "" && entry.State == "Failed" {
+				progress.LastErrors = append(progress.LastErrors, fmt.Sprintf("%s: %s", isName, entry.LastError))
+				break
+			}
+		}
+	}
+
+	if progress.Total > 0 {
+		progress.Percent = float64(progress.Mirrored) / float64(progress.Total) * 100
+	}
+	// ETA from average throughput since the oldest state ConfigMap appeared.
+	if oldestCreated != nil {
+		elapsed := now.Sub(*oldestCreated).Seconds()
+		if elapsed > 0 && progress.Mirrored > 0 && progress.Pending > 0 {
+			rate := float64(progress.Mirrored) / elapsed
+			if rate > 0 {
+				eta := float64(progress.Pending) / rate
+				progress.EtaSeconds = &eta
+			}
+		}
+	}
+
+	writeJSON(w, progress)
+}
 
 func (s *Server) handleLegacyRedirect(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusGone)

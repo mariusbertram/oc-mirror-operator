@@ -277,6 +277,18 @@ the supported interaction model is:
    kubectl port-forward svc/oc-mirror-resource-api 8081:8081 -n oc-mirror-system
    ```
 
+   For long-running first mirrors there is a progress endpoint summarizing
+   how far along the mirror is and what is failing right now — point your
+   HTTP client (or `jq` piped from any fetch tool) at it:
+
+   ```
+   GET /api/v1/targets/<target>/progress
+   ```
+
+   It returns `total`, `mirrored`, `pending`, `failed`, a `percent` and —
+   once throughput can be measured — an `etaSeconds` estimate, plus the
+   per-ImageSet breakdown and the most recent error message.
+
 3. **Metrics** — the operator exposes Prometheus metrics (see
    [operations](operations.md)); scrape them with your own Prometheus.
 
