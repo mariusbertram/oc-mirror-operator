@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.1.7] - 2026-10-10
+
+### Added
+
+- Mirror Helm chart archives into the target registry via workers.
+- REST API endpoint `/targets/{mt}/progress` aggregating per-ImageSet counts
+  (total/mirrored/pending/failed), overall percent, an ETA estimate derived
+  from throughput since the oldest state ConfigMap, and the most recent error
+  message.
+- The ImageSet `Ready` condition message now embeds the verbatim error of the
+  first permanently failed image (`; first failure: ...`), so the
+  troubleshooting symptom keywords are visible directly in
+  `kubectl get imageset`.
+- Publish a static install manifest per release and document a 3-command
+  vanilla-Kubernetes install.
+- `hack/merge-auth.sh` helper for combined registry credential secrets.
+- Canonical setup guide (`docs/setup.md`) consolidating operator install
+  (OLM, static release manifest, from source) and registry credentials; all
+  quickstarts link to it instead of repeating the steps. Example namespace
+  unified to `oc-mirror-operator` across the docs.
+- Bootstrap-the-bootstrapper recipe for disconnected installs and an explicit
+  statement of the vanilla-Kubernetes interaction story (kubectl + REST API
+  port-forward; the console plugin remains OpenShift-only).
+- Dependabot configuration for gomod, npm, github-actions and docker groups.
+- Weekly canary CI workflow (latest Kind node image, newest console).
+
+### Changed
+
+- Lower `pollInterval`/`checkExistInterval` minimums from 1h to 10m (CRD
+  validation and runtime clamps); values below the recommended 1h emit
+  `ShortPollInterval`/`ShortCheckExistInterval` warning events on the
+  MirrorTarget.
+
+### CI
+
+- Parallelized PR CI: 4-leg build matrix with per-component scan/export and a
+  collect job, e2e split into a 2-suite matrix on separate Kind clusters,
+  plugin build/scan/smoke-test consolidated into one `plugin-ci` job; npm,
+  Docker layer and Go build caching added.
+- Release workflow: lint, bundle validation, semver gate and manual dispatch;
+  draft PRs to Red Hat community-operators-prod and operatorhub.io
+  community-operators on stable releases; GitHub App credentials for the
+  catalog PR job.
+- Concurrency cancel, path filters and job timeouts in PR CI; multi-arch
+  build timeout raised to 60 minutes (cold-cache QEMU arm64 builds take
+  ~31 min); silent `go mod tidy` replaced with drift checks and the PR console
+  matrix reduced.
+
 ## [v0.1.6] - 2026-10-05
 
 ### Added
