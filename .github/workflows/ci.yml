@@ -133,7 +133,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        component: [controller, manager, worker, plugin]
+        include:
+          - component: controller
+            image-env: IMG_CONTROLLER
+          - component: manager
+            image-env: IMG_MANAGER
+          - component: worker
+            image-env: IMG_WORKER
+          - component: plugin
+            image-env: IMG_PLUGIN
     steps:
       - uses: actions/checkout@v7
 
@@ -141,7 +149,7 @@ jobs:
         run: |
           set -x
           CONTAINER_TOOL=docker make docker-build-${{ matrix.component }} \
-            ${{ matrix.component == 'plugin' && 'IMG_PLUGIN=example.com/oc-mirror-plugin:v0.0.1' || format('IMG_{0}=example.com/oc-mirror-{0}:v0.0.1', matrix.component) }}
+            ${{ matrix.image-env }}=example.com/oc-mirror-${{ matrix.component }}:v0.0.1
           docker images | grep "oc-mirror"
 
       # These images are only built locally for this job (never pushed to a
