@@ -19,6 +19,12 @@ images, changing specs, cleaning up, and monitoring.
 
 ## Reading status
 
+The `Ready` condition message on an `ImageSet` carries the verbatim error
+text of the first permanently failed image (`; first failure: …`), so the
+symptom keywords from the [troubleshooting](troubleshooting.md) tables
+(`unauthorized`, `i/o timeout`, `signature verification`, …) are visible
+directly in `kubectl get imageset` — no log digging needed for triage.
+
 ### At a glance
 
 ```bash

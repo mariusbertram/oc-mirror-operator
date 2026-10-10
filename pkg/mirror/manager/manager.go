@@ -1983,6 +1983,13 @@ func (m *MirrorManager) updateImageSetStatusLocked(ctx context.Context, is *mirr
 		if totalFailed > maxFailedImageDetails {
 			readyMsg += fmt.Sprintf(" — showing %d of %d permanently failed images", maxFailedImageDetails, totalFailed)
 		}
+		// Carry the verbatim error text of the first failed image so the
+		// symptom keywords from the troubleshooting doc ('unauthorized',
+		// 'i/o timeout', 'signature verification', …) are visible directly
+		// in `kubectl get imageset` — no log digging needed for triage.
+		if totalFailed > 0 && details[0].Error != "" {
+			readyMsg += fmt.Sprintf("; first failure: %s", details[0].Error)
+		}
 		if total == 0 {
 			readyStatus = metav1.ConditionFalse
 			readyReason = "Empty"

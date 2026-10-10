@@ -1561,6 +1561,38 @@ var _ = Describe("Manager Coverage", func() {
 			Expect(readyCond.Message).To(ContainSubstring("showing 20 of 25 permanently failed images"))
 		})
 
+		It("embeds the first failure error in the Ready condition message", func() {
+			is := &mirrorv1alpha1.ImageSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "cond-err-is",
+					Namespace:  "default",
+					Generation: 1,
+				},
+			}
+			c := fake.NewClientBuilder().WithScheme(scheme).
+				WithRuntimeObjects(is).
+				WithStatusSubresource(is).
+				Build()
+			m = NewWithClients(c, m.Clientset, "test", "default", "test-image:latest", "", scheme)
+			state := imagestate.ImageState{
+				"a": &imagestate.ImageEntry{State: "Mirrored"},
+				"b": &imagestate.ImageEntry{State: "Failed", PermanentlyFailed: true, LastError: "failed to send blob post: unauthorized"},
+			}
+			m.updateImageSetStatusLocked(context.TODO(), is, state, false)
+			var readyCond *metav1.Condition
+			for i := range is.Status.Conditions {
+				if is.Status.Conditions[i].Type == conditionReady {
+					readyCond = &is.Status.Conditions[i]
+					break
+				}
+			}
+			Expect(readyCond).NotTo(BeNil())
+			// The verbatim worker error keyword must be visible in the condition
+			// message so kubectl get imageset shows the troubleshooting-doc
+			// symptom without digging through logs.
+			Expect(readyCond.Message).To(ContainSubstring("first failure: failed to send blob post: unauthorized"))
+		})
+
 		It("excludes Mirrored entries from failedImageDetails", func() {
 			is := &mirrorv1alpha1.ImageSet{
 				ObjectMeta: metav1.ObjectMeta{
