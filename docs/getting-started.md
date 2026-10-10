@@ -85,7 +85,31 @@ console; search for *oc-mirror*.
 > operator into the namespace you want to use. The examples below use the operator
 > namespace `oc-mirror-operator` as `mirror`; pick one and stay consistent.
 
-### Option B: Plain manifests
+### Option B: Static release manifest (plain Kubernetes, 3 commands)
+
+Every release publishes a rendered, versioned install manifest — no Go
+toolchain, make or kustomize required. Works on vanilla Kubernetes and Kind.
+
+```bash
+# 1. Install the operator (namespace, CRDs, RBAC, deployments) in one shot
+kubectl apply -f https://github.com/mariusbertram/oc-mirror-operator/releases/download/v<version>/oc-mirror-operator.yaml
+
+# 2. Wait for it to roll out
+kubectl rollout status deployment/oc-mirror-controller-manager -n oc-mirror-system
+
+# 3. Verify the CRDs are registered
+kubectl get crd | grep mirror.openshift.io
+```
+
+> Note: the console plugin is OpenShift-only (it relies on the OpenShift
+> service CA and `console.openshift.io` CRDs); on vanilla Kubernetes the
+> operator runs without the plugin component.
+
+The manifest is generated with `make build-installer` (kustomize render of
+`config/default`) during each release and pinned to that release's
+multi-arch images on ghcr.io.
+
+### Option C: From source
 
 ```bash
 git clone https://github.com/mariusbertram/oc-mirror-operator.git
