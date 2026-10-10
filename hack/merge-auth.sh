@@ -127,7 +127,7 @@ if [ "$VALIDATE" = "true" ]; then
   [ "$FAIL" -eq 0 ] || { echo "ERROR: validation failed" >&2; exit 1; }
 fi
 
-TMP=$(mktemp)
+TMP=$(mktemp "/tmp/merge-auth.${SECRET_NAME}.XXXXXX")
 jq . <<<"$MERGED" > "$TMP"
 
 if [ "$APPLY" = "true" ]; then
@@ -135,11 +135,13 @@ if [ "$APPLY" = "true" ]; then
     --from-file=.dockerconfigjson="$TMP" \
     --type=kubernetes.io/dockerconfigjson \
     -n "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+  rm -f "$TMP"
   echo "Applied secret $SECRET_NAME in namespace $NAMESPACE"
 else
+  # Keep the rendered config on disk so the printed command is runnable.
   echo "Run the following to create the secret:"
   echo "  kubectl create secret generic $SECRET_NAME \\"
   echo "    --from-file=.dockerconfigjson=$TMP \\"
   echo "    --type=kubernetes.io/dockerconfigjson -n $NAMESPACE"
+  echo "Delete $TMP afterwards (it contains credentials)."
 fi
-rm -f "$TMP"
