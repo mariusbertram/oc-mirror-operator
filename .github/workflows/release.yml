@@ -66,6 +66,8 @@ jobs:
       - name: Run tests
         run: |
           go mod tidy
+          # Fail on module drift instead of silently tidying.
+          git diff --exit-code go.mod go.sum
           make test
 
       - name: Run linter

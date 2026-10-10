@@ -95,6 +95,7 @@ jobs:
       - name: Run e2e tests
         run: |
           go mod tidy
+          git diff --exit-code go.mod go.sum
           SKIP_CLUSTER_SETUP=true \
           CERT_MANAGER_INSTALL_SKIP=true \
           KIND_CLUSTER=oc-mirror-canary \

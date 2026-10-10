@@ -93,6 +93,8 @@ jobs:
       - name: Run tests
         run: |
           go mod tidy
+          # Fail on module drift instead of silently tidying.
+          git diff --exit-code go.mod go.sum
           make test
 
       - name: Coverage summary
@@ -214,7 +216,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        console-version: ['4.18', '4.19', '4.20', '4.21', '4.22']
+        # PR runs test the oldest and newest console only; pushes to main
+        # run the full matrix.
+        console-version: ${{ github.event_name == 'pull_request' && fromJSON('["4.18", "4.22"]') || fromJSON('["4.18", "4.19", "4.20", "4.21", "4.22"]') }}
     permissions:
       contents: read
       security-events: write # upload Grype SARIF to the Security tab
@@ -619,6 +623,7 @@ jobs:
           E2E_LABELS: ${{ matrix.suite == 'cluster' && 'cluster' || 'release || catalog' }}
         run: |
           go mod tidy
+          git diff --exit-code go.mod go.sum
           SKIP_CLUSTER_SETUP=true \
           CERT_MANAGER_INSTALL_SKIP=true \
           KIND_CLUSTER="$E2E_CLUSTER" \
