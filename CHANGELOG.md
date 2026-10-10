@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Release pipeline: the bundle-validation step in the release `test` job
+  resolved Makefile-default image refs (`…:v0.0.2`) and failed with
+  `MANIFEST_UNKNOWN` in every run since #231 — the step now pins the last
+  released images and skips digest pinning (the published bundle is built
+  with digest-pinned refs in the `build-bundle` job) (#249).
+
 ## [v0.1.7] - 2026-10-10
 
 ### Added
