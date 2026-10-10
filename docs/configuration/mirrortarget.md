@@ -79,9 +79,17 @@ spec:
 
 ```yaml
 spec:
-  pollInterval: 24h          # upstream re-resolution; min 1h; "0s" disables
-  checkExistInterval: 6h     # target registry verification; min 1h
+  pollInterval: 24h          # upstream re-resolution; min 10m; "0s" disables
+  checkExistInterval: 6h     # target registry verification; min 10m
 ```
+
+> **Short intervals for testing:** the minimum for both fields is **10m** —
+> intended for fast feedback on Kind or test clusters. Anything below the
+> recommended **1h** additionally emits a `ShortPollInterval` /
+> `ShortCheckExistInterval` warning event on the MirrorTarget, because
+> short intervals re-query upstream APIs (Cincinnati, catalogs) or sweep
+> the target registry accordingly often. Use `kubectl describe mirrortarget`
+> to see it. Production setups should stay at 1h or above.
 
 | | Polling | Drift check |
 |---|---|---|

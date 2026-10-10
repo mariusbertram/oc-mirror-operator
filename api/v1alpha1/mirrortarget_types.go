@@ -170,9 +170,11 @@ type MirrorTargetSpec struct {
 	// PollInterval defines how often the operator re-checks upstream sources
 	// (release channels, operator catalogs) for new content.
 	// New images are added as Pending; already-mirrored images are preserved.
-	// Minimum: 1h. Default: 24h. Set to "0" to disable periodic polling.
+	// Minimum: 10m (intended for testing on Kind; values below 1h also emit a
+	// warning event because they hammer upstream APIs). Default: 24h.
+	// Set to "0" to disable periodic polling.
 	// +optional
-	// +kubebuilder:validation:XValidation:rule="duration(self) == duration('0s') || duration(self) >= duration('1h')",message="pollInterval must be 0s (disabled) or at least 1h"
+	// +kubebuilder:validation:XValidation:rule="duration(self) == duration('0s') || duration(self) >= duration('10m')",message="pollInterval must be 0s (disabled) or at least 10m"
 	PollInterval *metav1.Duration `json:"pollInterval,omitempty"`
 
 	// CheckExistInterval defines how often the manager verifies that images
@@ -180,9 +182,10 @@ type MirrorTargetSpec struct {
 	// immediately. For Mirrored images this detects drift (manual deletions).
 	// For permanently-failed images (PermanentlyFailed=true) this triggers a
 	// retry attempt in case the upstream error was transient.
-	// Minimum: 1h. Default: 6h.
+	// Minimum: 10m (intended for testing on Kind; values below 1h also emit a
+	// warning event). Default: 6h.
 	// +optional
-	// +kubebuilder:validation:XValidation:rule="duration(self) >= duration('1h')",message="checkExistInterval must be at least 1h"
+	// +kubebuilder:validation:XValidation:rule="duration(self) >= duration('10m')",message="checkExistInterval must be at least 10m"
 	CheckExistInterval *metav1.Duration `json:"checkExistInterval,omitempty"`
 
 	// MaxRetries is how many failed mirror attempts an image gets before it

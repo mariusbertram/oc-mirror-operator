@@ -1305,9 +1305,9 @@ var _ = Describe("Manager Coverage", func() {
 			Expect(shouldResolve(is, mt, state)).To(BeTrue())
 		})
 
-		It("enforces minimum 1h pollInterval", func() {
-			// pollInterval < 1h should be clamped to 1h
-			past := metav1.NewTime(time.Now().Add(-30 * time.Minute))
+		It("enforces minimum 10m pollInterval", func() {
+			// pollInterval < 10m should be clamped to 10m
+			past := metav1.NewTime(time.Now().Add(-5 * time.Minute))
 			is := &mirrorv1alpha1.ImageSet{
 				ObjectMeta: metav1.ObjectMeta{Generation: 1},
 				Status: mirrorv1alpha1.ImageSetStatus{
@@ -1323,7 +1323,7 @@ var _ = Describe("Manager Coverage", func() {
 			state := imagestate.ImageState{
 				"d1": &imagestate.ImageEntry{State: "Pending"},
 			}
-			// 30 min < 1h (clamped minimum) → should NOT resolve
+			// 5 min < 10m (clamped minimum) → should NOT resolve
 			Expect(shouldResolve(is, mt, state)).To(BeFalse())
 		})
 	})

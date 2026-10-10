@@ -318,6 +318,7 @@ func runController() {
 	if err := (&controller.MirrorTargetReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
+		Record: mgr.GetEventRecorder("oc-mirror-operator"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "MirrorTarget")
 		os.Exit(1)

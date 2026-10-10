@@ -127,8 +127,8 @@ func (r *ImageSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (r
 	pollInterval := 24 * time.Hour
 	if mt.Spec.PollInterval != nil && mt.Spec.PollInterval.Duration > 0 {
 		pollInterval = mt.Spec.PollInterval.Duration
-		if pollInterval < 1*time.Hour {
-			pollInterval = 1 * time.Hour
+		if pollInterval < 10*time.Minute {
+			pollInterval = 10 * time.Minute
 		}
 	}
 	pollingEnabled := mt.Spec.PollInterval == nil || mt.Spec.PollInterval.Duration > 0

@@ -1149,8 +1149,8 @@ func effectivePollInterval(mt *mirrorv1alpha1.MirrorTarget) (time.Duration, bool
 		return 0, false
 	}
 	pollInterval = mt.Spec.PollInterval.Duration
-	if pollInterval < 1*time.Hour {
-		pollInterval = 1 * time.Hour
+	if pollInterval < 10*time.Minute {
+		pollInterval = 10 * time.Minute
 	}
 	return pollInterval, true
 }

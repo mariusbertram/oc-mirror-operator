@@ -31,6 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/recorder"
 
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
 	ocmetrics "github.com/mariusbertram/oc-mirror-operator/pkg/metrics"
@@ -52,6 +53,7 @@ const reasonReconcileError = "ReconcileError"
 type MirrorTargetReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	Record recorder.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=mirror.openshift.io,resources=mirrortargets,verbs=get;list;watch;create;update;patch;delete
@@ -101,6 +103,7 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		}
 		return ctrl.Result{}, err
 	}
+	r.warnShortIntervals(mt)
 
 	// Handle deletion
 	if !mt.DeletionTimestamp.IsZero() {
@@ -1216,6 +1219,27 @@ func cleanupSnapshotCMName(targetName, imageSetName string) string {
 	}
 	body = strings.TrimRight(body, "-")
 	return body + "-" + suffix
+}
+
+// warnShortIntervals emits a warning event when a poll or drift-check
+// interval below 1h is configured. The API floor is 10m (for testing on
+// Kind); anything below 1h hammers upstream APIs (Cincinnati, catalogs)
+// and is usually unintended outside test clusters.
+func (r *MirrorTargetReconciler) warnShortIntervals(mt *mirrorv1alpha1.MirrorTarget) {
+	if r.Record == nil {
+		return
+	}
+	const minRecommended = time.Hour
+	if mt.Spec.PollInterval != nil && mt.Spec.PollInterval.Duration > 0 && mt.Spec.PollInterval.Duration < minRecommended {
+		r.Record.Eventf(mt, nil, corev1.EventTypeWarning, "ShortPollInterval",
+			"pollInterval %s is below the recommended 1h; upstream APIs (Cincinnati, catalogs) are re-queried that often. Intended for testing on Kind.",
+			mt.Spec.PollInterval.Duration.String())
+	}
+	if mt.Spec.CheckExistInterval != nil && mt.Spec.CheckExistInterval.Duration > 0 && mt.Spec.CheckExistInterval.Duration < minRecommended {
+		r.Record.Eventf(mt, nil, corev1.EventTypeWarning, "ShortCheckExistInterval",
+			"checkExistInterval %s is below the recommended 1h; the target registry is swept that often. Intended for testing on Kind.",
+			mt.Spec.CheckExistInterval.Duration.String())
+	}
 }
 
 // SetupWithManager sets up the controller with the Manager.
