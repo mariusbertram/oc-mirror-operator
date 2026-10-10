@@ -15,7 +15,7 @@ The operator runs four images it references at runtime:
 | Controller | `ghcr.io/mariusbertram/oc-mirror-operator-controller:v<version>` | — (its own image) |
 | Manager / resource API | `ghcr.io/mariusbertram/oc-mirror-operator-manager:v<version>` | `MANAGER_IMAGE` |
 | Worker / cleanup jobs | `ghcr.io/mariusbertram/oc-mirror-operator-worker:v<version>` | `WORKER_IMAGE` |
-| Console plugin (OpenShift only) | `ghcr.io/mariusbertram/oc-mirror-operator-plugin:v<version>-ocp<console>` | `PLUGIN_IMAGE` |
+| Console plugin (OpenShift only) | `ghcr.io/mariusbertram/oc-mirror-operator-plugin:v<version>-ocp<console>` | `RELATED_IMAGE_PLUGIN_4_18` … `RELATED_IMAGE_PLUGIN_4_22` (one per console version) |
 
 In a disconnected environment none of these registries are reachable. The
 recipe below mirrors the operator images into your local registry with
@@ -34,7 +34,6 @@ VERSION=v0.1.0
 
 for img in controller manager worker; do
   skopeo copy --all \
-    --digestfile "${img}-digest.txt" \
     "docker://ghcr.io/mariusbertram/oc-mirror-operator-${img}:${VERSION}" \
     "docker://${TARGET}-${img}:${VERSION}"
 done
@@ -67,8 +66,9 @@ kubectl apply -f oc-mirror-operator.yaml
 ```
 
 The controller reads `MANAGER_IMAGE`, `WORKER_IMAGE`, `OPERATOR_IMAGE` and
-`PLUGIN_IMAGE` from its own container env (set by the rendered manifest).
-After the rewrite, all four point at your local registry — verify:
+the five `RELATED_IMAGE_PLUGIN_4_18` … `RELATED_IMAGE_PLUGIN_4_22` variables
+from its own container env (set by the rendered manifest). After the rewrite,
+they all point at your local registry — verify:
 
 ```bash
 kubectl set env deployment/oc-mirror-controller-manager -n oc-mirror-system --list | grep IMAGE
