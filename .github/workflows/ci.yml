@@ -129,13 +129,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # Shared Go build cache across the Go CI jobs (see also test/e2e).
-      - name: Cache Go build cache
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/go-build
-          key: go-build-${{ runner.os }}-${{ hashFiles('go.sum') }}
-          restore-keys: go-build-${{ runner.os }}-
       # Build four separate single-arch (amd64) images tagged with the names the e2e
       # test suite expects and save them as tar archives for downstream jobs.
       - name: Build images (controller, manager, worker)
