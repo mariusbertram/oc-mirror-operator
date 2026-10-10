@@ -5,104 +5,18 @@
 
 ## 1. Install the Operator
 
-Choose **one** installation method:
-
-### Option A: OLM (Recommended for OpenShift)
-
-```bash
-# 1. Create namespace
-kubectl create namespace oc-mirror-operator
-
-# 2. Register the catalog
-cat <<EOT | kubectl apply -f -
-apiVersion: operators.coreos.com/v1alpha1
-kind: CatalogSource
-metadata:
-  name: brtrm-dev-catalog
-  namespace: openshift-marketplace
-spec:
-  sourceType: grpc
-  image: quay.io/mariusbertram/brtrm-dev-catalog:latest
-  displayName: brtrm Dev Catalog
-EOT
-
-# 3. Install the operator
-cat <<EOT | kubectl apply -f -
-apiVersion: operators.coreos.com/v1
-kind: OperatorGroup
-metadata:
-  name: oc-mirror-operator
-  namespace: oc-mirror-operator
-spec:
-  targetNamespaces: [oc-mirror-operator]
----
-apiVersion: operators.coreos.com/v1alpha1
-kind: Subscription
-metadata:
-  name: oc-mirror
-  namespace: oc-mirror-operator
-spec:
-  name: oc-mirror
-  channel: alpha
-  source: brtrm-dev-catalog
-  sourceNamespace: openshift-marketplace
-EOT
-
-# 4. Wait for the operator to be ready
-kubectl get pods -n oc-mirror-operator -w
-```
-
-Wait for the `oc-mirror-operator-controller-manager` pod to show `Running` status.
-
-### Option B: Plain Manifests (Recommended for Kubernetes)
-
-```bash
-# 1. Clone the repository
-git clone https://github.com/mariusbertram/oc-mirror-operator.git
-cd oc-mirror-operator
-
-# 2. Install CRDs
-make install
-
-# 3. Deploy the operator
-make deploy IMG=ghcr.io/mariusbertram/oc-mirror-operator-controller:latest
-
-# 4. Wait for the operator to be ready
-kubectl get pods -n oc-mirror-operator -w
-```
+Follow the canonical [Setup guide](setup.md#1-install-the-operator).
+Options: [OLM](setup.md#option-a-olm-recommended-for-openshift),
+[static release manifest](setup.md#option-b-static-release-manifest-plain-kubernetes),
+[from source](setup.md#option-c-from-source).
 
 ---
 
 ## 2. Prepare Registry Credentials
 
-Create a secret with credentials for both the **source registry** (registry.redhat.io) and your **target registry**:
-
-```bash
-# Method 1: From existing Docker config
-export NS=oc-mirror-operator
-podman login registry.redhat.io
-podman login registry.example.com  # Replace with your target registry
-
-kubectl create secret generic registry-creds \
-  --from-file=.dockerconfigjson=${XDG_RUNTIME_DIR}/containers/auth.json \
-  --type=kubernetes.io/dockerconfigjson -n $NS
-
-# Method 2: From OpenShift pull secret (if on OpenShift)
-kubectl get secret/pull-secret -n openshift-config --export -o yaml | \
-  kubectl apply -n oc-mirror-operator -f -
-
-# Method 3: Manual creation
-kubectl create secret docker-registry registry-creds \
-  --docker-server=registry.redhat.io \
-  --docker-username=<your-username> \
-  --docker-password=<your-password> \
-  --docker-email=<your-email> -n oc-mirror-operator
-```
-
-Verify the secret was created:
-```bash
-kubectl get secret registry-creds -n oc-mirror-operator
-```
+Follow [Prepare the Registry Credentials](setup.md#2-prepare-the-registry-credentials)
+in the Setup guide. You need pull credentials for the Red Hat catalog
+(`registry.redhat.io`) and push credentials for your target registry.
 
 ---
 

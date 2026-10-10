@@ -41,13 +41,13 @@ ConfigMaps over HTTP. How it is reachable is decided per `MirrorTarget` by
 
 ```bash
 # OpenShift Route (default there)
-URL=https://$(kubectl get route internal-registry-resources -n mirror -o jsonpath='{.spec.host}')
+URL=https://$(kubectl get route internal-registry-resources -n oc-mirror-operator -o jsonpath='{.spec.host}')
 
 # Ingress
-URL=https://$(kubectl get ingress internal-registry-resources -n mirror -o jsonpath='{.spec.rules[0].host}')
+URL=https://$(kubectl get ingress internal-registry-resources -n oc-mirror-operator -o jsonpath='{.spec.rules[0].host}')
 
 # Service only / plain Kubernetes: port-forward
-kubectl port-forward svc/oc-mirror-resource-api 8081:8081 -n mirror &
+kubectl port-forward svc/oc-mirror-resource-api 8081:8081 -n oc-mirror-operator &
 URL=http://localhost:8081
 ```
 
@@ -131,7 +131,7 @@ apiVersion: mirror.openshift.io/v1alpha1
 kind: MirrorExport
 metadata:
   name: ocp-4-16-export
-  namespace: mirror
+  namespace: oc-mirror-operator
 spec:
   mirror:                                  # same schema as ImageSet.spec.mirror
     platform:
@@ -168,8 +168,8 @@ and writes the ConfigMap `<name>-artifacts`:
 | `catalogsource-<slug>.yaml`, `clustercatalog-<slug>.yaml` | Catalog resources for the destination |
 
 ```bash
-kubectl get mirrorexport ocp-4-16-export -n mirror         # Ready=True/Rendered, totalImages
-kubectl get cm ocp-4-16-export-artifacts -n mirror -o jsonpath='{.data.manifest\.json}' \
+kubectl get mirrorexport ocp-4-16-export -n oc-mirror-operator         # Ready=True/Rendered, totalImages
+kubectl get cm ocp-4-16-export-artifacts -n oc-mirror-operator -o jsonpath='{.data.manifest\.json}' \
   | jq -r '.images[] | "\(.source) \(.destination)"' > copy-list.txt
 
 # e.g. with skopeo

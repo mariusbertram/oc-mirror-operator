@@ -26,7 +26,7 @@ kubectl create secret docker-registry registry-creds \
   --docker-server=registry.example.com \
   --docker-username=<user> \
   --docker-password=<password> \
-  -n mirror
+  -n oc-mirror-operator
 ```
 
 ### Opaque secret with `username` / `password`
@@ -36,7 +36,7 @@ apiVersion: v1
 kind: Secret
 metadata:
   name: registry-creds
-  namespace: mirror
+  namespace: oc-mirror-operator
 type: Opaque
 stringData:
   username: robot$mirror
@@ -60,7 +60,7 @@ podman login registry.example.com
 kubectl create secret generic registry-creds \
   --from-file=.dockerconfigjson=${XDG_RUNTIME_DIR}/containers/auth.json \
   --type=kubernetes.io/dockerconfigjson \
-  -n mirror
+  -n oc-mirror-operator
 ```
 
 The resulting file looks like this (`auth` is `base64(user:password)`):
@@ -86,13 +86,13 @@ order (later ones win) and can validate the result:
 
 ```bash
 # Merge the cluster pull secret with the target registry login:
-hack/merge-auth.sh -n mirror -o registry-creds \
+hack/merge-auth.sh -n oc-mirror-operator -o registry-creds \
   --from-secret pull-secret \
   --login registry.example.com robot$mirror s3cr3t \
   --validate --apply
 
 # Or merge local Docker/Podman auth.json files:
-hack/merge-auth.sh -n mirror -o registry-creds \
+hack/merge-auth.sh -n oc-mirror-operator -o registry-creds \
   --from-file ~/.docker/config.json \
   --from-file ${XDG_RUNTIME_DIR}/containers/auth.json \
   --validate --apply
@@ -117,7 +117,7 @@ jq --arg auth "$(echo -n 'user:password' | base64 -w0)" \
 
 kubectl create secret generic registry-creds \
   --from-file=.dockerconfigjson=/tmp/combined.json \
-  --type=kubernetes.io/dockerconfigjson -n mirror
+  --type=kubernetes.io/dockerconfigjson -n oc-mirror-operator
 ```
 
 ## Which pod needs which access

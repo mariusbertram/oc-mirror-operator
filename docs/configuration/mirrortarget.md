@@ -27,7 +27,7 @@ apiVersion: mirror.openshift.io/v1alpha1
 kind: MirrorTarget
 metadata:
   name: internal-registry
-  namespace: mirror
+  namespace: oc-mirror-operator
 spec:
   registry: registry.example.com/mirror   # host[:port][/path], no scheme
   authSecret: registry-creds              # see credentials.md
@@ -175,7 +175,7 @@ cluster.
 ## Custom CA bundle
 
 ```bash
-kubectl create configmap corporate-ca --from-file=ca-bundle.crt=/path/to/chain.pem -n mirror
+kubectl create configmap corporate-ca --from-file=ca-bundle.crt=/path/to/chain.pem -n oc-mirror-operator
 ```
 
 ```yaml
@@ -240,7 +240,7 @@ apiVersion: mirror.openshift.io/v1alpha1
 kind: MirrorTarget
 metadata:
   name: internal-registry
-  namespace: mirror
+  namespace: oc-mirror-operator
   annotations:
     mirror.openshift.io/cleanup-policy: Delete
 spec:

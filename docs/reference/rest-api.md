@@ -64,7 +64,7 @@ found, `500` other API errors.
 ## Examples
 
 ```bash
-URL=https://$(kubectl get route internal-registry-resources -n mirror -o jsonpath='{.spec.host}')
+URL=https://$(kubectl get route internal-registry-resources -n oc-mirror-operator -o jsonpath='{.spec.host}')
 
 curl -sk $URL/api/v1/targets | jq .
 curl -sk $URL/api/v1/targets/internal-registry | jq '.catalogs'
