@@ -258,6 +258,33 @@ On plain Kubernetes use `spec.expose.type: Ingress` or port-forward the
 `oc-mirror-resource-api` Service on port 8081. All options are covered in
 [Consuming the mirror](consuming-results.md).
 
+### Interacting with the operator on plain Kubernetes (no console plugin)
+
+The OpenShift console plugin **does not exist on vanilla Kubernetes** — it is
+an OpenShift-only component (it requires the `console.openshift.io`
+`ConsolePlugin` CRD and the OpenShift service CA for TLS). On plain K8s/Kind,
+the supported interaction model is:
+
+1. **Declarative via kubectl** — create/update `ImageSet` and `MirrorTarget`
+   resources directly; status and conditions are visible with
+   `kubectl describe` / `kubectl get -o yaml`.
+2. **Resource API for everything the plugin would show** — the same HTTP API
+   the plugin uses (`/api/v1/targets/...`) serves mirror rules, signatures,
+   catalogs and status. Port-forward the Service and use any HTTP client, or
+   point one at the Ingress:
+
+   ```bash
+   kubectl port-forward svc/oc-mirror-resource-api 8081:8081 -n oc-mirror-system
+   ```
+
+3. **Metrics** — the operator exposes Prometheus metrics (see
+   [operations](operations.md)); scrape them with your own Prometheus.
+
+A standalone dashboard mode (running the plugin UI against the port-forwarded
+Resource API without the OpenShift console) is technically plausible since
+the plugin only reads through the Resource API, but it is **not supported
+today**; it is tracked as a potential follow-up.
+
 ## 8. Where to go next
 
 - [Concepts](concepts.md) — understand what just happened under the hood.
