@@ -91,15 +91,19 @@ Every release publishes a rendered, versioned install manifest — no Go
 toolchain, make or kustomize required. Works on vanilla Kubernetes and Kind.
 
 ```bash
-# 1. Install cert-manager (the operator uses it for TLS on the plugin API)
-kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.16.3/cert-manager.yaml
-
-# 2. Install the operator (CRDs, RBAC, deployments) in one shot
+# 1. Install the operator (namespace, CRDs, RBAC, deployments) in one shot
 kubectl apply -f https://github.com/mariusbertram/oc-mirror-operator/releases/download/v<version>/oc-mirror-operator.yaml
 
-# 3. Wait for it to roll out
-kubectl rollout status deployment/oc-mirror-operator-controller-manager -n oc-mirror-operator
+# 2. Wait for it to roll out
+kubectl rollout status deployment/oc-mirror-controller-manager -n oc-mirror-system
+
+# 3. Verify the CRDs are registered
+kubectl get crd | grep mirror.openshift.io
 ```
+
+> Note: the console plugin is OpenShift-only (it relies on the OpenShift
+> service CA and `console.openshift.io` CRDs); on vanilla Kubernetes the
+> operator runs without the plugin component.
 
 The manifest is generated with `make build-installer` (kustomize render of
 `config/default`) during each release and pinned to that release's
