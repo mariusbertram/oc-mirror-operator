@@ -421,11 +421,28 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Render static install manifest for vanilla Kubernetes
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}" \
+          IMAGE_TAG_BASE=${{ env.REGISTRY }}/${{ github.repository }} \
+          IMG_CONTROLLER=${{ env.REGISTRY }}/${{ github.repository }}-controller:${{ github.ref_name }} \
+          IMG_MANAGER=${{ env.REGISTRY }}/${{ github.repository }}-manager:${{ github.ref_name }} \
+          IMG_WORKER=${{ env.REGISTRY }}/${{ github.repository }}-worker:${{ github.ref_name }} \
+          IMG_PLUGIN_4_18=${{ env.REGISTRY }}/${{ github.repository }}-plugin:${{ github.ref_name }}-ocp4.18 \
+          IMG_PLUGIN_4_19=${{ env.REGISTRY }}/${{ github.repository }}-plugin:${{ github.ref_name }}-ocp4.19 \
+          IMG_PLUGIN_4_20=${{ env.REGISTRY }}/${{ github.repository }}-plugin:${{ github.ref_name }}-ocp4.20 \
+          IMG_PLUGIN_4_21=${{ env.REGISTRY }}/${{ github.repository }}-plugin:${{ github.ref_name }}-ocp4.21 \
+          IMG_PLUGIN_4_22=${{ env.REGISTRY }}/${{ github.repository }}-plugin:${{ github.ref_name }}-ocp4.22 \
+          make build-installer
+          mv dist/install.yaml oc-mirror-operator.yaml
+
       - name: Create release
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
           name: "oc-mirror-operator ${{ github.ref_name }}"
+          files: oc-mirror-operator.yaml
           body: |
             ## oc-mirror-operator ${{ github.ref_name }}
 
