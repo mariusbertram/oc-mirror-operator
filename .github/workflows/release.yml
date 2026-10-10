@@ -660,3 +660,102 @@ jobs:
           The bundle passes the operatorhubv2, capabilities and categories validation suites (run in the operator CI).
 
           Opened automatically by the [release workflow](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."
+
+  # ── 7. PR to Red Hat community-operators-prod (OpenShift OperatorHub) ──
+  # Feeds the catalog that OpenShift OperatorHub consumes out of the box.
+  # Draft PR, manual merge — Red Hat reviewers still gate it.
+  # Only stable semver releases (no pre-release/build suffix) qualify.
+  redhat-catalog-pr:
+    name: Open community-operators-prod PR
+    runs-on: ubuntu-latest
+    needs: [test, build-operator, build-bundle]
+    if: |
+      needs.test.outputs.semver-ok == 'true'
+      && !contains(needs.build-operator.outputs.version, '-')
+      && !contains(needs.build-operator.outputs.version, '+')
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Generate GitHub App token for the community-operators-prod repo
+        uses: actions/create-github-app-token@v2
+        id: redhat-catalog-token
+        with:
+          app-id: ${{ vars.CATALOG_APP_ID }}
+          private-key: ${{ secrets.CATALOG_APP_PRIVATE_KEY }}
+          repositories: community-operators-prod
+
+      - name: Open draft PR to redhat-openshift-ecosystem/community-operators-prod
+        env:
+          GH_TOKEN: ${{ steps.redhat-catalog-token.outputs.token }}
+          VERSION: ${{ needs.build-operator.outputs.version }}
+          BUNDLE_DIGEST: ${{ needs.build-bundle.outputs.bundle_digest }}
+        run: |
+          set -euo pipefail
+
+          BUNDLE_DIGEST_REF="${{ env.BUNDLE_IMAGE }}@${BUNDLE_DIGEST}"
+
+          gh auth setup-git
+          git clone "https://github.com/redhat-openshift-ecosystem/community-operators-prod.git" /tmp/redhat-catalog
+          cd /tmp/redhat-catalog
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          BRANCH="oc-mirror-operator-v${VERSION}"
+          git checkout -b "$BRANCH"
+
+          # Red Hat catalog layout: community-operators/<package>/<version>/
+          OPERATOR_DIR="community-operators/oc-mirror-operator/${VERSION}"
+          mkdir -p "${OPERATOR_DIR}"
+
+          # ── Write operator.yaml (olm.semver template) ──────
+          cat > "${OPERATOR_DIR}/operator.yaml" <<YAMLEOF
+          schema: olm.semver
+          GenerateMajorChannels: true
+          GenerateMinorChannels: true
+          Stable:
+            Bundles:
+              - Image: ${BUNDLE_DIGEST_REF}
+          YAMLEOF
+
+          # ── Copy logo (warn if missing) ────────────────
+          LOGO_SRC="${GITHUB_WORKSPACE}/docs/oc-mirror-operator-logo.svg"
+          if [ -f "$LOGO_SRC" ]; then
+            mkdir -p "${OPERATOR_DIR}/logo"
+            cp "$LOGO_SRC" "${OPERATOR_DIR}/logo/oc-mirror-operator-logo.svg"
+          else
+            echo "::warning::Logo ${LOGO_SRC} not found — submitting without logo."
+          fi
+
+          # ── Commit & push ──────────────────────────
+          git add "${OPERATOR_DIR}"
+          git diff --cached --stat
+          if git diff --cached --quiet; then
+            echo "Nothing to commit — bundle already present."
+            exit 0
+          fi
+          git commit -m "Add oc-mirror-operator v${VERSION} (${BUNDLE_DIGEST_REF})"
+          gh repo fork redhat-openshift-ecosystem/community-operators-prod --clone=false >/dev/null
+          git push "https://github.com/${GITHUB_REPOSITORY_OWNER}/community-operators-prod.git" "$BRANCH"
+
+          # ── Open draft PR against the upstream catalog repo ────
+          gh pr create \
+            --draft \
+            --repo "redhat-openshift-ecosystem/community-operators-prod" \
+            --base main \
+            --head "${GITHUB_REPOSITORY_OWNER}:${BRANCH}" \
+            --title "oc-mirror-operator v${VERSION}" \
+            --body "## oc-mirror-operator v${VERSION}
+
+          This PR adds oc-mirror-operator to the community-operators-prod catalog (OpenShift OperatorHub).
+
+          ### Bundle Image (multi-arch manifest list)
+          \`\`\`
+          ${BUNDLE_DIGEST_REF}
+          \`\`\`
+
+          The bundle passes the operatorhubv2, capabilities and categories validation suites (run in the operator CI).
+
+          Opened automatically by the [release workflow](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."
