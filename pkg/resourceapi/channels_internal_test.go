@@ -118,7 +118,9 @@ var _ = Describe("fetchChannelsFromConfigMap", func() {
 		if cm != nil {
 			builder = builder.WithObjects(cm)
 		}
-		return NewServer(builder.Build(), ns)
+		// Same reason as buildServerRouter in server_test.go: leave baseCfg
+		// nil so the fake client is used even when a kubeconfig exists.
+		return NewServerForTest(builder.Build(), ns)
 	}
 
 	It("returns an error when no namespace is configured (cluster-wide mode)", func() {

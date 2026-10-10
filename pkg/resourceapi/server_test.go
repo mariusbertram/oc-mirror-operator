@@ -1561,7 +1561,11 @@ func buildServerRouter(namespace string, objs ...client.Object) http.Handler {
 	_ = corev1.AddToScheme(sc)
 	_ = mirrorv1alpha1.AddToScheme(sc)
 	c := fake.NewClientBuilder().WithScheme(sc).WithObjects(objs...).Build()
-	s := resourceapi.NewServer(c, namespace)
+	// NewServerForTest leaves baseCfg nil, so requests carrying a Bearer
+	// token use the fake client instead of building a real client against
+	// whatever cluster the developer's/CI's kubeconfig points at — the
+	// write handlers then report 500s (or worse, touch a live cluster).
+	s := resourceapi.NewServerForTest(c, namespace)
 	r := mux.NewRouter()
 	s.RegisterAPIRoutes(r)
 	return r
