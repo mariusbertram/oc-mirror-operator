@@ -1392,7 +1392,7 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 	// interval (see startDriftSweepLocked for why this runs asynchronously
 	// rather than inline).
 	checkExistInterval := 6 * time.Hour
-	if mt.Spec.CheckExistInterval != nil && mt.Spec.CheckExistInterval.Duration >= time.Hour {
+	if mt.Spec.CheckExistInterval != nil && mt.Spec.CheckExistInterval.Duration >= 10*time.Minute {
 		checkExistInterval = mt.Spec.CheckExistInterval.Duration
 	}
 	if time.Since(m.lastDriftCheck) > checkExistInterval && !m.driftSweepRunning {
