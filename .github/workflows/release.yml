@@ -75,7 +75,20 @@ jobs:
 
       - name: Generate and validate bundle
         run: |
-          make bundle
+          # Bare `make bundle` resolves the Makefile's default image refs
+          # (ghcr.io/...:v0.0.2) and — with USE_IMAGE_DIGESTS defaulting to
+          # true — pulls each manifest to pin digests, which fails for tags
+          # that only exist after this run's build jobs have pushed (or for
+          # the outdated Makefile default version entirely). Pin the refs to
+          # the last released images instead: the bundle here is a *schema
+          # validation* artifact, its image fields are overwritten with
+          # digest-pinned refs in the build-bundle job before publishing.
+          make bundle \
+            IMG_CONTROLLER=ghcr.io/mariusbertram/oc-mirror-operator-controller:latest \
+            IMG_MANAGER=ghcr.io/mariusbertram/oc-mirror-operator-manager:latest \
+            IMG_WORKER=ghcr.io/mariusbertram/oc-mirror-operator-worker:latest \
+            IMG_PLUGIN=ghcr.io/mariusbertram/oc-mirror-operator-plugin:latest-ocp4.19 \
+            USE_IMAGE_DIGESTS=false
           bin/operator-sdk bundle validate ./bundle --select-optional suite=operatorframework             && bin/operator-sdk bundle validate ./bundle --select-optional 'name in (operatorhubv2,capabilities,categories)'
 
   # ── 2. Build & push component images (multi-arch) ──────────────────────────
