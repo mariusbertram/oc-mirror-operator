@@ -1,0 +1,253 @@
+name: Canary
+
+# Weekly scheduled runs to catch API drift (Cincinnati, console plugin API,
+# base images) before users do. The canary jobs run against the LATEST
+# Kind node image and the newest origin-console tag; on failure they open
+# an issue suggesting matrix updates.
+
+on:
+  schedule:
+    - cron: '0 4 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  # ── 1. Latest Kind node image canary (full Go e2e suite) ────────────────
+  kind-node-canary:
+    name: E2E against latest Kind node image
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      issues: write
+    outputs:
+      latest-node-image: ${{ steps.latest.outputs.image }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Resolve latest Kind node image
+        id: latest
+        run: |
+          set -euo pipefail
+          LATEST=$(curl -fsSL "https://hub.docker.com/v2/repositories/kindest/node/tags?page_size=25" \
+            | python3 -c 'import json,sys; tags=[t["name"] for t in json.load(sys.stdin)["results"] if t["name"].startswith("v")]; print("kindest/node:" + tags[0])')
+          echo "image=${LATEST}" >> "$GITHUB_OUTPUT"
+          echo "Latest node image: ${LATEST}"
+
+      - name: Download component images artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: operator-images
+          path: .
+        continue-on-error: true
+
+      - name: Build component images (fallback if no artifact available)
+        run: |
+          set -x
+          if ! ls operator-*-image.tar >/dev/null 2>&1; then
+            CONTAINER_TOOL=docker make docker-build-controller docker-build-manager docker-build-worker \
+              IMG_CONTROLLER=example.com/oc-mirror-controller:v0.0.1 \
+              IMG_MANAGER=example.com/oc-mirror-manager:v0.0.1 \
+              IMG_WORKER=example.com/oc-mirror-worker:v0.0.1
+            for c in controller manager worker; do
+              docker save example.com/oc-mirror-${c}:v0.0.1 -o operator-${c}-image.tar
+            done
+          fi
+
+      - name: Install Kind v0.29.0
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.29.0/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+
+      - name: Create Kind cluster with latest node image
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            echo "=== Attempt $attempt ==="
+            kind delete cluster --name oc-mirror-canary 2>/dev/null || true
+            cat <<EOF | kind create cluster --name oc-mirror-canary --wait 5m --config=-
+          kind: Cluster
+          apiVersion: kind.x-k8s.io/v1alpha4
+          nodes:
+          - role: control-plane
+            image: ${{ steps.latest.outputs.image }}
+          EOF
+            if [ $? -eq 0 ]; then
+              echo "Cluster created successfully"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "Failed to create Kind cluster with ${{ steps.latest.outputs.image }}" >&2
+          exit 1
+
+
+      - name: Run e2e tests
+        run: |
+          go mod tidy
+          SKIP_CLUSTER_SETUP=true \
+          CERT_MANAGER_INSTALL_SKIP=true \
+          KIND_CLUSTER=oc-mirror-canary \
+          go test ./test/e2e/ -v -timeout 45m \
+            -ginkgo.v \
+            -ginkgo.label-filter="!catalog-live"
+
+      - name: Open issue on canary failure
+        if: failure()
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const title = `Canary failure: e2e against latest Kind node image`;
+            const body = `The weekly canary run of the e2e suite against the **latest** Kind node image failed.
+
+            - Node image: \`${{ steps.latest.outputs.image }}\`
+            - Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+            Suggested actions:
+            1. Check whether the failure is caused by Kubernetes API drift.
+            2. If the pinned node image in \`.github/workflows/ci.yml\` should be updated, do so in a PR.
+            3. If the operator needs code changes, link this issue from the fixing PR.`;
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ['canary', 'pipeline'],
+            });
+
+  # ── 2. Newest origin-console canary (plugin smoke) ──────────────────────
+  console-canary:
+    name: Plugin smoke against newest origin-console
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      issues: write
+    outputs:
+      newest-console: ${{ steps.latest.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Resolve newest origin-console tag
+        id: latest
+        run: |
+          set -euo pipefail
+          NEWEST=$(curl -fsSL "https://quay.io/api/v1/repository/openshift/origin-console/tag/?limit=100&filter_tag_name=like:4." \
+            | python3 -c 'import json,sys; tags=[t["name"] for t in json.load(sys.stdin)["tags"] if t["name"].count(".")==2 and t["name"][0]=="4"]; print(tags[0])')
+          echo "tag=${NEWEST}" >> "$GITHUB_OUTPUT"
+          echo "Newest console tag: ${NEWEST}"
+
+      - name: Check whether newest console is already in the matrix
+        id: matrix-check
+        run: |
+          if grep -q "\"${{ steps.latest.outputs.tag }}\"" ui/console-compatibility.json; then
+            echo "in-matrix=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "in-matrix=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build plugin UI assets and embed them into the Go binary
+        if: steps.matrix-check.outputs.in-matrix == 'false'
+        env:
+          CONSOLE_VERSION: ${{ steps.latest.outputs.tag }}
+        run: |
+          set -x
+          npm --prefix ui ci
+          npm --prefix ui run install:console-profile
+          npm --prefix ui run build:plugin
+          rm -rf pkg/resourceapi/plugin
+          cp -r ui/dist/plugin pkg/resourceapi/plugin
+          mkdir -p .runtime-smoke
+          go build -o .runtime-smoke/plugin ./cmd/dashboard
+
+      - name: Install Kind v0.29.0
+        if: steps.matrix-check.outputs.in-matrix == 'false'
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.29.0/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+
+      - name: Create Kind cluster
+        if: steps.matrix-check.outputs.in-matrix == 'false'
+        run: kind create cluster --name plugin-canary --wait 3m
+
+      - name: Install CRDs and seed test data
+        if: steps.matrix-check.outputs.in-matrix == 'false'
+        run: |
+          set -x
+          make install
+          kubectl create namespace oc-mirror-demo
+          node hack/plugin-smoke/seed.mjs | kubectl apply -f -
+          kubectl patch mirrortarget demo-target -n oc-mirror-demo --subresource=status \
+            --type=merge -p "$(node hack/plugin-smoke/seed.mjs --status)"
+
+      - name: Start plugin resource-API server
+        if: steps.matrix-check.outputs.in-matrix == 'false'
+        run: |
+          set -x
+          openssl req -x509 -newkey rsa:2048 -keyout .runtime-smoke/tls.key -out .runtime-smoke/tls.crt \
+            -days 1 -nodes -subj "/CN=localhost"
+          KUBECONFIG="$HOME/.kube/config" POD_NAMESPACE=oc-mirror-demo \
+            .runtime-smoke/plugin --bind-address=:9001 --cert-file=.runtime-smoke/tls.crt --key-file=.runtime-smoke/tls.key \
+            > .runtime-smoke/plugin.log 2>&1 &
+
+      - name: Start origin-console with the canary plugin manifest
+        if: steps.matrix-check.outputs.in-matrix == 'false'
+        run: |
+          set -x
+          docker run -d --name canary-console --network host \
+            -e BRIDGE_USER_AUTH=disabled \
+            -e BRIDGE_KUBECONFIG=/kube/config \
+            -e BRIDGE_PLUGIN_PROXY_HOST=http://localhost:9001 \
+            quay.io/openshift/origin-console:${{ steps.latest.outputs.tag }} || true
+          echo "Started origin-console ${{ steps.latest.outputs.tag }}"
+
+      - name: Run headless-browser smoke test
+        if: steps.matrix-check.outputs.in-matrix == 'false'
+        env:
+          CONSOLE_VERSION: ${{ steps.latest.outputs.tag }}
+        run: |
+          cd hack/plugin-smoke
+          npm install --cache .npm-cache
+          npx playwright install --with-deps chromium
+          node smoke-test.mjs
+
+      - name: Open issue on new-console failure
+        if: failure() && steps.matrix-check.outputs.in-matrix == 'false'
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const title = `Canary failure: console plugin against origin-console ${{ steps.latest.outputs.tag }}`;
+            const body = `The weekly canary plugin smoke test against the **newest** origin-console tag failed.
+
+            - Console tag: \`${{ steps.latest.outputs.tag }}\` (not yet in the CI matrix)
+            - Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+            Suggested actions:
+            1. Add the tag to \`ui/console-compatibility.json\` with the matching SDK/React versions and extend the matrix in \`.github/workflows/ci.yml\`.
+            2. If the plugin needs code changes for the new console API, fix them in a PR and link this issue.`;
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ['canary', 'pipeline'],
+            });
