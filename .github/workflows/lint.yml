@@ -47,6 +47,12 @@ jobs:
         with:
           node-version: 22
 
+      - name: Setup node with npm cache
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
       - name: Install UI dependencies
         run: npm --prefix ui ci
 

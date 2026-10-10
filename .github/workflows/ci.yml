@@ -129,6 +129,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # Shared Go build cache across the Go CI jobs (see also test/e2e).
+      - name: Cache Go build cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/go-build
+          key: go-build-${{ runner.os }}-${{ hashFiles('go.sum') }}
+          restore-keys: go-build-${{ runner.os }}-
       # Build four separate single-arch (amd64) images tagged with the names the e2e
       # test suite expects and save them as tar archives for downstream jobs.
       - name: Build images (controller, manager, worker)
@@ -242,6 +249,8 @@ jobs:
           build-args: |
             CONSOLE_VERSION=${{ matrix.console-version }}
           tags: example.com/oc-mirror-plugin:v0.0.1-ocp${{ matrix.console-version }}
+          cache-from: type=gha,scope=plugin-ocp${{ matrix.console-version }}
+          cache-to: type=gha,mode=max,scope=plugin-ocp${{ matrix.console-version }}
 
       - name: SBOM + vulnerability scan (plugin)
         uses: ./.github/actions/sbom-scan-attest
@@ -294,6 +303,8 @@ jobs:
           file: bundle.Dockerfile
           platforms: linux/amd64
           push: false
+          cache-from: type=gha,scope=bundle
+          cache-to: type=gha,mode=max,scope=bundle
 
   # ── 4. Multi-arch component build check ────────────────────────────────────
   build-multiarch-check:
@@ -318,6 +329,8 @@ jobs:
           file: Dockerfile.controller
           platforms: linux/amd64,linux/arm64
           push: false
+          cache-from: type=gha,scope=controller-multiarch
+          cache-to: type=gha,mode=max,scope=controller-multiarch
 
       - name: Build manager image (linux/amd64 + linux/arm64, no push)
         uses: docker/build-push-action@v7
@@ -326,6 +339,8 @@ jobs:
           file: Dockerfile.manager
           platforms: linux/amd64,linux/arm64
           push: false
+          cache-from: type=gha,scope=manager-multiarch
+          cache-to: type=gha,mode=max,scope=manager-multiarch
 
       - name: Build worker image (linux/amd64 + linux/arm64, no push)
         uses: docker/build-push-action@v7
@@ -334,6 +349,8 @@ jobs:
           file: Dockerfile.worker
           platforms: linux/amd64,linux/arm64
           push: false
+          cache-from: type=gha,scope=worker-multiarch
+          cache-to: type=gha,mode=max,scope=worker-multiarch
 
       - name: Build plugin image (linux/amd64 + linux/arm64, no push)
         uses: docker/build-push-action@v7
@@ -342,6 +359,8 @@ jobs:
           file: Dockerfile.plugin
           platforms: linux/amd64,linux/arm64
           push: false
+          cache-from: type=gha,scope=plugin-multiarch
+          cache-to: type=gha,mode=max,scope=plugin-multiarch
 
   # ── 5. E2E tests (cluster, catalog, release) ─────────────────────────────
   # Single Kind cluster; operator deployed via make deploy.
@@ -518,7 +537,8 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 22
-
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
       - name: Build plugin UI assets and embed them into the Go binary
         env:
           CONSOLE_VERSION: ${{ matrix.console-version }}
@@ -612,7 +632,7 @@ jobs:
           SMOKE_BEARER_TOKEN: ${{ steps.kube.outputs.token }}
         run: |
           cd hack/plugin-smoke
-          npm install
+          npm install --cache .npm-cache
           npx playwright install --with-deps chromium
           node smoke-test.mjs
 
