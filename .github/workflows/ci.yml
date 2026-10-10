@@ -1,11 +1,13 @@
 name: CI
 
 # Runs on every push and pull request.
-# Jobs: test → build (image artifact) → e2e (reuses artifact)
+# Jobs: test → build matrix (4 parallel component builds) → e2e
+# (two parallel suites with separate Kind clusters).
 # Also validates the OLM bundle (operator-sdk bundle validate), verifies
 # that multi-arch and bundle image builds succeed, and runs a
 # headless-browser smoke test of the console plugin against a real
-# openshift/origin-console container (plugin-smoke-test).
+# openshift/origin-console container (plugin-ci: build once per console
+# version, then scan + smoke).
 
 on:
   push:
@@ -116,119 +118,144 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-  # ── 2. Build component images and export as artifacts ────────────────────────
+  # ── 2. Build component images and export as artifacts ───────────────────
+  # Matrix job: each component builds, scans and exports in parallel —
+  # the four sequential make builds previously serialized this job.
   build:
-    name: Build component images
+    name: Build ${{ matrix.component }} image
     needs: changes
     if: needs.changes.outputs.go == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write # upload Grype SARIF to the Security tab
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: controller
+            image-env: IMG_CONTROLLER
+          - component: manager
+            image-env: IMG_MANAGER
+          - component: worker
+            image-env: IMG_WORKER
+          - component: plugin
+            image-env: IMG_PLUGIN
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build ${{ matrix.component }} image
+        run: |
+          set -x
+          CONTAINER_TOOL=docker make docker-build-${{ matrix.component }} \
+            ${{ matrix.image-env }}=example.com/oc-mirror-${{ matrix.component }}:v0.0.1
+          docker images | grep "oc-mirror"
+
+      # These images are only built locally for this job (never pushed to a
+      # registry), so attest: false — SBOM/scan/SARIF only, no cosign step.
+      # This job runs on push/pull_request, so findings DO show up in
+      # the repo's Security tab.
+      - name: SBOM + vulnerability scan (${{ matrix.component }})
+        uses: ./.github/actions/sbom-scan-attest
+        with:
+          image-ref: example.com/oc-mirror-${{ matrix.component }}:v0.0.1
+          artifact-name: ${{ matrix.component }}-ci
+          sarif-category: ${{ matrix.component }}-image-ci
+          attest: "false"
+          fail-build: "false"
+          vex-files: vex/oc-mirror-operator.openvex.json
+
+      - name: Export image to tar
+        run: |
+          set -x
+          docker save example.com/oc-mirror-${{ matrix.component }}:v0.0.1 \
+            -o operator-${{ matrix.component }}-image.tar
+          ls -lh operator-*-image.tar
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: operator-image-${{ matrix.component }}
+          path: operator-${{ matrix.component }}-image.tar
+          retention-days: 1
+          if-no-files-found: error
+
+  # Collect the matrix tars into the single operator-images artifact the
+  # e2e job consumes.
+  build-collect:
+    name: Collect component images
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: operator-image-*
+          path: images/
+          merge-multiple: true
+      - uses: actions/upload-artifact@v7
+        with:
+          name: operator-images
+          path: images/operator-*-image.tar
+          retention-days: 1
+          if-no-files-found: error
+
+  # ── Console plugin CI: one job per console version builds the plugin
+  # ONCE, then scans and smoke-tests it — previously scan-plugin and
+  # plugin-smoke-test each built the same plugin (10 builds per run).
+  plugin-ci:
+    name: Console plugin CI (OpenShift ${{ matrix.console-version }})
+    needs: changes
+    if: needs.changes.outputs.ui == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        console-version: ['4.18', '4.19', '4.20', '4.21', '4.22']
     permissions:
       contents: read
       security-events: write # upload Grype SARIF to the Security tab
     steps:
       - uses: actions/checkout@v7
 
-      # Build four separate single-arch (amd64) images tagged with the names the e2e
-      # test suite expects and save them as tar archives for downstream jobs.
-      - name: Build images (controller, manager, worker)
+      # Create the Kind cluster in the background while the plugin is built
+      # and scanned below — the smoke steps later wait on it implicitly.
+      - name: Install Kind v0.29.0
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.29.0/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+
+      - name: Create Kind cluster (background, overlaps with the plugin build)
+        run: |
+          (kind create cluster --name plugin-smoke --wait 5m > .kind-setup.log 2>&1 &)
+          echo "Kind cluster creation started in background"
+
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Build plugin UI assets and embed them into the Go binary
+        env:
+          CONSOLE_VERSION: ${{ matrix.console-version }}
         run: |
           set -x
-          CONTAINER_TOOL=docker make docker-build-controller docker-build-manager docker-build-worker \
-            IMG_CONTROLLER=example.com/oc-mirror-controller:v0.0.1 \
-            IMG_MANAGER=example.com/oc-mirror-manager:v0.0.1 \
-            IMG_WORKER=example.com/oc-mirror-worker:v0.0.1
-          
-          # Verify built images exist
-          echo "Built images:"
-          docker images | grep "oc-mirror"
-
-      - name: Build plugin image
-        run: |
-          set -x
-          echo "Building plugin image..."
-          CONTAINER_TOOL=docker make docker-build-plugin \
-            IMG_PLUGIN=example.com/oc-mirror-plugin:v0.0.1
-          
-          # Verify built image exists
-          echo "Plugin image:"
-          docker images | grep "oc-mirror-plugin"
-
-      # These images are only built locally for this job (never pushed to a
-      # registry), so attest: false — SBOM/scan/SARIF only, no cosign step.
-      # Unlike the release pipeline's scan (tag-triggered, so its SARIF only
-      # lands in persistent artifacts — see the composite action's description),
-      # this job runs on push/pull_request, so findings here DO show up in
-      # the repo's Security tab.
-      - name: SBOM + vulnerability scan (controller)
-        uses: ./.github/actions/sbom-scan-attest
-        with:
-          image-ref: example.com/oc-mirror-controller:v0.0.1
-          artifact-name: controller-ci
-          sarif-category: controller-image-ci
-          attest: "false"
-          fail-build: "false"
-          vex-files: vex/oc-mirror-operator.openvex.json
-
-      - name: SBOM + vulnerability scan (manager)
-        uses: ./.github/actions/sbom-scan-attest
-        with:
-          image-ref: example.com/oc-mirror-manager:v0.0.1
-          artifact-name: manager-ci
-          sarif-category: manager-image-ci
-          attest: "false"
-          fail-build: "false"
-          vex-files: vex/oc-mirror-operator.openvex.json
-
-      - name: SBOM + vulnerability scan (worker)
-        uses: ./.github/actions/sbom-scan-attest
-        with:
-          image-ref: example.com/oc-mirror-worker:v0.0.1
-          artifact-name: worker-ci
-          sarif-category: worker-image-ci
-          attest: "false"
-          fail-build: "false"
-          vex-files: vex/oc-mirror-operator.openvex.json
-
-      - name: Export images to tar
-        run: |
-          set -x
-          echo "Exporting controller image..."
-          docker save example.com/oc-mirror-controller:v0.0.1 -o operator-controller-image.tar
-          echo "Exporting manager image..."
-          docker save example.com/oc-mirror-manager:v0.0.1 -o operator-manager-image.tar
-          echo "Exporting worker image..."
-          docker save example.com/oc-mirror-worker:v0.0.1 -o operator-worker-image.tar
-          echo "Exporting plugin image..."
-          docker save example.com/oc-mirror-plugin:v0.0.1 -o operator-plugin-image.tar
-          
-          # Verify exported files exist and have content
-          echo "Exported tar files:"
-          ls -lh operator-*-image.tar || (echo "ERROR: Failed to export images"; exit 1)
-          du -sh operator-*-image.tar
-      - uses: actions/upload-artifact@v7
-        with:
-          name: operator-images
-          path: operator-*-image.tar
-          retention-days: 1
-
-  # Scan all console profiles independently of the default plugin tar used by
-  # e2e. CI scans local amd64 images; release scans both published architectures.
-  scan-plugin:
-    name: Scan console plugin for OpenShift ${{ matrix.console-version }}
-    needs: changes
-    if: needs.changes.outputs.ui == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    permissions:
-      contents: read
-      security-events: write
-    strategy:
-      fail-fast: false
-      matrix:
-        console-version: ['4.18', '4.19', '4.20', '4.21', '4.22']
-    steps:
-      - uses: actions/checkout@v7
+          npm --prefix ui ci
+          npm --prefix ui run install:console-profile
+          npm --prefix ui run build:plugin
+          rm -rf pkg/resourceapi/plugin
+          cp -r ui/dist/plugin pkg/resourceapi/plugin
+          mkdir -p .runtime-smoke
+          go build -o .runtime-smoke/plugin ./cmd/dashboard
 
       - uses: docker/setup-buildx-action@v4
 
@@ -256,247 +283,6 @@ jobs:
           vex-files: vex/oc-mirror-operator.openvex.json
 
   # ── 3. Bundle validation + image build check ───────────────────────────────
-  build-bundle-check:
-    name: Build bundle image check
-    needs: changes
-    if: needs.changes.outputs.go == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-
-      - name: Generate and validate bundle
-        run: |
-          # make bundle regenerates bundle/ from config/ and runs the default
-          # `operator-sdk bundle validate`; the operatorframework suite adds the
-          # OperatorHub (v2), good-practices and deprecated-API checks on top.
-          # NB: the suite's legacy `operatorhub` validator is deprecated in
-          # favour of operatorhub/v2 + the standard capability/category checks.
-          IMG_CONTROLLER=example.com/oc-mirror-controller:v0.0.1 \
-          IMG_MANAGER=example.com/oc-mirror-manager:v0.0.1 \
-          IMG_WORKER=example.com/oc-mirror-worker:v0.0.1 \
-          IMG_PLUGIN=example.com/oc-mirror-plugin:v0.0.1 \
-          USE_IMAGE_DIGESTS=false \
-            make bundle
-          bin/operator-sdk bundle validate ./bundle --select-optional suite=operatorframework \
-            && bin/operator-sdk bundle validate ./bundle --select-optional 'name in (operatorhubv2,capabilities,categories)'
-
-      - uses: docker/setup-buildx-action@v4
-
-      - name: Build bundle image (no push)
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: bundle.Dockerfile
-          platforms: linux/amd64
-          push: false
-          cache-from: type=gha,scope=bundle
-          cache-to: type=gha,mode=max,scope=bundle
-
-  # ── 4. Multi-arch component build check ────────────────────────────────────
-  build-multiarch-check:
-    name: Multi-arch build check
-    needs: changes
-    if: needs.changes.outputs.go == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: docker/setup-qemu-action@v4
-
-      - uses: docker/setup-buildx-action@v4
-
-      - name: Build controller image (linux/amd64 + linux/arm64, no push)
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: Dockerfile.controller
-          platforms: linux/amd64,linux/arm64
-          push: false
-          cache-from: type=gha,scope=controller-multiarch
-          cache-to: type=gha,mode=max,scope=controller-multiarch
-
-      - name: Build manager image (linux/amd64 + linux/arm64, no push)
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: Dockerfile.manager
-          platforms: linux/amd64,linux/arm64
-          push: false
-          cache-from: type=gha,scope=manager-multiarch
-          cache-to: type=gha,mode=max,scope=manager-multiarch
-
-      - name: Build worker image (linux/amd64 + linux/arm64, no push)
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: Dockerfile.worker
-          platforms: linux/amd64,linux/arm64
-          push: false
-          cache-from: type=gha,scope=worker-multiarch
-          cache-to: type=gha,mode=max,scope=worker-multiarch
-
-      - name: Build plugin image (linux/amd64 + linux/arm64, no push)
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: Dockerfile.plugin
-          platforms: linux/amd64,linux/arm64
-          push: false
-          cache-from: type=gha,scope=plugin-multiarch
-          cache-to: type=gha,mode=max,scope=plugin-multiarch
-
-  # ── 5. E2E tests (cluster, catalog, release) ─────────────────────────────
-  # Single Kind cluster; operator deployed via make deploy.
-  e2e:
-    name: E2E tests
-    needs: build
-    if: needs.changes.outputs.go == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-
-      - name: Download component images artifacts
-        uses: actions/download-artifact@v8
-        with:
-          name: operator-images
-          path: .
-
-      - name: Install Kind v0.29.0
-        run: |
-          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.29.0/kind-linux-amd64
-          chmod +x ./kind
-          sudo mv ./kind /usr/local/bin/kind
-
-      - name: Create Kind cluster
-        run: |
-          # Retry up to 3 times — KinD cluster creation can fail transiently
-          # on GitHub Actions runners (kubelet cgroup race, slow I/O).
-          for attempt in 1 2 3; do
-            echo "=== Attempt $attempt ==="
-            kind delete cluster --name oc-mirror-e2e 2>/dev/null || true
-
-            cat <<'EOF' | kind create cluster --name oc-mirror-e2e --wait 5m --config=-
-          kind: Cluster
-          apiVersion: kind.x-k8s.io/v1alpha4
-          # Pin node image for reproducibility (containerd 2.x, Kubernetes 1.33.1)
-          nodes:
-          - role: control-plane
-            image: kindest/node:v1.33.1@sha256:050072256b9a903bd914c0b2866828150cb229cea0efe5892e2b644d5dd3b34f
-          EOF
-
-            if [ $? -eq 0 ]; then
-              echo "Cluster created successfully"
-              break
-            fi
-            if [ $attempt -eq 3 ]; then
-              echo "Failed to create cluster after 3 attempts"
-              exit 1
-            fi
-            # Exponential backoff: 10s, 30s, 60s
-            backoff=$((10 * attempt))
-            echo "Cluster creation failed, retrying in ${backoff}s..."
-            sleep $backoff
-          done
-
-      - name: Verify cluster health
-        run: |
-          kubectl cluster-info
-          kubectl get nodes -o wide
-          kubectl wait --for=condition=Ready node --all --timeout=120s
-
-      - name: Load component images into Kind
-        run: |
-          set -x
-          # Verify tar files exist
-          ls -lh operator-*-image.tar || (echo "ERROR: Image tar files not found"; exit 1)
-          
-          # Load images from tar
-          echo "Loading Docker images..."
-          docker load -i operator-controller-image.tar
-          docker load -i operator-manager-image.tar
-          docker load -i operator-worker-image.tar
-          docker load -i operator-plugin-image.tar
-          
-          # Verify images exist in Docker
-          echo "Verifying loaded images..."
-          docker images | grep "oc-mirror"
-          
-          # Load images into Kind cluster
-          echo "Loading images into Kind cluster..."
-          kind load docker-image example.com/oc-mirror-controller:v0.0.1 --name oc-mirror-e2e
-          kind load docker-image example.com/oc-mirror-manager:v0.0.1 --name oc-mirror-e2e
-          kind load docker-image example.com/oc-mirror-worker:v0.0.1 --name oc-mirror-e2e
-          kind load docker-image example.com/oc-mirror-plugin:v0.0.1 --name oc-mirror-e2e
-      - name: Install cert-manager v1.16.3
-        run: |
-          kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.16.3/cert-manager.yaml
-          kubectl wait deployment/cert-manager-webhook \
-            --namespace cert-manager \
-            --for=condition=Available \
-            --timeout=300s
-
-      - name: Run E2E tests (cluster, catalog, release)
-        run: |
-          go mod tidy
-          SKIP_CLUSTER_SETUP=true \
-          CERT_MANAGER_INSTALL_SKIP=true \
-          KIND_CLUSTER=oc-mirror-e2e \
-          go test ./test/e2e/ -v -timeout 45m \
-            -ginkgo.v \
-            -ginkgo.label-filter="!catalog-live"
-          # label map:
-          #   cluster         – needs Kind + deployed operator (mirror, catalog-cluster)
-          #   catalog         – pure in-memory FBC filter tests, no cluster required
-          #   release         – Cincinnati API (api.openshift.com), reachable in CI
-          #   catalog-live    – quay.io/operatorhubio/catalog (~2 GB), manual only
-
-      - name: Diagnostic dump on failure
-        if: failure()
-        run: |
-          echo "=== Cluster Nodes ==="
-          kubectl get nodes -o wide || true
-          echo "=== All Pods ==="
-          kubectl get pods -A -o wide || true
-          echo "=== Deployments (all namespaces) ==="
-          kubectl get deployments -A -o wide || true
-          echo "=== Describe Deployments in oc-mirror-system ==="
-          kubectl describe deployments -n oc-mirror-system || true
-          echo "=== Describe Pods in oc-mirror-system ==="
-          kubectl describe pods -n oc-mirror-system || true
-          echo "=== Failed/Pending Pod Events ==="
-          kubectl get events -A --sort-by=.lastTimestamp | grep -E "Failed|ErrImagePull|ImagePullBackOff|Pending|Warning" | tail -50 || true
-          echo "=== All Events (last 80) ==="
-          kubectl get events -A --sort-by=.lastTimestamp | tail -80 || true
-          echo "=== Controller-Manager Logs (oc-mirror-system) ==="
-          kubectl logs -l control-plane=controller-manager -n oc-mirror-system --tail=100 --all-containers 2>/dev/null || true
-          echo "=== Images loaded in Kind nodes ==="
-          for node in $(kind get nodes --name oc-mirror-e2e 2>/dev/null); do
-            echo "--- Node: $node ---"
-            docker exec "$node" crictl images 2>/dev/null | grep -E "oc-mirror|example.com" || true
-          done
-
-      - name: Cleanup
-        if: always()
-        run: |
-          kind delete cluster --name oc-mirror-e2e
-
   # ── 6. Console plugin smoke test (real console + headless browser) ────────
   # Runs the actual openshift/origin-console "bridge" container against a Kind
   # cluster, registers our freshly-built plugin with it the same way
@@ -508,51 +294,14 @@ jobs:
   # #130" regression, which was invisible to `npm run build:plugin` (a
   # webpack/TypeScript compile) and to the `e2e` job above (plain Kubernetes,
   # no console.openshift.io CRDs, so ConsolePluginReconciler skips itself).
-  plugin-smoke-test:
-    name: Console plugin light/dark smoke (OpenShift ${{ matrix.console-version }})
-    needs: changes
-    if: needs.changes.outputs.ui == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        console-version: ['4.18', '4.19', '4.20', '4.21', '4.22']
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: ui/package-lock.json
-      - name: Build plugin UI assets and embed them into the Go binary
-        env:
-          CONSOLE_VERSION: ${{ matrix.console-version }}
+      - name: Wait for the background Kind cluster
         run: |
-          set -x
-          npm --prefix ui ci
-          npm --prefix ui run install:console-profile
-          npm --prefix ui run build:plugin
-          rm -rf pkg/resourceapi/plugin
-          cp -r ui/dist/plugin pkg/resourceapi/plugin
-          mkdir -p .runtime-smoke
-          go build -o .runtime-smoke/plugin ./cmd/dashboard
-
-      - name: Install Kind v0.29.0
-        run: |
-          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.29.0/kind-linux-amd64
-          chmod +x ./kind
-          sudo mv ./kind /usr/local/bin/kind
-
-      - name: Create Kind cluster
-        run: kind create cluster --name plugin-smoke --wait 3m
+          for i in $(seq 1 60); do
+            kubectl cluster-info >/dev/null 2>&1 && kubectl get nodes >/dev/null 2>&1 && break
+            sleep 5
+          done
+          kubectl get nodes -o wide
 
       - name: Install CRDs and seed test data
         run: |
@@ -655,3 +404,259 @@ jobs:
           [ -f .runtime-smoke/socat.pid ] && kill "$(cat .runtime-smoke/socat.pid)" 2>/dev/null || true
           docker rm -f console 2>/dev/null || true
           kind delete cluster --name plugin-smoke 2>/dev/null || true
+
+
+  build-bundle-check:
+    name: Build bundle image check
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Generate and validate bundle
+        run: |
+          # make bundle regenerates bundle/ from config/ and runs the default
+          # `operator-sdk bundle validate`; the operatorframework suite adds the
+          # OperatorHub (v2), good-practices and deprecated-API checks on top.
+          # NB: the suite's legacy `operatorhub` validator is deprecated in
+          # favour of operatorhub/v2 + the standard capability/category checks.
+          IMG_CONTROLLER=example.com/oc-mirror-controller:v0.0.1 \
+          IMG_MANAGER=example.com/oc-mirror-manager:v0.0.1 \
+          IMG_WORKER=example.com/oc-mirror-worker:v0.0.1 \
+          IMG_PLUGIN=example.com/oc-mirror-plugin:v0.0.1 \
+          USE_IMAGE_DIGESTS=false \
+            make bundle
+          bin/operator-sdk bundle validate ./bundle --select-optional suite=operatorframework \
+            && bin/operator-sdk bundle validate ./bundle --select-optional 'name in (operatorhubv2,capabilities,categories)'
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build bundle image (no push)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: bundle.Dockerfile
+          platforms: linux/amd64
+          push: false
+          cache-from: type=gha,scope=bundle
+          cache-to: type=gha,mode=max,scope=bundle
+
+  # ── 4. Multi-arch component build check ────────────────────────────────────
+  build-multiarch-check:
+    name: Multi-arch build check
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-qemu-action@v4
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build controller image (linux/amd64 + linux/arm64, no push)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.controller
+          platforms: linux/amd64,linux/arm64
+          push: false
+          cache-from: type=gha,scope=controller-multiarch
+          cache-to: type=gha,mode=max,scope=controller-multiarch
+
+      - name: Build manager image (linux/amd64 + linux/arm64, no push)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.manager
+          platforms: linux/amd64,linux/arm64
+          push: false
+          cache-from: type=gha,scope=manager-multiarch
+          cache-to: type=gha,mode=max,scope=manager-multiarch
+
+      - name: Build worker image (linux/amd64 + linux/arm64, no push)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.worker
+          platforms: linux/amd64,linux/arm64
+          push: false
+          cache-from: type=gha,scope=worker-multiarch
+          cache-to: type=gha,mode=max,scope=worker-multiarch
+
+      - name: Build plugin image (linux/amd64 + linux/arm64, no push)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.plugin
+          platforms: linux/amd64,linux/arm64
+          push: false
+          cache-from: type=gha,scope=plugin-multiarch
+          cache-to: type=gha,mode=max,scope=plugin-multiarch
+
+  # ── 5. E2E tests (cluster, catalog, release) ─────────────────────────────
+  # Single Kind cluster; operator deployed via make deploy.
+  e2e:
+    name: E2E tests (${{ matrix.suite }})
+    needs: build-collect
+    if: needs.changes.outputs.go == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # Two parallel suites with separate Kind clusters: the cluster
+        # suite needs the deployed operator; release+catalog are API-level.
+        suite:
+          - cluster
+          - release-catalog
+    env:
+      E2E_CLUSTER: oc-mirror-e2e-${{ matrix.suite }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Download component images artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: operator-images
+          path: .
+
+
+      - name: Install Kind v0.29.0
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.29.0/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+
+      - name: Create Kind cluster
+        run: |
+          # Retry up to 3 times — KinD cluster creation can fail transiently
+          # on GitHub Actions runners (kubelet cgroup race, slow I/O).
+          for attempt in 1 2 3; do
+            echo "=== Attempt $attempt ==="
+            kind delete cluster --name "$E2E_CLUSTER" 2>/dev/null || true
+
+            cat <<'EOF' | kind create cluster --name "$E2E_CLUSTER" --wait 5m --config=-
+          kind: Cluster
+          apiVersion: kind.x-k8s.io/v1alpha4
+          # Pin node image for reproducibility (containerd 2.x, Kubernetes 1.33.1)
+          nodes:
+          - role: control-plane
+            image: kindest/node:v1.33.1@sha256:050072256b9a903bd914c0b2866828150cb229cea0efe5892e2b644d5dd3b34f
+          EOF
+
+            if [ $? -eq 0 ]; then
+              echo "Cluster created successfully"
+              break
+            fi
+            if [ $attempt -eq 3 ]; then
+              echo "Failed to create cluster after 3 attempts"
+              exit 1
+            fi
+            # Exponential backoff: 10s, 30s, 60s
+            backoff=$((10 * attempt))
+            echo "Cluster creation failed, retrying in ${backoff}s..."
+            sleep $backoff
+          done
+
+      - name: Verify cluster health
+        run: |
+          kubectl cluster-info
+          kubectl get nodes -o wide
+          kubectl wait --for=condition=Ready node --all --timeout=120s
+
+      - name: Load component images into Kind
+        run: |
+          set -x
+          # Verify tar files exist
+          ls -lh operator-*-image.tar || (echo "ERROR: Image tar files not found"; exit 1)
+          
+          # Load images from tar
+          echo "Loading Docker images..."
+          docker load -i operator-controller-image.tar
+          docker load -i operator-manager-image.tar
+          docker load -i operator-worker-image.tar
+          docker load -i operator-plugin-image.tar
+          
+          # Verify images exist in Docker
+          echo "Verifying loaded images..."
+          docker images | grep "oc-mirror"
+          
+          # Load images into Kind cluster (4 loads in parallel)
+          echo "Loading images into Kind cluster..."
+          for img in controller manager worker plugin; do
+            kind load docker-image "example.com/oc-mirror-${img}:v0.0.1" --name "$E2E_CLUSTER" &
+          done
+          wait
+      - name: Install cert-manager v1.16.3
+        if: matrix.suite == 'cluster'
+        run: |
+          kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.16.3/cert-manager.yaml
+          kubectl wait deployment/cert-manager-webhook \
+            --namespace cert-manager \
+            --for=condition=Available \
+            --timeout=300s
+
+      - name: Run E2E tests (${{ matrix.suite }})
+        env:
+          E2E_LABELS: ${{ matrix.suite == 'cluster' && 'cluster' || 'release || catalog' }}
+        run: |
+          go mod tidy
+          SKIP_CLUSTER_SETUP=true \
+          CERT_MANAGER_INSTALL_SKIP=true \
+          KIND_CLUSTER="$E2E_CLUSTER" \
+          go test ./test/e2e/ -v -timeout 45m \
+            -ginkgo.v \
+            -ginkgo.label-filter="$E2E_LABELS && !catalog-live"
+          # label map:
+          #   cluster         – needs Kind + deployed operator (mirror, catalog-cluster)
+          #   catalog         – pure in-memory FBC filter tests, no cluster required
+          #   release         – Cincinnati API (api.openshift.com), reachable in CI
+          #   catalog-live    – quay.io/operatorhubio/catalog (~2 GB), manual only
+
+      - name: Diagnostic dump on failure
+        if: failure()
+        run: |
+          echo "=== Cluster Nodes ==="
+          kubectl get nodes -o wide || true
+          echo "=== All Pods ==="
+          kubectl get pods -A -o wide || true
+          echo "=== Deployments (all namespaces) ==="
+          kubectl get deployments -A -o wide || true
+          echo "=== Describe Deployments in oc-mirror-system ==="
+          kubectl describe deployments -n oc-mirror-system || true
+          echo "=== Describe Pods in oc-mirror-system ==="
+          kubectl describe pods -n oc-mirror-system || true
+          echo "=== Failed/Pending Pod Events ==="
+          kubectl get events -A --sort-by=.lastTimestamp | grep -E "Failed|ErrImagePull|ImagePullBackOff|Pending|Warning" | tail -50 || true
+          echo "=== All Events (last 80) ==="
+          kubectl get events -A --sort-by=.lastTimestamp | tail -80 || true
+          echo "=== Controller-Manager Logs (oc-mirror-system) ==="
+          kubectl logs -l control-plane=controller-manager -n oc-mirror-system --tail=100 --all-containers 2>/dev/null || true
+          echo "=== Images loaded in Kind nodes ==="
+          for node in $(kind get nodes --name "$E2E_CLUSTER" 2>/dev/null); do
+            echo "--- Node: $node ---"
+            docker exec "$node" crictl images 2>/dev/null | grep -E "oc-mirror|example.com" || true
+          done
+
+      - name: Cleanup
+        if: always()
+        run: |
+          kind delete cluster --name "$E2E_CLUSTER"
