@@ -679,7 +679,7 @@ jobs:
           # ── Bundle-Layout (Pflichtformat dieses Catalogs): ──
           # operators/<pkg>/<version>/{manifests/,metadata/,bundle.Dockerfile}
           # + package-level operators/<pkg>/{ci.yaml,logo/}
-          PACKAGE_DIR="operators/oc-mirror-operator"
+          PACKAGE_DIR="operators/oc-mirror"
           OPERATOR_DIR="${PACKAGE_DIR}/${VERSION}"
           mkdir -p "${OPERATOR_DIR}"
 
@@ -842,7 +842,7 @@ jobs:
           # ── Red Hat catalog layout (Pflichtformat): operators/<pkg>/<version>/
           # mit manifests/, metadata/, bundle.Dockerfile + package-level
           # ci.yaml und logo/ — analog operatorhub.io, nur anderer Root. ──
-          PACKAGE_DIR="operators/oc-mirror-operator"
+          PACKAGE_DIR="operators/oc-mirror"
           OPERATOR_DIR="${PACKAGE_DIR}/${VERSION}"
           mkdir -p "${OPERATOR_DIR}"
 
