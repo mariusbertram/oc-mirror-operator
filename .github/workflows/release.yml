@@ -718,7 +718,7 @@ jobs:
           CSV_FILE="${OPERATOR_DIR}/manifests/oc-mirror.clusterserviceversion.yaml"
           NEW_VER="${VERSION}"
           # Highest already-published version from the version dirs
-          PREV_DIR=$(ls -1d "${PACKAGE_DIR}"/*/ 2>/dev/null | grep -v "/${NEW_VER}/" | sed 's|/$||; s|.*/||' | sort -V | tail -1)
+          PREV_DIR=$(find "${PACKAGE_DIR}" -mindepth 1 -maxdepth 1 -type d -name '[0-9]*' -exec test -f "{}/manifests/oc-mirror.clusterserviceversion.yaml" \; -print 2>/dev/null | sed 's|.*/||' | grep -Fxv "${NEW_VER}" | sort -V | tail -1)
           if [ -n "${PREV_DIR}" ] && [ "${PREV_DIR}" != "${NEW_VER}" ] && [ -f "${PACKAGE_DIR}/${PREV_DIR}/manifests/oc-mirror.clusterserviceversion.yaml" ]; then
             PREV_NAME=$(yq '.metadata.name' "${PACKAGE_DIR}/${PREV_DIR}/manifests/oc-mirror.clusterserviceversion.yaml")
             if ! grep -q "^  replaces:" "$CSV_FILE"; then
@@ -881,7 +881,7 @@ jobs:
           CSV_FILE="${OPERATOR_DIR}/manifests/oc-mirror.clusterserviceversion.yaml"
           NEW_VER="${VERSION}"
           # Highest already-published version from the version dirs
-          PREV_DIR=$(ls -1d "${PACKAGE_DIR}"/*/ 2>/dev/null | grep -v "/${NEW_VER}/" | sed 's|/$||; s|.*/||' | sort -V | tail -1)
+          PREV_DIR=$(find "${PACKAGE_DIR}" -mindepth 1 -maxdepth 1 -type d -name '[0-9]*' -exec test -f "{}/manifests/oc-mirror.clusterserviceversion.yaml" \; -print 2>/dev/null | sed 's|.*/||' | grep -Fxv "${NEW_VER}" | sort -V | tail -1)
           if [ -n "${PREV_DIR}" ] && [ "${PREV_DIR}" != "${NEW_VER}" ] && [ -f "${PACKAGE_DIR}/${PREV_DIR}/manifests/oc-mirror.clusterserviceversion.yaml" ]; then
             PREV_NAME=$(yq '.metadata.name' "${PACKAGE_DIR}/${PREV_DIR}/manifests/oc-mirror.clusterserviceversion.yaml")
             if ! grep -q "^  replaces:" "$CSV_FILE"; then
