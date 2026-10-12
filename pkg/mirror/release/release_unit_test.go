@@ -964,7 +964,11 @@ var _ = Describe("Unit", func() {
 				Expect(r.URL.Query().Get("channel")).To(Equal("stable-4"))
 				Expect(r.URL.Query().Get("arch")).To(Equal("amd64"))
 				w.Header().Set("Content-Type", "application/json")
-				_, _ = w.Write([]byte(`{"nodes":[{"version":"4.15.0-0.okd-2024","payload":"registry.ci.openshift.org/origin/release:v4.15.0-0.okd-2024"}],"edges":[]}`))
+				graphJSON := `{"nodes":[` +
+					`{"version":"4.13.0-0.okd-2023-11-11-143000","payload":"registry.ci.openshift.org/origin/release@sha256:111"},` +
+					`{"version":"4.13.0-0.okd-2024-04-09-152022","payload":"registry.ci.openshift.org/origin/release@sha256:222"}` +
+					`],"edges":[[0,1]]}`
+				_, _ = w.Write([]byte(graphJSON))
 			}))
 			defer server.Close()
 			origOcp := OcpUpdateURL
@@ -978,11 +982,21 @@ var _ = Describe("Unit", func() {
 			rr := &ReleaseResolver{httpClient: server.Client()}
 			graph, err := rr.FetchGraph(context.Background(), "stable-4", []string{"amd64"}, "okd")
 			Expect(err).NotTo(HaveOccurred())
-			Expect(graph.Nodes).To(HaveLen(1))
+			Expect(graph.Nodes).To(HaveLen(2))
 			Expect(graph.Nodes[0].Version).To(ContainSubstring("okd"))
 			nodes, err := rr.ResolveReleaseNodes(context.Background(), "stable-4", "", "", []string{"amd64"}, true, false, "okd")
 			Expect(err).NotTo(HaveOccurred())
-			Expect(nodes).To(HaveLen(1))
+			Expect(nodes).To(HaveLen(2))
+			// No-constraints resolution must pick the newest OKD payload even
+			// though both share the semver core 4.13.0 and differ only in the
+			// okd-<date> prerelease suffix.
+			latest, err := rr.ResolveReleaseNodes(context.Background(), "stable-4", "", "", []string{"amd64"}, false, false, "okd")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(latest).To(HaveLen(1))
+			Expect(latest[0].Image).To(Equal("registry.ci.openshift.org/origin/release@sha256:222"))
+			ver, err := rr.ResolveLatestVersion(context.Background(), "stable-4", []string{"amd64"}, "okd")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(ver).To(Equal("4.13.0-0.okd-2024-04-09-152022"))
 		})
 	})
 })

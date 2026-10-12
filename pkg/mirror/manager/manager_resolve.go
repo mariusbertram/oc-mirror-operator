@@ -555,6 +555,11 @@ func (m *MirrorManager) signatureConfigMapName() string {
 // tampered or unsigned release payload is never queued for mirroring in the
 // first place, rather than merely being flagged after the fact.
 func (m *MirrorManager) verifyReleaseNodes(ctx context.Context, ch mirrorv1alpha1.ReleaseChannel, nodes []release.Node) []release.Node {
+	if ch.Type == mirrorv1alpha1.TypeOKD && !ch.SkipSignatureVerification {
+		oclog.Printf("Warning: channel %s has type okd but skipSignatureVerification is false; "+
+			"OKD payloads are not signed with the Red Hat release keys, so every node will be rejected. "+
+			"Set skipSignatureVerification: true on the channel to mirror OKD releases\n", ch.Name)
+	}
 	if ch.SkipSignatureVerification || len(nodes) == 0 {
 		return nodes
 	}
