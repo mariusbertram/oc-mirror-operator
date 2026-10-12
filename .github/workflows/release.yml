@@ -517,8 +517,8 @@ jobs:
           git clone "https://github.com/${CATALOG_REPO}.git" /tmp/catalog
           cd /tmp/catalog
 
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name  "Marius Bertram"
+          git config user.email "marius@brtrm.de"
 
           BRANCH="add-oc-mirror-v${VERSION}"
           git checkout -b "$BRANCH"
@@ -570,7 +570,7 @@ jobs:
           git add "${OPERATOR_DIR}"
           git diff --cached --stat
 
-          git commit -m "feat(oc-mirror): add oc-mirror-operator v${VERSION}
+          git commit --signoff -m "feat(oc-mirror): add oc-mirror-operator v${VERSION}
 
           Bundle image: ${BUNDLE_DIGEST_REF}
           Controller image: ${{ env.CONTROLLER_IMAGE }}:${{ github.ref_name }}@${{ needs.build-operator.outputs.controller_digest }}"
@@ -669,8 +669,8 @@ jobs:
           git clone --depth 1 "https://github.com/k8s-operatorhub/community-operators.git" /tmp/operatorhub
           cd /tmp/operatorhub
 
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name  "Marius Bertram"
+          git config user.email "marius@brtrm.de"
 
           BRANCH="oc-mirror-operator-v${VERSION}"
           git push origin --delete "$BRANCH" 2>/dev/null || true
@@ -746,7 +746,7 @@ jobs:
             echo "Nothing to commit — bundle already present."
             exit 0
           fi
-          git commit -m "Add oc-mirror-operator v${VERSION} (${BUNDLE_DIGEST_REF})"
+          git commit --signoff -m "Add oc-mirror-operator v${VERSION} (${BUNDLE_DIGEST_REF})"
           git push -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY_OWNER}/community-operators.git" "$BRANCH"
 
           gh pr create \
@@ -832,8 +832,8 @@ jobs:
           git clone --depth 1 "https://github.com/redhat-openshift-ecosystem/community-operators-prod.git" /tmp/redhat-catalog
           cd /tmp/redhat-catalog
 
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name  "Marius Bertram"
+          git config user.email "marius@brtrm.de"
 
           BRANCH="oc-mirror-operator-v${VERSION}"
           git push origin --delete "$BRANCH" 2>/dev/null || true
@@ -908,7 +908,7 @@ jobs:
             echo "Nothing to commit — bundle already present."
             exit 0
           fi
-          git commit -m "Add oc-mirror-operator v${VERSION} (${BUNDLE_DIGEST_REF})"
+          git commit --signoff -m "Add oc-mirror-operator v${VERSION} (${BUNDLE_DIGEST_REF})"
           git push -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY_OWNER}/community-operators-prod.git" "$BRANCH"
 
           gh pr create \
