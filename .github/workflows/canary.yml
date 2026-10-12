@@ -63,9 +63,9 @@ jobs:
             done
           fi
 
-      - name: Install Kind v0.29.0
+      - name: Install Kind v0.33.0
         run: |
-          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.29.0/kind-linux-amd64
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.33.0/kind-linux-amd64
           chmod +x ./kind
           sudo mv ./kind /usr/local/bin/kind
 
@@ -179,10 +179,10 @@ jobs:
           mkdir -p .runtime-smoke
           go build -o .runtime-smoke/plugin ./cmd/dashboard
 
-      - name: Install Kind v0.29.0
+      - name: Install Kind v0.33.0
         if: steps.matrix-check.outputs.in-matrix == 'false'
         run: |
-          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.29.0/kind-linux-amd64
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.33.0/kind-linux-amd64
           chmod +x ./kind
           sudo mv ./kind /usr/local/bin/kind
 
