@@ -31,6 +31,22 @@ import (
 // Network requirement: outbound HTTPS to api.openshift.com:443 (Manager pod).
 var OcpUpdateURL = "https://api.openshift.com/api/upgrades_info/v1/graph"
 
+// OkdUpdateURL is the Cincinnati API endpoint for OKD release graphs
+// (the same endpoint oc-mirror v2 uses for OKD channels). It is a variable
+// (not a constant) so that tests can override it with httptest servers.
+// Network requirement: outbound HTTPS to origin-release.ci.openshift.org:443
+// (Manager pod).
+var OkdUpdateURL = "https://origin-release.ci.openshift.org/graph"
+
+// UpdateURLForType returns the Cincinnati graph endpoint for the given
+// platform type ("ocp" or "okd"), defaulting to the OCP endpoint.
+func UpdateURLForType(platformType string) string {
+	if platformType == "okd" {
+		return OkdUpdateURL
+	}
+	return OcpUpdateURL
+}
+
 type Graph struct {
 	Nodes []Node  `json:"nodes"`
 	Edges [][]int `json:"edges"` // each edge is [from_index, to_index]
@@ -93,8 +109,11 @@ func ResolvedSignature(payloadImages []string) string {
 
 // FetchGraph retrieves the raw Cincinnati upgrade graph for the given channel and arch.
 // It is exported so callers (e.g., integration tests) can inspect nodes and edges directly.
-func (r *ReleaseResolver) FetchGraph(ctx context.Context, channel string, arch []string) (*Graph, error) {
-	u, err := url.Parse(OcpUpdateURL)
+// platformType selects the Cincinnati endpoint: "okd" fetches the OKD graph
+// (origin-release.ci.openshift.org), anything else the OCP graph
+// (api.openshift.com).
+func (r *ReleaseResolver) FetchGraph(ctx context.Context, channel string, arch []string, platformType string) (*Graph, error) {
+	u, err := url.Parse(UpdateURLForType(platformType))
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse update URL: %w", err)
 	}
@@ -148,8 +167,8 @@ func (r *ReleaseResolver) FetchGraph(ctx context.Context, channel string, arch [
 //   - minVersion!="" && maxVersion!="": range filter [min, max] inclusive.
 //   - minVersion!="" && maxVersion="": all nodes >= minVersion.
 //   - no constraints: return only the latest (highest semver) node.
-func (r *ReleaseResolver) ResolveReleaseNodes(ctx context.Context, channel, minVersion, maxVersion string, arch []string, full, shortestPath bool) ([]Node, error) {
-	graph, err := r.FetchGraph(ctx, channel, arch)
+func (r *ReleaseResolver) ResolveReleaseNodes(ctx context.Context, channel, minVersion, maxVersion string, arch []string, full, shortestPath bool, platformType string) ([]Node, error) {
+	graph, err := r.FetchGraph(ctx, channel, arch, platformType)
 	if err != nil {
 		return nil, err
 	}
@@ -228,8 +247,8 @@ func (r *ReleaseResolver) ResolveReleaseNodes(ctx context.Context, channel, minV
 // references. It is a thin wrapper around ResolveReleaseNodes that discards
 // the version information. Prefer ResolveReleaseNodes when the version string
 // is needed for destination tagging.
-func (r *ReleaseResolver) ResolveRelease(ctx context.Context, channel, minVersion, maxVersion string, arch []string, full, shortestPath bool) ([]string, error) {
-	nodes, err := r.ResolveReleaseNodes(ctx, channel, minVersion, maxVersion, arch, full, shortestPath)
+func (r *ReleaseResolver) ResolveRelease(ctx context.Context, channel, minVersion, maxVersion string, arch []string, full, shortestPath bool, platformType string) ([]string, error) {
+	nodes, err := r.ResolveReleaseNodes(ctx, channel, minVersion, maxVersion, arch, full, shortestPath, platformType)
 	if err != nil {
 		return nil, err
 	}
@@ -238,8 +257,8 @@ func (r *ReleaseResolver) ResolveRelease(ctx context.Context, channel, minVersio
 
 // ResolveLatestVersion returns the highest semver version available in the given channel.
 // It is used by the collector to determine the destination path when no version is pinned.
-func (r *ReleaseResolver) ResolveLatestVersion(ctx context.Context, channel string, arch []string) (string, error) {
-	graph, err := r.FetchGraph(ctx, channel, arch)
+func (r *ReleaseResolver) ResolveLatestVersion(ctx context.Context, channel string, arch []string, platformType string) (string, error) {
+	graph, err := r.FetchGraph(ctx, channel, arch, platformType)
 	if err != nil {
 		return "", err
 	}

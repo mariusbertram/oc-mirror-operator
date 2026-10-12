@@ -98,10 +98,19 @@ are mirrored as such, with every architecture they contain; the payload is tagge
 
 ```yaml
 channels:
-  - name: stable-4.16
+  - name: stable-4
     type: okd
     skipSignatureVerification: true
 ```
+
+Channels with `type: okd` are resolved from the OKD Cincinnati update graph
+(`origin-release.ci.openshift.org`) instead of the OpenShift graph
+(`api.openshift.com`), and mirror the OKD/SCOS release payloads
+(`registry.ci.openshift.org/origin/release:...`) plus their component images
+like OCP releases. Typical OKD channel names are `stable-4`, `4-scos-stable`
+or `4.15.0-0.okd-scos` (see the channel list on
+[origin-release.ci.openshift.org](https://origin-release.ci.openshift.org/));
+unlike OCP they are not named after a minor version like `stable-4.16`.
 
 Release payloads are verified against the embedded Red Hat release signing keys before
 they are mirrored; the signatures are fetched from `mirror.openshift.com`. OKD, CI and
