@@ -199,7 +199,7 @@ func (c *Collector) ResolveReleasePayloadNodes(ctx context.Context, rel mirrorv1
 	if arch == "" {
 		arch = "amd64"
 	}
-	return c.releaseResolver.ResolveReleaseNodes(ctx, rel.Name, rel.MinVersion, rel.MaxVersion, []string{arch}, rel.Full, rel.ShortestPath)
+	return c.releaseResolver.ResolveReleaseNodes(ctx, rel.Name, rel.MinVersion, rel.MaxVersion, []string{arch}, rel.Full, rel.ShortestPath, string(rel.Type))
 }
 
 // ReleaseArchitectures returns spec's release architectures, defaulting to

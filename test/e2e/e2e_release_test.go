@@ -45,7 +45,7 @@ var _ = Describe("Cincinnati Release Resolver", Label("release", "integration"),
 
 	Context("FetchGraph", func() {
 		It("should return a non-empty graph for stable-4.15", func() {
-			graph, err := resolver.FetchGraph(ctx, "stable-4.15", []string{"amd64"})
+			graph, err := resolver.FetchGraph(ctx, "stable-4.15", []string{"amd64"}, "ocp")
 			Expect(err).NotTo(HaveOccurred(), "Cincinnati API should be reachable")
 			Expect(graph).NotTo(BeNil())
 			Expect(graph.Nodes).NotTo(BeEmpty(), "stable-4.15 must contain at least one node")
@@ -62,7 +62,7 @@ var _ = Describe("Cincinnati Release Resolver", Label("release", "integration"),
 
 	Context("full channel fetch", func() {
 		It("should return all release payload images from stable-4.15", func() {
-			images, err := resolver.ResolveRelease(ctx, "stable-4.15", "", "", []string{"amd64"}, true, false)
+			images, err := resolver.ResolveRelease(ctx, "stable-4.15", "", "", []string{"amd64"}, true, false, "ocp")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(images).NotTo(BeEmpty())
 
@@ -74,8 +74,8 @@ var _ = Describe("Cincinnati Release Resolver", Label("release", "integration"),
 		})
 
 		It("should return a different (smaller) set for stable-4.14", func() {
-			images415, err415 := resolver.ResolveRelease(ctx, "stable-4.15", "", "", []string{"amd64"}, true, false)
-			images414, err414 := resolver.ResolveRelease(ctx, "stable-4.14", "", "", []string{"amd64"}, true, false)
+			images415, err415 := resolver.ResolveRelease(ctx, "stable-4.15", "", "", []string{"amd64"}, true, false, "ocp")
+			images414, err414 := resolver.ResolveRelease(ctx, "stable-4.14", "", "", []string{"amd64"}, true, false, "ocp")
 			Expect(err415).NotTo(HaveOccurred())
 			Expect(err414).NotTo(HaveOccurred())
 			// Different channels → different payloads; sets must not be identical
@@ -86,14 +86,14 @@ var _ = Describe("Cincinnati Release Resolver", Label("release", "integration"),
 	Context("maxVersion pin", func() {
 		It("should return exactly one image for a specific release version", func() {
 			// Fetch graph first to get a real version that exists in the channel.
-			graph, err := resolver.FetchGraph(ctx, "stable-4.14", []string{"amd64"})
+			graph, err := resolver.FetchGraph(ctx, "stable-4.14", []string{"amd64"}, "ocp")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(graph.Nodes).NotTo(BeEmpty())
 
 			// Pick the first node as our pinned target.
 			target := graph.Nodes[0]
 
-			pinned, err := resolver.ResolveRelease(ctx, "stable-4.14", "", target.Version, []string{"amd64"}, false, false)
+			pinned, err := resolver.ResolveRelease(ctx, "stable-4.14", "", target.Version, []string{"amd64"}, false, false, "ocp")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(pinned).To(HaveLen(1), "a pinned maxVersion must resolve to exactly one payload")
 			Expect(pinned[0]).To(Equal(target.Image), "resolved payload must match the graph node")
@@ -102,7 +102,7 @@ var _ = Describe("Cincinnati Release Resolver", Label("release", "integration"),
 
 	Context("version range filter (minVersion + maxVersion)", func() {
 		It("should return fewer images than the full channel", func() {
-			graph, err := resolver.FetchGraph(ctx, "stable-4.14", []string{"amd64"})
+			graph, err := resolver.FetchGraph(ctx, "stable-4.14", []string{"amd64"}, "ocp")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(graph.Nodes)).To(BeNumerically(">=", 4),
 				"need at least 4 nodes to test a narrower range")
@@ -129,8 +129,8 @@ var _ = Describe("Cincinnati Release Resolver", Label("release", "integration"),
 			minVer := sorted[0].version
 			maxVer := sorted[2].version
 
-			rangeImages, err := resolver.ResolveRelease(ctx, "stable-4.14", minVer, maxVer, []string{"amd64"}, false, false)
-			fullImages, errFull := resolver.ResolveRelease(ctx, "stable-4.14", "", "", []string{"amd64"}, true, false)
+			rangeImages, err := resolver.ResolveRelease(ctx, "stable-4.14", minVer, maxVer, []string{"amd64"}, false, false, "ocp")
+			fullImages, errFull := resolver.ResolveRelease(ctx, "stable-4.14", "", "", []string{"amd64"}, true, false, "ocp")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(errFull).NotTo(HaveOccurred())
 
@@ -152,7 +152,7 @@ var _ = Describe("Cincinnati Release Resolver", Label("release", "integration"),
 			resolver := release.New(mc)
 
 			// Fetch one real payload image from the Cincinnati graph to use as test input.
-			graph, err := resolver.FetchGraph(ctx, "stable-4.15", []string{"amd64"})
+			graph, err := resolver.FetchGraph(ctx, "stable-4.15", []string{"amd64"}, "ocp")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(graph.Nodes).NotTo(BeEmpty())
 
@@ -192,7 +192,7 @@ var _ = Describe("Cincinnati Release Resolver", Label("release", "integration"),
 
 	Context("shortestPath via BFS", func() {
 		It("should return a path that starts and ends at the requested nodes", func() {
-			graph, err := resolver.FetchGraph(ctx, "stable-4.14", []string{"amd64"})
+			graph, err := resolver.FetchGraph(ctx, "stable-4.14", []string{"amd64"}, "ocp")
 			Expect(err).NotTo(HaveOccurred())
 
 			// Need at least two connected nodes.
@@ -206,7 +206,7 @@ var _ = Describe("Cincinnati Release Resolver", Label("release", "integration"),
 			fromVer := graph.Nodes[edge[0]].Version
 			toVer := graph.Nodes[edge[1]].Version
 
-			path, err := resolver.ResolveRelease(ctx, "stable-4.14", fromVer, toVer, []string{"amd64"}, false, true)
+			path, err := resolver.ResolveRelease(ctx, "stable-4.14", fromVer, toVer, []string{"amd64"}, false, true, "ocp")
 			Expect(err).NotTo(HaveOccurred(), "BFS must find a path for a known graph edge")
 			Expect(path).NotTo(BeEmpty())
 			Expect(path[0]).To(Equal(graph.Nodes[edge[0]].Image), "path must start with the from-node payload")

@@ -725,50 +725,50 @@ var _ = Describe("Unit", func() {
 		})
 
 		It("full=true returns all nodes via real method", func() {
-			nodes, err := rr.ResolveReleaseNodes(context.Background(), "stable-4.15", "", "", nil, true, false)
+			nodes, err := rr.ResolveReleaseNodes(context.Background(), "stable-4.15", "", "", nil, true, false, "ocp")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(nodes).To(HaveLen(4))
 		})
 
 		It("maxVersion only returns matching node via real method", func() {
-			nodes, err := rr.ResolveReleaseNodes(context.Background(), "stable-4.15", "", "4.14.5", nil, false, false)
+			nodes, err := rr.ResolveReleaseNodes(context.Background(), "stable-4.15", "", "4.14.5", nil, false, false, "ocp")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(nodes).To(HaveLen(1))
 			Expect(nodes[0].Version).To(Equal("4.14.5"))
 		})
 
 		It("minVersion + maxVersion range filter via real method", func() {
-			nodes, err := rr.ResolveReleaseNodes(context.Background(), "stable-4.15", "4.14.0", "4.14.5", nil, false, false)
+			nodes, err := rr.ResolveReleaseNodes(context.Background(), "stable-4.15", "4.14.0", "4.14.5", nil, false, false, "ocp")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(nodes).To(HaveLen(2))
 		})
 
 		It("minVersion + maxVersion + shortestPath via real method", func() {
-			nodes, err := rr.ResolveReleaseNodes(context.Background(), "stable-4.15", "4.14.0", "4.15.1", nil, false, true)
+			nodes, err := rr.ResolveReleaseNodes(context.Background(), "stable-4.15", "4.14.0", "4.15.1", nil, false, true, "ocp")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(nodes)).To(BeNumerically(">=", 2))
 		})
 
 		It("minVersion only returns >= min via real method", func() {
-			nodes, err := rr.ResolveReleaseNodes(context.Background(), "stable-4.15", "4.15.0", "", nil, false, false)
+			nodes, err := rr.ResolveReleaseNodes(context.Background(), "stable-4.15", "4.15.0", "", nil, false, false, "ocp")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(nodes).To(HaveLen(2))
 		})
 
 		It("no constraints returns latest via real method", func() {
-			nodes, err := rr.ResolveReleaseNodes(context.Background(), "stable-4.15", "", "", nil, false, false)
+			nodes, err := rr.ResolveReleaseNodes(context.Background(), "stable-4.15", "", "", nil, false, false, "ocp")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(nodes).To(HaveLen(1))
 			Expect(nodes[0].Version).To(Equal("4.15.1"))
 		})
 
 		It("invalid minVersion returns error via real method", func() {
-			_, err := rr.ResolveReleaseNodes(context.Background(), "stable-4.15", "not-semver", "4.15.0", nil, false, false)
+			_, err := rr.ResolveReleaseNodes(context.Background(), "stable-4.15", "not-semver", "4.15.0", nil, false, false, "ocp")
 			Expect(err).To(HaveOccurred())
 		})
 
 		It("invalid maxVersion returns error via real method", func() {
-			_, err := rr.ResolveReleaseNodes(context.Background(), "stable-4.15", "4.14.0", "not-semver", nil, false, false)
+			_, err := rr.ResolveReleaseNodes(context.Background(), "stable-4.15", "4.14.0", "not-semver", nil, false, false, "ocp")
 			Expect(err).To(HaveOccurred())
 		})
 	})
@@ -787,7 +787,7 @@ var _ = Describe("Unit", func() {
 			defer func() { OcpUpdateURL = origURL }()
 
 			rr := &ReleaseResolver{httpClient: server.Client()}
-			images, err := rr.ResolveRelease(context.Background(), "stable-4.14", "", "", nil, true, false)
+			images, err := rr.ResolveRelease(context.Background(), "stable-4.14", "", "", nil, true, false, "ocp")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(images).To(Equal([]string{"quay.io/a@sha256:aaa"}))
 		})
@@ -810,7 +810,7 @@ var _ = Describe("Unit", func() {
 			defer func() { OcpUpdateURL = origURL }()
 
 			rr := &ReleaseResolver{httpClient: server.Client()}
-			ver, err := rr.ResolveLatestVersion(context.Background(), "stable-4.15", nil)
+			ver, err := rr.ResolveLatestVersion(context.Background(), "stable-4.15", nil, "ocp")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(ver).To(Equal("4.15.1"))
 		})
@@ -825,7 +825,7 @@ var _ = Describe("Unit", func() {
 			defer func() { OcpUpdateURL = origURL }()
 
 			rr := &ReleaseResolver{httpClient: server.Client()}
-			_, err := rr.ResolveLatestVersion(context.Background(), "stable-4.15", nil)
+			_, err := rr.ResolveLatestVersion(context.Background(), "stable-4.15", nil, "ocp")
 			Expect(err).To(HaveOccurred())
 		})
 	})
@@ -880,7 +880,7 @@ var _ = Describe("Unit", func() {
 			defer func() { OcpUpdateURL = origURL }()
 
 			rr := New(nil)
-			_, err := rr.FetchGraph(context.Background(), "stable-4.15", nil)
+			_, err := rr.FetchGraph(context.Background(), "stable-4.15", nil, "ocp")
 			Expect(err).To(HaveOccurred())
 		})
 
@@ -894,7 +894,7 @@ var _ = Describe("Unit", func() {
 			defer func() { OcpUpdateURL = origURL }()
 
 			rr := &ReleaseResolver{httpClient: server.Client()}
-			_, err := rr.FetchGraph(context.Background(), "stable-4.15", nil)
+			_, err := rr.FetchGraph(context.Background(), "stable-4.15", nil, "ocp")
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("unexpected status code 500"))
 		})
@@ -909,7 +909,7 @@ var _ = Describe("Unit", func() {
 			defer func() { OcpUpdateURL = origURL }()
 
 			rr := &ReleaseResolver{httpClient: server.Client()}
-			_, err := rr.FetchGraph(context.Background(), "stable-4.15", nil)
+			_, err := rr.FetchGraph(context.Background(), "stable-4.15", nil, "ocp")
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("unmarshal"))
 		})
@@ -926,7 +926,7 @@ var _ = Describe("Unit", func() {
 			defer func() { OcpUpdateURL = origURL }()
 
 			rr := &ReleaseResolver{httpClient: server.Client()}
-			_, err := rr.FetchGraph(context.Background(), "stable-4.15", []string{"arm64"})
+			_, err := rr.FetchGraph(context.Background(), "stable-4.15", []string{"arm64"}, "ocp")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(receivedArch).To(Equal("arm64"))
 		})
@@ -939,7 +939,7 @@ var _ = Describe("Unit", func() {
 			defer func() { OcpUpdateURL = origURL }()
 
 			rr := New(nil)
-			_, err := rr.ResolveRelease(context.Background(), "stable-4.15", "", "", nil, true, false)
+			_, err := rr.ResolveRelease(context.Background(), "stable-4.15", "", "", nil, true, false, "ocp")
 			Expect(err).To(HaveOccurred())
 		})
 
@@ -949,8 +949,40 @@ var _ = Describe("Unit", func() {
 			defer func() { OcpUpdateURL = origURL }()
 
 			rr := New(nil)
-			_, err := rr.ResolveLatestVersion(context.Background(), "stable-4.15", nil)
+			_, err := rr.ResolveLatestVersion(context.Background(), "stable-4.15", nil, "ocp")
 			Expect(err).To(HaveOccurred())
+		})
+	})
+	Describe("OKD graph endpoint selection", func() {
+		It("uses OkdUpdateURL for platformType okd and OcpUpdateURL otherwise", func() {
+			Expect(UpdateURLForType("okd")).To(Equal(OkdUpdateURL))
+			Expect(UpdateURLForType("ocp")).To(Equal(OcpUpdateURL))
+			Expect(UpdateURLForType("")).To(Equal(OcpUpdateURL))
+		})
+		It("fetches the OKD graph from the OKD endpoint", func() {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				Expect(r.URL.Query().Get("channel")).To(Equal("stable-4"))
+				Expect(r.URL.Query().Get("arch")).To(Equal("amd64"))
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"nodes":[{"version":"4.15.0-0.okd-2024","payload":"registry.ci.openshift.org/origin/release:v4.15.0-0.okd-2024"}],"edges":[]}`))
+			}))
+			defer server.Close()
+			origOcp := OcpUpdateURL
+			origOkd := OkdUpdateURL
+			OkdUpdateURL = server.URL
+			OcpUpdateURL = unreachableURL
+			defer func() {
+				OkdUpdateURL = origOkd
+				OcpUpdateURL = origOcp
+			}()
+			rr := &ReleaseResolver{httpClient: server.Client()}
+			graph, err := rr.FetchGraph(context.Background(), "stable-4", []string{"amd64"}, "okd")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(graph.Nodes).To(HaveLen(1))
+			Expect(graph.Nodes[0].Version).To(ContainSubstring("okd"))
+			nodes, err := rr.ResolveReleaseNodes(context.Background(), "stable-4", "", "", []string{"amd64"}, true, false, "okd")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(nodes).To(HaveLen(1))
 		})
 	})
 })
