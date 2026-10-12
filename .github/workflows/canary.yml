@@ -43,25 +43,16 @@ jobs:
           echo "image=${LATEST}" >> "$GITHUB_OUTPUT"
           echo "Latest node image: ${LATEST}"
 
-      - name: Download component images artifacts
-        uses: actions/download-artifact@v8
-        with:
-          name: operator-images
-          path: .
-        continue-on-error: true
-
-      - name: Build component images (fallback if no artifact available)
+      - name: Build component images
         run: |
           set -x
-          if ! ls operator-*-image.tar >/dev/null 2>&1; then
-            CONTAINER_TOOL=docker make docker-build-controller docker-build-manager docker-build-worker \
-              IMG_CONTROLLER=example.com/oc-mirror-controller:v0.0.1 \
-              IMG_MANAGER=example.com/oc-mirror-manager:v0.0.1 \
-              IMG_WORKER=example.com/oc-mirror-worker:v0.0.1
-            for c in controller manager worker; do
-              docker save example.com/oc-mirror-${c}:v0.0.1 -o operator-${c}-image.tar
-            done
-          fi
+          # Always build from the checked-out HEAD so the canary tests the
+          # current code, not a stale artifact from an earlier CI run.
+          CONTAINER_TOOL=docker make docker-build-controller docker-build-manager docker-build-worker docker-build-plugin \
+            IMG_CONTROLLER=example.com/oc-mirror-controller:v0.0.1 \
+            IMG_MANAGER=example.com/oc-mirror-manager:v0.0.1 \
+            IMG_WORKER=example.com/oc-mirror-worker:v0.0.1 \
+            IMG_PLUGIN=example.com/oc-mirror-plugin:v0.0.1
 
       - name: Install Kind v0.33.0
         run: |
@@ -91,6 +82,15 @@ jobs:
           echo "Failed to create Kind cluster with ${{ steps.latest.outputs.image }}" >&2
           exit 1
 
+      - name: Load component images into Kind
+        run: |
+          set -x
+          # The e2e suite deploys example.com/oc-mirror-*:v0.0.1, which only
+          # exists locally — without kind load the pods would sit in
+          # ImagePullBackOff.
+          for img in controller manager worker plugin; do
+            kind load docker-image "example.com/oc-mirror-${img}:v0.0.1" --name oc-mirror-canary
+          done
 
       - name: Run e2e tests
         run: |
