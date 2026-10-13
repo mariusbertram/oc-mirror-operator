@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Mirror OKD platform images: `spec.mirror.platform.channels` entries with
+  `type: okd` now resolve their Cincinnati update graph from
+  `origin-release.ci.openshift.org` (the endpoint `oc-mirror` v2 uses for OKD)
+  instead of `api.openshift.com`, so OKD/SCOS release payloads
+  (`registry.ci.openshift.org/origin/release:...`) and their component images
+  are mirrored like OCP releases. OKD channel names follow the OKD convention
+  (`stable-4`, `4-scos-stable`), not OCP's minor-version naming. OKD payloads
+  are unsigned, so `skipSignatureVerification: true` is required for `okd`
+  channels (documented in `docs/configuration/imagesets.md`).
+
+### Changed
+
+- Release pipeline: catalog PR jobs now use the merged bundle layout
+  (`operators/oc-mirror`), previous-release detection only considers version
+  directories that contain a CSV, and catalog PR commits are signed with a DCO
+  sign-off.
+
+### Fixed
+
+- CI: canary images are rebuilt from HEAD and loaded into the Kind cluster;
+  Kind upgraded to v0.33.0 for Kubernetes 1.37 node image support.
+
+### Dependencies
+
+- `shell-quote` 1.10.0 → 1.12.0 and `source-map-js` 1.2.1 → 1.2.2 (`ui`).
+
 ## [v0.1.7] - 2026-10-10
 
 ### Added
@@ -1003,7 +1031,8 @@ v0.0.13; its entries are merged into this section.
 - **E2E test suite**: Ginkgo/Gomega end-to-end tests for a KinD cluster
   covering the full mirroring lifecycle.
 
-[Unreleased]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.1.7...HEAD
+[v0.1.7]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.1.6...v0.1.7
 [v0.1.4]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.1.3...v0.1.4
 [v0.1.3]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.1.2...v0.1.3
 [v0.1.2]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.1.0...v0.1.2
