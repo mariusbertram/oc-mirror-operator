@@ -492,7 +492,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Generate GitHub App token for catalog repo
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         id: catalog-token
         with:
           app-id: ${{ vars.CATALOG_APP_ID }}
@@ -620,7 +620,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install crane
-        uses: imjasonh/setup-crane@v0.1
+        uses: imjasonh/setup-crane@v0.7
 
       - name: Extract bundle content (manifests/, metadata/) from the bundle image
         env:
@@ -647,7 +647,7 @@ jobs:
           echo "Bundle content verified at $BUNDLE_ROOT"
 
       - name: Generate GitHub App token for the community-operators repo
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         id: operatorhub-token
         with:
           app-id: ${{ vars.CATALOG_APP_ID }}
@@ -788,7 +788,7 @@ jobs:
           sudo curl -sL "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64" -o /usr/local/bin/yq
           sudo chmod +x /usr/local/bin/yq
       - name: Install crane
-        uses: imjasonh/setup-crane@v0.1
+        uses: imjasonh/setup-crane@v0.7
 
       - name: Extract bundle content (manifests/, metadata/) from the bundle image
         env:
@@ -810,7 +810,7 @@ jobs:
           test -d "$BUNDLE_ROOT/manifests" && test -d "$BUNDLE_ROOT/metadata"
 
       - name: Generate GitHub App token for the community-operators-prod repo
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         id: redhat-catalog-token
         with:
           app-id: ${{ vars.CATALOG_APP_ID }}
