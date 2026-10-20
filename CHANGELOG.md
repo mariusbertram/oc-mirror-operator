@@ -36,6 +36,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   crashes its module-federation runtime ("Shared module is not available
   for eager consumption"). `build:plugin` now dispatches per console
   profile (`bundler: rspack` for 5.0, webpack for 4.18-4.22).
+- The 5.0 profile pins PatternFly 6.6.0 (react-core/icons/table) to match
+  the console's own shared-module versions exactly: a plugin registering a
+  higher version (6.6.1) wins the module-federation share scope and the
+  console's eager consumers crash at runtime ("Shared module is not
+  available for eager consumption").
 
 ## [v0.1.7] - 2026-10-10
 
