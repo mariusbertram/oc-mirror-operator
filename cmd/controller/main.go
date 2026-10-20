@@ -272,6 +272,7 @@ func main() {
 		"4.20": os.Getenv("RELATED_IMAGE_PLUGIN_4_20"),
 		"4.21": os.Getenv("RELATED_IMAGE_PLUGIN_4_21"),
 		"4.22": os.Getenv("RELATED_IMAGE_PLUGIN_4_22"),
+		"5.0":  os.Getenv("RELATED_IMAGE_PLUGIN_5_0"),
 	}
 	if err := (&controller.ConsolePluginReconciler{
 		Client:       mgr.GetClient(),

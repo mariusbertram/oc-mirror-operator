@@ -61,12 +61,15 @@ IMG_PLUGIN_4_19 ?= $(IMAGE_TAG_BASE)-plugin:v$(VERSION)-ocp4.19
 IMG_PLUGIN_4_20 ?= $(IMAGE_TAG_BASE)-plugin:v$(VERSION)-ocp4.20
 IMG_PLUGIN_4_21 ?= $(IMAGE_TAG_BASE)-plugin:v$(VERSION)-ocp4.21
 IMG_PLUGIN_4_22 ?= $(IMAGE_TAG_BASE)-plugin:v$(VERSION)-ocp4.22
+IMG_PLUGIN_5_0 ?= $(IMAGE_TAG_BASE)-plugin:v$(VERSION)-ocp5.0
 PLUGIN_IMAGE_TRANSFORMS = \
 	plugin-4-18=$(IMG_PLUGIN_4_18) \
 	plugin-4-19=$(IMG_PLUGIN_4_19) \
 	plugin-4-20=$(IMG_PLUGIN_4_20) \
 	plugin-4-21=$(IMG_PLUGIN_4_21) \
-	plugin-4-22=$(IMG_PLUGIN_4_22)
+	plugin-4-22=$(IMG_PLUGIN_4_22) \
+	plugin-5-0=$(IMG_PLUGIN_5_0) \
+
 
 # Test/OLM deployment variables
 OPERATOR_NAMESPACE ?= oc-mirror-operator
@@ -328,12 +331,13 @@ docker-build-plugin: ## Build a Console Plugin image for CONSOLE_VERSION (includ
 	$(CONTAINER_TOOL) build --build-arg CONSOLE_VERSION=$(CONSOLE_VERSION) -t ${IMG_PLUGIN} -f Dockerfile.plugin .
 
 .PHONY: docker-build-plugins
-docker-build-plugins: ## Build Console Plugin images for all supported Console profiles (4.18-4.22).
+docker-build-plugins: ## Build Console Plugin images for all supported Console profiles (4.18-5.0).
 	$(CONTAINER_TOOL) build --build-arg CONSOLE_VERSION=4.18 -t $(IMG_PLUGIN_4_18) -f Dockerfile.plugin .
 	$(CONTAINER_TOOL) build --build-arg CONSOLE_VERSION=4.19 -t $(IMG_PLUGIN_4_19) -f Dockerfile.plugin .
 	$(CONTAINER_TOOL) build --build-arg CONSOLE_VERSION=4.20 -t $(IMG_PLUGIN_4_20) -f Dockerfile.plugin .
 	$(CONTAINER_TOOL) build --build-arg CONSOLE_VERSION=4.21 -t $(IMG_PLUGIN_4_21) -f Dockerfile.plugin .
 	$(CONTAINER_TOOL) build --build-arg CONSOLE_VERSION=4.22 -t $(IMG_PLUGIN_4_22) -f Dockerfile.plugin .
+	$(CONTAINER_TOOL) build --build-arg CONSOLE_VERSION=5.0 -t $(IMG_PLUGIN_5_0) -f Dockerfile.plugin .
 
 .PHONY: docker-build-all
 docker-build-all: docker-build-controller docker-build-manager docker-build-worker docker-build-plugins ## (deprecated) Build all modular images. Use build-images instead.
@@ -361,6 +365,7 @@ docker-push-plugins: ## Push Console Plugin images for all supported OpenShift r
 	$(CONTAINER_TOOL) push $(IMG_PLUGIN_4_20)
 	$(CONTAINER_TOOL) push $(IMG_PLUGIN_4_21)
 	$(CONTAINER_TOOL) push $(IMG_PLUGIN_4_22)
+	$(CONTAINER_TOOL) push $(IMG_PLUGIN_5_0)
 
 .PHONY: docker-push-all
 docker-push-all: docker-push-controller docker-push-manager docker-push-worker docker-push-plugins ## (deprecated) Push all modular images. Use push-images instead.
@@ -597,7 +602,7 @@ bundle: manifests kustomize operator-sdk ## Generate bundle manifests and metada
 	# catalogs receive the bundle. A single version would restrict
 	# distribution to that release only.
 	$(Q)grep -q 'com.redhat.openshift.versions' bundle/metadata/annotations.yaml || \
-		sed -i '/operators.operatorframework.io.bundle.channels.v1:/a\  com.redhat.openshift.versions: v4.18-v4.22' bundle/metadata/annotations.yaml
+		sed -i '/operators.operatorframework.io.bundle.channels.v1:/a\  com.redhat.openshift.versions: v4.18-v5.0' bundle/metadata/annotations.yaml
 	$(OPERATOR_SDK) bundle validate ./bundle
 
 .PHONY: bundle-build

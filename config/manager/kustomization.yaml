@@ -26,6 +26,9 @@ images:
 - name: plugin-4-22
   newName: ghcr.io/mariusbertram/oc-mirror-operator-plugin
   newTag: latest-ocp4.22
+- name: plugin-5-0
+  newName: ghcr.io/mariusbertram/oc-mirror-operator-plugin
+  newTag: latest-ocp5.0
 - name: worker
   newName: ghcr.io/mariusbertram/oc-mirror-operator-worker
   newTag: v0.0.2

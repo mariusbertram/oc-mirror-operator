@@ -82,6 +82,17 @@ replacements:
     fieldPaths:
     - spec.relatedImages.[name=plugin-4-22].image
     - spec.install.spec.deployments.[name=controller-manager].spec.template.spec.containers.[name=manager].env.[name=RELATED_IMAGE_PLUGIN_4_22].value
+
+- source:
+    kind: Deployment
+    name: controller-manager
+    fieldPath: spec.template.metadata.annotations.oc-mirror-plugin-image-5-0
+  targets:
+  - select:
+      kind: ClusterServiceVersion
+    fieldPaths:
+    - spec.relatedImages.[name=plugin-5-0].image
+    - spec.install.spec.deployments.[name=controller-manager].spec.template.spec.containers.[name=manager].env.[name=RELATED_IMAGE_PLUGIN_5_0].value
 - source:
     kind: Deployment
     name: controller-manager

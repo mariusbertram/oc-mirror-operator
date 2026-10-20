@@ -26,6 +26,7 @@ const packages = {
   typescript: profile.typescript,
   webpack: profile.webpack,
   'webpack-cli': profile.webpackCli,
+  'webpack-dev-server': profile.webpackDevServer,
 };
 if (profile.routerTypes) packages['@types/react-router-dom'] = profile.routerTypes;
 

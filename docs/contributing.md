@@ -115,7 +115,7 @@ severity. Scanner/tool failures still fail their jobs.
    `replaces`, permissions) and `CHANGELOG.md`.
 2. `git tag vX.Y.Z && git push origin vX.Y.Z`.
 3. `release.yml` builds and pushes controller, manager and worker images tagged
-   `vX.Y.Z`, five plugin images tagged `vX.Y.Z-ocp4.18` through `vX.Y.Z-ocp4.22`,
+   `vX.Y.Z`, six plugin images tagged `vX.Y.Z-ocp4.18` through `vX.Y.Z-ocp5.0`,
    and the bundle tagged `X.Y.Z`, under `ghcr.io/mariusbertram/oc-mirror-operator-*`.
    It creates the GitHub release and opens the catalog PR after scanning succeeds.
 

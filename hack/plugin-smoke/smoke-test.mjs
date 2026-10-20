@@ -66,9 +66,28 @@ async function themeState(page, theme) {
 async function chooseTheme(context, theme) {
   const page = await context.newPage();
   await page.addLocatorHandler(button(page, 'Skip tour'), async () => button(page, 'Skip tour').click());
-  await page.goto(`${BASE_URL}/user-preferences/general`, { waitUntil: 'domcontentloaded' });
+  const diagnostics = [];
+  page.on('pageerror', (err) => diagnostics.push(`[pageerror] ${err.message}`));
+  page.on('console', (msg) => {
+    if (msg.type() === 'error') diagnostics.push(`[console.error] ${msg.text().slice(0, 500)}`);
+  });
+  page.on('response', (resp) => {
+    if (resp.status() >= 400) diagnostics.push(`[response ${resp.status()}] ${resp.url()}`);
+  });
+  try {
+    await page.goto(`${BASE_URL}/user-preferences/general`, { waitUntil: 'domcontentloaded' });
+    const field = page.locator('[data-test="console.theme field"]');
+    await visible(field.or(button(page, 'Skip tour')).first());
+  } catch (err) {
+    const url = page.url();
+    const body = await page.locator('body').innerText().catch(() => '<unreadable>');
+    await page.screenshot({ path: path.join(ARTIFACTS, 'user-preferences-failure.png'), fullPage: true }).catch(() => {});
+    diagnostics.push(`[url] ${url}`);
+    diagnostics.push(`[body] ${body.slice(0, 500)}`);
+    for (const d of diagnostics) console.error(d);
+    throw err;
+  }
   const field = page.locator('[data-test="console.theme field"]');
-  await visible(field.or(button(page, 'Skip tour')).first());
   await visible(field);
   await field.getByRole('button').click();
   await page.getByRole('option', { name: theme === 'dark' ? 'Dark' : 'Light', exact: true }).click();
@@ -444,7 +463,12 @@ async function main() {
       themeEvidence = [];
       await mkdir(ARTIFACTS, { recursive: true });
       reseed();
-      const context = await browser.newContext({ colorScheme: theme === 'dark' ? 'light' : 'dark' });
+      // OpenShift 5.0 shows the guided-tour modal unless the console's own
+      // integration-test user agent marks the session as automated.
+      const context = await browser.newContext({
+        colorScheme: theme === 'dark' ? 'light' : 'dark',
+        userAgent: 'ConsoleIntegrationTestEnvironment',
+      });
       let preference;
       try {
         preference = await chooseTheme(context, theme);

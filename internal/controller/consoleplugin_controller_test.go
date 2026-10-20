@@ -459,11 +459,11 @@ var _ = Describe("ConsolePlugin Controller", func() {
 		})
 
 		It("selects the exact image for every supported OpenShift minor", func() {
-			for _, minor := range []string{"4.18", "4.19", "4.20", "4.21", "4.22"} {
+			for _, minor := range []string{"4.18", "4.19", "4.20", "4.21", "4.22", "5.0"} {
 				r, c := newFakeReconciler(minor+".0", map[string]string{
 					"4.18": "plugin:4.18", "4.19": "plugin:4.19",
 					"4.20": "plugin:4.20",
-					"4.21": "plugin:4.21", "4.22": "plugin:4.22",
+					"4.21": "plugin:4.21", "4.22": "plugin:4.22", "5.0": "plugin:5.0",
 				})
 				_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: testNamespace}})
 				Expect(err).NotTo(HaveOccurred())
@@ -478,7 +478,7 @@ var _ = Describe("ConsolePlugin Controller", func() {
 			r, c := newFakeReconciler("4.20.0", map[string]string{
 				"4.18": "plugin:4.18", "4.19": "plugin:4.19",
 				"4.20": "plugin:4.20", "4.21": "plugin:4.21",
-				"4.22": "plugin:4.22",
+				"4.22": "plugin:4.22", "5.0": "plugin:5.0",
 			})
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: testNamespace}})
 			Expect(err).NotTo(HaveOccurred())

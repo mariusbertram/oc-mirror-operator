@@ -33,6 +33,7 @@ spec:
         oc-mirror-plugin-image-4-20: plugin-4-20:latest-ocp4.20
         oc-mirror-plugin-image-4-21: plugin-4-21:latest-ocp4.21
         oc-mirror-plugin-image-4-22: plugin-4-22:latest-ocp4.22
+        oc-mirror-plugin-image-5-0: plugin-5-0:latest-ocp5.0
       labels:
         control-plane: controller-manager
         app.kubernetes.io/name: oc-mirror
@@ -85,6 +86,8 @@ spec:
           value: plugin-4-21:latest-ocp4.21
         - name: RELATED_IMAGE_PLUGIN_4_22
           value: plugin-4-22:latest-ocp4.22
+        - name: RELATED_IMAGE_PLUGIN_5_0
+          value: plugin-5-0:latest-ocp5.0
         - name: OPERATOR_NAMESPACE
           valueFrom:
             fieldRef:

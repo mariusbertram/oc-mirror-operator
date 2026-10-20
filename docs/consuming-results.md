@@ -99,7 +99,7 @@ side is a reasonable automation.
 
 On OpenShift the controller deploys a console plugin (`oc-mirror-plugin` Deployment,
 `ConsolePlugin` CR `oc-mirror-operator`) automatically when the `ConsolePlugin` CRD
-exists, the Console release is supported (4.18-4.22), and its matching
+exists, the Console release is supported (4.18-5.0), and its matching
 `RELATED_IMAGE_PLUGIN_4_*` is set. It appears as a navigation entry in the web console
 and needs no Route: the console proxies to the plugin backend, which acts on the API
 with **your** console token, so cluster RBAC decides what you may edit.

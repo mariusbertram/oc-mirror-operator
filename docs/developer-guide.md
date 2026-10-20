@@ -51,8 +51,8 @@ make docker-buildx                          # multi-arch (linux/amd64, linux/arm
 
 This produces `${IMAGE_TAG_BASE}-controller:v${VERSION}` etc. (`IMG_CONTROLLER`,
 `IMG_MANAGER`, `IMG_WORKER` override individual references). Plugin tags are
-`${IMAGE_TAG_BASE}-plugin:v${VERSION}-ocp4.18` through `-ocp4.22`.
-`IMG_PLUGIN_4_18` through `IMG_PLUGIN_4_22` override the install/bundle references;
+`${IMAGE_TAG_BASE}-plugin:v${VERSION}-ocp4.18` through `-ocp5.0`.
+`IMG_PLUGIN_4_18` through `IMG_PLUGIN_5_0` override the install/bundle references;
 `IMG_PLUGIN` overrides only the single `docker-build-plugin`/`docker-push-plugin` target.
 
 ### OLM bundle and catalog
@@ -86,7 +86,7 @@ bin/operator-sdk bundle validate ./bundle --select-optional suite=operatorframew
 make install                                  # CRDs
 MANAGER_IMAGE=... WORKER_IMAGE=... OPERATOR_IMAGE=... \
 RELATED_IMAGE_PLUGIN_4_18=... RELATED_IMAGE_PLUGIN_4_19=... \
-RELATED_IMAGE_PLUGIN_4_20=... RELATED_IMAGE_PLUGIN_4_21=... RELATED_IMAGE_PLUGIN_4_22=... \
+RELATED_IMAGE_PLUGIN_4_20=... RELATED_IMAGE_PLUGIN_4_21=... RELATED_IMAGE_PLUGIN_4_22=... RELATED_IMAGE_PLUGIN_5_0=... \
 OPERATOR_NAMESPACE=oc-mirror-operator make run
 ```
 
@@ -130,7 +130,7 @@ deploys through a CatalogSource.
 
 With the operator installed by OLM you do not need a new bundle to test one changed
 component. The controller reads `MANAGER_IMAGE`, `WORKER_IMAGE`, `OPERATOR_IMAGE`,
-and `RELATED_IMAGE_PLUGIN_4_18` through `RELATED_IMAGE_PLUGIN_4_22`
+and `RELATED_IMAGE_PLUGIN_4_18` through `RELATED_IMAGE_PLUGIN_5_0`
 from its environment, and OLM merges `Subscription.spec.config.env`
 into the controller Deployment:
 
@@ -182,7 +182,7 @@ React 17 / Router 5 harness before starting mock mode.
 
 ### Versioned production builds
 
-The supported Console minors are **4.18, 4.19, 4.20, 4.21, and 4.22**.
+The supported Console minors are **4.18, 4.19, 4.20, 4.21, 4.22, and 5.0**.
 `ui/console-compatibility.json` pins each release's SDK, React, Router, and
 PatternFly dependencies. The operator reads the `operator` version in the
 `console` ClusterOperator's `status.versions`, not the cluster-wide upgrade
@@ -284,7 +284,7 @@ for the off-cluster flags).
 | Variable | Read by | Meaning |
 |---|---|---|
 | `MANAGER_IMAGE`, `WORKER_IMAGE`, `OPERATOR_IMAGE` | controller | Images for manager/resource-api, worker/cleanup, catalog/export builders. |
-| `RELATED_IMAGE_PLUGIN_4_18` … `RELATED_IMAGE_PLUGIN_4_22` | controller | Matching Console plugin images (OLM may supply digest references). Missing matching image disables/unregisters the plugin, not the controller. |
+| `RELATED_IMAGE_PLUGIN_4_18` … `RELATED_IMAGE_PLUGIN_5_0` | controller | Matching Console plugin images (OLM may supply digest references). Missing matching image disables/unregisters the plugin, not the controller. |
 | `OPERATOR_NAMESPACE` / `POD_NAMESPACE` | controller, plugin backend | Namespace to watch. |
 | `WORKER_IMAGE`, `DOCKER_CONFIG` | manager | Worker image; credential directory (set from `authSecret`). |
 | `MIRROR_BATCH`, `MANAGER_URL`, `WORKER_TOKEN`, `POD_NAME` | worker | Injected by the manager. |

@@ -7,8 +7,8 @@
  * backend at https://localhost:9443.  No consoleFetch or ConsolePlugin SDK needed.
  */
 import React from 'react';
-import ReactDOM from 'react-dom';
-import { BrowserRouter, NavLink, Redirect, Route, Switch } from 'react-router-dom';
+import ReactDOM from 'react-dom/client';
+import { BrowserRouter, NavLink, Navigate, Route, Routes } from 'react-router-dom';
 
 // PatternFly base CSS — provides global custom properties for colour, spacing, typography.
 import '@patternfly/react-core/dist/styles/base.css';
@@ -25,7 +25,7 @@ import { ReleaseBrowser } from '../pages/ReleaseBrowser/ReleaseBrowser';
 // requests go to the same origin — the webpack dev server proxies them to :9443.
 // No setFetchImpl / setApiBaseUrl overrides are needed here.
 
-function navStyle(isActive: boolean): React.CSSProperties {
+function navStyle({ isActive }: { isActive: boolean }): React.CSSProperties {
   return {
     display: 'block',
     padding: '8px 16px',
@@ -44,7 +44,7 @@ function App() {
             <div style={{ padding: '8px 16px 20px', color: '#fff', fontWeight: 700, fontSize: 15 }}>
               OC Mirror — Dev
             </div>
-            <NavLink to="/oc-mirror/targets" style={navStyle} exact>
+            <NavLink to="/oc-mirror/targets" style={navStyle}>
               Mirror Targets
             </NavLink>
             <NavLink to="/oc-mirror/imagesets" style={navStyle}>
@@ -55,26 +55,26 @@ function App() {
             </NavLink>
           </nav>
           <main style={{ flex: 1, overflow: 'auto' }}>
-            <Switch>
-              <Route exact path="/" render={() => <Redirect to="/oc-mirror/targets" />} />
-              <Route exact path="/oc-mirror/targets" component={MirrorTargetList} />
-              <Route path="/oc-mirror/targets/:name/failures" component={FailedImages} />
+            <Routes>
+              <Route path="/" element={<Navigate to="/oc-mirror/targets" replace />} />
+              <Route path="/oc-mirror/targets" element={<MirrorTargetList />} />
+              <Route path="/oc-mirror/targets/:name/failures" element={<FailedImages />} />
               <Route
                 path="/oc-mirror/targets/:targetName/namespaces/:namespace/imagesets/:imageSetName/releases"
-                component={ReleaseBrowser}
+                element={<ReleaseBrowser />}
               />
               <Route
                 path="/oc-mirror/targets/:targetName/namespaces/:namespace/imagesets/:imageSetName/catalogs/:slug"
-                component={CatalogBrowser}
+                element={<CatalogBrowser />}
               />
               <Route
                 path="/oc-mirror/targets/:targetName/imagesets/:imageSetName"
-                component={ImageSetDetail}
+                element={<ImageSetDetail />}
               />
-              <Route path="/oc-mirror/targets/:name" component={MirrorTargetDetail} />
-              <Route path="/oc-mirror/imagesets" component={ImageSetList} />
-              <Route render={() => <FailedImages crossTarget />} />
-            </Switch>
+              <Route path="/oc-mirror/targets/:name" element={<MirrorTargetDetail />} />
+              <Route path="/oc-mirror/imagesets" element={<ImageSetList />} />
+              <Route path="*" element={<FailedImages crossTarget />} />
+            </Routes>
           </main>
         </div>
     </BrowserRouter>
@@ -83,4 +83,4 @@ function App() {
 
 const container = document.getElementById('root');
 if (!container) throw new Error('Missing #root element in index.html');
-ReactDOM.render(<App />, container);
+ReactDOM.createRoot(container).render(<App />);
