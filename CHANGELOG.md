@@ -26,6 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   baseline; the 4.22 profile moves to webpack-cli 7.2.3.
 - The standalone dev harness (`ui/src/dev`) migrated to react-router 7 APIs
   (`Routes`/`Navigate`) and the React 18 `createRoot` renderer.
+- The plugin smoke harness sends the console's
+  `ConsoleIntegrationTestEnvironment` user agent so OpenShift 5.0 does not
+  interrupt the run with its guided-tour modal, and dumps browser
+  diagnostics (page errors, failed responses, URL, body text, screenshot)
+  when the user-preferences page fails to render.
 
 ## [v0.1.7] - 2026-10-10
 
