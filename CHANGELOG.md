@@ -7,10 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.1.8] - 2026-10-20
+
 ### Added
 - OpenShift 5.0 console plugin support: a sixth per-console profile
   (`ui/console-compatibility.json`: SDK 4.23, React 18.3, react-router 7.18,
-  PatternFly 6.6.1) with matching plugin image (`-ocp5.0`),
+  PatternFly 6.6.0) with matching plugin image (`-ocp5.0`),
   `RELATED_IMAGE_PLUGIN_5_0` wiring, CSV relatedImage, bundle OpenShift version
   label (`v4.18-v5.0`) and release/CI plugin matrix entries.
 
