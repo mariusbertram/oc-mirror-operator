@@ -15,3 +15,5 @@ images:
   path: spec/template/metadata/annotations/oc-mirror-plugin-image-4-21
 - kind: Deployment
   path: spec/template/metadata/annotations/oc-mirror-plugin-image-4-22
+- kind: Deployment
+  path: spec/template/metadata/annotations/oc-mirror-plugin-image-5-0
