@@ -73,6 +73,7 @@ var supportedConsolePluginMinors = map[string]struct{}{
 	"4.20": {},
 	"4.21": {},
 	"4.22": {},
+	"5.0":  {},
 }
 
 // ConsolePluginReconciler is a singleton controller that automatically manages

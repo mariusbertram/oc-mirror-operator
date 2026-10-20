@@ -218,7 +218,7 @@ jobs:
       matrix:
         # PR runs test the oldest and newest console only; pushes to main
         # run the full matrix.
-        console-version: ${{ github.event_name == 'pull_request' && fromJSON('["4.18", "4.22"]') || fromJSON('["4.18", "4.19", "4.20", "4.21", "4.22"]') }}
+        console-version: ${{ github.event_name == 'pull_request' && fromJSON('["4.18", "5.0"]') || fromJSON('["4.18", "4.19", "4.20", "4.21", "4.22", "5.0"]') }}
     permissions:
       contents: read
       security-events: write # upload Grype SARIF to the Security tab

@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- OpenShift 5.0 console plugin support: a sixth per-console profile
+  (`ui/console-compatibility.json`: SDK 4.23, React 18.3, react-router 7.18,
+  PatternFly 6.6.1) with matching plugin image (`-ocp5.0`),
+  `RELATED_IMAGE_PLUGIN_5_0` wiring, CSV relatedImage, bundle OpenShift version
+  label (`v4.18-v5.0`) and release/CI plugin matrix entries.
+
+### Changed
+- UI dependencies (npm group bump, partially adopted from #268): PatternFly
+  6.6.1, ESLint 10, `@swc/core` 1.16, css-loader 7.1.5, globals 17, webpack
+  5.111/CLI 7.2.3/webpack-dev-server 6, react-router-dom 7.18.4, React 18.3
+  baseline. TypeScript stays on 5.9 (typescript-eslint peer limit) and React
+  on 18 (console SDK requirement) — the PR's React 19/TS 7 bump is not
+  installable against the console compatibility matrix.
+- `install-console-profile` now pins `webpack-dev-server` per console profile
+  so older profiles (webpack 5.75) coexist with the webpack-dev-server 6
+  baseline; the 4.22 profile moves to webpack-cli 7.2.3.
+- The standalone dev harness (`ui/src/dev`) migrated to react-router 7 APIs
+  (`Routes`/`Navigate`) and the React 18 `createRoot` renderer.
+
 ## [v0.1.7] - 2026-10-10
 
 ### Added

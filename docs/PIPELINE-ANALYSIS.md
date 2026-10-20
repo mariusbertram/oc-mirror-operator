@@ -131,7 +131,7 @@ Nothing runs on a schedule. A weekly `schedule:` run of the e2e suite
 against the pinned Kind/node image plus a canary run with the *latest*
 node image/console versions catches rot (Cincinnati API changes, console
 plugin API drift, base image breakage) before users do. The console
-version matrix (currently 4.18–4.22) also needs a periodic reminder to add
+version matrix (currently 4.18–5.0) also needs a periodic reminder to add
 new versions and drop old ones — a canary job against the newest release
 would surface that automatically.
 

@@ -15,7 +15,7 @@ The operator runs four images it references at runtime:
 | Controller | `ghcr.io/mariusbertram/oc-mirror-operator-controller:v<version>` | — (its own image) |
 | Manager / resource API | `ghcr.io/mariusbertram/oc-mirror-operator-manager:v<version>` | `MANAGER_IMAGE` |
 | Worker / cleanup jobs | `ghcr.io/mariusbertram/oc-mirror-operator-worker:v<version>` | `WORKER_IMAGE` |
-| Console plugin (OpenShift only) | `ghcr.io/mariusbertram/oc-mirror-operator-plugin:v<version>-ocp<console>` | `RELATED_IMAGE_PLUGIN_4_18` … `RELATED_IMAGE_PLUGIN_4_22` (one per console version) |
+| Console plugin (OpenShift only) | `ghcr.io/mariusbertram/oc-mirror-operator-plugin:v<version>-ocp<console>` | `RELATED_IMAGE_PLUGIN_4_18` … `RELATED_IMAGE_PLUGIN_5_0` (one per console version) |
 
 In a disconnected environment none of these registries are reachable. The
 recipe below mirrors the operator images into your local registry with
@@ -39,7 +39,7 @@ for img in controller manager worker; do
 done
 
 # Console plugin images (only needed on OpenShift; one per console version)
-for console in 4.18 4.19 4.20 4.21 4.22; do
+for console in 4.18 4.19 4.20 4.21 4.22 5.0; do
   skopeo copy --all \
     "docker://ghcr.io/mariusbertram/oc-mirror-operator-plugin:${VERSION}-ocp${console}" \
     "docker://${TARGET}-plugin:${VERSION}-ocp${console}"
@@ -66,7 +66,7 @@ kubectl apply -f oc-mirror-operator.yaml
 ```
 
 The controller reads `MANAGER_IMAGE`, `WORKER_IMAGE`, `OPERATOR_IMAGE` and
-the five `RELATED_IMAGE_PLUGIN_4_18` … `RELATED_IMAGE_PLUGIN_4_22` variables
+the six `RELATED_IMAGE_PLUGIN_4_18` … `RELATED_IMAGE_PLUGIN_5_0` variables
 from its own container env (set by the rendered manifest). After the rewrite,
 they all point at your local registry — verify:
 

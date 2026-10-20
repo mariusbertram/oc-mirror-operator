@@ -254,6 +254,7 @@ spec:
                 oc-mirror-plugin-image-4-20: ghcr.io/mariusbertram/oc-mirror-operator-plugin:latest-ocp4.20
                 oc-mirror-plugin-image-4-21: ghcr.io/mariusbertram/oc-mirror-operator-plugin:latest-ocp4.21
                 oc-mirror-plugin-image-4-22: ghcr.io/mariusbertram/oc-mirror-operator-plugin:latest-ocp4.22
+                oc-mirror-plugin-image-5-0: ghcr.io/mariusbertram/oc-mirror-operator-plugin:latest-ocp5.0
                 oc-mirror-worker-image: ghcr.io/mariusbertram/oc-mirror-operator-worker:v0.0.2
               labels:
                 app.kubernetes.io/name: oc-mirror
@@ -299,6 +300,8 @@ spec:
                   value: ghcr.io/mariusbertram/oc-mirror-operator-plugin:latest-ocp4.21
                 - name: RELATED_IMAGE_PLUGIN_4_22
                   value: ghcr.io/mariusbertram/oc-mirror-operator-plugin:latest-ocp4.22
+                - name: RELATED_IMAGE_PLUGIN_5_0
+                  value: ghcr.io/mariusbertram/oc-mirror-operator-plugin:latest-ocp5.0
                 - name: OPERATOR_NAMESPACE
                   valueFrom:
                     fieldRef:
@@ -602,4 +605,6 @@ spec:
     name: plugin-4-21
   - image: ghcr.io/mariusbertram/oc-mirror-operator-plugin:latest-ocp4.22
     name: plugin-4-22
+  - image: ghcr.io/mariusbertram/oc-mirror-operator-plugin:latest-ocp5.0
+    name: plugin-5-0
   version: 0.0.2

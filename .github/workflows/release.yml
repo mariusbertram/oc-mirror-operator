@@ -234,7 +234,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        console-version: ['4.18', '4.19', '4.20', '4.21', '4.22']
+        console-version: ['4.18', '4.19', '4.20', '4.21', '4.22', '5.0']
     steps:
       - uses: actions/checkout@v7
 
@@ -319,6 +319,7 @@ jobs:
           IMG_PLUGIN_4_20: ${{ env.PLUGIN_IMAGE }}:${{ github.ref_name }}-ocp4.20
           IMG_PLUGIN_4_21: ${{ env.PLUGIN_IMAGE }}:${{ github.ref_name }}-ocp4.21
           IMG_PLUGIN_4_22: ${{ env.PLUGIN_IMAGE }}:${{ github.ref_name }}-ocp4.22
+          IMG_PLUGIN_5_0: ${{ env.PLUGIN_IMAGE }}:${{ github.ref_name }}-ocp5.0
         run: |
           set -euo pipefail
           CSV="bundle/manifests/oc-mirror.clusterserviceversion.yaml"
@@ -338,7 +339,7 @@ jobs:
             [[ "$related_images" == *"oc-mirror-operator-${component}@sha256:"* ]] \
               || { echo "ERROR: $component not in spec.relatedImages"; exit 1; }
           done
-          for minor in 4.18 4.19 4.20 4.21 4.22; do
+          for minor in 4.18 4.19 4.20 4.21 4.22 5.0; do
             name="plugin-${minor/./-}"
             image="$(NAME="$name" yq '.spec.relatedImages[] | select(.name == strenv(NAME)) | .image' "$CSV")"
             [[ "$image" == *"oc-mirror-operator-plugin@sha256:"* ]] \
@@ -450,6 +451,7 @@ jobs:
           IMG_PLUGIN_4_20=${{ env.REGISTRY }}/${{ github.repository }}-plugin:${{ github.ref_name }}-ocp4.20 \
           IMG_PLUGIN_4_21=${{ env.REGISTRY }}/${{ github.repository }}-plugin:${{ github.ref_name }}-ocp4.21 \
           IMG_PLUGIN_4_22=${{ env.REGISTRY }}/${{ github.repository }}-plugin:${{ github.ref_name }}-ocp4.22 \
+          IMG_PLUGIN_5_0=${{ env.REGISTRY }}/${{ github.repository }}-plugin:${{ github.ref_name }}-ocp5.0 \
           make build-installer
           mv dist/install.yaml oc-mirror-operator.yaml
 
@@ -469,7 +471,7 @@ jobs:
             | Controller (multi-arch) | `${{ env.CONTROLLER_IMAGE }}:${{ github.ref_name }}` | `${{ needs.build-operator.outputs.controller_digest }}` |
             | Manager (multi-arch) | `${{ env.MANAGER_IMAGE }}:${{ github.ref_name }}` | `${{ needs.build-operator.outputs.manager_digest }}` |
             | Worker (multi-arch) | `${{ env.WORKER_IMAGE }}:${{ github.ref_name }}` | `${{ needs.build-operator.outputs.worker_digest }}` |
-            | Plugin images | `${{ env.PLUGIN_IMAGE }}:${{ github.ref_name }}-ocp4.18` … `-ocp4.22` | See the version-specific `relatedImages` in the bundle |
+            | Plugin images | `${{ env.PLUGIN_IMAGE }}:${{ github.ref_name }}-ocp4.18` … `-ocp5.0` | See the version-specific `relatedImages` in the bundle |
             | Bundle (multi-arch)   | `${{ needs.build-bundle.outputs.bundle_image }}` | `${{ needs.build-bundle.outputs.bundle_digest }}` |
 
             ### Changes
@@ -597,7 +599,7 @@ jobs:
           Controller: ${{ env.CONTROLLER_IMAGE }}:${{ github.ref_name }}@${{ needs.build-operator.outputs.controller_digest }}
           Manager: ${{ env.MANAGER_IMAGE }}:${{ github.ref_name }}@${{ needs.build-operator.outputs.manager_digest }}
           Worker: ${{ env.WORKER_IMAGE }}:${{ github.ref_name }}@${{ needs.build-operator.outputs.worker_digest }}
-          Console plugin images: ${{ env.PLUGIN_IMAGE }}:${{ github.ref_name }}-ocp4.18 through -ocp4.22 (version-specific)
+          Console plugin images: ${{ env.PLUGIN_IMAGE }}:${{ github.ref_name }}-ocp4.18 through -ocp5.0 (version-specific)
           \`\`\`
 
           Opened automatically by the [release workflow](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."
@@ -697,7 +699,7 @@ jobs:
           LABEL operators.operatorframework.io.bundle.metadata.v1=metadata/
           LABEL operators.operatorframework.io.bundle.package.v1=oc-mirror
           LABEL operators.operatorframework.io.bundle.channels.v1=alpha
-          LABEL com.redhat.openshift.versions=v4.18-v4.22
+          LABEL com.redhat.openshift.versions=v4.18-v5.0
 
           COPY manifests /manifests/
           COPY metadata /metadata/
@@ -860,7 +862,7 @@ jobs:
           LABEL operators.operatorframework.io.bundle.metadata.v1=metadata/
           LABEL operators.operatorframework.io.bundle.package.v1=oc-mirror
           LABEL operators.operatorframework.io.bundle.channels.v1=alpha
-          LABEL com.redhat.openshift.versions=v4.18-v4.22
+          LABEL com.redhat.openshift.versions=v4.18-v5.0
 
           COPY manifests /manifests/
           COPY metadata /metadata/

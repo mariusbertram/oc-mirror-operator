@@ -131,6 +131,17 @@ replacements:
     fieldPaths:
     - spec.template.spec.containers.[name=manager].env.[name=RELATED_IMAGE_PLUGIN_4_22].value
 
+- source:
+    kind: Deployment
+    name: controller-manager
+    fieldPath: spec.template.metadata.annotations.oc-mirror-plugin-image-5-0
+  targets:
+  - select:
+      kind: Deployment
+      name: controller-manager
+    fieldPaths:
+    - spec.template.spec.containers.[name=manager].env.[name=RELATED_IMAGE_PLUGIN_5_0].value
+
 # Image overrides for container references
 images:
 - name: controller
@@ -157,6 +168,9 @@ images:
 - name: plugin-4-22
   newName: ghcr.io/mariusbertram/oc-mirror-operator-plugin
   newTag: latest-ocp4.22
+- name: plugin-5-0
+  newName: ghcr.io/mariusbertram/oc-mirror-operator-plugin
+  newTag: latest-ocp5.0
 
 # Uncomment the patches line if you enable Metrics and CertManager
 # [METRICS-WITH-CERTS] To enable metrics protected with certManager, uncomment the following line.
