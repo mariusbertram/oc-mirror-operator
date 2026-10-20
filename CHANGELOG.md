@@ -31,6 +31,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   interrupt the run with its guided-tour modal, and dumps browser
   diagnostics (page errors, failed responses, URL, body text, screenshot)
   when the user-preferences page fails to render.
+- OpenShift 5.0 plugin assets are built with rspack (`ui/rspack.plugin.js`);
+  the 5.0 console is itself an rspack bundle, and a webpack-built remote
+  crashes its module-federation runtime ("Shared module is not available
+  for eager consumption"). `build:plugin` now dispatches per console
+  profile (`bundler: rspack` for 5.0, webpack for 4.18-4.22).
 
 ## [v0.1.7] - 2026-10-10
 
