@@ -697,6 +697,10 @@ jobs:
 
           cp -r "${BUNDLE_ROOT}/manifests" "${OPERATOR_DIR}/manifests"
           cp -r "${BUNDLE_ROOT}/metadata" "${OPERATOR_DIR}/metadata"
+          # annotations.yaml references tests/scorecard — submit it when the
+          # bundle carries it, or the catalog CI fails on the dangling
+          # operators.operatorframework.io.test.config.v1 annotation.
+          [ -d "${BUNDLE_ROOT}/tests" ] && cp -r "${BUNDLE_ROOT}/tests" "${OPERATOR_DIR}/tests"
 
           if [ -f "${BUNDLE_ROOT}/bundle.Dockerfile" ]; then
             cp "${BUNDLE_ROOT}/bundle.Dockerfile" "${OPERATOR_DIR}/bundle.Dockerfile"
@@ -870,6 +874,10 @@ jobs:
 
           cp -r "${BUNDLE_ROOT}/manifests" "${OPERATOR_DIR}/manifests"
           cp -r "${BUNDLE_ROOT}/metadata" "${OPERATOR_DIR}/metadata"
+          # annotations.yaml references tests/scorecard — submit it when the
+          # bundle carries it, or the catalog CI fails on the dangling
+          # operators.operatorframework.io.test.config.v1 annotation.
+          [ -d "${BUNDLE_ROOT}/tests" ] && cp -r "${BUNDLE_ROOT}/tests" "${OPERATOR_DIR}/tests"
 
           if [ -f "${BUNDLE_ROOT}/bundle.Dockerfile" ]; then
             cp "${BUNDLE_ROOT}/bundle.Dockerfile" "${OPERATOR_DIR}/bundle.Dockerfile"
