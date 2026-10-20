@@ -602,7 +602,17 @@ jobs:
           Console plugin images: ${{ env.PLUGIN_IMAGE }}:${{ github.ref_name }}-ocp4.18 through -ocp5.0 (version-specific)
           \`\`\`
 
-          Opened automatically by the [release workflow](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."
+          Opened automatically by the [release workflow](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."; then
+            {
+              echo "## CATALOG_PR_FALLBACK"
+              echo "The GitHub App token cannot create cross-repo pull requests."
+              echo "Open the PR manually from the pushed branch ${BRANCH}:"
+              echo ""
+              echo "https://github.com/k8s-operatorhub/community-operators/compare/main...${GITHUB_REPOSITORY_OWNER}:community-operators:${BRANCH}?expand=1"
+              echo ""
+              echo "Bundle digest: ${BUNDLE_DIGEST_REF}"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   # ── 6. PR to operatorhub.io community-operators catalog ──────
   # Publishes digest-pinned bundles to the public operatorhub.io catalog.
@@ -751,7 +761,7 @@ jobs:
           git commit --signoff -m "Add oc-mirror-operator v${VERSION} (${BUNDLE_DIGEST_REF})"
           git push -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY_OWNER}/community-operators.git" "$BRANCH"
 
-          gh pr create \
+          if ! gh pr create \
             --repo "k8s-operatorhub/community-operators" \
             --base main \
             --head "${GITHUB_REPOSITORY_OWNER}:${BRANCH}" \
@@ -767,7 +777,17 @@ jobs:
 
           The bundle passes the operatorhubv2, capabilities and categories validation suites (run in the operator CI).
 
-          Opened automatically by the [release workflow](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."
+          Opened automatically by the [release workflow](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."; then
+            {
+              echo "## CATALOG_PR_FALLBACK"
+              echo "The GitHub App token cannot create cross-repo pull requests."
+              echo "Open the PR manually from the pushed branch ${BRANCH}:"
+              echo ""
+              echo "https://github.com/redhat-openshift-ecosystem/community-operators-prod/compare/main...${GITHUB_REPOSITORY_OWNER}:community-operators-prod:${BRANCH}?expand=1"
+              echo ""
+              echo "Bundle digest: ${BUNDLE_DIGEST_REF}"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
 
   redhat-catalog-pr:
@@ -913,7 +933,7 @@ jobs:
           git commit --signoff -m "Add oc-mirror-operator v${VERSION} (${BUNDLE_DIGEST_REF})"
           git push -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY_OWNER}/community-operators-prod.git" "$BRANCH"
 
-          gh pr create \
+          if ! gh pr create \
             --draft \
             --repo "redhat-openshift-ecosystem/community-operators-prod" \
             --base main \
