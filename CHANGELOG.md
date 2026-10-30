@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Mirroring images from registries whose referrers fallback tag
+  (`sha256-<hex>`) resolves to a non-index manifest (e.g.
+  `registry.gitlab.com`) no longer fails the whole copy with
+  "manifest is not an OCI index" (#278). The image itself is copied
+  without `ImageWithReferrers`; referrers (e.g. cosign signatures) are
+  now listed and copied best-effort afterwards, so a broken referrers
+  listing on the source never fails the mirror.
+
 ## [v0.1.8] - 2026-10-20
 
 ### Added
