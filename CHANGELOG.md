@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.1.9] - 2026-10-30
+
 ### Fixed
 - Mirroring images from registries whose referrers fallback tag
   (`sha256-<hex>`) resolves to a non-index manifest (e.g.
