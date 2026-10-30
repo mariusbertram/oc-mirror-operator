@@ -26,8 +26,11 @@ func TestCopyImage_SucceedsWhenReferrersFallbackTagIsNotAnIndex(t *testing.T) {
 
 	// GitLab-style: the fallback tag exists but is a single image manifest,
 	// not an OCI index.
+	fallbackBody := []byte(fmt.Sprintf(
+		`{"schemaVersion":2,"mediaType":%q,"config":{"mediaType":%q,"digest":"sha256:%064d","size":2},"layers":[]}`,
+		ociManifestMediaType, ociConfigMediaType, 0))
 	srcReg.seedManifest("gitlab-org/build/cng/sidekiq-ee", referrersFallbackTag(manifestDigest),
-		ociManifestMediaType, []byte(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"sha256:0000000000000000000000000000000000000000000000000000000000000000","size":2},"layers":[]}`))
+		ociManifestMediaType, fallbackBody)
 
 	_, dstHost := newFakeRegistryServer(t)
 	mc := NewMirrorClient([]string{srcHost, dstHost}, "", dstHost)
@@ -49,12 +52,18 @@ func TestCopyImage_CopiesReferrersBestEffort(t *testing.T) {
 	manifestDigest, _ := seedTestImage(t, srcReg, "img", "v1")
 
 	// Seed a referrer (e.g. a signature manifest) by digest and list it in the
-	// fallback tag as an OCI index.
-	refBody := []byte(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","artifactType":"application/vnd.dev.cosign.simplesigning.v1+json","config":{"mediaType":"application/vnd.oci.empty.v1+json","digest":"sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a","size":2},"subject":{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"` + manifestDigest + `","size":700}}`)
+	// fallback tag as an OCI index. Its config blob is the empty JSON object.
+	configDigest := srcReg.seedBlob([]byte("{}"))
+	refBody := []byte(fmt.Sprintf(
+		`{"schemaVersion":2,"mediaType":%q,"artifactType":"application/vnd.dev.cosign.simplesigning.v1+json",`+
+			`"config":{"mediaType":"application/vnd.oci.empty.v1+json","digest":%q,"size":2},`+
+			`"subject":{"mediaType":%q,"digest":%q,"size":700}}`,
+		ociManifestMediaType, configDigest, ociManifestMediaType, manifestDigest))
 	refDigest := srcReg.seedManifest("img", "sha256:1111111111111111111111111111111111111111111111111111111111111111", ociManifestMediaType, refBody)
-	srcReg.seedBlob([]byte("{}"))
 
-	indexBody := []byte(fmt.Sprintf(`{"schemaVersion":2,"mediaType":%q,"manifests":[{"mediaType":%q,"digest":%q,"size":%d,"artifactType":"application/vnd.dev.cosign.simplesigning.v1+json"}]}`,
+	indexBody := []byte(fmt.Sprintf(
+		`{"schemaVersion":2,"mediaType":%q,"manifests":[{"mediaType":%q,"digest":%q,"size":%d,`+
+			`"artifactType":"application/vnd.dev.cosign.simplesigning.v1+json"}]}`,
 		ociIndexMediaType, ociManifestMediaType, refDigest, len(refBody)))
 	srcReg.seedManifest("img", referrersFallbackTag(manifestDigest), ociIndexMediaType, indexBody)
 
