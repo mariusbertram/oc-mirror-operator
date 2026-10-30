@@ -276,14 +276,20 @@ func (c *MirrorClient) copyImageWith(ctx context.Context, rc *regclient.RegClien
 		destRef.Tag = tag
 	}
 
-	err = rc.ImageCopy(ctx, srcRef, destRef,
-		append([]regclient.ImageOpts{regclient.ImageWithReferrers()}, opts...)...,
-	)
+	// The image itself is copied without ImageWithReferrers: with that option
+	// regclient lists the source's referrers and returns the listing error as
+	// fatal, so a registry whose referrers fallback tag (sha256-<hex>) resolves
+	// to a non-index manifest (e.g. registry.gitlab.com) fails the whole copy
+	// with "manifest is not an OCI index" (#278). Referrers are copied
+	// best-effort below instead.
+	err = rc.ImageCopy(ctx, srcRef, destRef, opts...)
 	if err != nil {
 		return "", fmt.Errorf("failed to copy image %s to %s: %w", src, dest, err)
 	}
 
 	effectiveDest := destRef.CommonName()
+
+	c.copyReferrersBestEffort(ctx, rc, srcRef, destRef)
 
 	// Cosign stores signatures as tag-based manifests: sha256-{digest}.sig
 	// These are NOT returned by the OCI referrers API so ImageWithReferrers
@@ -307,6 +313,37 @@ func (c *MirrorClient) copyImageWith(ctx context.Context, rc *regclient.RegClien
 	}
 
 	return effectiveDest, nil
+}
+
+// copyReferrersBestEffort copies the referrers (e.g. cosign signatures) of the
+// just-copied image from srcRef's repository to destRef's repository. It is
+// strictly best-effort: any failure — the source registry not implementing the
+// referrers API, its fallback tag resolving to a non-index manifest (GitLab,
+// #278), or an individual referrer failing to copy — is only logged, never
+// returned, because the image itself has already been copied successfully.
+func (c *MirrorClient) copyReferrersBestEffort(ctx context.Context, rc *regclient.RegClient, srcRef, destRef ref.Ref) {
+	srcDigest := srcRef.Digest
+	if srcDigest == "" {
+		if m, err := rc.ManifestHead(ctx, srcRef); err == nil {
+			srcDigest = m.GetDescriptor().Digest.String()
+		}
+	}
+	if srcDigest == "" {
+		return
+	}
+	subject := srcRef.SetDigest(srcDigest)
+	rl, err := rc.ReferrerList(ctx, subject)
+	if err != nil {
+		oclog.Printf("Could not list referrers of %s, skipping referrer copy: %v\n", srcRef.CommonName(), err)
+		return
+	}
+	for _, d := range rl.Descriptors {
+		rSrc := srcRef.SetDigest(d.Digest.String())
+		rDst := destRef.SetDigest(d.Digest.String())
+		if err := rc.ImageCopy(ctx, rSrc, rDst); err != nil {
+			oclog.Printf("Could not copy referrer %s of %s: %v\n", d.Digest.String(), srcRef.CommonName(), err)
+		}
+	}
 }
 
 // CheckExist checks if an image exists at the destination registry.
