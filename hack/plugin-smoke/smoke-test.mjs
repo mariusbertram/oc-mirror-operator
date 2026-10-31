@@ -57,7 +57,7 @@ async function themeState(page, theme) {
     'Console theme classes disagree with the chosen preference');
   assert.equal(state.osDark, theme !== 'dark', 'The OS must disagree with the explicit Console theme');
   const expectedBackground = theme === 'light' ? [255, 255, 255]
-    : state.patternFly === 6 ? [41, 41, 41] : [27, 29, 33];
+    : state.patternFly === 6 ? [42, 42, 42] : [27, 29, 33];
   assert.deepEqual(state.backgroundRGB, expectedBackground,
     `Unexpected ${theme} PF${state.patternFly} primary background: ${state.background}`);
   return state;
