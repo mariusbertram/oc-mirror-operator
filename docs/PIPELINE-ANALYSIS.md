@@ -6,12 +6,9 @@
 flow.
 
 **Context:** The release pipeline publishes images to `ghcr.io`, creates a
-GitHub Release, and opens a PR — but **only** to the private
-`brtrm-dev-catalog`. The two catalogs that actually matter for operator
-discovery are missing from the automation: **operatorhub.io**
-(`k8s-operatorhub/community-operators`) and the **Red Hat community
-catalog** (`redhat-openshift-ecosystem/community-operators-prod`, which
-feeds OperatorHub on OpenShift).
+GitHub Release, and submits catalog PRs to `brtrm-dev-catalog`,
+`k8s-operatorhub/community-operators`, and
+`redhat-openshift-ecosystem/community-operators-prod`.
 
 ---
 
@@ -31,32 +28,28 @@ feeds OperatorHub on OpenShift).
 
 ## Findings
 
-### PIPE-1 — No automated PR to the operatorhub.io community catalog
+### PIPE-1 — OperatorHub.io PR needs upstream PR permissions
 
 **Severity: high (distribution gap)**
 
-The release only registers the bundle in `brtrm-dev-catalog`. There is no
-job that submits to `k8s-operatorhub/community-operators`, so the operator
-is invisible on operatorhub.io. The submission flow is standardized:
-build a PR against the catalog repo from the released bundle (digest-pinned,
-multi-arch). This can be fully automated in `release.yml` after
-`github-release` succeeds, gated on a stable version (semver without
-pre-release), using a `OPERATORHUB_PAT`/GitHub App token and the same
-clone-edit-PR pattern already used for `brtrm-dev-catalog`.
-Bundle validation already runs the `operatorhubv2` suite in CI, so the
-bundle should pass the catalog's CI checks.
+The release job pushes the bundle branch to the owner's fork, but the
+GitHub App token cannot create a PR in the upstream organization
+(`Resource not accessible by integration`). `CATALOG_PR_TOKEN` must be
+configured with pull-request write access to this upstream repo and the
+Red Hat catalog. The package-level `logo/` directory must not be submitted:
+it breaks the catalog pipeline's version detection.
 
-### PIPE-2 — No automated PR to the Red Hat community-operators catalog
+### PIPE-2 — Red Hat catalog PR shares the cross-repository token requirement
 
 **Severity: high (distribution gap — the primary audience is OpenShift)**
 
 For an operator "primarily for OpenShift", the
 `redhat-openshift-ecosystem/community-operators-prod` catalog is the one
 that reaches OpenShift admins via OperatorHub out of the box. Submission is
-a PR with the bundle under
-`community-operators/<package>/<version>/`. The workflow can open this PR
-automatically (draft PR, manual merge — Red Hat reviewers still gate it),
-falling back to a manual reminder comment if automation is not desired.
+a draft PR with the bundle under `operators/<package>/<version>/`. The
+workflow pushes to the owner's fork using the GitHub App token; creation
+against the upstream organization uses `CATALOG_PR_TOKEN`. Red Hat reviewers
+still gate merge.
 
 ### PIPE-3 — No dependabot.yml, and known vulnerabilities on main
 
@@ -111,17 +104,15 @@ already pins `actions/checkout@v6` etc. via tags only, not SHA).
   `workflow_dispatch` with a version input, or at minimum an `if` on
   semver format, reduces blast radius.
 
-### PIPE-7 — CATALOG_PAT and token handling in catalog-pr
+### PIPE-7 — Separate fork write and upstream PR credentials
 
 **Severity: low-medium (security/maintenance)**
 
-- A classic PAT (`CATALOG_PAT`) is embedded in a clone URL
-  (`https://x-access-token:${GH_TOKEN}@github.com/...`) — if any `set -x`
-  sneaks in, the token lands in logs. `gh repo clone`/`gh` commands with
-  `GH_TOKEN` env avoid URL-embedded tokens entirely.
-- A PAT expires; a GitHub App token (via `actions/create-github-app-token`)
-  is the low-maintenance replacement, and the same token could serve
-  PIPE-1/PIPE-2.
+- The GitHub App token is scoped to the owner's catalog/fork and handles
+  branch writes. The separate `CATALOG_PR_TOKEN` handles PR creation in
+  upstream organizations where the App is not installed.
+- Keep tokens out of remote URLs and request only `Contents: write` for
+  fork updates and `Pull requests: write` for PR creation.
 
 ### PIPE-8 — No scheduled runs against a moving world
 
