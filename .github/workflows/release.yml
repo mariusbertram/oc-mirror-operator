@@ -580,7 +580,7 @@ jobs:
           git push origin "$BRANCH"
 
           # ── Open PR ─────────────────────────────────────────────────────
-          gh pr create \
+          if ! gh pr create \
             --repo "${CATALOG_REPO}" \
             --base main \
             --head "$BRANCH" \
@@ -605,10 +605,10 @@ jobs:
           Opened automatically by the [release workflow](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."; then
             {
               echo "## CATALOG_PR_FALLBACK"
-              echo "The GitHub App token cannot create cross-repo pull requests."
+              echo "Could not create the pull request automatically."
               echo "Open the PR manually from the pushed branch ${BRANCH}:"
               echo ""
-              echo "https://github.com/k8s-operatorhub/community-operators/compare/main...${GITHUB_REPOSITORY_OWNER}:community-operators:${BRANCH}?expand=1"
+              echo "https://github.com/${CATALOG_REPO}/compare/main...${BRANCH}?expand=1"
               echo ""
               echo "Bundle digest: ${BUNDLE_DIGEST_REF}"
             } >> "$GITHUB_STEP_SUMMARY"
@@ -690,7 +690,7 @@ jobs:
 
           # ── Bundle-Layout (Pflichtformat dieses Catalogs): ──
           # operators/<pkg>/<version>/{manifests/,metadata/,bundle.Dockerfile}
-          # + package-level operators/<pkg>/{ci.yaml,logo/}
+          # + package-level operators/<pkg>/ci.yaml
           PACKAGE_DIR="operators/oc-mirror"
           OPERATOR_DIR="${PACKAGE_DIR}/${VERSION}"
           mkdir -p "${OPERATOR_DIR}"
@@ -754,11 +754,9 @@ jobs:
             fi
           fi
 
-          LOGO_SRC="${GITHUB_WORKSPACE}/docs/oc-mirror-operator-logo.svg"
-          if [ -f "$LOGO_SRC" ] && [ ! -f "${PACKAGE_DIR}/logo/oc-mirror-operator-logo.svg" ]; then
-            mkdir -p "${PACKAGE_DIR}/logo"
-            cp "$LOGO_SRC" "${PACKAGE_DIR}/logo/oc-mirror-operator-logo.svg"
-          fi
+          # No logo is submitted here: the icon is embedded in the CSV, and a
+          # package-level logo/ file in the PR breaks the operatorhub CI's
+          # version detection ("Must provide filename").
 
           # ── Commit & push in die BESTEHENDE Fork. Bewusst KEIN
           # `gh repo fork`: die GitHub App darf keine Forks anlegen
@@ -783,9 +781,9 @@ jobs:
           This PR adds oc-mirror-operator to the operatorhub.io community-operators catalog.
 
           ### Bundle Image (multi-arch manifest list)
-          \\\`\\\`\\\`
+          \`\`\`
           ${BUNDLE_DIGEST_REF}
-          \\\`\\\`\\\`
+          \`\`\`
 
           The bundle passes the operatorhubv2, capabilities and categories validation suites (run in the operator CI).
 
@@ -795,7 +793,7 @@ jobs:
               echo "The GitHub App token cannot create cross-repo pull requests."
               echo "Open the PR manually from the pushed branch ${BRANCH}:"
               echo ""
-              echo "https://github.com/redhat-openshift-ecosystem/community-operators-prod/compare/main...${GITHUB_REPOSITORY_OWNER}:community-operators-prod:${BRANCH}?expand=1"
+              echo "https://github.com/k8s-operatorhub/community-operators/compare/main...${GITHUB_REPOSITORY_OWNER}:${BRANCH}?expand=1"
               echo ""
               echo "Bundle digest: ${BUNDLE_DIGEST_REF}"
             } >> "$GITHUB_STEP_SUMMARY"
@@ -968,11 +966,20 @@ jobs:
           This PR adds oc-mirror-operator to the community-operators-prod catalog (OpenShift OperatorHub).
 
           ### Bundle Image (multi-arch manifest list)
-          \\\`\\\`\\\`
+          \`\`\`
           ${BUNDLE_DIGEST_REF}
-          \\\`\\\`\\\`
+          \`\`\`
 
           The bundle passes the operatorhubv2, capabilities and categories validation suites (run in the operator CI).
 
-          Opened automatically by the [release workflow](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."
-
+          Opened automatically by the [release workflow](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."; then
+            {
+              echo "## CATALOG_PR_FALLBACK"
+              echo "Could not create the pull request automatically."
+              echo "Open the PR manually from the pushed branch ${BRANCH}:"
+              echo ""
+              echo "https://github.com/redhat-openshift-ecosystem/community-operators-prod/compare/main...${GITHUB_REPOSITORY_OWNER}:${BRANCH}?expand=1"
+              echo ""
+              echo "Bundle digest: ${BUNDLE_DIGEST_REF}"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
