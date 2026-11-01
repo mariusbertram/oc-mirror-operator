@@ -915,24 +915,71 @@ jobs:
           DOCKEREOF
           fi
 
+          # ── FBC auto-release config (community-operators-prod): without
+          # release-config.yaml in the version dir the prod pipeline never
+          # adds the bundle to the catalog template and never opens the
+          # "Catalog update" PRs — the operator then stays out of newly
+          # promoted OCP catalogs (e.g. v5.0) and their index images.
+          # Two templates in parallel: basic.yaml keeps the existing 'alpha'
+          # channel on v4.18-v4.22 (renaming it would break subscriptions),
+          # semver.yaml (Candidate) covers v5.0.
+          PREV_VER=$(find "${PACKAGE_DIR}" -mindepth 1 -maxdepth 1 -type d -name '[0-9]*' -exec test -f "{}/manifests/oc-mirror.clusterserviceversion.yaml" \; -print 2>/dev/null | sed 's|.*/||' | grep -Fxv "${VERSION}" | sort -V | tail -1)
+          {
+            echo "---"
+            echo "catalog_templates:"
+            echo "  - template_name: basic.yaml"
+            echo "    channels:"
+            echo "      - alpha"
+            echo "    defaultChannel: alpha"
+            if [ -n "${PREV_VER}" ]; then
+              PREV_NAME=$(yq '.metadata.name' "${PACKAGE_DIR}/${PREV_VER}/manifests/oc-mirror.clusterserviceversion.yaml")
+              echo "    replaces: ${PREV_NAME}"
+            fi
+            echo "  - template_name: semver.yaml"
+            echo "    channels:"
+            echo "      - Candidate"
+          } > "${OPERATOR_DIR}/release-config.yaml"
+
           if [ ! -f "${PACKAGE_DIR}/ci.yaml" ]; then
             cat > "${PACKAGE_DIR}/ci.yaml" <<'CIEOF'
           ---
-          # Use `replaces-mode` or `semver-mode`. Once you switch to `semver-mode`, there is no easy way back.
-          updateGraph: replaces-mode
+          reviewers:
+            - mariusbertram
+          fbc:
+            enabled: true
+            version_promotion_strategy: review-needed
+            catalog_mapping:
+              - template_name: basic.yaml
+                type: olm.template.basic
+                catalog_names:
+                  - v4.18
+                  - v4.19
+                  - v4.20
+                  - v4.21
+                  - v4.22
+              - template_name: semver.yaml
+                type: olm.semver
+                catalog_names:
+                  - v5.0
           CIEOF
           fi
 
-          # ── Upgrade path: only catalogs running `replaces-mode` accept a
-          # `replaces` key in the CSV. In `semver-mode` the pipeline builds
-          # the upgrade graph from the version numbers itself and FAILS on
-          # a CSV that ships `replaces`. Read the mode from the target
-          # catalog's ci.yaml and stitch the chain only when appropriate.
+          # ── Upgrade path: only `replaces-mode` catalogs and FBC templates of
+          # type `olm.template.basic` accept a `replaces` key in the CSV. An
+          # `olm.semver` template derives the channel from the version and
+          # the pipeline FAILS on a CSV that ships `replaces`. Read the mode
+          # from the target catalog's ci.yaml and stitch the chain only when
+          # appropriate.
           CSV_FILE="${OPERATOR_DIR}/manifests/oc-mirror.clusterserviceversion.yaml"
           NEW_VER="${VERSION}"
-          UPDATE_GRAPH=$(yq '.updateGraph // "replaces-mode"' "${PACKAGE_DIR}/ci.yaml" 2>/dev/null || echo replaces-mode)
-          if [ "$UPDATE_GRAPH" != "replaces-mode" ]; then
-            echo "Target catalog uses '${UPDATE_GRAPH}' — leaving the CSV without a replaces key."
+          UPDATE_GRAPH=$(yq '.updateGraph // ""' "${PACKAGE_DIR}/ci.yaml" 2>/dev/null || echo "")
+          MAPPING_TYPE=$(yq '.fbc.catalog_mapping[0].type // ""' "${PACKAGE_DIR}/ci.yaml" 2>/dev/null || echo "")
+          # FBC catalogs with an olm.semver mapping run semver-mode.
+          if [ "${MAPPING_TYPE}" = "olm.semver" ]; then
+            UPDATE_GRAPH="semver-mode"
+          fi
+          if [ "$UPDATE_GRAPH" != "replaces-mode" ] && [ "${MAPPING_TYPE}" != "olm.template.basic" ]; then
+            echo "Target catalog uses '${UPDATE_GRAPH:-semver-mode}' — leaving the CSV without a replaces key."
             sed -i "/^  replaces:/d" "$CSV_FILE"
           else
             # Highest already-published version from the version dirs
