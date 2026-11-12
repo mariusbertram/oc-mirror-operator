@@ -6,7 +6,7 @@ require (
 	github.com/ProtonMail/go-crypto v1.5.2
 	github.com/blang/semver/v4 v4.0.0
 	github.com/gorilla/mux v1.8.1
-	github.com/onsi/ginkgo/v2 v2.33.1
+	github.com/onsi/ginkgo/v2 v2.34.0
 	github.com/onsi/gomega v1.44.0
 	github.com/opencontainers/go-digest v1.0.0
 	github.com/openshift/api v0.0.0-20261002115817-f8795cdde518
@@ -14,8 +14,8 @@ require (
 	github.com/prometheus/client_golang v1.25.0
 	github.com/prometheus/client_model v0.6.3
 	github.com/regclient/regclient v0.11.7
-	github.com/sigstore/sigstore v1.11.2
-	golang.org/x/sync v0.24.0
+	github.com/sigstore/sigstore v1.11.3
+	golang.org/x/sync v0.25.0
 	helm.sh/helm/v4 v4.3.1
 	k8s.io/api v0.37.2
 	k8s.io/apiextensions-apiserver v0.37.2
