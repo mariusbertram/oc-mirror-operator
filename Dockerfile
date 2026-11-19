@@ -1,9 +1,9 @@
 # Build the manager and catalog-builder binaries.
 # Base images are pinned by digest so that builds are deterministic and
 # supply-chain auditable. To refresh, run:
-#   podman pull docker.io/library/golang:1.27.2 && podman inspect docker.io/library/golang:1.27.2 --format '{{.Digest}}'
+#   podman pull docker.io/library/golang:1.27.4 && podman inspect docker.io/library/golang:1.27.4 --format '{{.Digest}}'
 #   podman pull gcr.io/distroless/static:nonroot && podman inspect gcr.io/distroless/static:nonroot --format '{{.Digest}}'
-FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.27.3@sha256:e519d3b0a5b285e5aa53ab9eef02bc6bbb9cb04608389b743a136a9ce75f0d1e AS builder
+FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.27.4@sha256:205c7636d74e0ffbe3d007162df7d74f859f5a8c8322dfb9f907977686c126cf AS builder
 ARG TARGETOS
 ARG TARGETARCH
 
