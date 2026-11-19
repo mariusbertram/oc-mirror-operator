@@ -1,6 +1,6 @@
 module github.com/mariusbertram/oc-mirror-operator
 
-go 1.27.2
+go 1.27.4
 
 require (
 	github.com/ProtonMail/go-crypto v1.5.2
@@ -9,7 +9,7 @@ require (
 	github.com/onsi/ginkgo/v2 v2.34.0
 	github.com/onsi/gomega v1.44.0
 	github.com/opencontainers/go-digest v1.0.0
-	github.com/openshift/api v0.0.0-20261002115817-f8795cdde518
+	github.com/openshift/api v0.0.0-20261118203153-ca0b115da1b1
 	github.com/operator-framework/operator-registry v1.74.0
 	github.com/prometheus/client_golang v1.25.0
 	github.com/prometheus/client_model v0.6.3

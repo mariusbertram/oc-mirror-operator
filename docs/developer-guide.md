@@ -19,7 +19,7 @@ on the console plugin. For the contribution process (tests, lint, CI, releases) 
 
 | Tool | Version | Notes |
 |---|---|---|
-| Go | >= 1.27.1 (`go.mod`) | container builds and the devcontainer use the same pinned toolchain |
+| Go | >= 1.27.4 (`go.mod`) | container builds and the devcontainer use the same pinned toolchain |
 | podman or docker | recent | `CONTAINER_TOOL=podman` is the Makefile default; pass `CONTAINER_TOOL=docker` to override |
 | kubectl / oc | ≥ 1.29 | |
 | Kind | ≥ 0.25 | local clusters and e2e |
