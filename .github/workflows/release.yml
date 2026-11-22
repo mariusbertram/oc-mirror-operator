@@ -102,7 +102,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-      id-token: write      # cosign keyless (OIDC) SBOM attestation
+      id-token: write      # cosign keyless (OIDC) signing and SBOM attestation
       security-events: write # upload Grype SARIF to the Security tab
     strategy:
       fail-fast: false
@@ -169,7 +169,13 @@ jobs:
           sarif-category: ${{ matrix.component }}-image-arm64
           vex-files: vex/oc-mirror-operator.openvex.json
 
-      # Digest handoff occurs only after both platform scans and attestations succeed.
+      - name: Sign component image and platform manifests (keyless cosign)
+        run: |
+          set -euo pipefail
+          cosign sign --yes --recursive \
+            "${{ env.REGISTRY }}/${{ github.repository }}-${{ matrix.component }}@${{ steps.build.outputs.digest }}"
+
+      # Digest handoff occurs only after both platform scans, attestations and signing succeed.
       # Matrix job outputs are last-writer-wins; use distinct artifacts instead.
       - name: Record component manifest-list digest
         env:
@@ -231,7 +237,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-      id-token: write
+      id-token: write      # cosign keyless (OIDC) signing and SBOM attestation
       security-events: write
     strategy:
       fail-fast: false
@@ -290,6 +296,12 @@ jobs:
           sarif-category: plugin-ocp-${{ matrix.console-version }}-arm64
           vex-files: vex/oc-mirror-operator.openvex.json
 
+      - name: Sign plugin image and platform manifests (keyless cosign)
+        run: |
+          set -euo pipefail
+          cosign sign --yes --recursive \
+            "${{ env.PLUGIN_IMAGE }}@${{ steps.build-plugin.outputs.digest }}"
+
   # ── 3. Build & push bundle image (multi-arch) ────────────────────────────
   build-bundle:
     name: Build bundle image
@@ -298,7 +310,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-      id-token: write      # cosign keyless (OIDC) SBOM attestation
+      id-token: write      # cosign keyless (OIDC) signing and SBOM attestation
       security-events: write # upload Grype SARIF to the Security tab
     outputs:
       # Tag reference (human-readable, mutable)
@@ -400,6 +412,12 @@ jobs:
           artifact-name: bundle-arm64
           sarif-category: bundle-image-arm64
 
+      - name: Sign bundle image and platform manifests (keyless cosign)
+        run: |
+          set -euo pipefail
+          cosign sign --yes --recursive \
+            "${{ env.BUNDLE_IMAGE }}@${{ steps.build.outputs.digest }}"
+
       - name: Emit bundle image ref
         id: bundle-ref
         run: |
@@ -475,6 +493,17 @@ jobs:
             | Worker (multi-arch) | `${{ env.WORKER_IMAGE }}:${{ github.ref_name }}` | `${{ needs.build-operator.outputs.worker_digest }}` |
             | Plugin images | `${{ env.PLUGIN_IMAGE }}:${{ github.ref_name }}-ocp4.18` … `-ocp5.0` | See the version-specific `relatedImages` in the bundle |
             | Bundle (multi-arch)   | `${{ needs.build-bundle.outputs.bundle_image }}` | `${{ needs.build-bundle.outputs.bundle_digest }}` |
+
+            ### Image Verification
+
+            All release images (manifest lists and platform manifests) are signed keyless via Sigstore Cosign:
+
+            ```bash
+            cosign verify \
+              --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
+              --certificate-identity="${{ github.server_url }}/${{ github.repository }}/.github/workflows/release.yml@refs/tags/${{ github.ref_name }}" \
+              "${{ env.CONTROLLER_IMAGE }}@${{ needs.build-operator.outputs.controller_digest }}"
+            ```
 
             ### Changes
 
