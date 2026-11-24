@@ -88,9 +88,11 @@ independently of `pollInterval`. It downloads from `install.stackrox.io`, stages
 one ZIP in pod ephemeral storage, and publishes it as a single OCI layer. It
 skips registry writes when the manifest digest matches, including after a pod
 restart. The container uses the target's registry credentials, proxy and CA
-settings. A version change restarts the publisher independently of the manager.
+settings. When `spec.authSecret` is configured, Kubernetes also uses it to pull
+the publisher's worker image. A version change restarts the publisher independently of the manager.
 
-The publisher requests 1 GiB of ephemeral storage for Scanner V4 and 2 GiB
+The publisher requests 50m CPU and 64 MiB of memory, with limits of 500m CPU
+and 256 MiB. It requests 1 GiB of ephemeral storage for Scanner V4 and 2 GiB
 for legacy Scanner. Allow space for one ZIP on the node and for each distinct
 bundle retained in the registry. Observed ZIP sizes are about 600 MB for
 Scanner V4 and 1.5 GB for legacy Scanner, and vary with the feed.

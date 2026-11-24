@@ -52,6 +52,10 @@ func (r *MirrorTargetReconciler) reconcileScannerDB(ctx context.Context, mt *mir
 		deploy.Spec.Strategy = appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType}
 		deploy.Spec.Template.Labels = labels
 		pod := &deploy.Spec.Template.Spec
+		pod.ImagePullSecrets = nil
+		if mt.Spec.AuthSecret != "" {
+			pod.ImagePullSecrets = []corev1.LocalObjectReference{{Name: mt.Spec.AuthSecret}}
+		}
 		pod.AutomountServiceAccountToken = pointerTo(false)
 		pod.SecurityContext = &corev1.PodSecurityContext{
 			RunAsNonRoot: pointerTo(true), SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
@@ -63,7 +67,17 @@ func (r *MirrorTargetReconciler) reconcileScannerDB(ctx context.Context, mt *mir
 		pod.Containers = []corev1.Container{{
 			Name: "acs-scanner-db", Image: os.Getenv("WORKER_IMAGE"), Args: args,
 			Env: registryEnv(mt), VolumeMounts: append(managerContainerVolumeMounts(mt), corev1.VolumeMount{Name: scratch, MountPath: "/tmp"}),
-			Resources:       corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceEphemeralStorage: storage}},
+			Resources: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceCPU:              resource.MustParse("50m"),
+					corev1.ResourceMemory:           resource.MustParse("64Mi"),
+					corev1.ResourceEphemeralStorage: storage,
+				},
+				Limits: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("500m"),
+					corev1.ResourceMemory: resource.MustParse("256Mi"),
+				},
+			},
 			SecurityContext: restrictedContainerSecurityContext(),
 		}}
 		return nil

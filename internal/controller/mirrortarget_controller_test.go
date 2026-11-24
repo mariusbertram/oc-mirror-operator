@@ -111,8 +111,13 @@ var _ = Describe("MirrorTarget Controller", func() {
 			Expect(metav1.IsControlledBy(deploy, mt)).To(BeTrue())
 			Expect(deploy.Spec.Strategy.Type).To(Equal(appsv1.RecreateDeploymentStrategyType))
 			Expect(deploy.Spec.Template.Spec.AutomountServiceAccountToken).To(HaveValue(BeFalse()))
+			Expect(deploy.Spec.Template.Spec.ImagePullSecrets).To(ConsistOf(corev1.LocalObjectReference{Name: "registry-creds"}))
 			containers := deploy.Spec.Template.Spec.Containers
 			Expect(containers).To(HaveLen(1))
+			Expect(containers[0].Resources.Requests.Cpu().String()).To(Equal("50m"))
+			Expect(containers[0].Resources.Requests.Memory().String()).To(Equal("64Mi"))
+			Expect(containers[0].Resources.Limits.Cpu().String()).To(Equal("500m"))
+			Expect(containers[0].Resources.Limits.Memory().String()).To(Equal("256Mi"))
 			Expect(containers[0].Resources.Requests.StorageEphemeral().String()).To(Equal("1Gi"))
 			Expect(containers[0].Name).To(Equal("acs-scanner-db"))
 			Expect(containers[0].Image).To(Equal("test-worker:latest"))
@@ -128,6 +133,15 @@ var _ = Describe("MirrorTarget Controller", func() {
 			Expect(deploy.Spec.Template.Spec.Containers[0].Resources.Requests.StorageEphemeral().String()).To(Equal("2Gi"))
 			Expect(k8sClient.Get(ctx, childName, deploy)).To(Succeed())
 			Expect(&deploy.Spec.Template).To(Equal(managerTemplate))
+
+			Expect(k8sClient.Get(ctx, namespacedName, mt)).To(Succeed())
+			mt.Spec.AuthSecret = ""
+			Expect(k8sClient.Update(ctx, mt)).To(Succeed())
+			reconcileTarget()
+			Expect(k8sClient.Get(ctx, publisher, deploy)).To(Succeed())
+			Expect(deploy.Spec.Template.Spec.ImagePullSecrets).To(BeEmpty())
+			Expect(k8sClient.Get(ctx, childName, deploy)).To(Succeed())
+			managerTemplate = deploy.Spec.Template.DeepCopy()
 
 			Expect(k8sClient.Get(ctx, namespacedName, mt)).To(Succeed())
 			mt.Spec.ACSScannerDB = nil
