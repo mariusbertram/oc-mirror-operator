@@ -5,6 +5,7 @@ go 1.27.4
 require (
 	github.com/ProtonMail/go-crypto v1.5.2
 	github.com/blang/semver/v4 v4.0.0
+	github.com/google/go-containerregistry v0.22.1
 	github.com/gorilla/mux v1.8.1
 	github.com/onsi/ginkgo/v2 v2.34.0
 	github.com/onsi/gomega v1.44.0
@@ -79,7 +80,6 @@ require (
 	github.com/google/cel-go v0.31.0 // indirect
 	github.com/google/gnostic-models v0.7.1 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
-	github.com/google/go-containerregistry v0.22.1 // indirect
 	github.com/google/pprof v0.0.0-20261002000307-77d3b59017a0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.31.0 // indirect

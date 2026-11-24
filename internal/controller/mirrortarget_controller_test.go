@@ -86,6 +86,40 @@ var _ = Describe("MirrorTarget Controller", func() {
 			}
 		})
 
+		It("starts and stops the hourly ACS publisher when the target configuration changes", func() {
+			r := &MirrorTargetReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			reconcileTarget := func() {
+				_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+				Expect(err).NotTo(HaveOccurred())
+			}
+			reconcileTarget() // add finalizer
+
+			mt := &mirrorv1alpha1.MirrorTarget{}
+			Expect(k8sClient.Get(ctx, namespacedName, mt)).To(Succeed())
+			mt.Spec.ACSScannerDB = &mirrorv1alpha1.ACSScannerDB{Version: "4.11.0"}
+			mt.Spec.Insecure = true
+			mt.Spec.AuthSecret = "registry-creds"
+			Expect(k8sClient.Update(ctx, mt)).To(Succeed())
+			reconcileTarget()
+
+			deploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, childName, deploy)).To(Succeed())
+			containers := deploy.Spec.Template.Spec.Containers
+			Expect(containers).To(HaveLen(2))
+			Expect(containers[1].Name).To(Equal("acs-scanner-db"))
+			Expect(containers[1].Image).To(Equal("test-worker:latest"))
+			Expect(containers[1].Args).To(Equal([]string{"acs-scanner-db", "--registry", mt.Spec.Registry, "--version", "4.11.0", "--insecure"}))
+			Expect(containers[1].Env).To(ContainElement(corev1.EnvVar{Name: "DOCKER_CONFIG", Value: "/docker-config"}))
+			Expect(containers[1].SecurityContext.ReadOnlyRootFilesystem).To(HaveValue(BeTrue()))
+
+			Expect(k8sClient.Get(ctx, namespacedName, mt)).To(Succeed())
+			mt.Spec.ACSScannerDB = nil
+			Expect(k8sClient.Update(ctx, mt)).To(Succeed())
+			reconcileTarget()
+			Expect(k8sClient.Get(ctx, childName, deploy)).To(Succeed())
+			Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(1))
+		})
+
 		It("should create a Deployment and Service with correct labels and owner reference", func() {
 			reconciler := &MirrorTargetReconciler{
 				Client: k8sClient,

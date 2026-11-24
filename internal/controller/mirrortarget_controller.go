@@ -265,6 +265,21 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 				},
 			},
 		}
+		if db := mt.Spec.ACSScannerDB; db != nil {
+			pod := &deployment.Spec.Template.Spec
+			args := []string{"acs-scanner-db", "--registry", mt.Spec.Registry, "--version", db.Version}
+			if mt.Spec.Insecure {
+				args = append(args, "--insecure")
+			}
+			const scratch = "scanner-db-tmp"
+			pod.Volumes = append(pod.Volumes, corev1.Volume{Name: scratch, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}})
+			mounts := append(managerContainerVolumeMounts(mt), corev1.VolumeMount{Name: scratch, MountPath: "/tmp"})
+			pod.Containers = append(pod.Containers, corev1.Container{
+				Name: "acs-scanner-db", Image: os.Getenv("WORKER_IMAGE"), Args: args,
+				Env: registryEnv(mt), VolumeMounts: mounts, Resources: mt.Spec.Worker.Resources,
+				SecurityContext: restrictedContainerSecurityContext(),
+			})
+		}
 		return nil
 	})
 	if err != nil {
@@ -1929,6 +1944,11 @@ func managerContainerEnv(mt *mirrorv1alpha1.MirrorTarget) []corev1.EnvVar {
 			Value: os.Getenv("WORKER_IMAGE"),
 		},
 	}
+	return slices.Concat(env, registryEnv(mt))
+}
+
+func registryEnv(mt *mirrorv1alpha1.MirrorTarget) []corev1.EnvVar {
+	var env []corev1.EnvVar
 	if mt.Spec.AuthSecret != "" {
 		env = append(env, corev1.EnvVar{
 			Name:  "DOCKER_CONFIG",

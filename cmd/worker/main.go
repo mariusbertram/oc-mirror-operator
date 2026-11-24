@@ -46,6 +46,9 @@ func init() {
 func main() {
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&zap.Options{Development: true})))
 
+	if len(os.Args) > 1 && os.Args[1] == "acs-scanner-db" {
+		os.Exit(worker.ScannerDBMain(ctrl.SetupSignalHandler(), os.Args[2:]))
+	}
 	if len(os.Args) > 1 && os.Args[1] == "cleanup" {
 		os.Exit(cleanup.Main(os.Args[2:], scheme))
 	}

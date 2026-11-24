@@ -118,10 +118,25 @@ type ExposeConfig struct {
 	GatewayRef *GatewayReference `json:"gatewayRef,omitempty"`
 }
 
+// ACSScannerDB selects the RHACS offline definitions bundle.
+type ACSScannerDB struct {
+	// Version selects the published Scanner V4 bundle matching Central, e.g. "4.11.0".
+	// Omit for the legacy StackRox Scanner bundle.
+	// +optional
+	// +kubebuilder:validation:Pattern=`^[0-9]+\.[0-9]+(\.[0-9]+)?([-][A-Za-z0-9_.-]+)?$`
+	// +kubebuilder:validation:MaxLength=128
+	Version string `json:"version,omitempty"`
+}
+
 // MirrorTargetSpec defines the desired state of MirrorTarget
 type MirrorTargetSpec struct {
 	// Registry is the URL of the target registry (e.g. registry.example.com/mirror)
 	Registry string `json:"registry"`
+
+	// ACSScannerDB enables hourly publication of the offline vulnerability database
+	// under <registry>/rhacs/scanner-db:<version> (latest for the legacy bundle).
+	// +optional
+	ACSScannerDB *ACSScannerDB `json:"acsScannerDB,omitempty"`
 
 	// ImageSets is the list of ImageSet names that should be mirrored to this target.
 	// Each ImageSet must be in the same namespace as the MirrorTarget.
