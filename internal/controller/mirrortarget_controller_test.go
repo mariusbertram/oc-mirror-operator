@@ -126,10 +126,22 @@ var _ = Describe("MirrorTarget Controller", func() {
 			Expect(containers[0].SecurityContext.ReadOnlyRootFilesystem).To(HaveValue(BeTrue()))
 
 			Expect(k8sClient.Get(ctx, namespacedName, mt)).To(Succeed())
-			mt.Spec.ACSScannerDB.Version = ""
+			mt.Spec.ACSScannerDB.Versions = []string{"4.10.3", "4.11.0"}
 			Expect(k8sClient.Update(ctx, mt)).To(Succeed())
 			reconcileTarget()
 			Expect(k8sClient.Get(ctx, publisher, deploy)).To(Succeed())
+			Expect(deploy.Spec.Template.Spec.Containers[0].Args).To(Equal([]string{
+				"acs-scanner-db", "--registry", mt.Spec.Registry, "--version", "4.11.0", "--version", "4.10.3", "--insecure",
+			}))
+			Expect(deploy.Spec.Template.Spec.Containers[0].Resources.Requests.StorageEphemeral().String()).To(Equal("1Gi"))
+
+			Expect(k8sClient.Get(ctx, namespacedName, mt)).To(Succeed())
+			mt.Spec.ACSScannerDB.Version = ""
+			mt.Spec.ACSScannerDB.Versions = nil
+			Expect(k8sClient.Update(ctx, mt)).To(Succeed())
+			reconcileTarget()
+			Expect(k8sClient.Get(ctx, publisher, deploy)).To(Succeed())
+			Expect(deploy.Spec.Template.Spec.Containers[0].Args).To(Equal([]string{"acs-scanner-db", "--registry", mt.Spec.Registry, "--insecure"}))
 			Expect(deploy.Spec.Template.Spec.Containers[0].Resources.Requests.StorageEphemeral().String()).To(Equal("2Gi"))
 			Expect(k8sClient.Get(ctx, childName, deploy)).To(Succeed())
 			Expect(&deploy.Spec.Template).To(Equal(managerTemplate))

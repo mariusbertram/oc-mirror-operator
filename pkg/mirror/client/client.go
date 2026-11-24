@@ -425,6 +425,17 @@ func (c *MirrorClient) ManifestGet(ctx context.Context, r ref.Ref) (manifest.Man
 	})
 }
 
+// TagList returns the tags of the repository of r.
+func (c *MirrorClient) TagList(ctx context.Context, r ref.Ref) ([]string, error) {
+	return withFallback(ctx, c, func(rc *regclient.RegClient) ([]string, error) {
+		tl, err := rc.TagList(ctx, r)
+		if err != nil {
+			return nil, err
+		}
+		return tl.GetTags()
+	})
+}
+
 // ManifestPut pushes a manifest to the registry.
 func (c *MirrorClient) ManifestPut(ctx context.Context, r ref.Ref, m manifest.Manifest) error {
 	_, err := withFallback(ctx, c, func(rc *regclient.RegClient) (struct{}, error) {

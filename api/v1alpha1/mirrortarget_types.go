@@ -118,14 +118,38 @@ type ExposeConfig struct {
 	GatewayRef *GatewayReference `json:"gatewayRef,omitempty"`
 }
 
-// ACSScannerDB selects the RHACS offline definitions bundle.
+// ACSScannerDB selects the RHACS offline definitions bundles.
 type ACSScannerDB struct {
 	// Version selects the published Scanner V4 bundle matching Central, e.g. "4.11.0".
-	// Omit for the legacy StackRox Scanner bundle.
+	// Omit both version and versions for the legacy StackRox Scanner bundle.
 	// +optional
 	// +kubebuilder:validation:Pattern=`^[0-9]+\.[0-9]+(\.[0-9]+)?([-][A-Za-z0-9_.-]+)?$`
 	// +kubebuilder:validation:MaxLength=128
 	Version string `json:"version,omitempty"`
+
+	// Versions selects several Scanner V4 bundles, one per Central version,
+	// e.g. ["4.10.3", "4.11.0"]. Combined with version; each is published
+	// under its own tag.
+	// +optional
+	// +listType=set
+	// +kubebuilder:validation:MaxItems=10
+	// +kubebuilder:validation:items:Pattern=`^[0-9]+\.[0-9]+(\.[0-9]+)?([-][A-Za-z0-9_.-]+)?$`
+	// +kubebuilder:validation:items:MaxLength=128
+	Versions []string `json:"versions,omitempty"`
+}
+
+// BundleVersions returns the configured Scanner V4 bundle versions, version
+// first, without duplicates. An empty result selects the legacy bundle.
+func (db *ACSScannerDB) BundleVersions() []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, v := range append([]string{db.Version}, db.Versions...) {
+		if v != "" && !seen[v] {
+			seen[v] = true
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // MirrorTargetSpec defines the desired state of MirrorTarget
