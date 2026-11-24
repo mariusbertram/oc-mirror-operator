@@ -7,6 +7,7 @@ moderate load.
 **Contents**
 
 - [Target registry](#target-registry)
+- [RHACS Scanner database](#rhacs-scanner-database)
 - [ImageSets](#imagesets)
 - [Throughput: concurrency and batch size](#throughput-concurrency-and-batch-size)
 - [Intervals: polling and drift check](#intervals-polling-and-drift-check)
@@ -42,6 +43,76 @@ spec:
   Use it for in-cluster `registry:5000`-style registries.
   For registries with a private CA prefer [`caBundle`](#custom-ca-bundle) and keep
   `insecure: false`.
+
+## RHACS Scanner database
+
+Enable the offline vulnerability bundle on a MirrorTarget and set the published
+bundle version that matches your RHACS Central installation.
+
+```yaml
+spec:
+  registry: registry.example.com/mirror
+  acsScannerDB:
+    version: "4.11.0"
+```
+
+### Find the Scanner V4 bundle version
+
+On an internet-connected machine that can also reach Central, run the following
+command with your authenticated `roxctl`. It queries Central for its version
+and downloads the matching offline bundle.
+
+```sh
+roxctl -e "$ROX_CENTRAL_ADDRESS" scanner download-db
+```
+
+If Central is on a disconnected network, open the **?** menu in the upper-right
+corner of the RHACS portal to find the installed Central version. On the
+internet-connected machine, pass that version explicitly, replacing `4.11.0`
+in the example. [Red Hat instructions for checking the Central version](https://access.redhat.com/solutions/7101364)
+
+```sh
+roxctl scanner download-db --skip-central --version 4.11.0
+```
+
+Set `acsScannerDB.version` to the version in the **downloaded ZIP filename**.
+For example, `scanner-vulns-4.11.0.zip` means `"4.11.0"`. If only a
+minor-version bundle is published, `roxctl` can fall back to
+`scanner-vulns-4.11.zip`. In that case, use `"4.11"`. The operator requests
+that exact bundle version. [Red Hat roxctl CLI reference](https://docs.redhat.com/en/documentation/red_hat_advanced_cluster_security_for_kubernetes/4.11/html-single/roxctl_cli/index)
+
+### Mirror and import the bundle
+
+The dedicated `<target>-acs-scanner-db` Deployment checks on startup and hourly,
+independently of `pollInterval`. It downloads from `install.stackrox.io`, stages
+one ZIP in pod ephemeral storage, and publishes it as a single OCI layer. It
+skips registry writes when the manifest digest matches, including after a pod
+restart. The container uses the target's registry credentials, proxy and CA
+settings. When `spec.authSecret` is configured, Kubernetes also uses it to pull
+the publisher's worker image. A version change restarts the publisher independently of the manager.
+
+The publisher requests 50m CPU and 64 MiB of memory, with limits of 500m CPU
+and 256 MiB. It requests 1 GiB of ephemeral storage for Scanner V4 and 2 GiB
+for legacy Scanner. Allow space for one ZIP on the node and for each distinct
+bundle retained in the registry. Observed ZIP sizes are about 600 MB for
+Scanner V4 and 1.5 GB for legacy Scanner, and vary with the feed.
+
+The registry must accept an OCI 1.1 image manifest with an `artifactType` and
+an `application/vnd.oci.empty.v1+json` config. To check the latest sync or
+diagnose a rejected upload, run `oc logs deployment/<target>-acs-scanner-db`
+in the MirrorTarget namespace.
+
+Pull the ZIP in the disconnected environment and import it into Central with
+your authenticated `roxctl`:
+
+```sh
+oras pull registry.example.com/mirror/rhacs/scanner-db:4.11.0
+roxctl scanner upload-db -e "$ROX_CENTRAL_ADDRESS" --scanner-db-file scanner-vulns-4.11.0.zip
+```
+
+For legacy StackRox Scanner, use `acsScannerDB: {}`. That publishes
+`scanner-vuln-updates.zip` at `rhacs/scanner-db:latest`. Removing
+`acsScannerDB` stops future checks. [Red Hat offline scanner documentation](https://docs.redhat.com/en/documentation/red_hat_advanced_cluster_security_for_kubernetes/4.11/html/configuring/enable-offline-mode)
 
 ## ImageSets
 

@@ -55,6 +55,19 @@ spec:
           spec:
             description: MirrorTargetSpec defines the desired state of MirrorTarget
             properties:
+              acsScannerDB:
+                description: |-
+                  ACSScannerDB enables hourly publication of the offline vulnerability database
+                  under <registry>/rhacs/scanner-db:<version> (latest for the legacy bundle).
+                properties:
+                  version:
+                    description: |-
+                      Version selects the published Scanner V4 bundle matching Central, e.g. "4.11.0".
+                      Omit for the legacy StackRox Scanner bundle.
+                    maxLength: 128
+                    pattern: ^[0-9]+\.[0-9]+(\.[0-9]+)?([-][A-Za-z0-9_.-]+)?$
+                    type: string
+                type: object
               authSecret:
                 description: |-
                   AuthSecret is a reference to a Secret containing the credentials for the target registry.

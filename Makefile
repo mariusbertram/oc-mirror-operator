@@ -602,7 +602,7 @@ bundle: manifests kustomize operator-sdk ## Generate bundle manifests and metada
 	# catalogs receive the bundle. A single version would restrict
 	# distribution to that release only.
 	$(Q)grep -q 'com.redhat.openshift.versions' bundle/metadata/annotations.yaml || \
-		sed -i '/operators.operatorframework.io.bundle.channels.v1:/a\  com.redhat.openshift.versions: v4.18-v5.0' bundle/metadata/annotations.yaml
+		printf '%s\n' '  com.redhat.openshift.versions: v4.18-v5.0' >> bundle/metadata/annotations.yaml
 	$(OPERATOR_SDK) bundle validate ./bundle
 
 .PHONY: bundle-build

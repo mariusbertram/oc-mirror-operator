@@ -386,6 +386,10 @@ func (r *MirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, err
 	}
 
+	if err := r.reconcileScannerDB(ctx, mt); err != nil {
+		return ctrl.Result{}, fmt.Errorf("reconcile scanner DB publisher: %w", err)
+	}
+
 	// Requeue more frequently while cleanups are in progress to detect completion.
 	if len(mt.Status.PendingCleanup) > 0 {
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
@@ -1929,6 +1933,11 @@ func managerContainerEnv(mt *mirrorv1alpha1.MirrorTarget) []corev1.EnvVar {
 			Value: os.Getenv("WORKER_IMAGE"),
 		},
 	}
+	return slices.Concat(env, registryEnv(mt))
+}
+
+func registryEnv(mt *mirrorv1alpha1.MirrorTarget) []corev1.EnvVar {
+	var env []corev1.EnvVar
 	if mt.Spec.AuthSecret != "" {
 		env = append(env, corev1.EnvVar{
 			Name:  "DOCKER_CONFIG",
