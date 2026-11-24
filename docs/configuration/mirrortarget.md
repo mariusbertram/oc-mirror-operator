@@ -114,6 +114,171 @@ For legacy StackRox Scanner, use `acsScannerDB: {}`. That publishes
 `scanner-vuln-updates.zip` at `rhacs/scanner-db:latest`. Removing
 `acsScannerDB` stops future checks. [Red Hat offline scanner documentation](https://docs.redhat.com/en/documentation/red_hat_advanced_cluster_security_for_kubernetes/4.11/html/configuring/enable-offline-mode)
 
+Upstream refreshes the bundles several times a day, roughly every three hours.
+Each change moves the tag to a new manifest. The operator does not delete the
+superseded manifest, so it stays in the repository untagged, together with its
+ZIP layer. Changing `version` or removing `acsScannerDB` also leaves the
+previous tag in place. Enable your registry's garbage collection for untagged
+manifests, such as Quay's tag expiration, Harbor's garbage collection, or
+`registry garbage-collect --delete-untagged` for a plain distribution
+registry. Otherwise, every refresh keeps another 0.6 to 1.5 GB.
+
+### Import into Central with a CronJob
+
+The CronJob below imports the mirrored bundle into Central automatically. An
+init container pulls the ZIP with ORAS into an `emptyDir`, then `roxctl`
+uploads it. Deploy it in the namespace where Central runs, `stackrox` by
+default.
+
+Prerequisites in that namespace:
+
+- **`mirror-registry-pull`**: a `kubernetes.io/dockerconfigjson` Secret that can
+  read the mirror registry. You can copy the MirrorTarget's `authSecret`.
+- **`mirror-registry-ca`**: a ConfigMap with key `ca-bundle.crt`, only needed
+  for a registry with a private CA. Otherwise, drop the `--ca-file` argument and
+  the `registry-ca` volume.
+- **`scanner-db-import-token`**: a Secret with key `token` that holds a Central
+  API token. Central authorizes the upload with **write access to
+  `Administration`**. Create a dedicated permission set with only
+  `Administration` read and write, and a role for this token.
+- **Images**: `oras` and `roxctl` reachable from the cluster. In a disconnected
+  environment, mirror them with an ImageSet:
+
+  ```yaml
+  spec:
+    mirror:
+      additionalImages:
+        - name: ghcr.io/oras-project/oras:v1.3.6
+        - name: quay.io/stackrox-io/roxctl:4.11.7  # or registry.redhat.io/advanced-cluster-security/rhacs-roxctl-rhel8
+  ```
+
+  Use a `roxctl` version that matches Central, and reference the images through
+  your mirror's IDMS/ITMS or with the mirror registry path.
+
+```yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: scanner-db-import
+  namespace: stackrox
+spec:
+  # The publisher checks hourly and upstream changes about every three hours.
+  # Each run uploads the full bundle again, even when it is unchanged.
+  schedule: "17 */3 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 3600
+      template:
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+          initContainers:
+            - name: pull
+              image: ghcr.io/oras-project/oras:v1.3.6
+              args:
+                - pull
+                - registry.example.com/mirror/rhacs/scanner-db:4.11.0
+                - --output=/work
+                - --registry-config=/auth/.dockerconfigjson
+                - --ca-file=/registry-ca/ca-bundle.crt
+              env:
+                - name: HOME
+                  value: /tmp
+              securityContext: &restricted
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                  ephemeral-storage: 1Gi   # 2Gi for the legacy bundle
+                limits:
+                  memory: 256Mi
+              volumeMounts:
+                - { name: work, mountPath: /work }
+                - { name: tmp, mountPath: /tmp }
+                - { name: registry-auth, mountPath: /auth, readOnly: true }
+                - { name: registry-ca, mountPath: /registry-ca, readOnly: true }
+          containers:
+            - name: upload
+              image: quay.io/stackrox-io/roxctl:4.11.7
+              args:
+                - scanner
+                - upload-db
+                - --endpoint=central.stackrox.svc:443
+                - --ca=/central-ca/ca.pem
+                - --token-file=/token/token
+                - --scanner-db-file=/work/scanner-vulns-4.11.0.zip
+                - --timeout=20m
+              env:
+                - name: HOME
+                  value: /tmp
+              securityContext: *restricted
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 128Mi
+                limits:
+                  memory: 512Mi
+              volumeMounts:
+                - { name: work, mountPath: /work, readOnly: true }
+                - { name: tmp, mountPath: /tmp }
+                - { name: central-ca, mountPath: /central-ca, readOnly: true }
+                - { name: token, mountPath: /token, readOnly: true }
+          volumes:
+            - name: work
+              emptyDir: {}
+            - name: tmp
+              emptyDir: {}
+            - name: registry-auth
+              secret:
+                secretName: mirror-registry-pull
+            - name: registry-ca
+              configMap:
+                name: mirror-registry-ca
+            - name: central-ca
+              secret:
+                secretName: central-tls
+                items:
+                  - key: ca.pem      # project only the CA certificate, not the CA key
+                    path: ca.pem
+            - name: token
+              secret:
+                secretName: scanner-db-import-token
+```
+
+Adjust the following for your installation:
+
+- **Bundle version**: the tag and the file name come from
+  `acsScannerDB.version`. ORAS names the file after the layer's
+  `org.opencontainers.image.title` annotation, for example
+  `scanner-vulns-4.11.0.zip`. After a Central upgrade, update the MirrorTarget,
+  the tag, the file name and the `roxctl` image together. For legacy Scanner,
+  pull `rhacs/scanner-db:latest` and upload `/work/scanner-vuln-updates.zip`.
+- **Central CA**: the internal `central.stackrox.svc` endpoint presents a
+  certificate from the RHACS internal CA, which `central-tls` provides as
+  `ca.pem`. If Central runs elsewhere, set `--endpoint` to its address. If its
+  certificate comes from another CA, mount that CA instead.
+- **Network**: if NetworkPolicies in the namespace restrict egress, allow
+  traffic to the mirror registry and to Central on port 8443.
+
+To verify an import, trigger a run and read the `roxctl` output:
+
+```sh
+oc -n stackrox create job --from=cronjob/scanner-db-import scanner-db-import-manual
+oc -n stackrox logs -f job/scanner-db-import-manual -c upload
+```
+
 ## ImageSets
 
 ```yaml
