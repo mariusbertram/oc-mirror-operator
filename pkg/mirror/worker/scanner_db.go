@@ -36,42 +36,64 @@ func ScannerDBMain(ctx context.Context, args []string) int {
 func runScannerDB(ctx context.Context, args []string, baseURL string) int {
 	fs := flag.NewFlagSet("acs-scanner-db", flag.ContinueOnError)
 	registry := fs.String("registry", "", "Target registry, optionally with a path prefix")
-	version := fs.String("version", "", "Published RHACS bundle version (empty for legacy Scanner)")
+	var versions []string
+	fs.Func("version", "Published RHACS bundle version; repeat for several, empty or omitted for legacy Scanner", func(v string) error {
+		versions = append(versions, v)
+		return nil
+	})
 	insecure := fs.Bool("insecure", false, "Allow insecure target registry")
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
 	if *registry == "" {
-		oclog.Println("Scanner DB publisher requires --registry")
+		oclog.Println("Scanner DB publishers require --registry")
 		return 1
+	}
+	if len(versions) == 0 {
+		versions = []string{""}
 	}
 
-	tag, filename := "latest", "scanner-vuln-updates.zip"
-	if *version != "" {
-		tag, filename = *version, fmt.Sprintf("%[1]s/scanner-vulns-%[1]s.zip", *version)
+	var pubs []*scannerDBPublisher
+	seen := map[string]bool{}
+	for _, version := range versions {
+		if seen[version] {
+			continue
+		}
+		seen[version] = true
+		tag, filename := "latest", "scanner-vuln-updates.zip"
+		if version != "" {
+			tag, filename = version, fmt.Sprintf("%[1]s/scanner-vulns-%[1]s.zip", version)
+		}
+		dest, err := ref.New(strings.TrimSuffix(*registry, "/") + "/rhacs/scanner-db:" + tag)
+		if err != nil {
+			oclog.Printf("Invalid scanner DB destination: %v", err)
+			return 1
+		}
+		pub := &scannerDBPublisher{
+			source: baseURL + filename, dest: dest,
+			registry: NewMirrorClient(*insecure, dest.CommonName()),
+		}
+		oclog.Printf("Scanner DB publisher started: %s -> %s, checking every %s", pub.source, dest.CommonName(), scannerDBInterval)
+		pubs = append(pubs, pub)
 	}
-	dest, err := ref.New(strings.TrimSuffix(*registry, "/") + "/rhacs/scanner-db:" + tag)
-	if err != nil {
-		oclog.Printf("Invalid scanner DB destination: %v", err)
-		return 1
-	}
-	pub := scannerDBPublisher{
-		source: baseURL + filename, dest: dest,
-		registry: NewMirrorClient(*insecure, dest.CommonName()),
-	}
-	oclog.Printf("Scanner DB publisher started: %s -> %s, checking every %s", pub.source, dest.CommonName(), scannerDBInterval)
 
 	ticker := time.NewTicker(scannerDBInterval)
 	defer ticker.Stop()
 	next := time.Now().Add(scannerDBInterval)
 	for ctx.Err() == nil {
-		syncCtx, cancel := context.WithTimeout(ctx, scannerDBInterval)
-		err := pub.sync(syncCtx)
-		cancel()
-		if err != nil {
-			oclog.Printf("Scanner DB sync to %s failed: %v", dest.CommonName(), err)
-		} else {
-			oclog.Printf("Scanner DB is current at %s@%s", dest.CommonName(), pub.published)
+		// One bundle at a time: the pod's ephemeral storage holds one ZIP.
+		for _, pub := range pubs {
+			if ctx.Err() != nil {
+				break
+			}
+			syncCtx, cancel := context.WithTimeout(ctx, scannerDBInterval)
+			err := pub.sync(syncCtx)
+			cancel()
+			if err != nil {
+				oclog.Printf("Scanner DB sync to %s failed: %v", pub.dest.CommonName(), err)
+			} else {
+				oclog.Printf("Scanner DB is current at %s@%s", pub.dest.CommonName(), pub.published)
+			}
 		}
 		oclog.Printf("Next scanner DB check at %s", next.UTC().Format(time.RFC3339))
 		select {
@@ -89,12 +111,27 @@ const (
 	// Bundles are 0.6 to 1.5 GB, so a transfer can take minutes. Periodic
 	// progress lines show that it is moving and expose a stalled connection.
 	scannerDBProgressInterval = 30 * time.Second
+	// scannerDBArtifactType marks manifests this publisher owns and may delete.
+	scannerDBArtifactType = "application/vnd.stackrox.scanner-db.v1+zip"
 )
+
+// scannerDBRegistry is the part of *mirrorclient.MirrorClient the publisher uses.
+type scannerDBRegistry interface {
+	ManifestHead(ctx context.Context, r ref.Ref) (manifest.Manifest, error)
+	ManifestGet(ctx context.Context, r ref.Ref) (manifest.Manifest, error)
+	ManifestPut(ctx context.Context, r ref.Ref, m manifest.Manifest) error
+	BlobExists(ctx context.Context, r ref.Ref, d descriptor.Descriptor) bool
+	BlobPut(ctx context.Context, r ref.Ref, d descriptor.Descriptor, rdr io.Reader) (descriptor.Descriptor, error)
+	TagList(ctx context.Context, r ref.Ref) ([]string, error)
+	DeleteManifest(ctx context.Context, image string) error
+}
+
+var _ scannerDBRegistry = (*mirrorclient.MirrorClient)(nil)
 
 type scannerDBPublisher struct {
 	source   string
 	dest     ref.Ref
-	registry *mirrorclient.MirrorClient
+	registry scannerDBRegistry
 
 	// Use the HTTP validator only while the destination still serves the
 	// manifest we published. A deleted or overwritten tag needs a fresh copy.
@@ -188,7 +225,7 @@ func (p *scannerDBPublisher) publish(ctx context.Context, body io.Reader, filena
 	cfg := descriptor.Descriptor{MediaType: mediatype.OCI1Empty, Digest: descriptor.EmptyDigest, Size: int64(len(descriptor.EmptyData))}
 	m, err := manifest.New(manifest.WithOrig(v1.Manifest{
 		Versioned: v1.ManifestSchemaVersion, MediaType: mediatype.OCI1Manifest,
-		ArtifactType: "application/vnd.stackrox.scanner-db.v1+zip",
+		ArtifactType: scannerDBArtifactType,
 		Config:       cfg, Layers: []descriptor.Descriptor{layer},
 	}))
 	if err != nil {
@@ -223,7 +260,56 @@ func (p *scannerDBPublisher) publish(ctx context.Context, body io.Reader, filena
 		return "", fmt.Errorf("publish scanner DB manifest: %w", err)
 	}
 	p.log("Published scanner DB manifest %s", m.GetDescriptor().Digest)
+	if current != "" {
+		p.removeSuperseded(ctx, current)
+	}
 	return m.GetDescriptor().Digest, nil
+}
+
+// removeSuperseded deletes the manifest the tag pointed to before the update.
+// Upstream refreshes the bundle about every three hours, so keeping each
+// untagged predecessor would retain 0.6 to 1.5 GB per refresh until registry
+// garbage collection runs. Only a scanner DB manifest that no other tag
+// references is deleted, because deleting by digest removes every tag that
+// shares it. Failures are logged: the new bundle is already published.
+func (p *scannerDBPublisher) removeSuperseded(ctx context.Context, old digest.Digest) {
+	keep := func(format string, args ...any) {
+		p.log("Keeping superseded scanner DB manifest %s: %s", old, fmt.Sprintf(format, args...))
+	}
+	oldRef := p.dest.SetDigest(old.String())
+	m, err := p.registry.ManifestGet(ctx, oldRef)
+	if err != nil {
+		keep("read manifest: %v", err)
+		return
+	}
+	if orig, ok := m.GetOrig().(v1.Manifest); !ok || orig.ArtifactType != scannerDBArtifactType {
+		keep("not published by the scanner DB publisher")
+		return
+	}
+	tags, err := p.registry.TagList(ctx, p.dest)
+	if err != nil {
+		keep("list tags: %v", err)
+		return
+	}
+	for _, tag := range tags {
+		if tag == p.dest.Tag {
+			continue
+		}
+		head, err := p.registry.ManifestHead(ctx, p.dest.SetTag(tag))
+		if err != nil {
+			keep("check tag %s: %v", tag, err)
+			return
+		}
+		if head.GetDescriptor().Digest == old {
+			keep("still tagged as %s", tag)
+			return
+		}
+	}
+	if err := p.registry.DeleteManifest(ctx, oldRef.CommonName()); err != nil {
+		keep("%v; registry garbage collection must reclaim it", err)
+		return
+	}
+	p.log("Deleted superseded scanner DB manifest %s", old)
 }
 
 // reportProgress logs the transferred bytes periodically until stop is called.

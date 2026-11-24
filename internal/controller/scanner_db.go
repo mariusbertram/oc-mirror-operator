@@ -37,12 +37,18 @@ func (r *MirrorTargetReconciler) reconcileScannerDB(ctx context.Context, mt *mir
 		}
 
 		labels := map[string]string{"app": "oc-mirror-acs-scanner-db", "mirrortarget": mt.Name}
-		args := []string{"acs-scanner-db", "--registry", mt.Spec.Registry, "--version", db.Version}
+		// No --version selects the legacy bundle. The publisher handles one
+		// bundle at a time, so storage does not grow with the version count.
+		args := []string{"acs-scanner-db", "--registry", mt.Spec.Registry}
+		versions := db.BundleVersions()
+		for _, v := range versions {
+			args = append(args, "--version", v)
+		}
 		if mt.Spec.Insecure {
 			args = append(args, "--insecure")
 		}
 		storage := resource.MustParse("1Gi")
-		if db.Version == "" {
+		if len(versions) == 0 {
 			storage = resource.MustParse("2Gi")
 		}
 

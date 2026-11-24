@@ -25,7 +25,7 @@ for guidance.
 | `insecure` | bool | `false` | Target registry: try plain HTTP first, then HTTPS without certificate verification. |
 | `concurrency` | int | `1` | Worker pods running concurrently. 1–100. |
 | `batchSize` | int | `50` | Images per worker pod. 1–100. |
-| `acsScannerDB` | object | omitted | Enables hourly mirroring of the RHACS offline definitions. Set `version` to the published bundle version for Central, or use `{}` for legacy Scanner. |
+| `acsScannerDB` | object | omitted | Enables hourly mirroring of the RHACS offline definitions. Set `version` to the published bundle version for Central, list several in `versions` (max. 10, one tag each), or use `{}` for legacy Scanner. Superseded manifests are deleted after each refresh. |
 | `pollInterval` | duration | `24h` | Upstream re-resolution interval. `0s` disables polling; otherwise ≥ `10m` (CEL-validated). |
 | `checkExistInterval` | duration | `6h` | Drift-check interval against the target registry. ≥ `10m`. |
 | `maxRetries` | int | `10` | Failed attempts per image before it is marked permanently failed. Retries back off exponentially (1 min, doubling, capped at 1 h, ±10 % jitter). ≥ `1`. |

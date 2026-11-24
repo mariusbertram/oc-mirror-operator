@@ -18,7 +18,12 @@ import (
 
 	"github.com/google/go-containerregistry/pkg/registry"
 	"github.com/opencontainers/go-digest"
+	"github.com/regclient/regclient"
+	"github.com/regclient/regclient/config"
+	"github.com/regclient/regclient/types/descriptor"
 	"github.com/regclient/regclient/types/manifest"
+	"github.com/regclient/regclient/types/mediatype"
+	v1 "github.com/regclient/regclient/types/oci/v1"
 	"github.com/regclient/regclient/types/ref"
 )
 
@@ -77,7 +82,7 @@ func TestScannerDBPublication(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pub := scannerDBPublisher{source: source.URL + "/scanner.zip", dest: dest, registry: NewMirrorClient(true, dest.CommonName())}
+	pub := scannerDBPublisher{source: source.URL + "/scanner.zip", dest: dest, registry: newPlainHTTPRegistry(dest.Registry)}
 	ctx := t.Context()
 	check := func() {
 		t.Helper()
@@ -286,7 +291,7 @@ func TestScannerDBLogging(t *testing.T) {
 	}
 	var logs logCapture
 	pub := scannerDBPublisher{
-		source: source.URL + "/scanner.zip", dest: dest, registry: NewMirrorClient(true, dest.CommonName()),
+		source: source.URL + "/scanner.zip", dest: dest, registry: newPlainHTTPRegistry(dest.Registry),
 		logf: logs.logf, progressInterval: 5 * time.Millisecond,
 	}
 	expect := func(step string, want ...string) {
@@ -355,4 +360,212 @@ func TestProgressReaderSeek(t *testing.T) {
 	if _, err := (&progressReader{r: iotest.ErrReader(io.EOF)}).Seek(0, io.SeekStart); err == nil {
 		t.Fatal("expected error for a non-seekable reader")
 	}
+}
+
+func TestScannerDBRunMultipleVersions(t *testing.T) {
+	var requested sync.Map
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requested.Store(r.URL.Path, true)
+		_, _ = w.Write(scannerZIP(t, r.URL.Path))
+	}))
+	defer source.Close()
+	handler := registry.New()
+	var mu sync.Mutex
+	tags := map[string]bool{}
+	published := make(chan struct{}, 4)
+	reg := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handler.ServeHTTP(w, r)
+		if tag, ok := strings.CutPrefix(r.URL.Path, "/v2/rhacs/scanner-db/manifests/"); ok && r.Method == http.MethodPut {
+			mu.Lock()
+			tags[tag] = true
+			mu.Unlock()
+			published <- struct{}{}
+		}
+	}))
+	defer reg.Close()
+
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
+	done := make(chan int, 1)
+	go func() {
+		args := []string{"--registry", strings.TrimPrefix(reg.URL, "http://"), "--version", "4.10.3", "--version", "4.11.0", "--version", "4.10.3", "--insecure"}
+		done <- runScannerDB(ctx, args, source.URL+"/")
+	}()
+	for range 2 {
+		select {
+		case <-published:
+		case <-ctx.Done():
+			t.Fatal("publisher did not push both versions")
+		}
+	}
+	cancel()
+	if code := <-done; code != 0 {
+		t.Fatalf("publisher exited with %d", code)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(tags) != 2 || !tags["4.10.3"] || !tags["4.11.0"] {
+		t.Fatalf("published tags %v, want 4.10.3 and 4.11.0", tags)
+	}
+	for _, p := range []string{"/4.10.3/scanner-vulns-4.10.3.zip", "/4.11.0/scanner-vulns-4.11.0.zip"} {
+		if _, ok := requested.Load(p); !ok {
+			t.Errorf("bundle %s was not downloaded", p)
+		}
+	}
+}
+
+func TestScannerDBRemovesSupersededManifest(t *testing.T) {
+	var rejectDeletes, hideTags, hideDigests atomic.Bool
+	handler := registry.New()
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodDelete && rejectDeletes.Load():
+			http.Error(w, `{"errors":[{"code":"UNSUPPORTED"}]}`, http.StatusMethodNotAllowed)
+		case strings.HasSuffix(r.URL.Path, "/tags/list") && hideTags.Load(),
+			r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/manifests/sha256:") && hideDigests.Load():
+			http.NotFound(w, r)
+		default:
+			handler.ServeHTTP(w, r)
+		}
+	}))
+	defer target.Close()
+	var bundle atomic.Pointer[[]byte]
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(*bundle.Load())
+	}))
+	defer source.Close()
+
+	dest, err := ref.New(strings.TrimPrefix(target.URL, "http://") + "/mirror/rhacs/scanner-db:4.11.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs logCapture
+	pub := scannerDBPublisher{
+		source: source.URL + "/scanner.zip", dest: dest, registry: newPlainHTTPRegistry(dest.Registry), logf: logs.logf,
+	}
+	ctx := t.Context()
+	generation := 0
+	update := func(step, want string) digest.Digest {
+		t.Helper()
+		generation++
+		b := scannerZIP(t, fmt.Sprint("generation ", generation))
+		bundle.Store(&b)
+		previous := pub.published
+		if err := pub.sync(ctx); err != nil {
+			t.Fatalf("%s: %v", step, err)
+		}
+		if got := logs.take(); !strings.Contains(got, want) {
+			t.Errorf("%s: missing %q in log:\n%s", step, want, got)
+		}
+		return previous
+	}
+	exists := func(d digest.Digest) bool {
+		t.Helper()
+		_, err := pub.registry.ManifestHead(ctx, dest.SetDigest(d.String()))
+		return err == nil
+	}
+
+	update("initial publication", "Published scanner DB manifest")
+	old := update("refresh", "Deleted superseded scanner DB manifest")
+	if exists(old) {
+		t.Error("superseded manifest still exists")
+	}
+
+	// Another tag on the current manifest must survive the next refresh.
+	pinned, err := pub.registry.ManifestGet(ctx, dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pub.registry.ManifestPut(ctx, dest.SetTag("pinned"), pinned); err != nil {
+		t.Fatal(err)
+	}
+	old = update("refresh with a second tag", "still tagged as pinned")
+	if !exists(old) {
+		t.Error("manifest referenced by another tag was deleted")
+	}
+
+	// A manifest someone else pushed to the tag is never deleted.
+	foreign, err := manifest.New(manifest.WithOrig(v1.Manifest{
+		Versioned: v1.ManifestSchemaVersion, MediaType: mediatype.OCI1Manifest, ArtifactType: "application/vnd.example.other",
+		Config: descriptor.Descriptor{MediaType: mediatype.OCI1Empty, Digest: descriptor.EmptyDigest, Size: int64(len(descriptor.EmptyData))},
+		Layers: []descriptor.Descriptor{},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pub.registry.ManifestPut(ctx, dest, foreign); err != nil {
+		t.Fatal(err)
+	}
+	update("refresh over a foreign manifest", "not published by the scanner DB publisher")
+	if !exists(foreign.GetDescriptor().Digest) {
+		t.Error("foreign manifest was deleted")
+	}
+
+	rejectDeletes.Store(true)
+	old = update("registry without deletes", "registry garbage collection must reclaim it")
+	if !exists(old) || pub.published == old {
+		t.Error("a rejected delete must keep the old manifest and still publish the new one")
+	}
+	rejectDeletes.Store(false)
+
+	// Without a tag listing the publisher cannot prove the digest is unshared.
+	hideTags.Store(true)
+	if old = update("tag listing unavailable", "list tags:"); !exists(old) {
+		t.Error("manifest deleted without checking the other tags")
+	}
+	hideTags.Store(false)
+
+	hideDigests.Store(true)
+	update("previous manifest unreadable", "read manifest:")
+	hideDigests.Store(false)
+}
+
+// plainHTTPRegistry talks plain HTTP to a test registry without the insecure
+// MirrorClient's HTTPS fallback. That fallback fails against an httptest
+// server, and regclient's per-host backoff then grows with every expected
+// 4xx answer, adding up to 30 s to each request this test provokes.
+type plainHTTPRegistry struct{ rc *regclient.RegClient }
+
+func newPlainHTTPRegistry(host string) plainHTTPRegistry {
+	return plainHTTPRegistry{regclient.New(regclient.WithConfigHost(config.Host{Name: host, TLS: config.TLSDisabled}))}
+}
+
+func (p plainHTTPRegistry) ManifestHead(ctx context.Context, r ref.Ref) (manifest.Manifest, error) {
+	return p.rc.ManifestHead(ctx, r)
+}
+
+func (p plainHTTPRegistry) ManifestGet(ctx context.Context, r ref.Ref) (manifest.Manifest, error) {
+	return p.rc.ManifestGet(ctx, r)
+}
+
+func (p plainHTTPRegistry) ManifestPut(ctx context.Context, r ref.Ref, m manifest.Manifest) error {
+	return p.rc.ManifestPut(ctx, r, m)
+}
+
+func (p plainHTTPRegistry) BlobExists(ctx context.Context, r ref.Ref, d descriptor.Descriptor) bool {
+	br, err := p.rc.BlobHead(ctx, r, d)
+	if err == nil {
+		_ = br.Close()
+	}
+	return err == nil
+}
+
+func (p plainHTTPRegistry) BlobPut(ctx context.Context, r ref.Ref, d descriptor.Descriptor, rdr io.Reader) (descriptor.Descriptor, error) {
+	return p.rc.BlobPut(ctx, r, d, rdr)
+}
+
+func (p plainHTTPRegistry) TagList(ctx context.Context, r ref.Ref) ([]string, error) {
+	tl, err := p.rc.TagList(ctx, r)
+	if err != nil {
+		return nil, err
+	}
+	return tl.GetTags()
+}
+
+func (p plainHTTPRegistry) DeleteManifest(ctx context.Context, image string) error {
+	r, err := ref.New(image)
+	if err != nil {
+		return err
+	}
+	return p.rc.ManifestDelete(ctx, r)
 }

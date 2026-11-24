@@ -81,6 +81,24 @@ minor-version bundle is published, `roxctl` can fall back to
 `scanner-vulns-4.11.zip`. In that case, use `"4.11"`. The operator requests
 that exact bundle version. [Red Hat roxctl CLI reference](https://docs.redhat.com/en/documentation/red_hat_advanced_cluster_security_for_kubernetes/4.11/html-single/roxctl_cli/index)
 
+### Several Central versions
+
+If you run Centrals on different versions, or need the next bundle ahead of an
+upgrade, list every version in `versions`. You can use it together with
+`version`. Duplicates are ignored, and the list takes up to 10 entries.
+
+```yaml
+spec:
+  acsScannerDB:
+    versions: ["4.10.3", "4.11.0"]
+```
+
+Each version gets its own tag, for example `rhacs/scanner-db:4.10.3` and
+`rhacs/scanner-db:4.11.0`. The publisher handles one bundle at a time, so its
+ephemeral storage request stays at 1 GiB, while each check takes longer per
+version. The legacy bundle is used only when neither `version` nor `versions`
+is set.
+
 ### Mirror and import the bundle
 
 The dedicated `<target>-acs-scanner-db` Deployment checks on startup and hourly,
@@ -115,13 +133,26 @@ For legacy StackRox Scanner, use `acsScannerDB: {}`. That publishes
 `acsScannerDB` stops future checks. [Red Hat offline scanner documentation](https://docs.redhat.com/en/documentation/red_hat_advanced_cluster_security_for_kubernetes/4.11/html/configuring/enable-offline-mode)
 
 Upstream refreshes the bundles several times a day, roughly every three hours.
-Each change moves the tag to a new manifest. The operator does not delete the
-superseded manifest, so it stays in the repository untagged, together with its
-ZIP layer. Changing `version` or removing `acsScannerDB` also leaves the
-previous tag in place. Enable your registry's garbage collection for untagged
-manifests, such as Quay's tag expiration, Harbor's garbage collection, or
-`registry garbage-collect --delete-untagged` for a plain distribution
-registry. Otherwise, every refresh keeps another 0.6 to 1.5 GB.
+Each change moves the tag to a new manifest. After publishing, the publisher
+deletes the superseded manifest by digest, but only if all of the following
+hold:
+
+- it carries the scanner DB `artifactType`, so manifests from other tools are
+  never touched
+- no other tag in the repository points to it
+- the registry credentials allow deletes
+
+If any condition fails, the log says why the manifest was kept, and the new
+bundle is published anyway. Deleting a manifest does not free its ZIP layer
+immediately. Your registry's garbage collection reclaims unreferenced blobs:
+Quay does this automatically, Harbor needs a garbage collection run, and a
+plain distribution registry needs `registry garbage-collect`. A distribution
+registry also rejects deletes unless `storage.delete.enabled` is set.
+
+Tags of versions you remove from `versions`, or of the whole `acsScannerDB`
+block, stay in place. Delete them by hand when no Central needs them anymore,
+for example with `oras manifest delete
+registry.example.com/mirror/rhacs/scanner-db:4.10.3`.
 
 ### Import into Central with a CronJob
 
@@ -260,7 +291,8 @@ spec:
 Adjust the following for your installation:
 
 - **Bundle version**: the tag and the file name come from
-  `acsScannerDB.version`. ORAS names the file after the layer's
+  `acsScannerDB.version` or one entry of `versions`. For several Centrals,
+  create one CronJob per Central. ORAS names the file after the layer's
   `org.opencontainers.image.title` annotation, for example
   `scanner-vulns-4.11.0.zip`. After a Central upgrade, update the MirrorTarget,
   the tag, the file name and the `roxctl` image together. For legacy Scanner,

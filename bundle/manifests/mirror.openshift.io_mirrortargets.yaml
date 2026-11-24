@@ -63,10 +63,22 @@ spec:
                   version:
                     description: |-
                       Version selects the published Scanner V4 bundle matching Central, e.g. "4.11.0".
-                      Omit for the legacy StackRox Scanner bundle.
+                      Omit both version and versions for the legacy StackRox Scanner bundle.
                     maxLength: 128
                     pattern: ^[0-9]+\.[0-9]+(\.[0-9]+)?([-][A-Za-z0-9_.-]+)?$
                     type: string
+                  versions:
+                    description: |-
+                      Versions selects several Scanner V4 bundles, one per Central version,
+                      e.g. ["4.10.3", "4.11.0"]. Combined with version; each is published
+                      under its own tag.
+                    items:
+                      maxLength: 128
+                      pattern: ^[0-9]+\.[0-9]+(\.[0-9]+)?([-][A-Za-z0-9_.-]+)?$
+                      type: string
+                    maxItems: 10
+                    type: array
+                    x-kubernetes-list-type: set
                 type: object
               authSecret:
                 description: |-
