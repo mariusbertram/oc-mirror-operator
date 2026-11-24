@@ -26,14 +26,22 @@ import (
 	"github.com/mariusbertram/oc-mirror-operator/pkg/oclog"
 )
 
-// ScannerDBMain runs in the optional worker container of the manager pod.
+// ScannerDBMain runs the dedicated publisher for a MirrorTarget.
 // The deployment's Recreate strategy keeps one publisher per target.
 func ScannerDBMain(ctx context.Context, args []string) int {
+	return runScannerDB(ctx, args, "https://install.stackrox.io/scanner/")
+}
+
+func runScannerDB(ctx context.Context, args []string, baseURL string) int {
 	fs := flag.NewFlagSet("acs-scanner-db", flag.ContinueOnError)
 	registry := fs.String("registry", "", "Target registry, optionally with a path prefix")
 	version := fs.String("version", "", "Published RHACS bundle version (empty for legacy Scanner)")
 	insecure := fs.Bool("insecure", false, "Allow insecure target registry")
-	if err := fs.Parse(args); err != nil || *registry == "" {
+	if err := fs.Parse(args); err != nil {
+		return 1
+	}
+	if *registry == "" {
+		oclog.Println("Scanner DB publisher requires --registry")
 		return 1
 	}
 
@@ -47,7 +55,7 @@ func ScannerDBMain(ctx context.Context, args []string) int {
 		return 1
 	}
 	pub := scannerDBPublisher{
-		source: "https://install.stackrox.io/scanner/" + filename, dest: dest,
+		source: baseURL + filename, dest: dest,
 		registry: NewMirrorClient(*insecure, dest.CommonName()),
 	}
 

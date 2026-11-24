@@ -83,12 +83,22 @@ that exact bundle version. [Red Hat roxctl CLI reference](https://docs.redhat.co
 
 ### Mirror and import the bundle
 
-The `acs-scanner-db` container in the manager pod checks on startup and hourly,
+The dedicated `<target>-acs-scanner-db` Deployment checks on startup and hourly,
 independently of `pollInterval`. It downloads from `install.stackrox.io`, stages
 one ZIP in pod ephemeral storage, and publishes it as a single OCI layer. It
 skips registry writes when the manifest digest matches, including after a pod
 restart. The container uses the target's registry credentials, proxy and CA
-settings. Check its logs for the last result.
+settings. A version change restarts the publisher independently of the manager.
+
+The publisher requests 1 GiB of ephemeral storage for Scanner V4 and 2 GiB
+for legacy Scanner. Allow space for one ZIP on the node and for each distinct
+bundle retained in the registry. Observed ZIP sizes are about 600 MB for
+Scanner V4 and 1.5 GB for legacy Scanner, and vary with the feed.
+
+The registry must accept an OCI 1.1 image manifest with an `artifactType` and
+an `application/vnd.oci.empty.v1+json` config. To check the latest sync or
+diagnose a rejected upload, run `oc logs deployment/<target>-acs-scanner-db`
+in the MirrorTarget namespace.
 
 Pull the ZIP in the disconnected environment and import it into Central with
 your authenticated `roxctl`:
@@ -100,7 +110,7 @@ roxctl scanner upload-db -e "$ROX_CENTRAL_ADDRESS" --scanner-db-file scanner-vul
 
 For legacy StackRox Scanner, use `acsScannerDB: {}`. That publishes
 `scanner-vuln-updates.zip` at `rhacs/scanner-db:latest`. Removing
-`acsScannerDB` stops future checks. [Red Hat offline scanner documentation](https://docs.redhat.com/en/documentation/red_hat_advanced_cluster_security_for_kubernetes/4.9/html/configuring/enable-offline-mode)
+`acsScannerDB` stops future checks. [Red Hat offline scanner documentation](https://docs.redhat.com/en/documentation/red_hat_advanced_cluster_security_for_kubernetes/4.11/html/configuring/enable-offline-mode)
 
 ## ImageSets
 

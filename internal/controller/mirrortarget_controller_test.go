@@ -104,20 +104,38 @@ var _ = Describe("MirrorTarget Controller", func() {
 
 			deploy := &appsv1.Deployment{}
 			Expect(k8sClient.Get(ctx, childName, deploy)).To(Succeed())
+			managerTemplate := deploy.Spec.Template.DeepCopy()
+			Expect(managerTemplate.Spec.Containers).To(HaveLen(1))
+			publisher := types.NamespacedName{Namespace: namespacedName.Namespace, Name: resourceName + "-acs-scanner-db"}
+			Expect(k8sClient.Get(ctx, publisher, deploy)).To(Succeed())
+			Expect(metav1.IsControlledBy(deploy, mt)).To(BeTrue())
+			Expect(deploy.Spec.Strategy.Type).To(Equal(appsv1.RecreateDeploymentStrategyType))
+			Expect(deploy.Spec.Template.Spec.AutomountServiceAccountToken).To(HaveValue(BeFalse()))
 			containers := deploy.Spec.Template.Spec.Containers
-			Expect(containers).To(HaveLen(2))
-			Expect(containers[1].Name).To(Equal("acs-scanner-db"))
-			Expect(containers[1].Image).To(Equal("test-worker:latest"))
-			Expect(containers[1].Args).To(Equal([]string{"acs-scanner-db", "--registry", mt.Spec.Registry, "--version", "4.11.0", "--insecure"}))
-			Expect(containers[1].Env).To(ContainElement(corev1.EnvVar{Name: "DOCKER_CONFIG", Value: "/docker-config"}))
-			Expect(containers[1].SecurityContext.ReadOnlyRootFilesystem).To(HaveValue(BeTrue()))
+			Expect(containers).To(HaveLen(1))
+			Expect(containers[0].Resources.Requests.StorageEphemeral().String()).To(Equal("1Gi"))
+			Expect(containers[0].Name).To(Equal("acs-scanner-db"))
+			Expect(containers[0].Image).To(Equal("test-worker:latest"))
+			Expect(containers[0].Args).To(Equal([]string{"acs-scanner-db", "--registry", mt.Spec.Registry, "--version", "4.11.0", "--insecure"}))
+			Expect(containers[0].Env).To(ContainElement(corev1.EnvVar{Name: "DOCKER_CONFIG", Value: "/docker-config"}))
+			Expect(containers[0].SecurityContext.ReadOnlyRootFilesystem).To(HaveValue(BeTrue()))
+
+			Expect(k8sClient.Get(ctx, namespacedName, mt)).To(Succeed())
+			mt.Spec.ACSScannerDB.Version = ""
+			Expect(k8sClient.Update(ctx, mt)).To(Succeed())
+			reconcileTarget()
+			Expect(k8sClient.Get(ctx, publisher, deploy)).To(Succeed())
+			Expect(deploy.Spec.Template.Spec.Containers[0].Resources.Requests.StorageEphemeral().String()).To(Equal("2Gi"))
+			Expect(k8sClient.Get(ctx, childName, deploy)).To(Succeed())
+			Expect(&deploy.Spec.Template).To(Equal(managerTemplate))
 
 			Expect(k8sClient.Get(ctx, namespacedName, mt)).To(Succeed())
 			mt.Spec.ACSScannerDB = nil
 			Expect(k8sClient.Update(ctx, mt)).To(Succeed())
 			reconcileTarget()
 			Expect(k8sClient.Get(ctx, childName, deploy)).To(Succeed())
-			Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(1))
+			Expect(&deploy.Spec.Template).To(Equal(managerTemplate))
+			Expect(errors.IsNotFound(k8sClient.Get(ctx, publisher, deploy))).To(BeTrue())
 		})
 
 		It("should create a Deployment and Service with correct labels and owner reference", func() {
