@@ -12,6 +12,7 @@ import (
 	"os"
 	"path"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/opencontainers/go-digest"
@@ -58,11 +59,13 @@ func runScannerDB(ctx context.Context, args []string, baseURL string) int {
 		source: baseURL + filename, dest: dest,
 		registry: NewMirrorClient(*insecure, dest.CommonName()),
 	}
+	oclog.Printf("Scanner DB publisher started: %s -> %s, checking every %s", pub.source, dest.CommonName(), scannerDBInterval)
 
-	ticker := time.NewTicker(time.Hour)
+	ticker := time.NewTicker(scannerDBInterval)
 	defer ticker.Stop()
+	next := time.Now().Add(scannerDBInterval)
 	for ctx.Err() == nil {
-		syncCtx, cancel := context.WithTimeout(ctx, time.Hour)
+		syncCtx, cancel := context.WithTimeout(ctx, scannerDBInterval)
 		err := pub.sync(syncCtx)
 		cancel()
 		if err != nil {
@@ -70,13 +73,23 @@ func runScannerDB(ctx context.Context, args []string, baseURL string) int {
 		} else {
 			oclog.Printf("Scanner DB is current at %s@%s", dest.CommonName(), pub.published)
 		}
+		oclog.Printf("Next scanner DB check at %s", next.UTC().Format(time.RFC3339))
 		select {
 		case <-ctx.Done():
-		case <-ticker.C:
+		case t := <-ticker.C:
+			next = t.Add(scannerDBInterval)
 		}
 	}
+	oclog.Println("Scanner DB publisher stopped")
 	return 0
 }
+
+const (
+	scannerDBInterval = time.Hour
+	// Bundles are 0.6 to 1.5 GB, so a transfer can take minutes. Periodic
+	// progress lines show that it is moving and expose a stalled connection.
+	scannerDBProgressInterval = 30 * time.Second
+)
 
 type scannerDBPublisher struct {
 	source   string
@@ -87,9 +100,22 @@ type scannerDBPublisher struct {
 	// manifest we published. A deleted or overwritten tag needs a fresh copy.
 	etag      string
 	published digest.Digest
+
+	// Overridable in tests; nil means oclog.Printf and scannerDBProgressInterval.
+	logf             func(format string, args ...any)
+	progressInterval time.Duration
+}
+
+func (p *scannerDBPublisher) log(format string, args ...any) {
+	if p.logf != nil {
+		p.logf(format, args...)
+		return
+	}
+	oclog.Printf(format, args...)
 }
 
 func (p *scannerDBPublisher) sync(ctx context.Context) error {
+	p.log("Checking scanner DB for %s", p.dest.CommonName())
 	var current digest.Digest
 	head, err := p.registry.ManifestHead(ctx, p.dest)
 	if err == nil {
@@ -111,13 +137,15 @@ func (p *scannerDBPublisher) sync(ctx context.Context) error {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusNotModified && req.Header.Get("If-None-Match") != "" {
+		p.log("Scanner DB unchanged upstream (ETag %s), nothing to download", p.etag)
 		return nil
 	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("download %s: %s", p.source, resp.Status)
 	}
 
-	published, err := p.publish(ctx, resp.Body, path.Base(req.URL.Path), current)
+	p.log("Downloading %s (%s)", p.source, formatProgress(-1, resp.ContentLength))
+	published, err := p.publish(ctx, resp.Body, path.Base(req.URL.Path), current, resp.ContentLength)
 	if err != nil {
 		return err
 	}
@@ -126,7 +154,7 @@ func (p *scannerDBPublisher) sync(ctx context.Context) error {
 	return nil
 }
 
-func (p *scannerDBPublisher) publish(ctx context.Context, body io.Reader, filename string, current digest.Digest) (digest.Digest, error) {
+func (p *scannerDBPublisher) publish(ctx context.Context, body io.Reader, filename string, current digest.Digest, total int64) (digest.Digest, error) {
 	file, err := os.CreateTemp("", "scanner-db-*.zip")
 	if err != nil {
 		return "", err
@@ -138,10 +166,14 @@ func (p *scannerDBPublisher) publish(ctx context.Context, body io.Reader, filena
 		return "", err
 	}
 	hash := digest.SHA256.Digester()
-	size, err := io.Copy(io.MultiWriter(file, hash.Hash()), body)
+	download := &progressReader{r: body}
+	stop := p.reportProgress("Downloading", download, total)
+	size, err := io.Copy(io.MultiWriter(file, hash.Hash()), download)
+	stop()
 	if err != nil {
-		return "", fmt.Errorf("download scanner DB: %w", err)
+		return "", fmt.Errorf("download scanner DB after %s: %w", formatProgress(download.n.Load(), total), err)
 	}
+	p.log("Downloaded %s (%s)", formatProgress(size, -1), hash.Digest())
 	archive, err := zip.NewReader(file, size)
 	if err != nil {
 		return "", fmt.Errorf("invalid scanner DB ZIP: %w", err)
@@ -163,23 +195,113 @@ func (p *scannerDBPublisher) publish(ctx context.Context, body io.Reader, filena
 		return "", err
 	}
 
-	if current != m.GetDescriptor().Digest {
-		if !p.registry.BlobExists(ctx, p.dest, layer) {
-			if _, err := file.Seek(0, io.SeekStart); err != nil {
-				return "", err
-			}
-			if _, err := p.registry.BlobPut(ctx, p.dest, layer, file); err != nil {
-				return "", fmt.Errorf("push scanner DB layer: %w", err)
-			}
+	if current == m.GetDescriptor().Digest {
+		p.log("Destination already serves this scanner DB, skipping upload")
+		return current, nil
+	}
+	if p.registry.BlobExists(ctx, p.dest, layer) {
+		p.log("Scanner DB layer already in the destination repository, publishing the manifest only")
+	} else {
+		if _, err := file.Seek(0, io.SeekStart); err != nil {
+			return "", err
 		}
-		if !p.registry.BlobExists(ctx, p.dest, cfg) {
-			if _, err := p.registry.BlobPut(ctx, p.dest, cfg, bytes.NewReader(descriptor.EmptyData)); err != nil {
-				return "", fmt.Errorf("push scanner DB config: %w", err)
-			}
-		}
-		if err := p.registry.ManifestPut(ctx, p.dest, m); err != nil {
-			return "", fmt.Errorf("publish scanner DB manifest: %w", err)
+		p.log("Uploading scanner DB layer (%s) to %s", formatProgress(size, -1), p.dest.CommonName())
+		upload := &progressReader{r: file}
+		stop := p.reportProgress("Uploading", upload, size)
+		_, err := p.registry.BlobPut(ctx, p.dest, layer, upload)
+		stop()
+		if err != nil {
+			return "", fmt.Errorf("push scanner DB layer: %w", err)
 		}
 	}
+	if !p.registry.BlobExists(ctx, p.dest, cfg) {
+		if _, err := p.registry.BlobPut(ctx, p.dest, cfg, bytes.NewReader(descriptor.EmptyData)); err != nil {
+			return "", fmt.Errorf("push scanner DB config: %w", err)
+		}
+	}
+	if err := p.registry.ManifestPut(ctx, p.dest, m); err != nil {
+		return "", fmt.Errorf("publish scanner DB manifest: %w", err)
+	}
+	p.log("Published scanner DB manifest %s", m.GetDescriptor().Digest)
 	return m.GetDescriptor().Digest, nil
+}
+
+// reportProgress logs the transferred bytes periodically until stop is called.
+func (p *scannerDBPublisher) reportProgress(action string, r *progressReader, total int64) (stop func()) {
+	every := p.progressInterval
+	if every <= 0 {
+		every = scannerDBProgressInterval
+	}
+	done, finished := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(finished)
+		ticker := time.NewTicker(every)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				p.log("%s scanner DB: %s", action, formatProgress(r.n.Load(), total))
+			}
+		}
+	}()
+	return func() {
+		close(done)
+		<-finished
+	}
+}
+
+// progressReader counts the bytes read through it. It deliberately exposes
+// only Read and Seek: embedding *os.File would also expose WriteTo, letting
+// io.Copy bypass the counter.
+type progressReader struct {
+	r io.Reader
+	n atomic.Int64
+}
+
+func (p *progressReader) Read(b []byte) (int, error) {
+	n, err := p.r.Read(b)
+	p.n.Add(int64(n))
+	return n, err
+}
+
+// Seek lets MirrorClient.BlobPut rewind the upload for its HTTPS fallback.
+func (p *progressReader) Seek(offset int64, whence int) (int64, error) {
+	s, ok := p.r.(io.Seeker)
+	if !ok {
+		return 0, errors.New("scanner DB reader is not seekable")
+	}
+	pos, err := s.Seek(offset, whence)
+	if err == nil {
+		p.n.Store(pos)
+	}
+	return pos, err
+}
+
+// formatProgress renders done and total in binary units; a negative value
+// is omitted (unknown total, or no progress to report yet).
+func formatProgress(done, total int64) string {
+	switch {
+	case done < 0 && total < 0:
+		return "size unknown"
+	case done < 0:
+		return formatBytes(total)
+	case total <= 0:
+		return formatBytes(done)
+	}
+	return fmt.Sprintf("%s of %s, %d%%", formatBytes(done), formatBytes(total), done*100/total)
+}
+
+func formatBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for m := n / unit; m >= unit; m /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
 }

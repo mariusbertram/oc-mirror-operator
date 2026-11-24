@@ -88,6 +88,7 @@ func main() {
 			runWorker()
 			return
 		case "acs-scanner-db":
+			ctrl.SetLogger(zap.New(zap.UseFlagOptions(&zap.Options{Development: true})))
 			os.Exit(worker.ScannerDBMain(ctrl.SetupSignalHandler(), os.Args[2:]))
 		case "cleanup":
 			ctrl.SetLogger(zap.New(zap.UseFlagOptions(&zap.Options{Development: true})))
