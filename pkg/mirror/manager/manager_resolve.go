@@ -846,6 +846,9 @@ func mergeIntoStateWithSig(dst imagestate.ImageState, images []mirror.TargetImag
 				entry.State = existing.State
 				entry.RetryCount = existing.RetryCount
 				entry.LastError = existing.LastError
+				// What the mirrored image holds, and any reconcile backoff,
+				// stay true across a re-resolve (see archreconcile.go).
+				copyArchState(entry, existing)
 			}
 		}
 		dst[img.Destination] = entry
@@ -1104,6 +1107,7 @@ func mergeWorkerUpdates(resolved, live imagestate.ImageState) imagestate.ImageSt
 			rEntry.RetryCount = lEntry.RetryCount
 			rEntry.LastError = lEntry.LastError
 			rEntry.PermanentlyFailed = lEntry.PermanentlyFailed
+			copyArchState(rEntry, lEntry)
 		}
 	}
 	return resolved

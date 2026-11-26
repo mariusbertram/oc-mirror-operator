@@ -433,12 +433,29 @@ Signatures and attachments are mirrored as for any other image: the cosign
 `sha256-<digest>.sig`, `.att` and `.sbom` tags and the OCI referrers (signatures, attestations, SBOMs) are
 attached to the manifest list digest, which stays the same.
 
-Widening `architectures` later does **not** add the new architectures to images that are
-already mirrored: their manifest list digest is unchanged, so they count as complete and
-the drift check (which looks at the manifest list only) does not notice the missing
-entries. Delete those images at the destination; the next drift check finds them missing
-and mirrors them again with the new list. To retry images that failed before the switch
-was set, run a [recollect](../operations.md#recollect).
+### Changing `architectures` later
+
+Every mirrored image remembers the architectures it was mirrored with. When the
+selection of its `ImageSet`s changes, the manager reconciles the image in the background;
+it stays `Mirrored` and in the generated IDMS/ITMS the whole time, and its manifest list
+digest does not change:
+
+| Change | What happens |
+|---|---|
+| Architecture added (or the list removed) | The missing per-architecture images are copied. |
+| Architecture removed | With [`cleanup-policy: Delete`](mirrortarget.md#cleanup-policy) on the `MirrorTarget`, the per-architecture images that are no longer selected are deleted at the destination. Without it nothing is deleted. |
+
+Deleting is careful: an architecture is only removed from an image when no other image in
+the same repository still selects it (manifest lists in one repository can share
+per-architecture images), entries without a platform such as build attestations are
+kept, and so is a per-architecture image that is also mirrored on its own (a digest a
+bundle references directly). The registry frees the space only on its next garbage
+collection; Quay may keep per-architecture images alive as long as a manifest list
+references them.
+
+A failed reconcile is logged by the worker and retried with backoff; the image stays
+usable. Images that failed before `skipMissingArchitectures` was set are retried by a
+[recollect](../operations.md#recollect).
 
 ## How many ImageSets?
 

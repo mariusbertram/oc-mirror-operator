@@ -246,11 +246,16 @@ type CopyFilter struct {
 	// SkipMissing leaves out children that do not exist at the source
 	// registry instead of failing the copy on them.
 	SkipMissing bool
+	// ForceRecursive copies the selected children even when the manifest
+	// list already exists at the destination. Without it regclient skips an
+	// image whose list digest is already there, so children added to the
+	// selection later (a widened Architectures) would never be copied.
+	ForceRecursive bool
 }
 
-// IsZero reports whether f copies everything.
+// IsZero reports whether f is a plain copy of everything.
 func (f CopyFilter) IsZero() bool {
-	return len(f.Architectures) == 0 && !f.SkipMissing
+	return len(f.Architectures) == 0 && !f.SkipMissing && !f.ForceRecursive
 }
 
 // CopyImageFiltered is CopyImage (or, with buffered, CopyImageBuffered) that
@@ -271,7 +276,7 @@ func (f CopyFilter) IsZero() bool {
 // filter does not narrow, are copied as by CopyImage.
 func (c *MirrorClient) CopyImageFiltered(ctx context.Context, src, dest string, f CopyFilter, buffered bool) (effectiveDest string, missing []string, err error) {
 	var platforms []string
-	if !f.IsZero() {
+	if len(f.Architectures) > 0 || f.SkipMissing {
 		platforms, missing, err = c.selectPlatforms(ctx, src, f)
 		if err != nil {
 			return "", nil, err
@@ -280,6 +285,9 @@ func (c *MirrorClient) CopyImageFiltered(ctx context.Context, src, dest string, 
 	var opts []regclient.ImageOpts
 	if platforms != nil {
 		opts = append(opts, regclient.ImageWithPlatforms(platforms))
+	}
+	if f.ForceRecursive {
+		opts = append(opts, regclient.ImageWithForceRecursive())
 	}
 	if buffered {
 		opts = append(opts, regclient.ImageWithBlobReaderHook(bufferLargeBlobs))
@@ -362,6 +370,75 @@ func (c *MirrorClient) selectPlatforms(ctx context.Context, src string, f CopyFi
 		}
 	}
 	return platforms, missing, nil
+}
+
+// PruneArchitectures deletes from dest's repository the child manifests of
+// the manifest list at dest whose CPU architecture is not in retain. The
+// list itself is left unchanged (its digest stays valid), so the destination
+// keeps a sparse manifest list. It returns the deleted children
+// ("<platform> <digest>"); a single-architecture image is left alone.
+//
+// The child list is read from the destination, so pruning works even when
+// the source is gone. Children without an architecture (e.g. build
+// attestations) are never deleted, and neither is a child that is also
+// mirrored on its own — a per-architecture digest referenced directly (e.g.
+// by a bundle's relatedImages) lives under the synthesized sha256-<hex> tag
+// in the same repository, and deleting the manifest would remove that tag.
+// retain must therefore cover every architecture that any image in dest's
+// repository still needs. The first failure aborts and is returned.
+func (c *MirrorClient) PruneArchitectures(ctx context.Context, dest string, retain []string) (deleted []string, err error) {
+	if len(retain) == 0 {
+		return nil, fmt.Errorf("refusing to prune %s without architectures to retain", dest)
+	}
+	destRef, err := ref.New(dest)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse destination reference %s: %w", dest, err)
+	}
+	m, err := c.ManifestGet(ctx, destRef)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get destination manifest %s: %w", dest, err)
+	}
+	idx, ok := m.(manifest.Indexer)
+	if !ok || !m.IsList() {
+		return nil, nil
+	}
+	children, err := idx.GetManifestList()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read manifest list %s: %w", dest, err)
+	}
+	for _, d := range children {
+		if !hasArch(d.Platform) || archSelected(d.Platform, retain) {
+			continue
+		}
+		pinnedTag := destRef.SetTag(strings.Replace(d.Digest.String(), ":", "-", 1)).CommonName()
+		pinned, err := c.CheckExist(ctx, pinnedTag)
+		if err != nil {
+			return deleted, fmt.Errorf("failed to check %s: %w", pinnedTag, err)
+		}
+		if pinned {
+			oclog.Printf("Keeping child %s of %s: it is also mirrored on its own as %s\n", d.Digest, dest, pinnedTag)
+			continue
+		}
+		child := destRef.SetDigest(d.Digest.String()).CommonName()
+		exists, err := c.CheckExist(ctx, child)
+		if err != nil {
+			return deleted, fmt.Errorf("failed to check child manifest %s: %w", child, err)
+		}
+		if !exists {
+			continue
+		}
+		if err := c.DeleteManifest(ctx, child); err != nil {
+			return deleted, fmt.Errorf("failed to delete child manifest %s: %w", child, err)
+		}
+		deleted = append(deleted, describeChild(d))
+	}
+	return deleted, nil
+}
+
+// hasArch reports whether p names a real CPU architecture (build
+// attestations use "unknown/unknown").
+func hasArch(p *platform.Platform) bool {
+	return p != nil && p.Architecture != "" && p.Architecture != "unknown"
 }
 
 // archSelected reports whether p's CPU architecture is in archs. Children

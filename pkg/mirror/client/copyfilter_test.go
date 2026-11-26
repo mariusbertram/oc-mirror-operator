@@ -451,3 +451,105 @@ func TestCopyImageFiltered_CopiesSignaturesAndReferrers(t *testing.T) {
 		})
 	}
 }
+
+// Widening the selection later: the manifest list is already at the
+// destination, so only ForceRecursive copies the newly selected children.
+func TestCopyImageFiltered_ForceRecursiveBackfills(t *testing.T) {
+	reg, host := newFakeRegistryServer(t)
+	idx, children := seedIndex(t, reg, []indexChild{
+		{platform: "linux/amd64"}, {platform: "linux/arm64"},
+	})
+	mc := httpOnlyClient(host)
+	src, dst := host+"/src@"+idx, host+"/dst:v1"
+	if _, _, err := mc.CopyImageFiltered(context.Background(), src, dst, CopyFilter{Architectures: []string{"amd64"}}, false); err != nil {
+		t.Fatal(err)
+	}
+	if hasManifest(reg, "dst", children[1]) {
+		t.Fatal("arm64 must not be copied by the narrow filter")
+	}
+
+	widened := CopyFilter{Architectures: []string{"amd64", "arm64"}}
+	if _, _, err := mc.CopyImageFiltered(context.Background(), src, dst, widened, false); err != nil {
+		t.Fatal(err)
+	}
+	if hasManifest(reg, "dst", children[1]) {
+		t.Fatal("without ForceRecursive regclient skips the existing list (precondition of this test)")
+	}
+
+	widened.ForceRecursive = true
+	if _, _, err := mc.CopyImageFiltered(context.Background(), src, dst, widened, false); err != nil {
+		t.Fatal(err)
+	}
+	if !hasManifest(reg, "dst", children[1]) || !hasManifest(reg, "dst", idx) {
+		t.Error("ForceRecursive must backfill arm64 and keep the list digest")
+	}
+	if (CopyFilter{ForceRecursive: true}).IsZero() {
+		t.Error("ForceRecursive filter must not be zero")
+	}
+}
+
+func TestPruneArchitectures(t *testing.T) {
+	reg, host := newFakeRegistryServer(t)
+	idx, children := seedIndex(t, reg, []indexChild{
+		{platform: "linux/amd64"},
+		{platform: "linux/arm64"},
+		{platform: "linux/s390x"},
+		{platform: "linux/ppc64le"},
+		{platform: "unknown/unknown"},
+	})
+	mc := httpOnlyClient(host)
+	dst := host + "/dst:v1"
+	if _, err := mc.CopyImage(context.Background(), host+"/src@"+idx, dst); err != nil {
+		t.Fatal(err)
+	}
+	// ppc64le is also mirrored on its own (a pinned per-arch digest).
+	pinned := "sha256-" + strings.TrimPrefix(children[3], "sha256:")
+	reg.mu.Lock()
+	reg.manifests["dst:"+pinned] = reg.manifests["dst:"+children[3]]
+	reg.mediaType["dst:"+pinned] = reg.mediaType["dst:"+children[3]]
+	reg.mu.Unlock()
+
+	deleted, err := mc.PruneArchitectures(context.Background(), dst, []string{"amd64", "arm64"})
+	if err != nil {
+		t.Fatalf("PruneArchitectures: %v", err)
+	}
+	if len(deleted) != 1 || !strings.Contains(deleted[0], "linux/s390x") {
+		t.Errorf("deleted = %v, want only s390x", deleted)
+	}
+	want := map[int]bool{0: true, 1: true, 2: false, 3: true, 4: true}
+	for i, d := range children {
+		if got := hasManifest(reg, "dst", d); got != want[i] {
+			t.Errorf("child %d present = %v, want %v", i, got, want[i])
+		}
+	}
+	if !hasManifest(reg, "dst", idx) {
+		t.Error("manifest list must stay")
+	}
+
+	// Running it again finds nothing left to delete.
+	if deleted, err := mc.PruneArchitectures(context.Background(), dst, []string{"amd64", "arm64"}); err != nil || len(deleted) != 0 {
+		t.Errorf("second prune: deleted=%v err=%v", deleted, err)
+	}
+}
+
+func TestPruneArchitectures_EdgeCases(t *testing.T) {
+	reg, host := newFakeRegistryServer(t)
+	mc := httpOnlyClient(host)
+	ctx := context.Background()
+	if _, err := mc.PruneArchitectures(ctx, host+"/dst:v1", nil); err == nil {
+		t.Error("expected refusal without retain list")
+	}
+	if _, err := mc.PruneArchitectures(ctx, "Bad Ref!", []string{"amd64"}); err == nil {
+		t.Error("expected parse error")
+	}
+	if _, err := mc.PruneArchitectures(ctx, host+"/absent:v1", []string{"amd64"}); err == nil {
+		t.Error("expected error for missing destination")
+	}
+	d, _ := seedTestImage(t, reg, "single", "v1")
+	if deleted, err := mc.PruneArchitectures(ctx, host+"/single:v1", []string{"amd64"}); err != nil || len(deleted) != 0 || !hasManifest(reg, "single", d) {
+		t.Errorf("single-arch image must be left alone: deleted=%v err=%v", deleted, err)
+	}
+	if hasArch(nil) || hasArch(&platform.Platform{OS: "unknown", Architecture: "unknown"}) || !hasArch(&platform.Platform{OS: "linux", Architecture: "s390x"}) {
+		t.Error("hasArch mismatch")
+	}
+}

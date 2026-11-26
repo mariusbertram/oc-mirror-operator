@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   previously failed the whole copy. In both cases the manifest list is pushed
   unchanged, so its digest and the IDMS/ITMS mappings stay valid; the target
   registry must accept sparse manifest lists (Quay: `FEATURE_SPARSE_INDEX`).
+  Changing `architectures` later reconciles images already mirrored while
+  they stay `Mirrored` (and in IDMS/ITMS): added architectures are copied,
+  removed ones are deleted at the destination when the MirrorTarget has
+  `cleanup-policy=Delete`. Each image records the selection it was mirrored
+  with in the image state.
 - Cosign attestations (`sha256-<digest>.att`) and attached SBOMs
   (`sha256-<digest>.sbom`) are now mirrored best-effort alongside the
   `.sig` signature tag.

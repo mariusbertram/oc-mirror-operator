@@ -63,10 +63,11 @@ type Mirror struct {
 	// shared by several ImageSets the union of their lists is copied (all
 	// architectures if any of them sets none). Release payloads are selected
 	// by platform.architectures; this only narrows what is copied of each
-	// image. Widening the list later does not add the new architectures to
-	// images already mirrored (their manifest list is unchanged); delete
-	// such an image at the destination to have it re-mirrored by the next
-	// drift check. Honored by MirrorTarget mirroring, not by MirrorExport.
+	// image. Changing the list later reconciles images already mirrored
+	// while they stay usable: added architectures are copied, and removed
+	// ones are deleted at the destination when the MirrorTarget has
+	// cleanup-policy=Delete. Honored by MirrorTarget mirroring, not by
+	// MirrorExport.
 	// +optional
 	// +listType=set
 	// +kubebuilder:validation:items:Enum=amd64;arm64;ppc64le;s390x;arm;386;riscv64

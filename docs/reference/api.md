@@ -142,7 +142,7 @@ What to mirror. Bound to a target only through `MirrorTarget.spec.imageSets`. Se
 | `helm` | [Helm](#helm) | Helm chart images. |
 | `blockedImages` | []`{name}` | Images to exclude from every other section. `name` is a repository path without registry, optionally with `:tag` or `@digest`. |
 | `requireSignedImages` | bool | Require a cosign signature at every mirrored destination (presence check during the drift sweep; failing images become `Failed`). |
-| `architectures` | []string | Copy only these CPU architectures (`amd64`, `arm64`, `ppc64le`, `s390x`, `arm`, `386`, `riscv64`) of every manifest list; the list itself is pushed unchanged (digest preserved, sparse at the destination). Empty: all. See [Limiting architectures](../configuration/imagesets.md#limiting-architectures). |
+| `architectures` | []string | Copy only these CPU architectures (`amd64`, `arm64`, `ppc64le`, `s390x`, `arm`, `386`, `riscv64`) of every manifest list; the list itself is pushed unchanged (digest preserved, sparse at the destination). Empty: all. Changing it later backfills mirrored images, and prunes them with `cleanup-policy: Delete`. See [Limiting architectures](../configuration/imagesets.md#limiting-architectures). |
 | `skipMissingArchitectures` | bool | Leave out manifest-list entries whose image does not exist at the source instead of failing the copy; same sparse-list behavior as `architectures`. |
 | `samples` | list | **Not implemented.** |
 

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 
@@ -18,7 +19,8 @@ type fakeManager struct {
 	mu       sync.Mutex
 	gone     map[string]bool // dests answered with 410 on /should-mirror
 	reports  []StatusRequest
-	failNext int // number of /status requests to answer with 500
+	failNext int      // number of /status requests to answer with 500
+	queries  []string // raw queries of /should-mirror requests
 	srv      *httptest.Server
 }
 
@@ -34,6 +36,7 @@ func newFakeManager(t *testing.T) *fakeManager {
 		defer fm.mu.Unlock()
 		switch r.URL.Path {
 		case "/should-mirror":
+			fm.queries = append(fm.queries, r.URL.RawQuery)
 			if fm.gone[r.URL.Query().Get("dest")] {
 				w.WriteHeader(http.StatusGone)
 				return
@@ -454,7 +457,7 @@ func TestMirrorOne_SkipMissingUsesBufferedOnLastAttempt(t *testing.T) {
 		skipCalls: map[string][]bool{},
 	}
 	w := &Worker{Status: fm.status()}
-	if !w.mirrorOne(context.Background(), c, "src/0", "reg/0", mirrorclient.CopyFilter{SkipMissing: true}) {
+	if !w.mirrorOne(context.Background(), c, BatchItem{Source: "src/0", Dest: "reg/0", SkipMissingArchitectures: true}) {
 		t.Fatal("mirrorOne failed")
 	}
 	if got := c.skipCalls["reg/0"]; len(got) != 2 || got[0] || !got[1] {
@@ -469,5 +472,135 @@ func TestBatchItem_FilterJSON(t *testing.T) {
 	}
 	if !items[0].SkipMissingArchitectures || len(items[0].Architectures) != 2 || items[1].SkipMissingArchitectures || !items[1].filter().IsZero() {
 		t.Errorf("items = %+v", items)
+	}
+}
+
+// prunerFakeClient adds PruneArchitectures to skipMissingFakeClient.
+type prunerFakeClient struct {
+	skipMissingFakeClient
+	pruneErr   error
+	pruneCalls map[string][]string // dest → retain
+}
+
+func (c *prunerFakeClient) PruneArchitectures(_ context.Context, dest string, retain []string) ([]string, error) {
+	c.pruneCalls[dest] = retain
+	if c.pruneErr != nil {
+		return nil, c.pruneErr
+	}
+	return []string{"linux/s390x sha256:abc"}, nil
+}
+
+func newPrunerFake() (*prunerFakeClient, *[]string) {
+	var copied []string
+	return &prunerFakeClient{
+		skipMissingFakeClient: skipMissingFakeClient{
+			bufferedFakeClient: bufferedFakeClient{fakeClient: fakeClient{
+				copyErrs: map[string][]error{}, digestErr: map[string]error{}, copied: &copied,
+			}},
+			skipCalls: map[string][]bool{},
+			filters:   map[string]mirrorclient.CopyFilter{},
+		},
+		pruneCalls: map[string][]string{},
+	}, &copied
+}
+
+func TestRunBatch_ArchitectureReconcile(t *testing.T) {
+	fm := newFakeManager(t)
+	c, copied := newPrunerFake()
+	w := &Worker{NewClient: func(string) Client { return c }, Status: fm.status()}
+	w.RunBatch(context.Background(), []BatchItem{
+		{Source: "src/backfill", Dest: "reg/backfill", Architectures: []string{"amd64", "arm64"}, Backfill: true},
+		{Source: "src/prune", Dest: "reg/prune", Architectures: []string{"amd64"}, PruneRetain: []string{"amd64", "arm64"}},
+		{Source: "src/plain", Dest: "reg/plain"},
+	})
+
+	// Backfill copies with ForceRecursive, prune-only does not copy.
+	if f := c.filters["reg/backfill"]; !f.ForceRecursive || len(f.Architectures) != 2 {
+		t.Errorf("backfill filter = %+v", f)
+	}
+	if _, ok := c.filters["reg/prune"]; ok {
+		t.Error("prune-only reconcile must not copy")
+	}
+	if len(*copied) != 2 {
+		t.Errorf("copied = %v, want backfill and plain", *copied)
+	}
+	if got := c.pruneCalls["reg/prune"]; len(got) != 2 {
+		t.Errorf("prune retain = %v", got)
+	}
+	if _, ok := c.pruneCalls["reg/backfill"]; ok {
+		t.Error("backfill without PruneRetain must not prune")
+	}
+
+	// Reconcile items ask /should-mirror with reconcile=1.
+	reconcileQueries := 0
+	for _, q := range fm.queries {
+		if strings.Contains(q, "reconcile=1") {
+			reconcileQueries++
+		}
+	}
+	if reconcileQueries != 2 {
+		t.Errorf("reconcile should-mirror queries = %d, want 2 (%v)", reconcileQueries, fm.queries)
+	}
+
+	reports := fm.reportsByDest()
+	for _, d := range []string{"reg/backfill", "reg/prune"} {
+		if r := reports[d]; !r.Reconcile || r.Error != "" || r.Digest == "" {
+			t.Errorf("%s report = %+v", d, r)
+		}
+	}
+	if r := reports["reg/prune"]; len(r.Architectures) != 1 || r.Architectures[0] != "amd64" {
+		t.Errorf("prune report architectures = %v", r.Architectures)
+	}
+	if r := reports["reg/plain"]; r.Reconcile || r.Architectures != nil {
+		t.Errorf("plain report = %+v", r)
+	}
+}
+
+func TestMirrorOne_ReconcileFailures(t *testing.T) {
+	t.Run("prune error", func(t *testing.T) {
+		fm := newFakeManager(t)
+		c, _ := newPrunerFake()
+		c.pruneErr = errors.New("DELETE not allowed")
+		w := &Worker{Status: fm.status()}
+		if w.mirrorOne(context.Background(), c, BatchItem{Source: "s", Dest: "reg/x", PruneRetain: []string{"amd64"}}) {
+			t.Fatal("expected failure")
+		}
+		if r := fm.reportsByDest()["reg/x"]; !r.Reconcile || !strings.Contains(r.Error, "DELETE not allowed") {
+			t.Errorf("report = %+v", r)
+		}
+	})
+	t.Run("client cannot prune", func(t *testing.T) {
+		fm := newFakeManager(t)
+		var copied []string
+		c := &fakeClient{copyErrs: map[string][]error{}, digestErr: map[string]error{}, copied: &copied}
+		w := &Worker{Status: fm.status()}
+		if w.mirrorOne(context.Background(), c, BatchItem{Source: "s", Dest: "reg/x", PruneRetain: []string{"amd64"}}) {
+			t.Fatal("expected failure")
+		}
+		if r := fm.reportsByDest()["reg/x"]; !r.Reconcile || r.Error == "" {
+			t.Errorf("report = %+v", r)
+		}
+	})
+	t.Run("backfill copy error", func(t *testing.T) {
+		fm := newFakeManager(t)
+		c, _ := newPrunerFake()
+		c.copyErrs["reg/x"] = []error{errors.New("a"), errors.New("b")}
+		w := &Worker{Status: fm.status()}
+		if w.mirrorOne(context.Background(), c, BatchItem{Source: "s", Dest: "reg/x", Backfill: true, PruneRetain: []string{"amd64"}}) {
+			t.Fatal("expected failure")
+		}
+		if _, pruned := c.pruneCalls["reg/x"]; pruned {
+			t.Error("must not prune after a failed backfill")
+		}
+		if r := fm.reportsByDest()["reg/x"]; !r.Reconcile || r.Error == "" {
+			t.Errorf("report = %+v", r)
+		}
+	})
+}
+
+func TestStatusClient_ShouldReconcileUnconfigured(t *testing.T) {
+	var s *StatusClient
+	if !s.ShouldReconcile(context.Background(), "d") {
+		t.Error("unconfigured client must answer true")
 	}
 }
