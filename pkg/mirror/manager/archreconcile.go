@@ -11,6 +11,7 @@ import (
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
@@ -235,7 +236,7 @@ func (m *MirrorManager) handleConfirmPrune(w http.ResponseWriter, r *http.Reques
 	mirrored := ok && entry.State == stateMirrored
 	current, known := m.retainArchByRepo[repoOf(dest)]
 	prune := m.pruneArchitectures
-	generations := maps.Clone(m.archPlanGenerations)
+	planned := maps.Clone(m.archPlanImageSets)
 	m.mu.RUnlock()
 
 	if !mirrored || !prune || !known || current == nil || !covers(retain, current) {
@@ -250,7 +251,7 @@ func (m *MirrorManager) handleConfirmPrune(w http.ResponseWriter, r *http.Reques
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), shouldMirrorLockWait)
 	defer cancel()
-	if stale, err := m.prunePlanStale(ctx, generations); err != nil {
+	if stale, err := m.prunePlanStale(ctx, planned); err != nil {
 		oclog.Printf("Cannot confirm prune of %s: %v\n", dest, err)
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return
@@ -262,10 +263,18 @@ func (m *MirrorManager) handleConfirmPrune(w http.ResponseWriter, r *http.Reques
 	w.WriteHeader(http.StatusOK)
 }
 
+// planImageSet identifies the revision of an ImageSet a prune plan was
+// computed from. The UID matters as much as the generation: an ImageSet
+// deleted and recreated under the same name starts at generation 1 again.
+type planImageSet struct {
+	UID        types.UID
+	Generation int64
+}
+
 // prunePlanStale checks the live MirrorTarget and ImageSets against the
 // state a prune plan was computed from and says why the plan is stale, or ""
 // if it still holds.
-func (m *MirrorManager) prunePlanStale(ctx context.Context, generations map[string]int64) (string, error) {
+func (m *MirrorManager) prunePlanStale(ctx context.Context, planned map[string]planImageSet) (string, error) {
 	mt := &mirrorv1alpha1.MirrorTarget{}
 	if err := m.Client.Get(ctx, client.ObjectKey{Name: m.TargetName, Namespace: m.Namespace}, mt); err != nil {
 		return "", fmt.Errorf("get MirrorTarget: %w", err)
@@ -273,11 +282,11 @@ func (m *MirrorManager) prunePlanStale(ctx context.Context, generations map[stri
 	if mt.Annotations[mirrorv1alpha1.CleanupPolicyAnnotation] != mirrorv1alpha1.CleanupPolicyDelete {
 		return "cleanup-policy is no longer Delete", nil
 	}
-	if len(mt.Spec.ImageSets) != len(generations) {
+	if len(mt.Spec.ImageSets) != len(planned) {
 		return "the MirrorTarget's ImageSets changed", nil
 	}
 	for _, name := range mt.Spec.ImageSets {
-		planned, ok := generations[name]
+		plan, ok := planned[name]
 		if !ok {
 			return "ImageSet " + name + " was added", nil
 		}
@@ -288,8 +297,11 @@ func (m *MirrorManager) prunePlanStale(ctx context.Context, generations map[stri
 			}
 			return "", fmt.Errorf("get ImageSet %s: %w", name, err)
 		}
-		if is.Generation != planned {
-			return fmt.Sprintf("ImageSet %s changed (generation %d, planned with %d)", name, is.Generation, planned), nil
+		if is.UID != plan.UID {
+			return "ImageSet " + name + " was recreated", nil
+		}
+		if is.Generation != plan.Generation {
+			return fmt.Sprintf("ImageSet %s changed (generation %d, planned with %d)", name, is.Generation, plan.Generation), nil
 		}
 	}
 	return "", nil
@@ -312,26 +324,47 @@ func (m *MirrorManager) applyReconcileStatusLocked(req WorkerStatusRequest) {
 	}
 	if req.Error != "" {
 		oclog.Printf("Architecture reconcile of %s failed (image stays mirrored): %s\n", req.Destination, req.Error)
+		if req.PruneRetain != nil {
+			// The worker deleted children before failing (a partial prune,
+			// or a verification error afterwards): stop counting what may
+			// be gone as mirrored, so a selection that needs it again
+			// backfills it. The backoff stays.
+			entry.Architectures = sortedArchs(reconciledArchs(entry.Architectures, req))
+			m.stateDirty = true
+		}
 		m.archBackoffLocked(entry)
 		return
 	}
-	// What the destination may still hold: the new selection, plus what it
-	// held before — minus, after a prune, what the prune removed.
-	kept := entry.Architectures
+	m.recordArchitecturesLocked(entry, reconciledArchs(entry.Architectures, req))
+}
+
+// reconciledArchs is what the destination of an image recorded with old may
+// still hold after the reconcile req reports: the new selection, plus what
+// it held before — minus, after a (possibly partial) prune, everything
+// outside the retain set. Erring towards too little is safe: a missing
+// architecture is backfilled, an extra one is at most pruned later.
+func reconciledArchs(old []string, req WorkerStatusRequest) []string {
+	kept := old
 	if req.PruneRetain != nil {
-		kept = intersectArchs(entry.Architectures, req.PruneRetain)
+		kept = intersectArchs(old, req.PruneRetain)
 	}
-	m.recordArchitecturesLocked(entry, unionArchs(req.Architectures, kept))
+	return unionArchs(req.Architectures, kept)
+}
+
+// sortedArchs returns a sorted copy of archs; nil stays nil (all).
+func sortedArchs(archs []string) []string {
+	if len(archs) == 0 {
+		return nil
+	}
+	out := slices.Clone(archs)
+	sort.Strings(out)
+	return out
 }
 
 // recordArchitecturesLocked records the architecture selection entry was
 // mirrored with and clears any reconcile backoff. Caller must hold m.mu.
 func (m *MirrorManager) recordArchitecturesLocked(entry *imagestate.ImageEntry, archs []string) {
-	var recorded []string
-	if len(archs) > 0 {
-		recorded = slices.Clone(archs)
-		sort.Strings(recorded)
-	}
+	recorded := sortedArchs(archs)
 	if slices.Equal(entry.Architectures, recorded) && entry.ArchRetryCount == 0 && entry.ArchNextRetryAt == nil {
 		return
 	}

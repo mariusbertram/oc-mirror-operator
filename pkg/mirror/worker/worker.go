@@ -348,10 +348,15 @@ func (w *Worker) mirrorOne(ctx context.Context, c Client, item BatchItem) bool {
 		if len(deleted) > 0 {
 			oclog.Printf("Deleted child manifests of %s outside %v: %s\n", effectiveDest, item.PruneRetain, strings.Join(deleted, ", "))
 		}
+		// Once anything was deleted, the report must say so — also when
+		// the prune or the verification below fails — so the manager no
+		// longer counts the deleted architectures as mirrored.
+		if err == nil || len(deleted) > 0 {
+			report.PruneRetain = item.PruneRetain
+		}
 		if err != nil {
 			return fail("failed to prune architectures of", err)
 		}
-		report.PruneRetain = item.PruneRetain
 	}
 
 	oclog.Printf("Copy complete, verifying digest at %s\n", effectiveDest)

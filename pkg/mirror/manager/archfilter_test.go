@@ -505,7 +505,9 @@ func TestHandleConfirmPrune_LiveCluster(t *testing.T) {
 			}
 		}, http.StatusGone},
 		{"ImageSet spec changed", func(t *testing.T, m *MirrorManager) {
-			m.archPlanGenerations["is"]-- // the live ImageSet is now newer than the plan
+			p := m.archPlanImageSets["is"]
+			p.Generation-- // the live ImageSet is now newer than the plan
+			m.archPlanImageSets["is"] = p
 		}, http.StatusGone},
 		{"ImageSet added to the target", func(t *testing.T, m *MirrorManager) {
 			mt := &mirrorv1alpha1.MirrorTarget{}
@@ -516,7 +518,7 @@ func TestHandleConfirmPrune_LiveCluster(t *testing.T) {
 			}
 		}, http.StatusGone},
 		{"ImageSet swapped", func(t *testing.T, m *MirrorManager) {
-			m.archPlanGenerations = map[string]int64{"gone": 1}
+			m.archPlanImageSets = map[string]planImageSet{"gone": {Generation: 1}}
 		}, http.StatusGone},
 		{"ImageSet deleted", func(t *testing.T, m *MirrorManager) {
 			is := &mirrorv1alpha1.ImageSet{}
@@ -524,6 +526,22 @@ func TestHandleConfirmPrune_LiveCluster(t *testing.T) {
 			if err := m.Client.Delete(ctx, is); err != nil {
 				t.Fatal(err)
 			}
+		}, http.StatusGone},
+		{"ImageSet recreated with the same generation", func(t *testing.T, m *MirrorManager) {
+			// Review #299 (3rd round) P2: only the UID tells the
+			// replacement apart from the ImageSet the plan was made for.
+			old := &mirrorv1alpha1.ImageSet{}
+			mustGet(t, m, "is", old)
+			if err := m.Client.Delete(ctx, old); err != nil {
+				t.Fatal(err)
+			}
+			repl := &mirrorv1alpha1.ImageSet{ObjectMeta: metav1.ObjectMeta{Name: "is", Namespace: "default", UID: "uid-new"}}
+			repl.Spec.Mirror.Architectures = []string{"amd64", "arm64"}
+			if err := m.Client.Create(ctx, repl); err != nil {
+				t.Fatal(err)
+			}
+			mustGet(t, m, "is", repl)
+			m.archPlanImageSets["is"] = planImageSet{UID: "uid-old", Generation: repl.Generation}
 		}, http.StatusGone},
 		{"MirrorTarget unreadable", func(t *testing.T, m *MirrorManager) {
 			m.TargetName = "missing"
@@ -563,7 +581,7 @@ func confirmPruneManager(t *testing.T, state string) *MirrorManager {
 	m.imageState = imagestate.ImageState{dest: {State: state}}
 	m.pruneArchitectures = true
 	m.retainArchByRepo = map[string][]string{repoOf(dest): {"amd64"}}
-	m.archPlanGenerations = map[string]int64{"is": is.Generation}
+	m.archPlanImageSets = map[string]planImageSet{"is": {UID: is.UID, Generation: is.Generation}}
 	return m
 }
 
@@ -655,5 +673,37 @@ func TestArchSetHelpers(t *testing.T) {
 	}
 	if got := intersectArchs(a("amd64", "s390x"), a("s390x", "arm64")); !reflect.DeepEqual(got, a("s390x")) {
 		t.Errorf("intersect = %v", got)
+	}
+}
+
+// Review #299 (3rd round) P2: a worker that pruned and then failed (e.g. the
+// final digest check timed out) must not leave the deleted architecture
+// recorded as mirrored; restoring the selection then backfills it.
+func TestApplyStatus_FailedReconcileAfterPrune(t *testing.T) {
+	m := NewWithClients(nil, nil, "t", "default", "img", "", runtime.NewScheme())
+	dest := "reg.io/ns/a:v1"
+	e := &imagestate.ImageEntry{Source: "quay.io/a:v1", State: stateMirrored, Architectures: []string{"amd64", "arm64"}}
+	m.imageState = imagestate.ImageState{dest: e}
+	m.owners = map[string][]string{dest: {"is"}}
+
+	m.applyStatusLocked(WorkerStatusRequest{Destination: dest, Reconcile: true, Error: "verify: context deadline exceeded",
+		Architectures: []string{"amd64"}, PruneRetain: []string{"amd64"}})
+	if e.State != stateMirrored || !reflect.DeepEqual(e.Architectures, []string{"amd64"}) || e.ArchRetryCount != 1 || e.ArchNextRetryAt == nil {
+		t.Fatalf("entry = %+v, want arm64 no longer recorded and a backoff", e)
+	}
+
+	// The selection goes back to amd64+arm64: once the backoff passed, arm64
+	// is backfilled.
+	item, ok := m.archReconcileItemLocked(dest, e, []string{"amd64", "arm64"}, false, true,
+		map[string][]string{"reg.io/ns/a": {"amd64", "arm64"}}, e.ArchNextRetryAt.Add(time.Second))
+	if !ok || !item.Backfill {
+		t.Errorf("item = %+v ok=%v, want a backfill", item, ok)
+	}
+
+	// A failure before anything was deleted keeps the record.
+	e.Architectures = []string{"amd64", "arm64"}
+	m.applyStatusLocked(WorkerStatusRequest{Destination: dest, Reconcile: true, Error: "not confirmed", Architectures: []string{"amd64"}})
+	if !reflect.DeepEqual(e.Architectures, []string{"amd64", "arm64"}) {
+		t.Errorf("record changed without a prune: %v", e.Architectures)
 	}
 }

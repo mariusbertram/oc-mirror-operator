@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/regclient/regclient/types/descriptor"
 	"github.com/regclient/regclient/types/errs"
 	"github.com/regclient/regclient/types/manifest"
+	"github.com/regclient/regclient/types/mediatype"
 	"github.com/regclient/regclient/types/platform"
 	"github.com/regclient/regclient/types/ref"
 )
@@ -443,7 +445,13 @@ func (c *MirrorClient) PruneArchitectures(ctx context.Context, dest string, want
 	if len(candidates) == 0 {
 		return nil, nil
 	}
-	protected, err := c.protectedDigests(ctx, destRef, ownDigest)
+	// The tags this prune is about: dest's own tag, and the synthesized
+	// sha256-<hex> tag a digest-referenced dest is pushed under.
+	ownTags := []string{strings.Replace(ownDigest, ":", "-", 1)}
+	if destRef.Tag != "" {
+		ownTags = append(ownTags, destRef.Tag)
+	}
+	protected, err := c.protectedDigests(ctx, destRef, ownDigest, ownTags)
 	if err != nil {
 		return nil, err
 	}
@@ -470,17 +478,22 @@ func (c *MirrorClient) PruneArchitectures(ctx context.Context, dest string, want
 
 // protectedDigests returns the manifests of r's repository that a prune of
 // the manifest list ownDigest must not delete, each with the reason: every
-// manifest a tag points at directly, and every child of another manifest
-// list a tag points at (whoever owns it). Each tag is fetched (GET computes
-// the digest from the content even when a registry omits
-// Docker-Content-Digest); a tag that cannot be resolved to a digest, or any
-// other failure, aborts — pruning must not guess.
-func (c *MirrorClient) protectedDigests(ctx context.Context, r ref.Ref, ownDigest string) (map[string]string, error) {
+// manifest a tag points at directly, and everything reachable from a tagged
+// manifest list — nested indexes included — except the direct children of
+// the list being pruned. That list is only exempt under its own tags
+// (ownTags): another tag pointing at the same digest is an alias with
+// unknown requirements (e.g. a promoted release tag), so its children stay.
+// Each tag is fetched (GET computes the digest from the content even when a
+// registry omits Docker-Content-Digest); a tag that cannot be resolved to a
+// digest, a nested index that cannot be read, or any other failure aborts —
+// pruning must not guess.
+func (c *MirrorClient) protectedDigests(ctx context.Context, r ref.Ref, ownDigest string, ownTags []string) (map[string]string, error) {
 	tags, err := c.TagList(ctx, r.SetTag(""))
 	if err != nil {
 		return nil, fmt.Errorf("failed to list tags of %s: %w", r.CommonName(), err)
 	}
 	out := map[string]string{}
+	visited := map[string]bool{}
 	for _, tag := range tags {
 		m, err := c.ManifestGet(ctx, r.SetTag(tag))
 		if err != nil {
@@ -493,22 +506,63 @@ func (c *MirrorClient) protectedDigests(ctx context.Context, r ref.Ref, ownDiges
 		if dig == "" {
 			return nil, fmt.Errorf("failed to resolve tag %s of %s to a digest", tag, r.CommonName())
 		}
-		out[dig] = "tag " + tag + " points at it"
-		idx, ok := m.(manifest.Indexer)
-		if !ok || !m.IsList() || dig == ownDigest {
-			continue
+		if _, seen := out[dig]; !seen {
+			out[dig] = "tag " + tag + " points at it"
 		}
-		others, err := idx.GetManifestList()
-		if err != nil {
-			return nil, fmt.Errorf("failed to read manifest list %s:%s: %w", r.CommonName(), tag, err)
-		}
-		for _, d := range others {
-			if _, seen := out[d.Digest.String()]; !seen {
-				out[d.Digest.String()] = "the manifest list tagged " + tag + " also references it"
-			}
+		// The list being pruned, under one of its own tags: only its nested
+		// indexes are walked, its direct children are the prune candidates.
+		exemptChildren := dig == ownDigest && slices.Contains(ownTags, tag)
+		if err := c.protectReachable(ctx, r, m, tag, exemptChildren, visited, out); err != nil {
+			return nil, err
 		}
 	}
 	return out, nil
+}
+
+// protectReachable marks everything reachable from the manifest list m
+// (tagged tag) as protected in out, descending into each nested index once
+// (visited). With exemptChildren, m's direct platform children are left
+// unmarked — they are the prune candidates — but nested indexes below m
+// are still walked and protected with all their descendants. A single image
+// manifest has nothing to walk.
+func (c *MirrorClient) protectReachable(ctx context.Context, r ref.Ref, m manifest.Manifest, tag string, exemptChildren bool, visited map[string]bool, out map[string]string) error {
+	idx, ok := m.(manifest.Indexer)
+	if !ok || !m.IsList() {
+		return nil
+	}
+	dig := m.GetDescriptor().Digest.String()
+	key := dig
+	if exemptChildren {
+		key += "#exempt"
+	}
+	if visited[key] {
+		return nil
+	}
+	visited[key] = true
+	children, err := idx.GetManifestList()
+	if err != nil {
+		return fmt.Errorf("failed to read manifest list %s (tag %s): %w", dig, tag, err)
+	}
+	for _, d := range children {
+		child := d.Digest.String()
+		nested := d.MediaType == mediatype.OCI1ManifestList || d.MediaType == mediatype.Docker2ManifestList
+		if !exemptChildren || nested {
+			if _, seen := out[child]; !seen {
+				out[child] = "the manifest list tagged " + tag + " also references it"
+			}
+		}
+		if !nested {
+			continue
+		}
+		inner, err := c.ManifestGet(ctx, r.SetDigest(child))
+		if err != nil {
+			return fmt.Errorf("failed to read nested index %s of the manifest list tagged %s: %w", child, tag, err)
+		}
+		if err := c.protectReachable(ctx, r, inner, tag, false, visited, out); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // hasArch reports whether p names a real CPU architecture (build

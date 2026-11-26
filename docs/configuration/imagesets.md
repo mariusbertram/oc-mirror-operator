@@ -456,12 +456,14 @@ Deleting is careful:
 - Entries without a platform, such as build attestations, are kept. So is every
   per-architecture image a tag of the repository points at directly (a digest a bundle
   references, or a tag such as `app:stable-arm64`), and every per-architecture image
-  another tagged manifest list of the repository references — whoever owns it. Shared
-  per-architecture images are therefore never removed.
+  another tagged manifest list of the repository references — including through nested
+  indexes, and including another tag on the *same* list (an alias such as a promoted
+  `stable` tag), whoever owns it. Shared per-architecture images are therefore never
+  removed.
 - Right before deleting, the worker asks the manager to confirm the plan. The manager
   re-reads the `MirrorTarget` and its `ImageSet`s from the cluster: if the cleanup
-  policy was removed or any `ImageSet` changed since the plan was made, nothing is
-  deleted and the reconcile is retried with a fresh plan. Without a confirmation (no
+  policy was removed or any `ImageSet` changed or was recreated since the plan was
+  made, nothing is deleted and the reconcile is retried with a fresh plan. Without a confirmation (no
   answer, an error) nothing is deleted either.
 
 The registry frees the space only on its next garbage collection; Quay may keep

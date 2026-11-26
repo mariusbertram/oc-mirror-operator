@@ -670,3 +670,80 @@ func TestPruneArchitectures_TagWithoutDigestHeaderStillProtects(t *testing.T) {
 		t.Error("stable-arm64 and its child must survive")
 	}
 }
+
+// Review #299 (3rd round) P1: another tag on the same manifest list
+// (release promotion: dst:stable == dst:v1) has unknown requirements, so its
+// children must survive a prune of v1.
+func TestPruneArchitectures_KeepsChildrenOfAliasTag(t *testing.T) {
+	reg, host := newFakeRegistryServer(t)
+	mc := httpOnlyClient(host)
+	children := mirroredIndex(t, reg, mc, host)
+	reg.mu.Lock()
+	reg.manifests["dst:stable"] = reg.manifests["dst:v1"]
+	reg.mediaType["dst:stable"] = reg.mediaType["dst:v1"]
+	reg.mu.Unlock()
+
+	deleted, err := mc.PruneArchitectures(context.Background(), host+"/dst:v1", []string{"amd64"}, []string{"amd64"})
+	if err != nil || len(deleted) != 0 || !hasManifest(reg, "dst", children[1]) {
+		t.Errorf("arm64 behind alias dst:stable must survive: deleted=%v err=%v", deleted, err)
+	}
+}
+
+// Review #299 (3rd round) P1: a tagged index pointing at an untagged inner
+// index whose only leaf is the arm64 child of dst:v1.
+func TestPruneArchitectures_KeepsLeavesOfNestedIndexes(t *testing.T) {
+	reg, host := newFakeRegistryServer(t)
+	mc := httpOnlyClient(host)
+	children := mirroredIndex(t, reg, mc, host)
+	inner := []byte(fmt.Sprintf(`{"schemaVersion":2,"mediaType":%q,"manifests":[{"mediaType":%q,"digest":%q,"size":100,"platform":{"os":"linux","architecture":"arm64"}}]}`,
+		ociIndexMediaType, ociManifestMediaType, children[1]))
+	innerDigest := sha256Digest(inner)
+	reg.seedManifest("dst", innerDigest, ociIndexMediaType, inner)
+	outer := []byte(fmt.Sprintf(`{"schemaVersion":2,"mediaType":%q,"manifests":[{"mediaType":%q,"digest":%q,"size":%d}]}`,
+		ociIndexMediaType, ociIndexMediaType, innerDigest, len(inner)))
+	reg.seedManifest("dst", "other", ociIndexMediaType, outer)
+
+	deleted, err := mc.PruneArchitectures(context.Background(), host+"/dst:v1", []string{"amd64"}, []string{"amd64"})
+	if err != nil || len(deleted) != 0 || !hasManifest(reg, "dst", children[1]) {
+		t.Errorf("arm64 leaf of nested index must survive: deleted=%v err=%v", deleted, err)
+	}
+
+	// An unreadable nested index aborts instead of guessing.
+	reg.mu.Lock()
+	delete(reg.manifests, "dst:"+innerDigest)
+	reg.mu.Unlock()
+	if _, err := mc.PruneArchitectures(context.Background(), host+"/dst:v1", []string{"amd64"}, []string{"amd64"}); err == nil || !strings.Contains(err.Error(), "nested index") {
+		t.Errorf("err = %v, want refusal on unreadable nested index", err)
+	}
+	if !hasManifest(reg, "dst", children[1]) {
+		t.Error("nothing may be deleted when the scan is incomplete")
+	}
+}
+
+// A digest-referenced dest lives under its synthesized sha256-<hex> tag;
+// that tag is its own, not an alias, so the prune still works.
+func TestPruneArchitectures_DigestDestUnderSynthesizedTag(t *testing.T) {
+	reg, host := newFakeRegistryServer(t)
+	mc := httpOnlyClient(host)
+	idx, children := seedIndex(t, reg, []indexChild{{platform: "linux/amd64"}, {platform: "linux/arm64"}})
+	// As mirror.ComponentDestination names it.
+	dest := host + "/dst:sha256-" + strings.TrimPrefix(idx, "sha256:")
+	if _, err := mc.CopyImage(context.Background(), host+"/src@"+idx, dest); err != nil {
+		t.Fatal(err)
+	}
+	deleted, err := mc.PruneArchitectures(context.Background(), dest, []string{"amd64"}, []string{"amd64"})
+	if err != nil || len(deleted) != 1 || hasManifest(reg, "dst", children[1]) {
+		t.Errorf("tag dest: deleted=%v err=%v", deleted, err)
+	}
+
+	// The same list addressed by digest (prune-only reconciles pass the
+	// entry's dest): the synthesized tag still counts as its own. Restore
+	// arm64 first (recursive copy; a plain one skips the existing list).
+	if _, _, err := mc.CopyImageFiltered(context.Background(), host+"/src@"+idx, dest, CopyFilter{ForceRecursive: true}, false); err != nil {
+		t.Fatal(err)
+	}
+	deleted, err = mc.PruneArchitectures(context.Background(), host+"/dst@"+idx, []string{"amd64"}, []string{"amd64"})
+	if err != nil || len(deleted) != 1 || hasManifest(reg, "dst", children[1]) {
+		t.Errorf("deleted=%v err=%v", deleted, err)
+	}
+}

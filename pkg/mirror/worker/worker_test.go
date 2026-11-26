@@ -479,13 +479,17 @@ func TestBatchItem_FilterJSON(t *testing.T) {
 // prunerFakeClient adds PruneArchitectures to skipMissingFakeClient.
 type prunerFakeClient struct {
 	skipMissingFakeClient
-	pruneErr   error
-	pruneCalls map[string][]string // dest → retain
+	pruneErr     error
+	partialPrune bool                // with pruneErr: something was deleted first
+	pruneCalls   map[string][]string // dest → retain
 }
 
 func (c *prunerFakeClient) PruneArchitectures(_ context.Context, dest string, _, retain []string) ([]string, error) {
 	c.pruneCalls[dest] = retain
 	if c.pruneErr != nil {
+		if c.partialPrune {
+			return []string{"linux/arm64 sha256:abc"}, c.pruneErr
+		}
 		return nil, c.pruneErr
 	}
 	return []string{"linux/s390x sha256:abc"}, nil
@@ -650,4 +654,42 @@ func TestStatusClient_ConfirmPruneFailsClosed(t *testing.T) {
 	if bad.ConfirmPrune(context.Background(), "d", []string{"amd64"}) {
 		t.Error("bad URL must not confirm")
 	}
+}
+
+// Review #299 (3rd round) P2: once the worker deleted something, the error
+// report carries the retain set, so the manager stops counting the deleted
+// architectures as mirrored.
+func TestMirrorOne_ReportsPruneOnLaterFailure(t *testing.T) {
+	item := BatchItem{Source: "s", Dest: "reg/x", Architectures: []string{"amd64"}, PruneRetain: []string{"amd64"}}
+	t.Run("partial prune", func(t *testing.T) {
+		fm := newFakeManager(t)
+		c, _ := newPrunerFake()
+		c.pruneErr, c.partialPrune = errors.New("DELETE failed"), true
+		if (&Worker{Status: fm.status()}).mirrorOne(context.Background(), c, item) {
+			t.Fatal("expected failure")
+		}
+		if r := fm.reportsByDest()["reg/x"]; r.Error == "" || len(r.PruneRetain) != 1 {
+			t.Errorf("report = %+v", r)
+		}
+	})
+	t.Run("nothing deleted", func(t *testing.T) {
+		fm := newFakeManager(t)
+		c, _ := newPrunerFake()
+		c.pruneErr = errors.New("refusing")
+		(&Worker{Status: fm.status()}).mirrorOne(context.Background(), c, item)
+		if r := fm.reportsByDest()["reg/x"]; r.Error == "" || r.PruneRetain != nil {
+			t.Errorf("report = %+v", r)
+		}
+	})
+	t.Run("verification fails after prune", func(t *testing.T) {
+		fm := newFakeManager(t)
+		c, _ := newPrunerFake()
+		c.digestErr["reg/x"] = errors.New("context deadline exceeded")
+		if (&Worker{Status: fm.status()}).mirrorOne(context.Background(), c, item) {
+			t.Fatal("expected failure")
+		}
+		if r := fm.reportsByDest()["reg/x"]; !strings.Contains(r.Error, "deadline") || len(r.PruneRetain) != 1 {
+			t.Errorf("report = %+v", r)
+		}
+	})
 }
