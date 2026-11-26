@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"net/http"
 	"slices"
 	"sort"
 	"time"
@@ -165,6 +166,30 @@ func (m *MirrorManager) archReconcileItemLocked(dest string, entry *imagestate.I
 	oclog.Printf("Reconciling architectures of %s: mirrored with %v, selected %v (backfill=%v, prune=%v)\n",
 		dest, archList(entry.Architectures), archList(want), backfill, prune)
 	return item, true
+}
+
+// handleConfirmPrune answers a worker's confirmation, right before deleting,
+// that removing dest's children outside retain is still allowed: dest must
+// still be Mirrored, the cleanup policy must still be Delete, and retain must
+// cover every architecture dest's repository needs as of the latest tick
+// (another ImageSet may have started to need an architecture since the plan
+// was made). It fails closed — 503 when the state cannot be read in time —
+// because the deletion cannot be undone.
+func (m *MirrorManager) handleConfirmPrune(w http.ResponseWriter, dest string, retain []string) {
+	if !m.tryRLockFor(shouldMirrorLockWait) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+	defer m.mu.RUnlock()
+	entry, ok := m.imageState[dest]
+	current, known := m.retainArchByRepo[repoOf(dest)]
+	if !ok || entry.State != stateMirrored || !m.pruneArchitectures || !known || current == nil || !covers(retain, current) {
+		oclog.Printf("Refusing prune of %s: plan keeps %v, repository now needs %v (cleanup-policy Delete: %v)\n",
+			dest, retain, archList(current), m.pruneArchitectures)
+		w.WriteHeader(http.StatusGone)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
 }
 
 // archList renders an architecture selection for logs.

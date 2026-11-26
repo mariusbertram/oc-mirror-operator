@@ -430,3 +430,69 @@ func TestArchReconcile_SkipsHelmCharts(t *testing.T) {
 		t.Error("chart must not be reconciled")
 	}
 }
+
+// Review #299 P1: a queued prune is confirmed against the current policy and
+// retain set right before the worker deletes anything.
+func TestHandleConfirmPrune(t *testing.T) {
+	const dest = "reg.io/ns/app:v1"
+	tests := []struct {
+		name    string
+		prune   bool
+		state   string
+		current []string
+		known   bool
+		retain  string
+		want    int
+	}{
+		{"plan still valid", true, stateMirrored, []string{"amd64"}, true, "amd64", http.StatusOK},
+		{"plan keeps more than needed", true, stateMirrored, []string{"amd64"}, true, "amd64,arm64", http.StatusOK},
+		{"cleanup policy removed", false, stateMirrored, []string{"amd64"}, true, "amd64", http.StatusGone},
+		{"repository now needs arm64", true, stateMirrored, []string{"amd64", "arm64"}, true, "amd64", http.StatusGone},
+		{"repository now needs all", true, stateMirrored, nil, true, "amd64", http.StatusGone},
+		{"repository unknown", true, stateMirrored, nil, false, "amd64", http.StatusGone},
+		{"image no longer mirrored", true, statePending, []string{"amd64"}, true, "amd64", http.StatusGone},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newTestManager("tok", imagestate.ImageState{dest: {State: tt.state}})
+			m.pruneArchitectures = tt.prune
+			m.retainArchByRepo = map[string][]string{}
+			if tt.known {
+				m.retainArchByRepo["reg.io/ns/app"] = tt.current
+			}
+			if got := doConfirmPrune(m, dest, tt.retain); got != tt.want {
+				t.Errorf("code = %d, want %d", got, tt.want)
+			}
+		})
+	}
+
+	t.Run("fails closed while the state is locked", func(t *testing.T) {
+		m := newTestManager("tok", imagestate.ImageState{dest: {State: stateMirrored}})
+		m.pruneArchitectures = true
+		m.retainArchByRepo = map[string][]string{"reg.io/ns/app": {"amd64"}}
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if got := doConfirmPrune(m, dest, "amd64"); got != http.StatusServiceUnavailable {
+			t.Errorf("code = %d, want 503", got)
+		}
+	})
+}
+
+func doConfirmPrune(m *MirrorManager, dest, retain string) int {
+	req := httptest.NewRequest(http.MethodGet, "/should-mirror?reconcile=1&dest="+dest+"&prune="+retain, nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	rr := httptest.NewRecorder()
+	m.handleShouldMirror(rr, req)
+	return rr.Code
+}
+
+// The tick publishes the prune policy and retain sets the confirmation uses.
+func TestReconcile_PublishesPrunePlanState(t *testing.T) {
+	m, _, dest := reconcileArchTest(t, []string{"amd64"}, nil, true)
+	if err := m.reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !m.pruneArchitectures || !reflect.DeepEqual(m.retainArchByRepo[repoOf(dest)], []string{"amd64"}) {
+		t.Errorf("prune=%v retain=%v", m.pruneArchitectures, m.retainArchByRepo)
+	}
+}

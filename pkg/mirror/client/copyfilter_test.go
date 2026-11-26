@@ -15,6 +15,7 @@ import (
 type indexChild struct {
 	platform string
 	digest   string
+	osver    string
 }
 
 // seedIndex seeds an OCI index under src:v1 whose entries point at the
@@ -44,6 +45,9 @@ func seedIndex(t *testing.T, reg *fakeRegistry, children []indexChild) (string, 
 			plat = fmt.Sprintf(`,"platform":{"os":%q,"architecture":%q`, p.OS, p.Architecture)
 			if p.Variant != "" {
 				plat += fmt.Sprintf(`,"variant":%q`, p.Variant)
+			}
+			if c.osver != "" {
+				plat += fmt.Sprintf(`,"os.version":%q`, c.osver)
 			}
 			plat += "}"
 		}
@@ -294,6 +298,18 @@ func TestCopyImageFiltered_Architectures(t *testing.T) {
 			wantCopied: []int{0},
 		},
 		{
+			// Found on k3s with registry.k8s.io/pause: Windows children carry
+			// an os.version, which Platform.String drops.
+			name: "windows children with os.version are kept",
+			children: []indexChild{
+				{platform: "linux/amd64"}, {platform: "linux/arm64"},
+				{platform: "windows/amd64", osver: "10.0.17763.6532"},
+				{platform: "windows/amd64", osver: "10.0.20348.2849"},
+			},
+			filter:     CopyFilter{Architectures: []string{"amd64"}},
+			wantCopied: []int{0, 2, 3},
+		},
+		{
 			name: "attestation children are dropped",
 			children: []indexChild{
 				{platform: "linux/amd64"}, {platform: "unknown/unknown"}, {},
@@ -503,13 +519,9 @@ func TestPruneArchitectures(t *testing.T) {
 		t.Fatal(err)
 	}
 	// ppc64le is also mirrored on its own (a pinned per-arch digest).
-	pinned := "sha256-" + strings.TrimPrefix(children[3], "sha256:")
-	reg.mu.Lock()
-	reg.manifests["dst:"+pinned] = reg.manifests["dst:"+children[3]]
-	reg.mediaType["dst:"+pinned] = reg.mediaType["dst:"+children[3]]
-	reg.mu.Unlock()
+	tagChild(reg, "dst", "sha256-"+strings.TrimPrefix(children[3], "sha256:"), children[3])
 
-	deleted, err := mc.PruneArchitectures(context.Background(), dst, []string{"amd64", "arm64"})
+	deleted, err := mc.PruneArchitectures(context.Background(), dst, []string{"amd64"}, []string{"amd64", "arm64"})
 	if err != nil {
 		t.Fatalf("PruneArchitectures: %v", err)
 	}
@@ -527,7 +539,7 @@ func TestPruneArchitectures(t *testing.T) {
 	}
 
 	// Running it again finds nothing left to delete.
-	if deleted, err := mc.PruneArchitectures(context.Background(), dst, []string{"amd64", "arm64"}); err != nil || len(deleted) != 0 {
+	if deleted, err := mc.PruneArchitectures(context.Background(), dst, []string{"amd64"}, []string{"amd64", "arm64"}); err != nil || len(deleted) != 0 {
 		t.Errorf("second prune: deleted=%v err=%v", deleted, err)
 	}
 }
@@ -536,20 +548,85 @@ func TestPruneArchitectures_EdgeCases(t *testing.T) {
 	reg, host := newFakeRegistryServer(t)
 	mc := httpOnlyClient(host)
 	ctx := context.Background()
-	if _, err := mc.PruneArchitectures(ctx, host+"/dst:v1", nil); err == nil {
+	amd := []string{"amd64"}
+	if _, err := mc.PruneArchitectures(ctx, host+"/dst:v1", nil, amd); err == nil {
+		t.Error("expected refusal without want list")
+	}
+	if _, err := mc.PruneArchitectures(ctx, host+"/dst:v1", amd, nil); err == nil {
 		t.Error("expected refusal without retain list")
 	}
-	if _, err := mc.PruneArchitectures(ctx, "Bad Ref!", []string{"amd64"}); err == nil {
+	if _, err := mc.PruneArchitectures(ctx, "Bad Ref!", amd, amd); err == nil {
 		t.Error("expected parse error")
 	}
-	if _, err := mc.PruneArchitectures(ctx, host+"/absent:v1", []string{"amd64"}); err == nil {
+	if _, err := mc.PruneArchitectures(ctx, host+"/absent:v1", amd, amd); err == nil {
 		t.Error("expected error for missing destination")
 	}
 	d, _ := seedTestImage(t, reg, "single", "v1")
-	if deleted, err := mc.PruneArchitectures(ctx, host+"/single:v1", []string{"amd64"}); err != nil || len(deleted) != 0 || !hasManifest(reg, "single", d) {
+	if deleted, err := mc.PruneArchitectures(ctx, host+"/single:v1", amd, amd); err != nil || len(deleted) != 0 || !hasManifest(reg, "single", d) {
 		t.Errorf("single-arch image must be left alone: deleted=%v err=%v", deleted, err)
 	}
 	if hasArch(nil) || hasArch(&platform.Platform{OS: "unknown", Architecture: "unknown"}) || !hasArch(&platform.Platform{OS: "linux", Architecture: "s390x"}) {
 		t.Error("hasArch mismatch")
+	}
+}
+
+// tagChild points tag in repo at the manifest stored under digest.
+func tagChild(reg *fakeRegistry, repo, tag, digest string) {
+	reg.mu.Lock()
+	defer reg.mu.Unlock()
+	reg.manifests[repo+":"+tag] = reg.manifests[repo+":"+digest]
+	reg.mediaType[repo+":"+tag] = reg.mediaType[repo+":"+digest]
+}
+
+// mirroredIndex mirrors a full amd64/arm64 index to dst:v1 and returns its
+// child digests.
+func mirroredIndex(t *testing.T, reg *fakeRegistry, mc *MirrorClient, host string) []string {
+	t.Helper()
+	idx, children := seedIndex(t, reg, []indexChild{{platform: "linux/amd64"}, {platform: "linux/arm64"}})
+	if _, err := mc.CopyImage(context.Background(), host+"/src@"+idx, host+"/dst:v1"); err != nil {
+		t.Fatal(err)
+	}
+	return children
+}
+
+// Review #299 P1: a selection none of whose architectures exists must not
+// delete the children that do exist.
+func TestPruneArchitectures_RefusesWhenNoWantedChildExists(t *testing.T) {
+	reg, host := newFakeRegistryServer(t)
+	mc := httpOnlyClient(host)
+	children := mirroredIndex(t, reg, mc, host)
+	_, err := mc.PruneArchitectures(context.Background(), host+"/dst:v1", []string{"s390x"}, []string{"s390x"})
+	if err == nil || !strings.Contains(err.Error(), "none of the selected architectures") {
+		t.Fatalf("err = %v", err)
+	}
+	for _, d := range children {
+		if !hasManifest(reg, "dst", d) {
+			t.Errorf("child %s was deleted", d)
+		}
+	}
+}
+
+// Review #299 P1: a child an ordinary tag points at (app:stable-arm64) is
+// mirrored on its own and must survive.
+func TestPruneArchitectures_KeepsChildrenReferencedByTags(t *testing.T) {
+	reg, host := newFakeRegistryServer(t)
+	mc := httpOnlyClient(host)
+	children := mirroredIndex(t, reg, mc, host)
+	tagChild(reg, "dst", "stable-arm64", children[1])
+	deleted, err := mc.PruneArchitectures(context.Background(), host+"/dst:v1", []string{"amd64"}, []string{"amd64"})
+	if err != nil || len(deleted) != 0 {
+		t.Fatalf("deleted=%v err=%v", deleted, err)
+	}
+	if !hasManifest(reg, "dst", "stable-arm64") || !hasManifest(reg, "dst", children[1]) {
+		t.Error("tagged arm64 child must survive")
+	}
+
+	// Without the tag it is pruned.
+	reg.mu.Lock()
+	delete(reg.manifests, "dst:stable-arm64")
+	reg.mu.Unlock()
+	deleted, err = mc.PruneArchitectures(context.Background(), host+"/dst:v1", []string{"amd64"}, []string{"amd64"})
+	if err != nil || len(deleted) != 1 || hasManifest(reg, "dst", children[1]) {
+		t.Errorf("untagged arm64 must be pruned: deleted=%v err=%v", deleted, err)
 	}
 }

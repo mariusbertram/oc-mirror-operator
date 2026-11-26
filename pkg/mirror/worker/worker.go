@@ -72,12 +72,16 @@ type BatchItem struct {
 	PruneRetain []string `json:"pruneRetain,omitempty"`
 }
 
-// filter returns the copy filter the item asks for.
+// filter returns the copy filter the item asks for. Copies are always
+// recursive: if the destination already holds the manifest list (an earlier,
+// possibly sparser mirror of the same image), regclient would otherwise skip
+// it and report success while selected children are still missing. For a
+// destination without the list it makes no difference.
 func (i BatchItem) filter() mirrorclient.CopyFilter {
 	return mirrorclient.CopyFilter{
 		Architectures:  i.Architectures,
 		SkipMissing:    i.SkipMissingArchitectures,
-		ForceRecursive: i.Backfill,
+		ForceRecursive: true,
 	}
 }
 
@@ -121,7 +125,7 @@ type FilteredCopier interface {
 // manifests of unwanted architectures at the destination (see
 // mirrorclient.MirrorClient.PruneArchitectures).
 type ArchitecturePruner interface {
-	PruneArchitectures(ctx context.Context, dest string, retain []string) ([]string, error)
+	PruneArchitectures(ctx context.Context, dest string, want, retain []string) ([]string, error)
 }
 
 // NewMirrorClient builds a registry client for the registry host of
@@ -333,8 +337,13 @@ func (w *Worker) mirrorOne(ctx context.Context, c Client, item BatchItem) bool {
 		if !ok {
 			return fail("failed to prune architectures of", fmt.Errorf("registry client cannot prune architectures"))
 		}
+		// The plan was made at dispatch; the policy or the architectures
+		// the repository needs may have changed since.
+		if !w.Status.ConfirmPrune(ctx, dest, item.PruneRetain) {
+			return fail("not pruning architectures of", fmt.Errorf("manager did not confirm the prune plan (keep %v); it is retried with the current plan", item.PruneRetain))
+		}
 		pruneCtx, cancel := context.WithTimeout(ctx, PruneTimeout)
-		deleted, err := p.PruneArchitectures(pruneCtx, effectiveDest, item.PruneRetain)
+		deleted, err := p.PruneArchitectures(pruneCtx, effectiveDest, item.Architectures, item.PruneRetain)
 		cancel()
 		if len(deleted) > 0 {
 			oclog.Printf("Deleted child manifests of %s outside %v: %s\n", effectiveDest, item.PruneRetain, strings.Join(deleted, ", "))

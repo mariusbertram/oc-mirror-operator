@@ -132,7 +132,7 @@ spec:
                       - ppc64le
                       - s390x
                       - arm
-                      - 386
+                      - "386"
                       - riscv64
                       type: string
                     type: array

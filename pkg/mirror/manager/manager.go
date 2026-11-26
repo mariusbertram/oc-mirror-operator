@@ -156,9 +156,15 @@ type MirrorManager struct {
 
 	// State in memory — protected by mu
 	mu         sync.RWMutex
-	inProgress map[string]string     // dest → podName
-	mirrored   map[string]bool       // dest → true once successfully mirrored
-	imageState imagestate.ImageState // dest → entry, merged across all ImageSets on this target
+	inProgress map[string]string // dest → podName
+	// pruneArchitectures and retainArchByRepo are the architecture prune
+	// policy (cleanup-policy=Delete) and the per-repository retain sets of
+	// the latest reconcile tick; a worker confirms its prune plan against
+	// them right before deleting (see handleShouldMirror).
+	pruneArchitectures bool
+	retainArchByRepo   map[string][]string
+	mirrored           map[string]bool       // dest → true once successfully mirrored
+	imageState         imagestate.ImageState // dest → entry, merged across all ImageSets on this target
 	// owners tracks which ImageSet(s) each destination in imageState currently
 	// belongs to. It is the in-memory analogue of the on-disk partitioning
 	// (each ImageSet's own state ConfigMap + the shared-image index) — kept
@@ -702,6 +708,10 @@ func (m *MirrorManager) handleShouldMirror(w http.ResponseWriter, r *http.Reques
 	}
 
 	reconcile := r.URL.Query().Get("reconcile") == "1"
+	if prune, ok := r.URL.Query()["prune"]; ok {
+		m.handleConfirmPrune(w, dest, strings.Split(prune[0], ","))
+		return
+	}
 	if !reconcile && m.queuedSuccess(dest) {
 		w.WriteHeader(http.StatusGone)
 		return
@@ -1487,6 +1497,7 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 	var reconcileImages []BatchItem
 	pruneArchitectures := mt.Annotations[mirrorv1alpha1.CleanupPolicyAnnotation] == mirrorv1alpha1.CleanupPolicyDelete
 	wantArchByDest, retainArchByRepo := m.archSelectionsLocked(archByIS)
+	m.pruneArchitectures, m.retainArchByRepo = pruneArchitectures, retainArchByRepo
 	newOrphans := make(imagestate.ImageState)
 
 	for dest, entry := range m.imageState {

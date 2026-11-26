@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -185,6 +186,8 @@ func (f *fakeRegistry) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case path == registryPingPath || path == "/v2":
 		w.WriteHeader(http.StatusOK)
+	case r.Method == http.MethodGet && strings.HasSuffix(path, "/tags/list"):
+		f.listTags(w, strings.TrimSuffix(strings.TrimPrefix(path, "/v2/"), "/tags/list"))
 	case r.Method == http.MethodPost && strings.HasSuffix(path, uploadsSegment):
 		w.Header().Set("Location", path+"upload-1")
 		w.Header().Set("Docker-Upload-UUID", "upload-1")
@@ -206,6 +209,20 @@ func (f *fakeRegistry) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+// listTags answers the tag listing of repo: every key that is not a digest.
+func (f *fakeRegistry) listTags(w http.ResponseWriter, repo string) {
+	f.mu.Lock()
+	tags := []string{}
+	for key := range f.manifests {
+		if r, tag, ok := strings.Cut(key, ":"); ok && r == repo && !strings.HasPrefix(tag, "sha256:") {
+			tags = append(tags, tag)
+		}
+	}
+	f.mu.Unlock()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"name": repo, "tags": tags})
 }
 
 func (f *fakeRegistry) putBlob(w http.ResponseWriter, r *http.Request) {

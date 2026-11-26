@@ -20,7 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   they stay `Mirrored` (and in IDMS/ITMS): added architectures are copied,
   removed ones are deleted at the destination when the MirrorTarget has
   `cleanup-policy=Delete`. Each image records the selection it was mirrored
-  with in the image state.
+  with in the image state. Image copies are recursive, so a copy into a
+  destination that already holds the manifest list (e.g. a sparser earlier
+  mirror) still adds the missing children.
 - Cosign attestations (`sha256-<digest>.att`) and attached SBOMs
   (`sha256-<digest>.sbom`) are now mirrored best-effort alongside the
   `.sig` signature tag.

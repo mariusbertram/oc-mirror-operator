@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/mariusbertram/oc-mirror-operator/pkg/oclog"
@@ -121,6 +122,32 @@ func (s *StatusClient) ShouldMirror(ctx context.Context, dest string) bool {
 // longer Mirrored (a regular mirror takes over) or no longer required.
 func (s *StatusClient) ShouldReconcile(ctx context.Context, dest string) bool {
 	return s.shouldMirror(ctx, dest, true)
+}
+
+// ConfirmPrune asks the manager, right before deleting anything, whether
+// deleting dest's children outside retain is still allowed by the current
+// cleanup policy and the architectures its repository needs. Unlike
+// ShouldMirror it fails closed: only an explicit 200 allows the deletion.
+func (s *StatusClient) ConfirmPrune(ctx context.Context, dest string, retain []string) bool {
+	if s == nil || s.ManagerURL == "" {
+		return false
+	}
+	reqCtx, cancel := context.WithTimeout(ctx, ShouldMirrorTimeout)
+	defer cancel()
+	u := s.ManagerURL + "/should-mirror?reconcile=1&dest=" + url.QueryEscape(dest) +
+		"&prune=" + url.QueryEscape(strings.Join(retain, ","))
+	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodGet, u, nil)
+	if err != nil {
+		return false
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+s.Token)
+	resp, err := (&http.Client{Timeout: ShouldMirrorTimeout}).Do(httpReq)
+	if err != nil {
+		oclog.Printf("Failed to confirm prune of %s: %v (not pruning)\n", dest, err)
+		return false
+	}
+	_ = resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
 }
 
 func (s *StatusClient) shouldMirror(ctx context.Context, dest string, reconcile bool) bool {

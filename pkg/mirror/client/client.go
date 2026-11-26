@@ -378,17 +378,21 @@ func (c *MirrorClient) selectPlatforms(ctx context.Context, src string, f CopyFi
 // keeps a sparse manifest list. It returns the deleted children
 // ("<platform> <digest>"); a single-architecture image is left alone.
 //
+// want is the image's own architecture selection. Nothing is deleted unless
+// at least one child of a wanted architecture exists at dest, so a prune can
+// never leave the image without a pullable platform.
+//
 // The child list is read from the destination, so pruning works even when
-// the source is gone. Children without an architecture (e.g. build
-// attestations) are never deleted, and neither is a child that is also
-// mirrored on its own — a per-architecture digest referenced directly (e.g.
-// by a bundle's relatedImages) lives under the synthesized sha256-<hex> tag
-// in the same repository, and deleting the manifest would remove that tag.
-// retain must therefore cover every architecture that any image in dest's
-// repository still needs. The first failure aborts and is returned.
-func (c *MirrorClient) PruneArchitectures(ctx context.Context, dest string, retain []string) (deleted []string, err error) {
-	if len(retain) == 0 {
-		return nil, fmt.Errorf("refusing to prune %s without architectures to retain", dest)
+// the source is gone. Never deleted are children without an architecture
+// (e.g. build attestations) and children any tag of the repository points at
+// directly — a per-architecture image mirrored on its own (a digest
+// reference under its synthesized sha256-<hex> tag, or a tag such as
+// app:stable-arm64), since deleting the manifest would also remove that tag.
+// retain must cover every architecture that any image in dest's repository
+// still needs. The first failure aborts and is returned.
+func (c *MirrorClient) PruneArchitectures(ctx context.Context, dest string, want, retain []string) (deleted []string, err error) {
+	if len(want) == 0 || len(retain) == 0 {
+		return nil, fmt.Errorf("refusing to prune %s without an architecture selection to keep", dest)
 	}
 	destRef, err := ref.New(dest)
 	if err != nil {
@@ -406,17 +410,40 @@ func (c *MirrorClient) PruneArchitectures(ctx context.Context, dest string, reta
 	if err != nil {
 		return nil, fmt.Errorf("failed to read manifest list %s: %w", dest, err)
 	}
+
+	var candidates []descriptor.Descriptor
+	wantedPresent := false
 	for _, d := range children {
-		if !hasArch(d.Platform) || archSelected(d.Platform, retain) {
+		if !hasArch(d.Platform) {
 			continue
 		}
-		pinnedTag := destRef.SetTag(strings.Replace(d.Digest.String(), ":", "-", 1)).CommonName()
-		pinned, err := c.CheckExist(ctx, pinnedTag)
-		if err != nil {
-			return deleted, fmt.Errorf("failed to check %s: %w", pinnedTag, err)
+		if archSelected(d.Platform, want) {
+			if !wantedPresent {
+				exists, err := c.CheckExist(ctx, destRef.SetDigest(d.Digest.String()).CommonName())
+				if err != nil {
+					return nil, fmt.Errorf("failed to check child manifest %s of %s: %w", d.Digest, dest, err)
+				}
+				wantedPresent = exists
+			}
+			continue
 		}
-		if pinned {
-			oclog.Printf("Keeping child %s of %s: it is also mirrored on its own as %s\n", d.Digest, dest, pinnedTag)
+		if !archSelected(d.Platform, retain) {
+			candidates = append(candidates, d)
+		}
+	}
+	if !wantedPresent {
+		return nil, fmt.Errorf("refusing to prune %s: none of the selected architectures %v exists at the destination", dest, want)
+	}
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	tagged, err := c.taggedDigests(ctx, destRef)
+	if err != nil {
+		return nil, err
+	}
+	for _, d := range candidates {
+		if tag, ok := tagged[d.Digest.String()]; ok {
+			oclog.Printf("Keeping child %s of %s: tag %s points at it\n", d.Digest, dest, tag)
 			continue
 		}
 		child := destRef.SetDigest(d.Digest.String()).CommonName()
@@ -433,6 +460,27 @@ func (c *MirrorClient) PruneArchitectures(ctx context.Context, dest string, reta
 		deleted = append(deleted, describeChild(d))
 	}
 	return deleted, nil
+}
+
+// taggedDigests maps the digest every tag of r's repository points at to one
+// such tag. Any failure is returned: pruning must not guess.
+func (c *MirrorClient) taggedDigests(ctx context.Context, r ref.Ref) (map[string]string, error) {
+	tags, err := c.TagList(ctx, r.SetTag(""))
+	if err != nil {
+		return nil, fmt.Errorf("failed to list tags of %s: %w", r.CommonName(), err)
+	}
+	out := make(map[string]string, len(tags))
+	for _, tag := range tags {
+		m, err := c.ManifestHead(ctx, r.SetTag(tag))
+		if err != nil {
+			if errors.Is(err, errs.ErrNotFound) {
+				continue
+			}
+			return nil, fmt.Errorf("failed to resolve tag %s of %s: %w", tag, r.CommonName(), err)
+		}
+		out[m.GetDescriptor().Digest.String()] = tag
+	}
+	return out, nil
 }
 
 // hasArch reports whether p names a real CPU architecture (build
@@ -477,10 +525,15 @@ func describeChild(d descriptor.Descriptor) string {
 }
 
 // platformString renders p for regclient.ImageWithPlatforms; "" selects
-// children without a platform.
+// children without a platform. The OS version is kept (",osver=..."):
+// Platform.String drops it, and a Windows child whose version is missing
+// from the filter is not matched by it.
 func platformString(p *platform.Platform) string {
 	if p == nil || p.OS == "" {
 		return ""
+	}
+	if p.OSVersion != "" {
+		return p.String() + ",osver=" + p.OSVersion
 	}
 	return p.String()
 }

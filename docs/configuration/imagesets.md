@@ -445,13 +445,22 @@ digest does not change:
 | Architecture added (or the list removed) | The missing per-architecture images are copied. |
 | Architecture removed | With [`cleanup-policy: Delete`](mirrortarget.md#cleanup-policy) on the `MirrorTarget`, the per-architecture images that are no longer selected are deleted at the destination. Without it nothing is deleted. |
 
-Deleting is careful: an architecture is only removed from an image when no other image in
-the same repository still selects it (manifest lists in one repository can share
-per-architecture images), entries without a platform such as build attestations are
-kept, and so is a per-architecture image that is also mirrored on its own (a digest a
-bundle references directly). The registry frees the space only on its next garbage
-collection; Quay may keep per-architecture images alive as long as a manifest list
-references them.
+Deleting is careful:
+
+- An architecture is only removed from an image when no other image in the same
+  repository still selects it (manifest lists in one repository can share
+  per-architecture images).
+- Nothing is deleted unless at least one of the image's selected architectures exists at
+  the destination, so an image never ends up without a pullable platform.
+- Entries without a platform, such as build attestations, are kept, and so is every
+  per-architecture image a tag of the repository points at directly (a digest a bundle
+  references, or a tag such as `app:stable-arm64`).
+- Right before deleting, the worker asks the manager to confirm the plan against the
+  current cleanup policy and selections; without a confirmation nothing is deleted and
+  the reconcile is retried with a fresh plan.
+
+The registry frees the space only on its next garbage collection; Quay may keep
+per-architecture images alive as long as a manifest list references them.
 
 A failed reconcile is logged by the worker and retried with backoff; the image stays
 usable. Images that failed before `skipMissingArchitectures` was set are retried by a

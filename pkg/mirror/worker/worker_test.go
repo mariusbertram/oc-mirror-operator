@@ -16,12 +16,13 @@ import (
 
 // fakeManager is an httptest stand-in for the manager's status API.
 type fakeManager struct {
-	mu       sync.Mutex
-	gone     map[string]bool // dests answered with 410 on /should-mirror
-	reports  []StatusRequest
-	failNext int      // number of /status requests to answer with 500
-	queries  []string // raw queries of /should-mirror requests
-	srv      *httptest.Server
+	mu        sync.Mutex
+	gone      map[string]bool // dests answered with 410 on /should-mirror
+	reports   []StatusRequest
+	failNext  int      // number of /status requests to answer with 500
+	queries   []string // raw queries of /should-mirror requests
+	denyPrune bool     // answer prune confirmations with 410
+	srv       *httptest.Server
 }
 
 func newFakeManager(t *testing.T) *fakeManager {
@@ -37,7 +38,7 @@ func newFakeManager(t *testing.T) *fakeManager {
 		switch r.URL.Path {
 		case "/should-mirror":
 			fm.queries = append(fm.queries, r.URL.RawQuery)
-			if fm.gone[r.URL.Query().Get("dest")] {
+			if fm.gone[r.URL.Query().Get("dest")] || (fm.denyPrune && r.URL.Query().Get("prune") != "") {
 				w.WriteHeader(http.StatusGone)
 				return
 			}
@@ -433,8 +434,8 @@ func TestRunBatch_SkipMissingArchitecturesPerItem(t *testing.T) {
 	if got := c.skipCalls["reg/0"]; len(got) != 1 || got[0] {
 		t.Errorf("reg/0 skip-missing calls = %v, want one streamed call", got)
 	}
-	if _, ok := c.skipCalls["reg/1"]; ok {
-		t.Error("reg/1 must use the plain copy")
+	if f := c.filters["reg/1"]; !f.ForceRecursive || f.SkipMissing || len(f.Architectures) != 0 {
+		t.Errorf("reg/1 must be a plain but recursive copy, got %+v", f)
 	}
 	if len(copied) != 2 {
 		t.Errorf("copied = %v, want both", copied)
@@ -470,7 +471,7 @@ func TestBatchItem_FilterJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !items[0].SkipMissingArchitectures || len(items[0].Architectures) != 2 || items[1].SkipMissingArchitectures || !items[1].filter().IsZero() {
+	if !items[0].SkipMissingArchitectures || len(items[0].Architectures) != 2 || items[1].SkipMissingArchitectures || items[1].filter().SkipMissing || len(items[1].filter().Architectures) != 0 {
 		t.Errorf("items = %+v", items)
 	}
 }
@@ -482,7 +483,7 @@ type prunerFakeClient struct {
 	pruneCalls map[string][]string // dest → retain
 }
 
-func (c *prunerFakeClient) PruneArchitectures(_ context.Context, dest string, retain []string) ([]string, error) {
+func (c *prunerFakeClient) PruneArchitectures(_ context.Context, dest string, _, retain []string) ([]string, error) {
 	c.pruneCalls[dest] = retain
 	if c.pruneErr != nil {
 		return nil, c.pruneErr
@@ -524,6 +525,9 @@ func TestRunBatch_ArchitectureReconcile(t *testing.T) {
 	if len(*copied) != 2 {
 		t.Errorf("copied = %v, want backfill and plain", *copied)
 	}
+	if f := c.filters["reg/plain"]; !f.ForceRecursive {
+		t.Errorf("plain item must copy recursively: %+v", f)
+	}
 	if got := c.pruneCalls["reg/prune"]; len(got) != 2 {
 		t.Errorf("prune retain = %v", got)
 	}
@@ -531,15 +535,19 @@ func TestRunBatch_ArchitectureReconcile(t *testing.T) {
 		t.Error("backfill without PruneRetain must not prune")
 	}
 
-	// Reconcile items ask /should-mirror with reconcile=1.
-	reconcileQueries := 0
+	// Reconcile items ask /should-mirror with reconcile=1, and the prune is
+	// confirmed once more right before deleting.
+	reconcileQueries, pruneConfirms := 0, 0
 	for _, q := range fm.queries {
 		if strings.Contains(q, "reconcile=1") {
 			reconcileQueries++
 		}
+		if strings.Contains(q, "prune=amd64%2Carm64") {
+			pruneConfirms++
+		}
 	}
-	if reconcileQueries != 2 {
-		t.Errorf("reconcile should-mirror queries = %d, want 2 (%v)", reconcileQueries, fm.queries)
+	if reconcileQueries != 3 || pruneConfirms != 1 {
+		t.Errorf("reconcile queries = %d (want 3), prune confirmations = %d (want 1): %v", reconcileQueries, pruneConfirms, fm.queries)
 	}
 
 	reports := fm.reportsByDest()
@@ -602,5 +610,38 @@ func TestStatusClient_ShouldReconcileUnconfigured(t *testing.T) {
 	var s *StatusClient
 	if !s.ShouldReconcile(context.Background(), "d") {
 		t.Error("unconfigured client must answer true")
+	}
+}
+
+// Review #299 P1: a prune the manager no longer confirms (policy removed,
+// another ImageSet needs the architecture) must not delete anything.
+func TestMirrorOne_PruneNotConfirmed(t *testing.T) {
+	fm := newFakeManager(t)
+	fm.denyPrune = true
+	c, _ := newPrunerFake()
+	w := &Worker{Status: fm.status()}
+	if w.mirrorOne(context.Background(), c, BatchItem{Source: "s", Dest: "reg/x", Architectures: []string{"amd64"}, PruneRetain: []string{"amd64"}}) {
+		t.Fatal("expected the reconcile to fail")
+	}
+	if _, pruned := c.pruneCalls["reg/x"]; pruned {
+		t.Error("must not prune without confirmation")
+	}
+	if r := fm.reportsByDest()["reg/x"]; !r.Reconcile || !strings.Contains(r.Error, "did not confirm") {
+		t.Errorf("report = %+v", r)
+	}
+}
+
+func TestStatusClient_ConfirmPruneFailsClosed(t *testing.T) {
+	var s *StatusClient
+	if s.ConfirmPrune(context.Background(), "d", []string{"amd64"}) {
+		t.Error("unconfigured client must not confirm")
+	}
+	unreachable := &StatusClient{ManagerURL: "http://127.0.0.1:1", Token: "t"}
+	if unreachable.ConfirmPrune(context.Background(), "d", []string{"amd64"}) {
+		t.Error("unreachable manager must not confirm")
+	}
+	bad := &StatusClient{ManagerURL: "://bad", Token: "t"}
+	if bad.ConfirmPrune(context.Background(), "d", []string{"amd64"}) {
+		t.Error("bad URL must not confirm")
 	}
 }

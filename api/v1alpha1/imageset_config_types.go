@@ -70,7 +70,7 @@ type Mirror struct {
 	// MirrorExport.
 	// +optional
 	// +listType=set
-	// +kubebuilder:validation:items:Enum=amd64;arm64;ppc64le;s390x;arm;386;riscv64
+	// +kubebuilder:validation:items:Enum=amd64;arm64;ppc64le;s390x;arm;"386";riscv64
 	Architectures []string `json:"architectures,omitempty"`
 	// SkipMissingArchitectures mirrors multi-architecture images whose
 	// manifest list references per-architecture images that do not exist at
