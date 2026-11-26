@@ -384,12 +384,14 @@ func (c *MirrorClient) selectPlatforms(ctx context.Context, src string, f CopyFi
 //
 // The child list is read from the destination, so pruning works even when
 // the source is gone. Never deleted are children without an architecture
-// (e.g. build attestations) and children any tag of the repository points at
+// (e.g. build attestations), children any tag of the repository points at
 // directly — a per-architecture image mirrored on its own (a digest
 // reference under its synthesized sha256-<hex> tag, or a tag such as
-// app:stable-arm64), since deleting the manifest would also remove that tag.
-// retain must cover every architecture that any image in dest's repository
-// still needs. The first failure aborts and is returned.
+// app:stable-arm64) — and children of any other manifest list a tag of the
+// repository points at, whoever owns it: another MirrorTarget or an
+// independent publisher may share the child. retain must cover every
+// architecture that any image of this MirrorTarget in dest's repository still
+// needs. The first failure aborts and is returned.
 func (c *MirrorClient) PruneArchitectures(ctx context.Context, dest string, want, retain []string) (deleted []string, err error) {
 	if len(want) == 0 || len(retain) == 0 {
 		return nil, fmt.Errorf("refusing to prune %s without an architecture selection to keep", dest)
@@ -409,6 +411,10 @@ func (c *MirrorClient) PruneArchitectures(ctx context.Context, dest string, want
 	children, err := idx.GetManifestList()
 	if err != nil {
 		return nil, fmt.Errorf("failed to read manifest list %s: %w", dest, err)
+	}
+	ownDigest := m.GetDescriptor().Digest.String()
+	if ownDigest == "" {
+		return nil, fmt.Errorf("refusing to prune %s: its manifest list digest is unknown", dest)
 	}
 
 	var candidates []descriptor.Descriptor
@@ -437,13 +443,13 @@ func (c *MirrorClient) PruneArchitectures(ctx context.Context, dest string, want
 	if len(candidates) == 0 {
 		return nil, nil
 	}
-	tagged, err := c.taggedDigests(ctx, destRef)
+	protected, err := c.protectedDigests(ctx, destRef, ownDigest)
 	if err != nil {
 		return nil, err
 	}
 	for _, d := range candidates {
-		if tag, ok := tagged[d.Digest.String()]; ok {
-			oclog.Printf("Keeping child %s of %s: tag %s points at it\n", d.Digest, dest, tag)
+		if why, ok := protected[d.Digest.String()]; ok {
+			oclog.Printf("Keeping child %s of %s: %s\n", d.Digest, dest, why)
 			continue
 		}
 		child := destRef.SetDigest(d.Digest.String()).CommonName()
@@ -462,23 +468,45 @@ func (c *MirrorClient) PruneArchitectures(ctx context.Context, dest string, want
 	return deleted, nil
 }
 
-// taggedDigests maps the digest every tag of r's repository points at to one
-// such tag. Any failure is returned: pruning must not guess.
-func (c *MirrorClient) taggedDigests(ctx context.Context, r ref.Ref) (map[string]string, error) {
+// protectedDigests returns the manifests of r's repository that a prune of
+// the manifest list ownDigest must not delete, each with the reason: every
+// manifest a tag points at directly, and every child of another manifest
+// list a tag points at (whoever owns it). Each tag is fetched (GET computes
+// the digest from the content even when a registry omits
+// Docker-Content-Digest); a tag that cannot be resolved to a digest, or any
+// other failure, aborts — pruning must not guess.
+func (c *MirrorClient) protectedDigests(ctx context.Context, r ref.Ref, ownDigest string) (map[string]string, error) {
 	tags, err := c.TagList(ctx, r.SetTag(""))
 	if err != nil {
 		return nil, fmt.Errorf("failed to list tags of %s: %w", r.CommonName(), err)
 	}
-	out := make(map[string]string, len(tags))
+	out := map[string]string{}
 	for _, tag := range tags {
-		m, err := c.ManifestHead(ctx, r.SetTag(tag))
+		m, err := c.ManifestGet(ctx, r.SetTag(tag))
 		if err != nil {
 			if errors.Is(err, errs.ErrNotFound) {
 				continue
 			}
 			return nil, fmt.Errorf("failed to resolve tag %s of %s: %w", tag, r.CommonName(), err)
 		}
-		out[m.GetDescriptor().Digest.String()] = tag
+		dig := m.GetDescriptor().Digest.String()
+		if dig == "" {
+			return nil, fmt.Errorf("failed to resolve tag %s of %s to a digest", tag, r.CommonName())
+		}
+		out[dig] = "tag " + tag + " points at it"
+		idx, ok := m.(manifest.Indexer)
+		if !ok || !m.IsList() || dig == ownDigest {
+			continue
+		}
+		others, err := idx.GetManifestList()
+		if err != nil {
+			return nil, fmt.Errorf("failed to read manifest list %s:%s: %w", r.CommonName(), tag, err)
+		}
+		for _, d := range others {
+			if _, seen := out[d.Digest.String()]; !seen {
+				out[d.Digest.String()] = "the manifest list tagged " + tag + " also references it"
+			}
+		}
 	}
 	return out, nil
 }

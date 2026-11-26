@@ -39,6 +39,11 @@ type StatusRequest struct {
 	// Architectures is the architecture selection the image was mirrored
 	// with (BatchItem.Architectures); empty means all.
 	Architectures []string `json:"architectures,omitempty"`
+	// PruneRetain is set when a reconcile pruned the image: the retain set
+	// it pruned to. Architectures of the image outside Architectures but in
+	// PruneRetain were kept for other images of the repository and may still
+	// be at the destination.
+	PruneRetain []string `json:"pruneRetain,omitempty"`
 }
 
 // StatusClient talks to the manager's worker status API.

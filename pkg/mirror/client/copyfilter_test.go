@@ -630,3 +630,43 @@ func TestPruneArchitectures_KeepsChildrenReferencedByTags(t *testing.T) {
 		t.Errorf("untagged arm64 must be pruned: deleted=%v err=%v", deleted, err)
 	}
 }
+
+// Review #299 (2nd round) P1: another manifest list in the repository —
+// owned by someone else — shares the arm64 child, and it is that list's only
+// platform. Pruning the managed list to amd64 must keep it.
+func TestPruneArchitectures_KeepsChildrenOfOtherTaggedIndexes(t *testing.T) {
+	reg, host := newFakeRegistryServer(t)
+	mc := httpOnlyClient(host)
+	children := mirroredIndex(t, reg, mc, host)
+	other := []byte(fmt.Sprintf(`{"schemaVersion":2,"mediaType":%q,"manifests":[{"mediaType":%q,"digest":%q,"size":100,"platform":{"os":"linux","architecture":"arm64"}}]}`,
+		ociIndexMediaType, ociManifestMediaType, children[1]))
+	reg.seedManifest("dst", "other", ociIndexMediaType, other)
+
+	deleted, err := mc.PruneArchitectures(context.Background(), host+"/dst:v1", []string{"amd64"}, []string{"amd64"})
+	if err != nil || len(deleted) != 0 {
+		t.Fatalf("deleted=%v err=%v", deleted, err)
+	}
+	if !hasManifest(reg, "dst", children[1]) {
+		t.Error("arm64 child shared with dst:other was deleted")
+	}
+}
+
+// Review #299 (2nd round) P1: a registry that omits Docker-Content-Digest
+// must not make a protected tag resolve to an empty digest.
+func TestPruneArchitectures_TagWithoutDigestHeaderStillProtects(t *testing.T) {
+	reg, host := newFakeRegistryServer(t)
+	mc := httpOnlyClient(host)
+	children := mirroredIndex(t, reg, mc, host)
+	tagChild(reg, "dst", "stable-arm64", children[1])
+	reg.mu.Lock()
+	reg.omitDigest = true
+	reg.mu.Unlock()
+
+	deleted, err := mc.PruneArchitectures(context.Background(), host+"/dst:v1", []string{"amd64"}, []string{"amd64"})
+	if err != nil || len(deleted) != 0 {
+		t.Fatalf("deleted=%v err=%v", deleted, err)
+	}
+	if !hasManifest(reg, "dst", "stable-arm64") || !hasManifest(reg, "dst", children[1]) {
+		t.Error("stable-arm64 and its child must survive")
+	}
+}

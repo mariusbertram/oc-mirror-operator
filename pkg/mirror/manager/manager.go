@@ -163,8 +163,12 @@ type MirrorManager struct {
 	// them right before deleting (see handleShouldMirror).
 	pruneArchitectures bool
 	retainArchByRepo   map[string][]string
-	mirrored           map[string]bool       // dest → true once successfully mirrored
-	imageState         imagestate.ImageState // dest → entry, merged across all ImageSets on this target
+	// archPlanGenerations are the generations of this MirrorTarget's
+	// ImageSets that retainArchByRepo was computed from; a prune is only
+	// confirmed while the live ImageSets still match them.
+	archPlanGenerations map[string]int64
+	mirrored            map[string]bool       // dest → true once successfully mirrored
+	imageState          imagestate.ImageState // dest → entry, merged across all ImageSets on this target
 	// owners tracks which ImageSet(s) each destination in imageState currently
 	// belongs to. It is the in-memory analogue of the on-disk partitioning
 	// (each ImageSet's own state ConfigMap + the shared-image index) — kept
@@ -709,7 +713,7 @@ func (m *MirrorManager) handleShouldMirror(w http.ResponseWriter, r *http.Reques
 
 	reconcile := r.URL.Query().Get("reconcile") == "1"
 	if prune, ok := r.URL.Query()["prune"]; ok {
-		m.handleConfirmPrune(w, dest, strings.Split(prune[0], ","))
+		m.handleConfirmPrune(w, r, dest, strings.Split(prune[0], ","))
 		return
 	}
 	if !reconcile && m.queuedSuccess(dest) {
@@ -1498,6 +1502,12 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 	pruneArchitectures := mt.Annotations[mirrorv1alpha1.CleanupPolicyAnnotation] == mirrorv1alpha1.CleanupPolicyDelete
 	wantArchByDest, retainArchByRepo := m.archSelectionsLocked(archByIS)
 	m.pruneArchitectures, m.retainArchByRepo = pruneArchitectures, retainArchByRepo
+	m.archPlanGenerations = make(map[string]int64, len(mt.Spec.ImageSets))
+	for _, is := range imageSets.Items {
+		if containsString(mt.Spec.ImageSets, is.Name) {
+			m.archPlanGenerations[is.Name] = is.Generation
+		}
+	}
 	newOrphans := make(imagestate.ImageState)
 
 	for dest, entry := range m.imageState {

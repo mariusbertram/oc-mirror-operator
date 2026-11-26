@@ -351,6 +351,7 @@ func (w *Worker) mirrorOne(ctx context.Context, c Client, item BatchItem) bool {
 		if err != nil {
 			return fail("failed to prune architectures of", err)
 		}
+		report.PruneRetain = item.PruneRetain
 	}
 
 	oclog.Printf("Copy complete, verifying digest at %s\n", effectiveDest)

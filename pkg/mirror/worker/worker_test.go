@@ -559,6 +559,12 @@ func TestRunBatch_ArchitectureReconcile(t *testing.T) {
 	if r := reports["reg/prune"]; len(r.Architectures) != 1 || r.Architectures[0] != "amd64" {
 		t.Errorf("prune report architectures = %v", r.Architectures)
 	}
+	if r := reports["reg/prune"]; len(r.PruneRetain) != 2 {
+		t.Errorf("prune report must carry the retain set it pruned to: %+v", r)
+	}
+	if r := reports["reg/backfill"]; r.PruneRetain != nil {
+		t.Errorf("backfill report must not claim a prune: %+v", r)
+	}
 	if r := reports["reg/plain"]; r.Reconcile || r.Architectures != nil {
 		t.Errorf("plain report = %+v", r)
 	}

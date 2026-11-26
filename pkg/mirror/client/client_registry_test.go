@@ -45,6 +45,9 @@ type fakeRegistry struct {
 	manifests map[string][]byte // key: "repo:tagOrDigest"
 	mediaType map[string]string // key: "repo:tagOrDigest"
 	blobs     map[string][]byte // key: digest
+	// omitDigest drops Docker-Content-Digest from manifest HEAD/GET
+	// responses, as some registries do.
+	omitDigest bool
 }
 
 func newFakeRegistryHandler() *fakeRegistry {
@@ -295,13 +298,16 @@ func (f *fakeRegistry) headManifest(w http.ResponseWriter, r *http.Request, path
 	f.mu.Lock()
 	body, found := f.manifests[repo+":"+tagOrDigest]
 	mt := f.mediaType[repo+":"+tagOrDigest]
+	omitDigest := f.omitDigest
 	f.mu.Unlock()
 	if !found {
 		http.NotFound(w, r)
 		return
 	}
 	w.Header().Set("Content-Type", mt)
-	w.Header().Set("Docker-Content-Digest", sha256Digest(body))
+	if !omitDigest {
+		w.Header().Set("Docker-Content-Digest", sha256Digest(body))
+	}
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
 	w.WriteHeader(http.StatusOK)
 }
@@ -315,13 +321,16 @@ func (f *fakeRegistry) getManifest(w http.ResponseWriter, r *http.Request, path 
 	f.mu.Lock()
 	body, found := f.manifests[repo+":"+tagOrDigest]
 	mt := f.mediaType[repo+":"+tagOrDigest]
+	omitDigest := f.omitDigest
 	f.mu.Unlock()
 	if !found {
 		http.NotFound(w, r)
 		return
 	}
 	w.Header().Set("Content-Type", mt)
-	w.Header().Set("Docker-Content-Digest", sha256Digest(body))
+	if !omitDigest {
+		w.Header().Set("Docker-Content-Digest", sha256Digest(body))
+	}
 	_, _ = w.Write(body)
 }
 

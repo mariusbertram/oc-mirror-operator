@@ -141,6 +141,8 @@ func TestArchReconcileNeeded(t *testing.T) {
 		{"narrowed without cleanup policy", nil, a("amd64"), false, a("amd64"), false, false},
 		{"narrowed but repo needs all", nil, a("amd64"), true, nil, false, false},
 		{"swapped", a("amd64"), a("arm64"), true, a("arm64"), true, true},
+		{"removed arch still needed in repo", a("amd64", "arm64"), a("amd64"), true, a("amd64", "arm64"), false, false},
+		{"repo need for it went away", a("amd64", "arm64"), a("amd64"), true, a("amd64"), false, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -318,10 +320,11 @@ func TestApplyStatus_ArchitectureReconcile(t *testing.T) {
 		t.Error("expected no reconcile during backoff")
 	}
 
-	// A successful reconcile records the selection and clears the backoff.
-	m.applyStatusLocked(WorkerStatusRequest{Destination: dest, Reconcile: true, Digest: "sha256:x", Architectures: []string{"arm64", "amd64"}})
+	// A successful backfill records old ∪ new and clears the backoff.
+	e.Architectures = []string{"amd64"}
+	m.applyStatusLocked(WorkerStatusRequest{Destination: dest, Reconcile: true, Digest: "sha256:x", Architectures: []string{"arm64"}})
 	if !reflect.DeepEqual(e.Architectures, []string{"amd64", "arm64"}) || e.ArchRetryCount != 0 || e.ArchNextRetryAt != nil {
-		t.Errorf("after success: %+v", e)
+		t.Errorf("after backfill: %+v", e)
 	}
 	// Unknown destinations are ignored.
 	m.applyStatusLocked(WorkerStatusRequest{Destination: "gone", Reconcile: true})
@@ -431,10 +434,9 @@ func TestArchReconcile_SkipsHelmCharts(t *testing.T) {
 	}
 }
 
-// Review #299 P1: a queued prune is confirmed against the current policy and
-// retain set right before the worker deletes anything.
+// Review #299 P1: a queued prune is confirmed against the latest plan and
+// the live cluster right before the worker deletes anything.
 func TestHandleConfirmPrune(t *testing.T) {
-	const dest = "reg.io/ns/app:v1"
 	tests := []struct {
 		name    string
 		prune   bool
@@ -454,31 +456,126 @@ func TestHandleConfirmPrune(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			m := newTestManager("tok", imagestate.ImageState{dest: {State: tt.state}})
+			m := confirmPruneManager(t, tt.state)
 			m.pruneArchitectures = tt.prune
 			m.retainArchByRepo = map[string][]string{}
 			if tt.known {
 				m.retainArchByRepo["reg.io/ns/app"] = tt.current
 			}
-			if got := doConfirmPrune(m, dest, tt.retain); got != tt.want {
+			if got := doConfirmPrune(m, tt.retain); got != tt.want {
 				t.Errorf("code = %d, want %d", got, tt.want)
 			}
 		})
 	}
 
 	t.Run("fails closed while the state is locked", func(t *testing.T) {
-		m := newTestManager("tok", imagestate.ImageState{dest: {State: stateMirrored}})
-		m.pruneArchitectures = true
-		m.retainArchByRepo = map[string][]string{"reg.io/ns/app": {"amd64"}}
+		m := confirmPruneManager(t, stateMirrored)
 		m.mu.Lock()
 		defer m.mu.Unlock()
-		if got := doConfirmPrune(m, dest, "amd64"); got != http.StatusServiceUnavailable {
+		if got := doConfirmPrune(m, "amd64"); got != http.StatusServiceUnavailable {
+			t.Errorf("code = %d, want 503", got)
+		}
+	})
+	t.Run("fails closed without a Kubernetes client", func(t *testing.T) {
+		m := confirmPruneManager(t, stateMirrored)
+		m.Client = nil
+		if got := doConfirmPrune(m, "amd64"); got != http.StatusServiceUnavailable {
 			t.Errorf("code = %d, want 503", got)
 		}
 	})
 }
 
-func doConfirmPrune(m *MirrorManager, dest, retain string) int {
+// Review #299 (2nd round) P1: the cached plan is only refreshed after image
+// resolution, so a revoked policy or changed selection must be caught by
+// reading the live MirrorTarget and ImageSets.
+func TestHandleConfirmPrune_LiveCluster(t *testing.T) {
+	ctx := context.Background()
+	tests := []struct {
+		name   string
+		change func(t *testing.T, m *MirrorManager)
+		want   int
+	}{
+		{"unchanged", func(*testing.T, *MirrorManager) {}, http.StatusOK},
+		{"annotation removed", func(t *testing.T, m *MirrorManager) {
+			mt := &mirrorv1alpha1.MirrorTarget{}
+			mustGet(t, m, "test", mt)
+			delete(mt.Annotations, mirrorv1alpha1.CleanupPolicyAnnotation)
+			if err := m.Client.Update(ctx, mt); err != nil {
+				t.Fatal(err)
+			}
+		}, http.StatusGone},
+		{"ImageSet spec changed", func(t *testing.T, m *MirrorManager) {
+			m.archPlanGenerations["is"]-- // the live ImageSet is now newer than the plan
+		}, http.StatusGone},
+		{"ImageSet added to the target", func(t *testing.T, m *MirrorManager) {
+			mt := &mirrorv1alpha1.MirrorTarget{}
+			mustGet(t, m, "test", mt)
+			mt.Spec.ImageSets = append(mt.Spec.ImageSets, "other")
+			if err := m.Client.Update(ctx, mt); err != nil {
+				t.Fatal(err)
+			}
+		}, http.StatusGone},
+		{"ImageSet swapped", func(t *testing.T, m *MirrorManager) {
+			m.archPlanGenerations = map[string]int64{"gone": 1}
+		}, http.StatusGone},
+		{"ImageSet deleted", func(t *testing.T, m *MirrorManager) {
+			is := &mirrorv1alpha1.ImageSet{}
+			mustGet(t, m, "is", is)
+			if err := m.Client.Delete(ctx, is); err != nil {
+				t.Fatal(err)
+			}
+		}, http.StatusGone},
+		{"MirrorTarget unreadable", func(t *testing.T, m *MirrorManager) {
+			m.TargetName = "missing"
+		}, http.StatusServiceUnavailable},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := confirmPruneManager(t, stateMirrored)
+			tt.change(t, m)
+			if got := doConfirmPrune(m, "amd64"); got != tt.want {
+				t.Errorf("code = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+// confirmDest is the image the prune-confirmation tests ask about.
+const confirmDest = "reg.io/ns/app:v1"
+
+// confirmPruneManager returns a manager whose latest plan allows pruning
+// dest down to amd64, backed by a live MirrorTarget "test" (cleanup-policy
+// Delete) and ImageSet "is" matching the planned generation.
+func confirmPruneManager(t *testing.T, state string) *MirrorManager {
+	t.Helper()
+	const dest = confirmDest
+	m, _ := newReconcileTestManager(t, []string{"is"}, "is")
+	ctx := context.Background()
+	mt := &mirrorv1alpha1.MirrorTarget{}
+	mustGet(t, m, "test", mt)
+	mt.Annotations = map[string]string{mirrorv1alpha1.CleanupPolicyAnnotation: mirrorv1alpha1.CleanupPolicyDelete}
+	if err := m.Client.Update(ctx, mt); err != nil {
+		t.Fatal(err)
+	}
+	is := &mirrorv1alpha1.ImageSet{}
+	mustGet(t, m, "is", is)
+	m.workerToken = "tok"
+	m.imageState = imagestate.ImageState{dest: {State: state}}
+	m.pruneArchitectures = true
+	m.retainArchByRepo = map[string][]string{repoOf(dest): {"amd64"}}
+	m.archPlanGenerations = map[string]int64{"is": is.Generation}
+	return m
+}
+
+func mustGet(t *testing.T, m *MirrorManager, name string, obj client.Object) {
+	t.Helper()
+	if err := m.Client.Get(context.Background(), client.ObjectKey{Name: name, Namespace: "default"}, obj); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func doConfirmPrune(m *MirrorManager, retain string) int {
+	const dest = confirmDest
 	req := httptest.NewRequest(http.MethodGet, "/should-mirror?reconcile=1&dest="+dest+"&prune="+retain, nil)
 	req.Header.Set("Authorization", "Bearer tok")
 	rr := httptest.NewRecorder()
@@ -509,5 +606,54 @@ func TestArchReconcile_ClearsStaleBackoff(t *testing.T) {
 	}
 	if e.ArchRetryCount != 0 || e.ArchNextRetryAt != nil || !m.stateDirty {
 		t.Errorf("stale backoff not cleared: %+v", e)
+	}
+}
+
+// Review #299 (2nd round) P2: an architecture kept for another image of the
+// repository stays recorded, and is pruned once that need goes away.
+func TestArchReconcile_RevisitsDeferredPrune(t *testing.T) {
+	m := NewWithClients(nil, nil, "t", "default", "img", "", runtime.NewScheme())
+	dest := "reg.io/ns/a:v1"
+	e := &imagestate.ImageEntry{Source: "quay.io/a:v1", State: stateMirrored} // mirrored with all
+	m.imageState = imagestate.ImageState{dest: e}
+	m.owners = map[string][]string{dest: {"is"}}
+
+	// A narrows to amd64 while B in the same repository still needs arm64.
+	m.applyStatusLocked(WorkerStatusRequest{Destination: dest, Reconcile: true, Digest: "sha256:x",
+		Architectures: []string{"amd64"}, PruneRetain: []string{"amd64", "arm64"}})
+	if !reflect.DeepEqual(e.Architectures, []string{"amd64", "arm64"}) {
+		t.Fatalf("recorded = %v, want arm64 kept as recorded", e.Architectures)
+	}
+	if _, ok := m.archReconcileItemLocked(dest, e, []string{"amd64"}, false, true, map[string][]string{"reg.io/ns/a": {"amd64", "arm64"}}, time.Now()); ok {
+		t.Error("no prune while B still needs arm64")
+	}
+	// B drops arm64: A is pruned again.
+	item, ok := m.archReconcileItemLocked(dest, e, []string{"amd64"}, false, true, map[string][]string{"reg.io/ns/a": {"amd64"}}, time.Now())
+	if !ok || item.Backfill || !reflect.DeepEqual(item.PruneRetain, []string{"amd64"}) {
+		t.Fatalf("item = %+v ok=%v", item, ok)
+	}
+	m.applyStatusLocked(WorkerStatusRequest{Destination: dest, Reconcile: true, Digest: "sha256:x",
+		Architectures: []string{"amd64"}, PruneRetain: []string{"amd64"}})
+	if !reflect.DeepEqual(e.Architectures, []string{"amd64"}) {
+		t.Errorf("recorded = %v, want amd64", e.Architectures)
+	}
+}
+
+func TestArchSetHelpers(t *testing.T) {
+	a := func(s ...string) []string { return s }
+	if unionArchs(nil, a("x")) != nil || unionArchs(a("x"), nil) != nil {
+		t.Error("union with all is all")
+	}
+	if got := unionArchs(a("amd64"), a("arm64", "amd64")); !reflect.DeepEqual(got, a("amd64", "arm64")) {
+		t.Errorf("union = %v", got)
+	}
+	if got := intersectArchs(nil, a("amd64")); !reflect.DeepEqual(got, a("amd64")) {
+		t.Errorf("intersect(all, x) = %v", got)
+	}
+	if got := intersectArchs(a("amd64", "s390x"), nil); !reflect.DeepEqual(got, a("amd64", "s390x")) {
+		t.Errorf("intersect(x, all) = %v", got)
+	}
+	if got := intersectArchs(a("amd64", "s390x"), a("s390x", "arm64")); !reflect.DeepEqual(got, a("s390x")) {
+		t.Errorf("intersect = %v", got)
 	}
 }

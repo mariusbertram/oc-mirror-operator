@@ -1,12 +1,19 @@
 package manager
 
 import (
+	"context"
+	"fmt"
+	"maps"
 	"net/http"
 	"slices"
 	"sort"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	mirrorv1alpha1 "github.com/mariusbertram/oc-mirror-operator/api/v1alpha1"
 
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror"
 	"github.com/mariusbertram/oc-mirror-operator/pkg/mirror/imagestate"
@@ -128,13 +135,47 @@ func covers(have, need []string) bool {
 }
 
 // archReconcileNeeded decides what a Mirrored image recorded with the
-// architectures recorded needs now that its selection is want: backfill when
-// want has an architecture beyond recorded; prune (only with pruneEnabled and
-// a retain set for the repository) when recorded has one beyond want.
+// architectures recorded (what its destination may still hold) needs now that
+// its selection is want: backfill when want has an architecture beyond
+// recorded; prune (only with pruneEnabled and a retain set for the
+// repository) when recorded has one the repository no longer needs. An
+// architecture another image of the repository still needs stays recorded
+// after a prune, so it is pruned once that need goes away.
 func archReconcileNeeded(recorded, want []string, pruneEnabled bool, retain []string) (backfill, prune bool) {
 	backfill = !covers(recorded, want)
-	prune = pruneEnabled && want != nil && len(retain) > 0 && !covers(want, recorded)
+	prune = pruneEnabled && want != nil && len(retain) > 0 && !covers(retain, recorded)
 	return backfill, prune
+}
+
+// unionArchs returns a ∪ b for architecture selections (nil = all).
+func unionArchs(a, b []string) []string {
+	if a == nil || b == nil {
+		return nil
+	}
+	out := slices.Clone(a)
+	for _, x := range b {
+		if !slices.Contains(out, x) {
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
+// intersectArchs returns a ∩ b for architecture selections (nil = all).
+func intersectArchs(a, b []string) []string {
+	if a == nil {
+		return slices.Clone(b)
+	}
+	if b == nil {
+		return slices.Clone(a)
+	}
+	out := []string{}
+	for _, x := range a {
+		if slices.Contains(b, x) {
+			out = append(out, x)
+		}
+	}
+	return out
 }
 
 // archReconcileItemLocked returns the batch item reconciling the Mirrored
@@ -175,27 +216,83 @@ func (m *MirrorManager) archReconcileItemLocked(dest string, entry *imagestate.I
 }
 
 // handleConfirmPrune answers a worker's confirmation, right before deleting,
-// that removing dest's children outside retain is still allowed: dest must
-// still be Mirrored, the cleanup policy must still be Delete, and retain must
-// cover every architecture dest's repository needs as of the latest tick
-// (another ImageSet may have started to need an architecture since the plan
-// was made). It fails closed — 503 when the state cannot be read in time —
-// because the deletion cannot be undone.
-func (m *MirrorManager) handleConfirmPrune(w http.ResponseWriter, dest string, retain []string) {
+// that removing dest's children outside retain is still allowed. It must
+// still hold for the plan the manager last computed — dest Mirrored, the
+// cleanup policy Delete, and retain covering every architecture dest's
+// repository needs — and for the live cluster: the MirrorTarget must still
+// carry cleanup-policy=Delete and reference the same ImageSets, each at the
+// generation the plan was computed from. The cached plan alone is not enough:
+// it is only refreshed after image resolution, which can take long, so a
+// revoked policy or a changed selection would otherwise go unnoticed. It
+// fails closed — 410 when the plan is stale, 503 when the state cannot be
+// read — because the deletion cannot be undone.
+func (m *MirrorManager) handleConfirmPrune(w http.ResponseWriter, r *http.Request, dest string, retain []string) {
 	if !m.tryRLockFor(shouldMirrorLockWait) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return
 	}
-	defer m.mu.RUnlock()
 	entry, ok := m.imageState[dest]
+	mirrored := ok && entry.State == stateMirrored
 	current, known := m.retainArchByRepo[repoOf(dest)]
-	if !ok || entry.State != stateMirrored || !m.pruneArchitectures || !known || current == nil || !covers(retain, current) {
+	prune := m.pruneArchitectures
+	generations := maps.Clone(m.archPlanGenerations)
+	m.mu.RUnlock()
+
+	if !mirrored || !prune || !known || current == nil || !covers(retain, current) {
 		oclog.Printf("Refusing prune of %s: plan keeps %v, repository now needs %v (cleanup-policy Delete: %v)\n",
-			dest, retain, archList(current), m.pruneArchitectures)
+			dest, retain, archList(current), prune)
+		w.WriteHeader(http.StatusGone)
+		return
+	}
+	if m.Client == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), shouldMirrorLockWait)
+	defer cancel()
+	if stale, err := m.prunePlanStale(ctx, generations); err != nil {
+		oclog.Printf("Cannot confirm prune of %s: %v\n", dest, err)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	} else if stale != "" {
+		oclog.Printf("Refusing prune of %s: %s\n", dest, stale)
 		w.WriteHeader(http.StatusGone)
 		return
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+// prunePlanStale checks the live MirrorTarget and ImageSets against the
+// state a prune plan was computed from and says why the plan is stale, or ""
+// if it still holds.
+func (m *MirrorManager) prunePlanStale(ctx context.Context, generations map[string]int64) (string, error) {
+	mt := &mirrorv1alpha1.MirrorTarget{}
+	if err := m.Client.Get(ctx, client.ObjectKey{Name: m.TargetName, Namespace: m.Namespace}, mt); err != nil {
+		return "", fmt.Errorf("get MirrorTarget: %w", err)
+	}
+	if mt.Annotations[mirrorv1alpha1.CleanupPolicyAnnotation] != mirrorv1alpha1.CleanupPolicyDelete {
+		return "cleanup-policy is no longer Delete", nil
+	}
+	if len(mt.Spec.ImageSets) != len(generations) {
+		return "the MirrorTarget's ImageSets changed", nil
+	}
+	for _, name := range mt.Spec.ImageSets {
+		planned, ok := generations[name]
+		if !ok {
+			return "ImageSet " + name + " was added", nil
+		}
+		is := &mirrorv1alpha1.ImageSet{}
+		if err := m.Client.Get(ctx, client.ObjectKey{Name: name, Namespace: m.Namespace}, is); err != nil {
+			if apierrors.IsNotFound(err) {
+				return "ImageSet " + name + " was deleted", nil
+			}
+			return "", fmt.Errorf("get ImageSet %s: %w", name, err)
+		}
+		if is.Generation != planned {
+			return fmt.Sprintf("ImageSet %s changed (generation %d, planned with %d)", name, is.Generation, planned), nil
+		}
+	}
+	return "", nil
 }
 
 // archList renders an architecture selection for logs.
@@ -218,7 +315,13 @@ func (m *MirrorManager) applyReconcileStatusLocked(req WorkerStatusRequest) {
 		m.archBackoffLocked(entry)
 		return
 	}
-	m.recordArchitecturesLocked(entry, req.Architectures)
+	// What the destination may still hold: the new selection, plus what it
+	// held before — minus, after a prune, what the prune removed.
+	kept := entry.Architectures
+	if req.PruneRetain != nil {
+		kept = intersectArchs(entry.Architectures, req.PruneRetain)
+	}
+	m.recordArchitecturesLocked(entry, unionArchs(req.Architectures, kept))
 }
 
 // recordArchitecturesLocked records the architecture selection entry was

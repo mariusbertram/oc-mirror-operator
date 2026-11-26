@@ -447,17 +447,22 @@ digest does not change:
 
 Deleting is careful:
 
-- An architecture is only removed from an image when no other image in the same
-  repository still selects it (manifest lists in one repository can share
-  per-architecture images).
+- An architecture is only removed from an image when no other image of the
+  `MirrorTarget` in the same repository still selects it (manifest lists in one
+  repository can share per-architecture images). Once that other image stops selecting
+  it, the architecture is removed in a later reconcile.
 - Nothing is deleted unless at least one of the image's selected architectures exists at
   the destination, so an image never ends up without a pullable platform.
-- Entries without a platform, such as build attestations, are kept, and so is every
+- Entries without a platform, such as build attestations, are kept. So is every
   per-architecture image a tag of the repository points at directly (a digest a bundle
-  references, or a tag such as `app:stable-arm64`).
-- Right before deleting, the worker asks the manager to confirm the plan against the
-  current cleanup policy and selections; without a confirmation nothing is deleted and
-  the reconcile is retried with a fresh plan.
+  references, or a tag such as `app:stable-arm64`), and every per-architecture image
+  another tagged manifest list of the repository references — whoever owns it. Shared
+  per-architecture images are therefore never removed.
+- Right before deleting, the worker asks the manager to confirm the plan. The manager
+  re-reads the `MirrorTarget` and its `ImageSet`s from the cluster: if the cleanup
+  policy was removed or any `ImageSet` changed since the plan was made, nothing is
+  deleted and the reconcile is retried with a fresh plan. Without a confirmation (no
+  answer, an error) nothing is deleted either.
 
 The registry frees the space only on its next garbage collection; Quay may keep
 per-architecture images alive as long as a manifest list references them.
