@@ -7,30 +7,108 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.1.13] - 2026-11-26
+
 ### Added
 - `ImageSet.spec.mirror.architectures` copies only the listed CPU
-  architectures of every multi-arch image, and
-  `ImageSet.spec.mirror.skipMissingArchitectures` leaves out manifest-list
-  entries that do not exist at the source (e.g. Confluent's
-  `cp-kafka-rest` index listing an s390x image that answers 404), which
-  previously failed the whole copy. In both cases the manifest list is pushed
-  unchanged, so its digest and the IDMS/ITMS mappings stay valid; the target
-  registry must accept sparse manifest lists (Quay: `FEATURE_SPARSE_INDEX`).
-  Changing `architectures` later reconciles images already mirrored while
-  they stay `Mirrored` (and in IDMS/ITMS): added architectures are copied,
-  removed ones are deleted at the destination when the MirrorTarget has
-  `cleanup-policy=Delete`. Each image records the selection it was mirrored
-  with in the image state. Image copies are recursive, so a copy into a
-  destination that already holds the manifest list (e.g. a sparser earlier
-  mirror) still adds the missing children.
+  architectures (`amd64`, `arm64`, `ppc64le`, `s390x`, `arm`, `386`,
+  `riscv64`) of every multi-arch image (#299). Windows entries of a selected
+  architecture are kept; entries without a platform (build attestations) are
+  dropped.
+- `ImageSet.spec.mirror.skipMissingArchitectures` leaves out manifest-list
+  entries that do not exist at the source instead of failing the whole copy
+  — e.g. Confluent's `cp-kafka-rest` in the Red Hat certified catalog lists
+  an s390x image that answers 404 (#299).
+- In both cases the manifest list is pushed byte for byte, so its digest and
+  the IDMS/ITMS mappings stay valid. The destination then holds a sparse
+  manifest list, which the target registry must accept (Quay:
+  `FEATURE_SPARSE_INDEX`; distribution:
+  `validation.manifests.indexes.platforms`). Each image records in the image
+  state the architectures it was mirrored with.
+- Changing `architectures` later reconciles images that are already
+  mirrored, while they stay `Mirrored` and in the IDMS/ITMS (#299):
+  architectures added to the selection are copied, and architectures removed
+  from it are deleted at the destination when the MirrorTarget has
+  `mirror.openshift.io/cleanup-policy: Delete`. Deleting is conservative:
+  - Nothing is deleted unless one of the image's own architectures exists at
+    the destination.
+  - Nothing another image of the MirrorTarget in the same repository still
+    selects is deleted; once it no longer does, a later reconcile removes it.
+  - Per-architecture images any tag points at directly, or that another
+    tagged manifest list references (including nested indexes and alias
+    tags of the same list, whoever owns them), are kept.
+  - The worker confirms the plan with the manager right before deleting; the
+    manager re-reads the MirrorTarget and its ImageSets (UID and generation)
+    and refuses if the cleanup policy was removed or an ImageSet changed.
+    Without a confirmation nothing is deleted.
+  - A failed reconcile backs off on its own; the image's state, error and
+    retry count are untouched.
 - Cosign attestations (`sha256-<digest>.att`) and attached SBOMs
-  (`sha256-<digest>.sbom`) are now mirrored best-effort alongside the
-  `.sig` signature tag.
+  (`sha256-<digest>.sbom`) are mirrored best-effort alongside the `.sig`
+  signature tag (#299).
+
+### Changed
+- Image copies are recursive (regclient `ImageWithForceRecursive`): a copy
+  into a destination that already holds the manifest list (e.g. an earlier,
+  sparser mirror) still copies the missing children instead of reporting
+  success (#299).
+- `github.com/sigstore/sigstore` 1.11.4 (#300) and a refreshed
+  `distroless/static:nonroot` base image (#302).
 
 ### Fixed
-- Cosign tags (`.sig`, `.att`, `.sbom`) are now also mirrored for images
+- Cosign tags (`.sig`, `.att`, `.sbom`) are also mirrored for images
   referenced by tag (e.g. additional images); previously they were only
-  copied when the source was given by digest.
+  copied when the source was given by digest (#299).
+
+## [v0.1.12] - 2026-11-25
+
+### Added
+- `MirrorTarget.spec.acsScannerDB.versions` publishes several Scanner V4
+  bundles, one per Central version (e.g. `["4.10.3", "4.11.0"]`), each under
+  its own tag; combined with `version`, deduplicated, up to 10 (#295).
+- After publishing, the scanner DB publisher deletes the superseded manifest
+  by digest — only if it carries the scanner DB `artifactType` and no other
+  tag points to it. Upstream refreshes the bundles about every three hours,
+  and each refresh used to leave a 0.6–1.5 GB untagged layer behind (#295).
+- The publisher logs its configuration, each sync phase, transfer progress
+  every 30 s and the time of the next check (#295).
+- Docs: a CronJob example that imports the bundle into Central with ORAS and
+  `roxctl scanner upload-db`, plus sections on several versions, retention
+  and registry GC (#295).
+
+### Fixed
+- The `acs-scanner-db` subcommand of the unified binary discarded all log
+  output because it never set the logger (#295).
+
+## [v0.1.11] - 2026-11-24
+
+### Added
+- `MirrorTarget.spec.acsScannerDB` publishes the RHACS offline vulnerability
+  database as an OCI artifact (a ZIP layer) at
+  `<registry>/rhacs/scanner-db:<version>`, for disconnected Central (#294).
+  The publisher checks on startup and hourly, independently of ImageSet
+  polling, uses conditional HTTP requests and skips unchanged bundles.
+- Release images — controller, manager, worker, console plugins and bundle,
+  manifest lists and platform manifests — are signed keyless with Sigstore
+  cosign; the GitHub release shows a `cosign verify` example (#292).
+
+### Fixed
+- OLM bundle generation on macOS, and the documented minimum poll interval
+  (#294).
+
+## [v0.1.10] - 2026-11-19
+
+### Fixed
+- Release pipeline: the catalog PR steps for the private and Red Hat
+  catalogs, the operatorhub.io package logo that broke its version
+  detection (#280), and an automatically generated FBC
+  `release-config.yaml` for the Red Hat catalog PRs, mapping OpenShift
+  4.18–4.22 (channel `alpha`) and 5.0 (`Candidate`) (#282).
+
+### Changed
+- Go 1.27.4 and UI npm security updates (#291); Go module, Docker and
+  `distroless/static` bumps (#283, #284, #288, #289); `serialize-javascript`
+  7.1.4 in the UI (#281).
 
 ## [v0.1.9] - 2026-10-30
 
@@ -1076,7 +1154,16 @@ v0.0.13; its entries are merged into this section.
 - **E2E test suite**: Ginkgo/Gomega end-to-end tests for a KinD cluster
   covering the full mirroring lifecycle.
 
-[Unreleased]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.1.13...HEAD
+[v0.1.13]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.1.12...v0.1.13
+[v0.1.12]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.1.11...v0.1.12
+[v0.1.11]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.1.10...v0.1.11
+[v0.1.10]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.1.9...v0.1.10
+[v0.1.9]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.1.8...v0.1.9
+[v0.1.8]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.1.7...v0.1.8
+[v0.1.7]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.1.6...v0.1.7
+[v0.1.6]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.1.5...v0.1.6
+[v0.1.5]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.1.4...v0.1.5
 [v0.1.4]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.1.3...v0.1.4
 [v0.1.3]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.1.2...v0.1.3
 [v0.1.2]: https://github.com/mariusbertram/oc-mirror-operator/compare/v0.1.0...v0.1.2

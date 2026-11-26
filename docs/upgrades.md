@@ -82,6 +82,26 @@ layout changed).
 Only versions with user-visible changes are listed; see [CHANGELOG.md](../CHANGELOG.md)
 for everything else.
 
+### v0.1.13 — architecture selection
+
+New optional fields `spec.mirror.architectures` and `spec.mirror.skipMissingArchitectures`
+on ImageSets; without them nothing changes. Existing images are recorded as mirrored with
+all architectures. Two things to know before setting `architectures` on an existing
+ImageSet:
+
+- If the MirrorTarget has `mirror.openshift.io/cleanup-policy: Delete`, the
+  per-architecture images that are no longer selected are **deleted** from the target
+  registry (shared ones and ones a tag points at are kept). Without the annotation
+  nothing is deleted.
+- The target registry must accept sparse manifest lists (Quay: `FEATURE_SPARSE_INDEX`),
+  otherwise those copies fail with an error naming the copied platforms.
+
+Image copies are now recursive: re-mirroring an image whose manifest list already exists
+at the target checks and completes its children instead of skipping it. After a rollback,
+older managers drop the new image state fields; upgrading again then treats every image
+as mirrored with all architectures, which only matters together with
+`cleanup-policy: Delete` (unselected architectures are pruned again where present).
+
 ### v0.1.0 — modular images
 
 The single `oc-mirror-operator` image with subcommands was split into

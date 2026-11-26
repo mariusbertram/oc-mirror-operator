@@ -102,7 +102,16 @@ A `/status` report is queued and acknowledged at once, without waiting for a rec
 tick that may be blocked on the Kubernetes API; the queue is applied as soon as the
 manager's state lock is free, and always before a finished worker pod is processed.
 `/should-mirror` answers from the queue for an already reported image and fails open
-(`200`) if the state lock stays busy for 2 s.
+(`200`) if the state lock stays busy for 2 s. Two variants serve architecture reconciles
+(see [Configuring ImageSets → Changing `architectures`
+later](configuration/imagesets.md#changing-architectures-later)): `reconcile=1` asks
+whether a `Mirrored` image should still be reconciled, and `reconcile=1&prune=<archs>`
+confirms a prune plan right before the worker deletes anything. The confirmation fails
+closed: it answers `200` only if the image is still `Mirrored`, the MirrorTarget still
+carries `cleanup-policy: Delete`, its ImageSets are still at the UID and generation the
+plan was computed from (read live from the API server), and the plan keeps every
+architecture the repository needs; otherwise `410`, and `503` when the state cannot be
+read.
 
 ## Workers
 
@@ -112,13 +121,24 @@ order (see [Blob replication planning](#blob-replication-planning)), and for eac
 
 1. `GET /should-mirror?dest=…` — skip if the manager answers `410 Gone` (image removed
    from the spec or already mirrored).
-2. Copy with regclient (`ImageCopy` with referrers), streaming every layer from source to
+2. Copy with regclient (`ImageCopy`, recursive, so children missing from a manifest list
+   that already exists at the target are still copied; limited to the ImageSet's
+   `architectures` and, with `skipMissingArchitectures`, to the children that exist at
+   the source — the list itself is pushed unchanged), streaming every layer from source to
    target: layers ≤ 100 MiB with a monolithic `PUT`, larger ones as a chunked upload of
    16 MiB `PATCH`es (bounded memory, no disk). Two attempts, 20 min each; the second
    attempt falls back to buffering layers > 100 MiB on `/tmp/blob-buffer` and pushing
    them with monolithic `PUT`s. Cosign `sha256-<digest>.sig`, `.att` and `.sbom` tags are copied best-effort.
 3. `HEAD` the pushed manifest to verify the digest.
-4. `POST /status` with the result (three attempts).
+4. `POST /status` with the result (three attempts), including the architecture selection
+   the image was mirrored with.
+
+A batch item can also be an architecture reconcile of an image that is already
+`Mirrored` (its ImageSets' `architectures` changed): the worker checks with
+`should-mirror?reconcile=1`, copies the newly selected children (backfill), and for a
+prune confirms the plan and deletes the children outside it. Its report carries
+`reconcile: true`, so a failure only backs off the reconcile and never changes the
+image's state.
 
 The registry client is recreated every 20 images to keep the accumulated bearer-token
 scope below Quay's 8 KB header limit. A pod exits 0 even if images failed; failure is
