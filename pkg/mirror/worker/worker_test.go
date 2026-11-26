@@ -7,17 +7,22 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
+
+	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
 )
 
 // fakeManager is an httptest stand-in for the manager's status API.
 type fakeManager struct {
-	mu       sync.Mutex
-	gone     map[string]bool // dests answered with 410 on /should-mirror
-	reports  []StatusRequest
-	failNext int // number of /status requests to answer with 500
-	srv      *httptest.Server
+	mu        sync.Mutex
+	gone      map[string]bool // dests answered with 410 on /should-mirror
+	reports   []StatusRequest
+	failNext  int      // number of /status requests to answer with 500
+	queries   []string // raw queries of /should-mirror requests
+	denyPrune bool     // answer prune confirmations with 410
+	srv       *httptest.Server
 }
 
 func newFakeManager(t *testing.T) *fakeManager {
@@ -32,7 +37,8 @@ func newFakeManager(t *testing.T) *fakeManager {
 		defer fm.mu.Unlock()
 		switch r.URL.Path {
 		case "/should-mirror":
-			if fm.gone[r.URL.Query().Get("dest")] {
+			fm.queries = append(fm.queries, r.URL.RawQuery)
+			if fm.gone[r.URL.Query().Get("dest")] || (fm.denyPrune && r.URL.Query().Get("prune") != "") {
 				w.WriteHeader(http.StatusGone)
 				return
 			}
@@ -380,4 +386,310 @@ func TestImageBudget(t *testing.T) {
 	if want := 42*60 + 15; int(ImageBudget.Seconds()) != want {
 		t.Fatalf("ImageBudget = %s", ImageBudget)
 	}
+}
+
+// skipMissingFakeClient records which copy path the worker chose per dest.
+type skipMissingFakeClient struct {
+	bufferedFakeClient
+	skipCalls map[string][]bool // dest → buffered flag of each filtered call
+	filters   map[string]mirrorclient.CopyFilter
+	skipped   []string
+}
+
+func (c *skipMissingFakeClient) CopyImageFiltered(ctx context.Context, src, dest string, f mirrorclient.CopyFilter, buffered bool) (string, []string, error) {
+	c.skipCalls[dest] = append(c.skipCalls[dest], buffered)
+	if c.filters != nil {
+		c.filters[dest] = f
+	}
+	eff, err := c.fakeClient.CopyImage(ctx, src, dest)
+	return eff, c.skipped, err
+}
+
+func TestRunBatch_SkipMissingArchitecturesPerItem(t *testing.T) {
+	fm := newFakeManager(t)
+	var copied []string
+	c := &skipMissingFakeClient{
+		bufferedFakeClient: bufferedFakeClient{fakeClient: fakeClient{
+			copyErrs: map[string][]error{}, digestErr: map[string]error{}, copied: &copied,
+		}},
+		skipCalls: map[string][]bool{},
+		filters:   map[string]mirrorclient.CopyFilter{},
+		skipped:   []string{"linux/s390x sha256:abc"},
+	}
+	w := &Worker{
+		NewClient: func(string) Client { return c },
+		Status:    fm.status(),
+		// Reverse the order to check the flag follows its dest, not its index.
+		Plan: func(_ context.Context, _ Client, s, d []string) ([]string, []string) {
+			return []string{s[1], s[0]}, []string{d[1], d[0]}
+		},
+	}
+	w.RunBatch(context.Background(), []BatchItem{
+		{Source: "src/0", Dest: "reg/0", SkipMissingArchitectures: true, Architectures: []string{"amd64"}},
+		{Source: "src/1", Dest: "reg/1"},
+	})
+	if f := c.filters["reg/0"]; !f.SkipMissing || len(f.Architectures) != 1 || f.Architectures[0] != "amd64" {
+		t.Errorf("reg/0 filter = %+v", f)
+	}
+	if got := c.skipCalls["reg/0"]; len(got) != 1 || got[0] {
+		t.Errorf("reg/0 skip-missing calls = %v, want one streamed call", got)
+	}
+	if f := c.filters["reg/1"]; !f.ForceRecursive || f.SkipMissing || len(f.Architectures) != 0 {
+		t.Errorf("reg/1 must be a plain but recursive copy, got %+v", f)
+	}
+	if len(copied) != 2 {
+		t.Errorf("copied = %v, want both", copied)
+	}
+	reports := fm.reportsByDest()
+	if reports["reg/0"].Error != "" || reports["reg/1"].Error != "" {
+		t.Errorf("reports = %v, want both successful", reports)
+	}
+}
+
+func TestMirrorOne_SkipMissingUsesBufferedOnLastAttempt(t *testing.T) {
+	fm := newFakeManager(t)
+	var copied []string
+	c := &skipMissingFakeClient{
+		bufferedFakeClient: bufferedFakeClient{fakeClient: fakeClient{
+			copyErrs:  map[string][]error{"reg/0": {errors.New("BLOB_UPLOAD_UNKNOWN")}},
+			digestErr: map[string]error{},
+			copied:    &copied,
+		}},
+		skipCalls: map[string][]bool{},
+	}
+	w := &Worker{Status: fm.status()}
+	if !w.mirrorOne(context.Background(), c, BatchItem{Source: "src/0", Dest: "reg/0", SkipMissingArchitectures: true}) {
+		t.Fatal("mirrorOne failed")
+	}
+	if got := c.skipCalls["reg/0"]; len(got) != 2 || got[0] || !got[1] {
+		t.Errorf("skip-missing calls = %v, want [streamed, buffered]", got)
+	}
+}
+
+func TestBatchItem_FilterJSON(t *testing.T) {
+	items, err := ParseBatch(`[{"source":"s","dest":"d","skipMissingArchitectures":true,"architectures":["amd64","arm64"]},{"source":"s2","dest":"d2"}]`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !items[0].SkipMissingArchitectures || len(items[0].Architectures) != 2 || items[1].SkipMissingArchitectures || items[1].filter().SkipMissing || len(items[1].filter().Architectures) != 0 {
+		t.Errorf("items = %+v", items)
+	}
+}
+
+// prunerFakeClient adds PruneArchitectures to skipMissingFakeClient.
+type prunerFakeClient struct {
+	skipMissingFakeClient
+	pruneErr     error
+	partialPrune bool                // with pruneErr: something was deleted first
+	pruneCalls   map[string][]string // dest → retain
+}
+
+func (c *prunerFakeClient) PruneArchitectures(_ context.Context, dest string, _, retain []string) ([]string, error) {
+	c.pruneCalls[dest] = retain
+	if c.pruneErr != nil {
+		if c.partialPrune {
+			return []string{"linux/arm64 sha256:abc"}, c.pruneErr
+		}
+		return nil, c.pruneErr
+	}
+	return []string{"linux/s390x sha256:abc"}, nil
+}
+
+func newPrunerFake() (*prunerFakeClient, *[]string) {
+	var copied []string
+	return &prunerFakeClient{
+		skipMissingFakeClient: skipMissingFakeClient{
+			bufferedFakeClient: bufferedFakeClient{fakeClient: fakeClient{
+				copyErrs: map[string][]error{}, digestErr: map[string]error{}, copied: &copied,
+			}},
+			skipCalls: map[string][]bool{},
+			filters:   map[string]mirrorclient.CopyFilter{},
+		},
+		pruneCalls: map[string][]string{},
+	}, &copied
+}
+
+func TestRunBatch_ArchitectureReconcile(t *testing.T) {
+	fm := newFakeManager(t)
+	c, copied := newPrunerFake()
+	w := &Worker{NewClient: func(string) Client { return c }, Status: fm.status()}
+	w.RunBatch(context.Background(), []BatchItem{
+		{Source: "src/backfill", Dest: "reg/backfill", Architectures: []string{"amd64", "arm64"}, Backfill: true},
+		{Source: "src/prune", Dest: "reg/prune", Architectures: []string{"amd64"}, PruneRetain: []string{"amd64", "arm64"}},
+		{Source: "src/plain", Dest: "reg/plain"},
+	})
+
+	// Backfill copies with ForceRecursive, prune-only does not copy.
+	if f := c.filters["reg/backfill"]; !f.ForceRecursive || len(f.Architectures) != 2 {
+		t.Errorf("backfill filter = %+v", f)
+	}
+	if _, ok := c.filters["reg/prune"]; ok {
+		t.Error("prune-only reconcile must not copy")
+	}
+	if len(*copied) != 2 {
+		t.Errorf("copied = %v, want backfill and plain", *copied)
+	}
+	if f := c.filters["reg/plain"]; !f.ForceRecursive {
+		t.Errorf("plain item must copy recursively: %+v", f)
+	}
+	if got := c.pruneCalls["reg/prune"]; len(got) != 2 {
+		t.Errorf("prune retain = %v", got)
+	}
+	if _, ok := c.pruneCalls["reg/backfill"]; ok {
+		t.Error("backfill without PruneRetain must not prune")
+	}
+
+	// Reconcile items ask /should-mirror with reconcile=1, and the prune is
+	// confirmed once more right before deleting.
+	reconcileQueries, pruneConfirms := 0, 0
+	for _, q := range fm.queries {
+		if strings.Contains(q, "reconcile=1") {
+			reconcileQueries++
+		}
+		if strings.Contains(q, "prune=amd64%2Carm64") {
+			pruneConfirms++
+		}
+	}
+	if reconcileQueries != 3 || pruneConfirms != 1 {
+		t.Errorf("reconcile queries = %d (want 3), prune confirmations = %d (want 1): %v", reconcileQueries, pruneConfirms, fm.queries)
+	}
+
+	reports := fm.reportsByDest()
+	for _, d := range []string{"reg/backfill", "reg/prune"} {
+		if r := reports[d]; !r.Reconcile || r.Error != "" || r.Digest == "" {
+			t.Errorf("%s report = %+v", d, r)
+		}
+	}
+	if r := reports["reg/prune"]; len(r.Architectures) != 1 || r.Architectures[0] != "amd64" {
+		t.Errorf("prune report architectures = %v", r.Architectures)
+	}
+	if r := reports["reg/prune"]; len(r.PruneRetain) != 2 {
+		t.Errorf("prune report must carry the retain set it pruned to: %+v", r)
+	}
+	if r := reports["reg/backfill"]; r.PruneRetain != nil {
+		t.Errorf("backfill report must not claim a prune: %+v", r)
+	}
+	if r := reports["reg/plain"]; r.Reconcile || r.Architectures != nil {
+		t.Errorf("plain report = %+v", r)
+	}
+}
+
+func TestMirrorOne_ReconcileFailures(t *testing.T) {
+	t.Run("prune error", func(t *testing.T) {
+		fm := newFakeManager(t)
+		c, _ := newPrunerFake()
+		c.pruneErr = errors.New("DELETE not allowed")
+		w := &Worker{Status: fm.status()}
+		if w.mirrorOne(context.Background(), c, BatchItem{Source: "s", Dest: "reg/x", PruneRetain: []string{"amd64"}}) {
+			t.Fatal("expected failure")
+		}
+		if r := fm.reportsByDest()["reg/x"]; !r.Reconcile || !strings.Contains(r.Error, "DELETE not allowed") {
+			t.Errorf("report = %+v", r)
+		}
+	})
+	t.Run("client cannot prune", func(t *testing.T) {
+		fm := newFakeManager(t)
+		var copied []string
+		c := &fakeClient{copyErrs: map[string][]error{}, digestErr: map[string]error{}, copied: &copied}
+		w := &Worker{Status: fm.status()}
+		if w.mirrorOne(context.Background(), c, BatchItem{Source: "s", Dest: "reg/x", PruneRetain: []string{"amd64"}}) {
+			t.Fatal("expected failure")
+		}
+		if r := fm.reportsByDest()["reg/x"]; !r.Reconcile || r.Error == "" {
+			t.Errorf("report = %+v", r)
+		}
+	})
+	t.Run("backfill copy error", func(t *testing.T) {
+		fm := newFakeManager(t)
+		c, _ := newPrunerFake()
+		c.copyErrs["reg/x"] = []error{errors.New("a"), errors.New("b")}
+		w := &Worker{Status: fm.status()}
+		if w.mirrorOne(context.Background(), c, BatchItem{Source: "s", Dest: "reg/x", Backfill: true, PruneRetain: []string{"amd64"}}) {
+			t.Fatal("expected failure")
+		}
+		if _, pruned := c.pruneCalls["reg/x"]; pruned {
+			t.Error("must not prune after a failed backfill")
+		}
+		if r := fm.reportsByDest()["reg/x"]; !r.Reconcile || r.Error == "" {
+			t.Errorf("report = %+v", r)
+		}
+	})
+}
+
+func TestStatusClient_ShouldReconcileUnconfigured(t *testing.T) {
+	var s *StatusClient
+	if !s.ShouldReconcile(context.Background(), "d") {
+		t.Error("unconfigured client must answer true")
+	}
+}
+
+// Review #299 P1: a prune the manager no longer confirms (policy removed,
+// another ImageSet needs the architecture) must not delete anything.
+func TestMirrorOne_PruneNotConfirmed(t *testing.T) {
+	fm := newFakeManager(t)
+	fm.denyPrune = true
+	c, _ := newPrunerFake()
+	w := &Worker{Status: fm.status()}
+	if w.mirrorOne(context.Background(), c, BatchItem{Source: "s", Dest: "reg/x", Architectures: []string{"amd64"}, PruneRetain: []string{"amd64"}}) {
+		t.Fatal("expected the reconcile to fail")
+	}
+	if _, pruned := c.pruneCalls["reg/x"]; pruned {
+		t.Error("must not prune without confirmation")
+	}
+	if r := fm.reportsByDest()["reg/x"]; !r.Reconcile || !strings.Contains(r.Error, "did not confirm") {
+		t.Errorf("report = %+v", r)
+	}
+}
+
+func TestStatusClient_ConfirmPruneFailsClosed(t *testing.T) {
+	var s *StatusClient
+	if s.ConfirmPrune(context.Background(), "d", []string{"amd64"}) {
+		t.Error("unconfigured client must not confirm")
+	}
+	unreachable := &StatusClient{ManagerURL: "http://127.0.0.1:1", Token: "t"}
+	if unreachable.ConfirmPrune(context.Background(), "d", []string{"amd64"}) {
+		t.Error("unreachable manager must not confirm")
+	}
+	bad := &StatusClient{ManagerURL: "://bad", Token: "t"}
+	if bad.ConfirmPrune(context.Background(), "d", []string{"amd64"}) {
+		t.Error("bad URL must not confirm")
+	}
+}
+
+// Review #299 (3rd round) P2: once the worker deleted something, the error
+// report carries the retain set, so the manager stops counting the deleted
+// architectures as mirrored.
+func TestMirrorOne_ReportsPruneOnLaterFailure(t *testing.T) {
+	item := BatchItem{Source: "s", Dest: "reg/x", Architectures: []string{"amd64"}, PruneRetain: []string{"amd64"}}
+	t.Run("partial prune", func(t *testing.T) {
+		fm := newFakeManager(t)
+		c, _ := newPrunerFake()
+		c.pruneErr, c.partialPrune = errors.New("DELETE failed"), true
+		if (&Worker{Status: fm.status()}).mirrorOne(context.Background(), c, item) {
+			t.Fatal("expected failure")
+		}
+		if r := fm.reportsByDest()["reg/x"]; r.Error == "" || len(r.PruneRetain) != 1 {
+			t.Errorf("report = %+v", r)
+		}
+	})
+	t.Run("nothing deleted", func(t *testing.T) {
+		fm := newFakeManager(t)
+		c, _ := newPrunerFake()
+		c.pruneErr = errors.New("refusing")
+		(&Worker{Status: fm.status()}).mirrorOne(context.Background(), c, item)
+		if r := fm.reportsByDest()["reg/x"]; r.Error == "" || r.PruneRetain != nil {
+			t.Errorf("report = %+v", r)
+		}
+	})
+	t.Run("verification fails after prune", func(t *testing.T) {
+		fm := newFakeManager(t)
+		c, _ := newPrunerFake()
+		c.digestErr["reg/x"] = errors.New("context deadline exceeded")
+		if (&Worker{Status: fm.status()}).mirrorOne(context.Background(), c, item) {
+			t.Fatal("expected failure")
+		}
+		if r := fm.reportsByDest()["reg/x"]; !strings.Contains(r.Error, "deadline") || len(r.PruneRetain) != 1 {
+			t.Errorf("report = %+v", r)
+		}
+	})
 }

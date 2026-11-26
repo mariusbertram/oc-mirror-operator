@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -178,7 +179,7 @@ func TestCheckDriftOne_NoOwners_NoOp(t *testing.T) {
 
 	m.checkDriftOne(context.Background(), dest, nil)
 
-	if *m.imageState[dest] != before {
+	if !reflect.DeepEqual(*m.imageState[dest], before) {
 		t.Errorf("expected entry untouched when it has no current owner, got %+v", m.imageState[dest])
 	}
 }
@@ -192,7 +193,7 @@ func TestCheckDriftOne_NonMirroredNonPermanentlyFailed_NoOp(t *testing.T) {
 
 	m.checkDriftOne(context.Background(), dest, nil)
 
-	if *m.imageState[dest] != before {
+	if !reflect.DeepEqual(*m.imageState[dest], before) {
 		t.Errorf("expected a Pending entry to be left untouched, got %+v", m.imageState[dest])
 	}
 }

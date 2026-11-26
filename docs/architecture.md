@@ -116,7 +116,7 @@ order (see [Blob replication planning](#blob-replication-planning)), and for eac
    target: layers ≤ 100 MiB with a monolithic `PUT`, larger ones as a chunked upload of
    16 MiB `PATCH`es (bounded memory, no disk). Two attempts, 20 min each; the second
    attempt falls back to buffering layers > 100 MiB on `/tmp/blob-buffer` and pushing
-   them with monolithic `PUT`s. Cosign `sha256-<digest>.sig` tags are copied best-effort.
+   them with monolithic `PUT`s. Cosign `sha256-<digest>.sig`, `.att` and `.sbom` tags are copied best-effort.
 3. `HEAD` the pushed manifest to verify the digest.
 4. `POST /status` with the result (three attempts).
 

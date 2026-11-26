@@ -105,6 +105,18 @@ type ImageEntry struct {
 	// moved upstream so the entry can be reset to Pending instead of staying
 	// Mirrored against stale content forever.
 	SourceDigest string `json:"sourceDigest,omitempty"`
+	// Architectures is the architecture selection (ImageSet
+	// spec.mirror.architectures, merged over the owning ImageSets) the image
+	// was last mirrored or reconciled with; empty means all, which is also
+	// what every entry written before the field existed was mirrored with.
+	// The manager compares it with the current selection to backfill or
+	// prune the image's architectures while it stays Mirrored.
+	Architectures []string `json:"architectures,omitempty"`
+	// ArchRetryCount and ArchNextRetryAt back off a failing architecture
+	// reconcile. They never affect State: the image stays Mirrored and
+	// usable while its architectures are being reconciled.
+	ArchRetryCount  int          `json:"archRetryCount,omitempty"`
+	ArchNextRetryAt *metav1.Time `json:"archNextRetryAt,omitempty"`
 }
 
 // CatalogFromOriginRef recovers the source catalog from an operator entry's

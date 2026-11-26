@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/mariusbertram/oc-mirror-operator/pkg/oclog"
@@ -31,6 +32,18 @@ type StatusRequest struct {
 	Destination string `json:"destination"`
 	Digest      string `json:"digest"`
 	Error       string `json:"error,omitempty"`
+	// Reconcile marks the result of an architecture reconcile of an image
+	// that is already mirrored (see BatchItem.Backfill/PruneRetain). The
+	// manager keeps such an image Mirrored even when the reconcile failed.
+	Reconcile bool `json:"reconcile,omitempty"`
+	// Architectures is the architecture selection the image was mirrored
+	// with (BatchItem.Architectures); empty means all.
+	Architectures []string `json:"architectures,omitempty"`
+	// PruneRetain is set when a reconcile pruned the image: the retain set
+	// it pruned to. Architectures of the image outside Architectures but in
+	// PruneRetain were kept for other images of the repository and may still
+	// be at the destination.
+	PruneRetain []string `json:"pruneRetain,omitempty"`
 }
 
 // StatusClient talks to the manager's worker status API.
@@ -59,15 +72,17 @@ func StatusClientFromEnv() *StatusClient {
 // StatusAttempts times so transient network blips don't lose it. The
 // manager's handler is idempotent, so a duplicate delivery is harmless.
 func (s *StatusClient) Report(ctx context.Context, dest, digest, errMsg string) {
+	s.ReportResult(ctx, StatusRequest{Destination: dest, Digest: digest, Error: errMsg})
+}
+
+// ReportResult is Report for a full StatusRequest; PodName is filled in.
+func (s *StatusClient) ReportResult(ctx context.Context, req StatusRequest) {
 	if s == nil || s.ManagerURL == "" || s.PodName == "" {
 		return
 	}
-	body, err := json.Marshal(StatusRequest{
-		PodName:     s.PodName,
-		Destination: dest,
-		Digest:      digest,
-		Error:       errMsg,
-	})
+	dest := req.Destination
+	req.PodName = s.PodName
+	body, err := json.Marshal(req)
 	if err != nil {
 		oclog.Printf("Failed to marshal status request: %v\n", err)
 		return
@@ -104,13 +119,53 @@ func (s *StatusClient) Report(ctx context.Context, dest, digest, errMsg string) 
 // configured) it returns true: an unneeded mirror is preferable to skipping
 // a still-required image.
 func (s *StatusClient) ShouldMirror(ctx context.Context, dest string) bool {
+	return s.shouldMirror(ctx, dest, false)
+}
+
+// ShouldReconcile is ShouldMirror for an architecture reconcile of an image
+// that is already mirrored: the manager answers 410 once the image is no
+// longer Mirrored (a regular mirror takes over) or no longer required.
+func (s *StatusClient) ShouldReconcile(ctx context.Context, dest string) bool {
+	return s.shouldMirror(ctx, dest, true)
+}
+
+// ConfirmPrune asks the manager, right before deleting anything, whether
+// deleting dest's children outside retain is still allowed by the current
+// cleanup policy and the architectures its repository needs. Unlike
+// ShouldMirror it fails closed: only an explicit 200 allows the deletion.
+func (s *StatusClient) ConfirmPrune(ctx context.Context, dest string, retain []string) bool {
+	if s == nil || s.ManagerURL == "" {
+		return false
+	}
+	reqCtx, cancel := context.WithTimeout(ctx, ShouldMirrorTimeout)
+	defer cancel()
+	u := s.ManagerURL + "/should-mirror?reconcile=1&dest=" + url.QueryEscape(dest) +
+		"&prune=" + url.QueryEscape(strings.Join(retain, ","))
+	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodGet, u, nil)
+	if err != nil {
+		return false
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+s.Token)
+	resp, err := (&http.Client{Timeout: ShouldMirrorTimeout}).Do(httpReq)
+	if err != nil {
+		oclog.Printf("Failed to confirm prune of %s: %v (not pruning)\n", dest, err)
+		return false
+	}
+	_ = resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}
+
+func (s *StatusClient) shouldMirror(ctx context.Context, dest string, reconcile bool) bool {
 	if s == nil || s.ManagerURL == "" {
 		return true
 	}
 	reqCtx, cancel := context.WithTimeout(ctx, ShouldMirrorTimeout)
 	defer cancel()
-	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodGet,
-		s.ManagerURL+"/should-mirror?dest="+url.QueryEscape(dest), nil)
+	u := s.ManagerURL + "/should-mirror?dest=" + url.QueryEscape(dest)
+	if reconcile {
+		u += "&reconcile=1"
+	}
+	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodGet, u, nil)
 	if err != nil {
 		return true
 	}

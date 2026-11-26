@@ -30,6 +30,11 @@ const (
 	CopyRetryDelay = 15 * time.Second
 	// VerifyTimeout bounds the digest verification after a copy.
 	VerifyTimeout = 2 * time.Minute
+	// PruneTimeout bounds deleting the unwanted architectures of an image
+	// during an architecture reconcile. It is not part of ImageBudget: a
+	// prune runs only after a successful copy (or instead of one), never
+	// after the worst case of every copy attempt timing out.
+	PruneTimeout = 2 * time.Minute
 	// ImageBudget is the worst-case time a worker spends on one image. The
 	// manager derives the worker pod's activeDeadlineSeconds from it.
 	ImageBudget = CopyAttempts*CopyTimeout + (CopyAttempts-1)*CopyRetryDelay + VerifyTimeout
@@ -49,6 +54,40 @@ var log = logf.Log.WithName("worker")
 type BatchItem struct {
 	Source string `json:"source"`
 	Dest   string `json:"dest"`
+	// Architectures limits a manifest list copy to these CPU architectures
+	// (see ImageSet spec.mirror.architectures). Empty means all.
+	Architectures []string `json:"architectures,omitempty"`
+	// SkipMissingArchitectures copies a manifest list without the child
+	// manifests missing at the source (see ImageSet
+	// spec.mirror.skipMissingArchitectures).
+	SkipMissingArchitectures bool `json:"skipMissingArchitectures,omitempty"`
+	// Backfill and PruneRetain make the item an architecture reconcile of an
+	// image that is already mirrored, after its ImageSet's architectures
+	// changed. Backfill copies the selected children even though the
+	// manifest list exists at the destination (a widened selection).
+	// PruneRetain, when set, deletes the destination's children whose
+	// architecture is not in it (a narrowed selection; only with
+	// cleanup-policy=Delete). The manifest list itself never changes.
+	Backfill    bool     `json:"backfill,omitempty"`
+	PruneRetain []string `json:"pruneRetain,omitempty"`
+}
+
+// filter returns the copy filter the item asks for. Copies are always
+// recursive: if the destination already holds the manifest list (an earlier,
+// possibly sparser mirror of the same image), regclient would otherwise skip
+// it and report success while selected children are still missing. For a
+// destination without the list it makes no difference.
+func (i BatchItem) filter() mirrorclient.CopyFilter {
+	return mirrorclient.CopyFilter{
+		Architectures:  i.Architectures,
+		SkipMissing:    i.SkipMissingArchitectures,
+		ForceRecursive: true,
+	}
+}
+
+// reconcile reports whether the item reconciles an already mirrored image.
+func (i BatchItem) reconcile() bool {
+	return i.Backfill || len(i.PruneRetain) > 0
 }
 
 // ParseBatch decodes a MIRROR_BATCH value.
@@ -73,6 +112,20 @@ type Client interface {
 // last copy attempt, after streaming failed.
 type BufferedCopier interface {
 	CopyImageBuffered(ctx context.Context, src, dest string) (string, error)
+}
+
+// FilteredCopier is implemented by clients that can copy only some child
+// manifests of a manifest list (see
+// mirrorclient.MirrorClient.CopyImageFiltered).
+type FilteredCopier interface {
+	CopyImageFiltered(ctx context.Context, src, dest string, f mirrorclient.CopyFilter, buffered bool) (string, []string, error)
+}
+
+// ArchitecturePruner is implemented by clients that can delete the child
+// manifests of unwanted architectures at the destination (see
+// mirrorclient.MirrorClient.PruneArchitectures).
+type ArchitecturePruner interface {
+	PruneArchitectures(ctx context.Context, dest string, want, retain []string) ([]string, error)
 }
 
 // NewMirrorClient builds a registry client for the registry host of
@@ -138,9 +191,12 @@ func (w *Worker) RunBatch(ctx context.Context, items []BatchItem) (anyFailed boo
 	// those blobs via anonymous mount (zero-copy).
 	sources := make([]string, len(items))
 	dests := make([]string, len(items))
+	// Plan reorders sources/dests, so items are looked up by dest.
+	byDest := make(map[string]BatchItem, len(items))
 	for i, item := range items {
 		sources[i] = item.Source
 		dests[i] = item.Dest
+		byDest[item.Dest] = item
 	}
 	if w.Plan != nil {
 		planCtx, planCancel := context.WithTimeout(ctx, PlanTimeout)
@@ -152,7 +208,16 @@ func (w *Worker) RunBatch(ctx context.Context, items []BatchItem) (anyFailed boo
 		// The user may have shrunk the ImageSet (operator removed, version
 		// range narrowed) since this batch was dispatched, or a parallel
 		// worker may have mirrored the image after a re-collection.
-		if !w.Status.ShouldMirror(ctx, dests[i]) {
+		item, ok := byDest[dests[i]]
+		if !ok {
+			item = BatchItem{Source: sources[i], Dest: dests[i]}
+		}
+		if item.reconcile() {
+			if !w.Status.ShouldReconcile(ctx, dests[i]) {
+				oclog.Printf("Skipping architecture reconcile of %s: no longer mirrored or required\n", dests[i])
+				continue
+			}
+		} else if !w.Status.ShouldMirror(ctx, dests[i]) {
 			oclog.Printf("Skipping %s: no longer required by any ImageSet\n", dests[i])
 			continue
 		}
@@ -165,7 +230,7 @@ func (w *Worker) RunBatch(ctx context.Context, items []BatchItem) (anyFailed boo
 			}
 			continue
 		}
-		if !w.MirrorOne(ctx, c, sources[i], dests[i]) {
+		if !w.mirrorOne(ctx, c, item) {
 			anyFailed = true
 		}
 	}
@@ -233,33 +298,65 @@ func (w *Worker) MirrorChartOne(ctx context.Context, c Client, src, dest string)
 // returns true on success. Blobs are streamed; when c is a BufferedCopier,
 // the last attempt buffers large blobs to disk instead.
 func (w *Worker) MirrorOne(ctx context.Context, c Client, src, dest string) bool {
-	oclog.Printf("Starting mirror: %s -> %s\n", src, dest)
+	return w.mirrorOne(ctx, c, BatchItem{Source: src, Dest: dest})
+}
 
-	var effectiveDest string
-	var lastErr error
-	for attempt := 1; attempt <= CopyAttempts; attempt++ {
-		copyFn := c.CopyImage
-		if attempt > 1 {
-			oclog.Printf("Retry attempt %d/%d after %s...\n", attempt, CopyAttempts, w.RetryDelay)
-			time.Sleep(w.RetryDelay)
-			if bc, ok := c.(BufferedCopier); ok && attempt == CopyAttempts {
-				oclog.Println("Streaming copy failed, retrying with large blobs buffered to disk")
-				copyFn = bc.CopyImageBuffered
-			}
-		}
-		copyCtx, cancel := context.WithTimeout(ctx, CopyTimeout)
-		effectiveDest, lastErr = copyFn(copyCtx, src, dest)
-		cancel()
-		if lastErr == nil {
-			break
-		}
-		oclog.Printf("Attempt %d failed: %v\n", attempt, lastErr)
-	}
-	if lastErr != nil {
-		oclog.Printf("ERROR: failed to mirror %s: %v", src, lastErr)
-		log.Error(lastErr, "failed to mirror image")
-		w.Status.Report(ctx, dest, "", lastErr.Error())
+// mirrorOne is MirrorOne for a batch item: only the child manifests of a
+// manifest list that the item's filter selects are copied (when c supports
+// it, see FilteredCopier), and an architecture reconcile backfills and/or
+// prunes an already mirrored image (see BatchItem.Backfill/PruneRetain). The
+// report carries the item's architecture selection so the manager can record
+// what the image was mirrored with.
+func (w *Worker) mirrorOne(ctx context.Context, c Client, item BatchItem) bool {
+	src, dest := item.Source, item.Dest
+	reconcile := item.reconcile()
+	report := StatusRequest{Destination: dest, Reconcile: reconcile, Architectures: item.Architectures}
+	fail := func(msg string, err error) bool {
+		oclog.Printf("ERROR: %s %s: %v", msg, src, err)
+		log.Error(err, msg, "src", src, "dest", dest)
+		report.Error = err.Error()
+		w.Status.ReportResult(ctx, report)
 		return false
+	}
+
+	effectiveDest := dest
+	if !reconcile || item.Backfill {
+		if reconcile {
+			oclog.Printf("Backfilling architectures %v: %s -> %s\n", item.Architectures, src, dest)
+		} else {
+			oclog.Printf("Starting mirror: %s -> %s\n", src, dest)
+		}
+		var err error
+		effectiveDest, err = w.copyWithRetries(ctx, c, src, dest, item.filter())
+		if err != nil {
+			return fail("failed to mirror", err)
+		}
+	}
+	if len(item.PruneRetain) > 0 {
+		p, ok := c.(ArchitecturePruner)
+		if !ok {
+			return fail("failed to prune architectures of", fmt.Errorf("registry client cannot prune architectures"))
+		}
+		// The plan was made at dispatch; the policy or the architectures
+		// the repository needs may have changed since.
+		if !w.Status.ConfirmPrune(ctx, dest, item.PruneRetain) {
+			return fail("not pruning architectures of", fmt.Errorf("manager did not confirm the prune plan (keep %v); it is retried with the current plan", item.PruneRetain))
+		}
+		pruneCtx, cancel := context.WithTimeout(ctx, PruneTimeout)
+		deleted, err := p.PruneArchitectures(pruneCtx, effectiveDest, item.Architectures, item.PruneRetain)
+		cancel()
+		if len(deleted) > 0 {
+			oclog.Printf("Deleted child manifests of %s outside %v: %s\n", effectiveDest, item.PruneRetain, strings.Join(deleted, ", "))
+		}
+		// Once anything was deleted, the report must say so — also when
+		// the prune or the verification below fails — so the manager no
+		// longer counts the deleted architectures as mirrored.
+		if err == nil || len(deleted) > 0 {
+			report.PruneRetain = item.PruneRetain
+		}
+		if err != nil {
+			return fail("failed to prune architectures of", err)
+		}
 	}
 
 	oclog.Printf("Copy complete, verifying digest at %s\n", effectiveDest)
@@ -267,14 +364,51 @@ func (w *Worker) MirrorOne(ctx context.Context, c Client, src, dest string) bool
 	digest, err := c.GetDigest(verifyCtx, effectiveDest)
 	verifyCancel()
 	if err != nil {
-		oclog.Printf("ERROR: failed to verify digest for %s: %v", src, err)
-		log.Error(err, "failed to verify mirrored image digest")
-		w.Status.Report(ctx, dest, "", err.Error())
-		return false
+		return fail("failed to verify digest for", err)
 	}
 
 	oclog.Printf("Successfully mirrored %s -> %s (digest: %s)\n", src, dest, digest)
 	log.Info("successfully mirrored image", "src", src, "dest", dest, "digest", digest)
-	w.Status.Report(ctx, dest, digest, "")
+	report.Digest = digest
+	w.Status.ReportResult(ctx, report)
 	return true
+}
+
+// copyWithRetries copies src→dest with up to CopyAttempts attempts and
+// returns the effective destination. Blobs are streamed; when c is a
+// BufferedCopier, the last attempt buffers large blobs to disk instead. A
+// non-zero f is applied when c is a FilteredCopier.
+func (w *Worker) copyWithRetries(ctx context.Context, c Client, src, dest string, f mirrorclient.CopyFilter) (string, error) {
+	var effectiveDest string
+	var lastErr error
+	for attempt := 1; attempt <= CopyAttempts; attempt++ {
+		copyFn := c.CopyImage
+		buffered := false
+		if attempt > 1 {
+			oclog.Printf("Retry attempt %d/%d after %s...\n", attempt, CopyAttempts, w.RetryDelay)
+			time.Sleep(w.RetryDelay)
+			if bc, ok := c.(BufferedCopier); ok && attempt == CopyAttempts {
+				oclog.Println("Streaming copy failed, retrying with large blobs buffered to disk")
+				copyFn = bc.CopyImageBuffered
+				buffered = true
+			}
+		}
+		if fc, ok := c.(FilteredCopier); ok && !f.IsZero() {
+			copyFn = func(ctx context.Context, src, dest string) (string, error) {
+				eff, missing, err := fc.CopyImageFiltered(ctx, src, dest, f, buffered)
+				if len(missing) > 0 {
+					oclog.Printf("Skipping child manifests missing at the source of %s: %s\n", src, strings.Join(missing, ", "))
+				}
+				return eff, err
+			}
+		}
+		copyCtx, cancel := context.WithTimeout(ctx, CopyTimeout)
+		effectiveDest, lastErr = copyFn(copyCtx, src, dest)
+		cancel()
+		if lastErr == nil {
+			return effectiveDest, nil
+		}
+		oclog.Printf("Attempt %d failed: %v\n", attempt, lastErr)
+	}
+	return "", lastErr
 }

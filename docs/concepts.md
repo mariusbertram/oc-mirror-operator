@@ -113,7 +113,7 @@ See [Architecture](architecture.md) for the internals of each.
 2. **Dispatch.** Pending images are grouped into batches of `batchSize` and handed to
    worker pods, at most `concurrency` pods at a time. Operator bundle images go first so
    OLM has something installable as early as possible.
-3. **Copy.** A worker copies each image with regclient, including cosign `.sig` tags and
+3. **Copy.** A worker copies each image with regclient, including cosign `.sig`/`.att`/`.sbom` tags and
    OCI referrers, buffering layers larger than 100 MiB on local disk first. It verifies
    the pushed digest and reports `Mirrored` or `Failed` with the error to the manager.
 4. **Retry.** A failed image is re-queued after a backoff (1 min, doubling, capped at

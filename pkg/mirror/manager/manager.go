@@ -156,9 +156,19 @@ type MirrorManager struct {
 
 	// State in memory — protected by mu
 	mu         sync.RWMutex
-	inProgress map[string]string     // dest → podName
-	mirrored   map[string]bool       // dest → true once successfully mirrored
-	imageState imagestate.ImageState // dest → entry, merged across all ImageSets on this target
+	inProgress map[string]string // dest → podName
+	// pruneArchitectures and retainArchByRepo are the architecture prune
+	// policy (cleanup-policy=Delete) and the per-repository retain sets of
+	// the latest reconcile tick; a worker confirms its prune plan against
+	// them right before deleting (see handleShouldMirror).
+	pruneArchitectures bool
+	retainArchByRepo   map[string][]string
+	// archPlanImageSets identifies (UID and generation) the ImageSets of
+	// this MirrorTarget that retainArchByRepo was computed from; a prune is
+	// only confirmed while the live ImageSets still match them.
+	archPlanImageSets map[string]planImageSet
+	mirrored          map[string]bool       // dest → true once successfully mirrored
+	imageState        imagestate.ImageState // dest → entry, merged across all ImageSets on this target
 	// owners tracks which ImageSet(s) each destination in imageState currently
 	// belongs to. It is the in-memory analogue of the on-disk partitioning
 	// (each ImageSet's own state ConfigMap + the shared-image index) — kept
@@ -618,6 +628,13 @@ func (m *MirrorManager) applyStatusLocked(req WorkerStatusRequest) {
 		imageset = names[0]
 	}
 
+	if req.Reconcile {
+		m.applyReconcileStatusLocked(req)
+		delete(m.inProgress, req.Destination)
+		m.statusDirty = true
+		return
+	}
+
 	if req.Error != "" {
 		m.setImageStateLocked(req.Destination, stateFailed, req.Error)
 		ocmetrics.ManagerImagesFailedTotal.WithLabelValues(m.TargetName, imageset).Inc()
@@ -630,6 +647,9 @@ func (m *MirrorManager) applyStatusLocked(req WorkerStatusRequest) {
 			m.mirrored[req.Destination] = true
 		}
 		m.setImageStateLocked(req.Destination, stateMirrored, "")
+		if entry, ok := m.imageState[req.Destination]; ok {
+			m.recordArchitecturesLocked(entry, req.Architectures)
+		}
 		// Record the digest the worker actually mirrored as the drift-check
 		// baseline for tag-referenced additional images (see
 		// sourceDigestNoLock/applySourceDigestLocked) — free, since the worker already
@@ -657,9 +677,11 @@ func (m *MirrorManager) applyStatusLocked(req WorkerStatusRequest) {
 //
 // Responses:
 //
-//	200 OK    — image is still pending or failed (worker should mirror it)
-//	410 Gone  — image is already Mirrored or no longer in any state
-//	            (worker MUST skip it)
+//	200 OK    — image is still pending or failed (worker should mirror it);
+//	            with reconcile=1: image is Mirrored (worker should reconcile
+//	            its architectures)
+//	410 Gone  — image is already Mirrored (with reconcile=1: no longer
+//	            Mirrored) or no longer in any state (worker MUST skip it)
 //	401 Unauthorized — bad/missing Bearer token
 //	400 Bad Request  — missing dest query parameter
 //
@@ -689,7 +711,12 @@ func (m *MirrorManager) handleShouldMirror(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if m.queuedSuccess(dest) {
+	reconcile := r.URL.Query().Get("reconcile") == "1"
+	if prune, ok := r.URL.Query()["prune"]; ok {
+		m.handleConfirmPrune(w, r, dest, strings.Split(prune[0], ","))
+		return
+	}
+	if !reconcile && m.queuedSuccess(dest) {
 		w.WriteHeader(http.StatusGone)
 		return
 	}
@@ -705,7 +732,9 @@ func (m *MirrorManager) handleShouldMirror(w http.ResponseWriter, r *http.Reques
 		w.WriteHeader(http.StatusGone)
 		return
 	}
-	if entry.State == stateMirrored {
+	// An architecture reconcile (reconcile=1) is for Mirrored images only;
+	// once the image left Mirrored, a regular mirror takes over.
+	if (entry.State == stateMirrored) != reconcile {
 		w.WriteHeader(http.StatusGone)
 		return
 	}
@@ -799,6 +828,13 @@ func (m *MirrorManager) cleanupFinishedWorkers(ctx context.Context) {
 			if cur, ok := m.inProgress[f.dest]; ok && cur == f.podName {
 				delete(m.inProgress, f.dest)
 				if f.phase == corev1.PodFailed {
+					if entry, ok := m.imageState[f.dest]; ok && entry.State == stateMirrored {
+						// An architecture reconcile: the image itself is
+						// still mirrored, so only back off the reconcile.
+						oclog.Printf("Worker pod %s reconciling architectures of %s failed without reporting\n", f.podName, f.dest)
+						m.archBackoffLocked(entry)
+						continue
+					}
 					oclog.Printf("Worker pod %s for %s failed or got stuck without reporting; resetting to Pending\n", f.podName, f.dest)
 					m.setImageStateLocked(f.dest, statePending, "")
 				}
@@ -1175,8 +1211,43 @@ func (m *MirrorManager) applySourceDigestLocked(entry *imagestate.ImageEntry, di
 // Mirror.RequireSignedImages set, per requireSignedByIS (built once per
 // reconcile from the current ImageSet list).
 func anyOwnerRequiresSignedImages(owners []string, requireSignedByIS map[string]bool) bool {
+	return anyOwnerEnabled(owners, requireSignedByIS)
+}
+
+// ownerArchitectures returns the architectures to copy of an image owned by
+// owners: the sorted union of their Mirror.Architectures, or nil (all) when
+// any owner sets none — an ImageSet that wants every architecture must get
+// it even if another owner narrows the same image.
+func ownerArchitectures(owners []string, archByIS map[string][]string) []string {
+	seen := map[string]bool{}
 	for _, name := range owners {
-		if requireSignedByIS[name] {
+		archs, known := archByIS[name]
+		if !known {
+			continue
+		}
+		if len(archs) == 0 {
+			return nil
+		}
+		for _, a := range archs {
+			seen[a] = true
+		}
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(seen))
+	for a := range seen {
+		out = append(out, a)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// anyOwnerEnabled reports whether any ImageSet in owners is true in byIS, a
+// per-ImageSet boolean setting built once per reconcile.
+func anyOwnerEnabled(owners []string, byIS map[string]bool) bool {
+	for _, name := range owners {
+		if byIS[name] {
 			return true
 		}
 	}
@@ -1382,9 +1453,16 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 	// sweep) so a shared destination is checked if ANY owning ImageSet
 	// requires it.
 	requireSignedByIS := make(map[string]bool, len(imageSets.Items))
+	// skipMissingArchByIS and archByIS likewise record
+	// Mirror.SkipMissingArchitectures and Mirror.Architectures for the
+	// per-image copy filter (see ownerArchitectures).
+	skipMissingArchByIS := make(map[string]bool, len(imageSets.Items))
+	archByIS := make(map[string][]string, len(imageSets.Items))
 	for _, is := range imageSets.Items {
 		if containsString(mt.Spec.ImageSets, is.Name) {
 			requireSignedByIS[is.Name] = is.Spec.Mirror.RequireSignedImages
+			skipMissingArchByIS[is.Name] = is.Spec.Mirror.SkipMissingArchitectures
+			archByIS[is.Name] = is.Spec.Mirror.Architectures
 		}
 	}
 
@@ -1418,6 +1496,18 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 	now := time.Now()
 	pendingImages := make([]BatchItem, 0, len(m.imageState))
 	pendingBundleImages := make([]BatchItem, 0, len(m.imageState))
+	// Mirrored images whose architecture selection changed (see
+	// archreconcile.go); dispatched after all pending images.
+	var reconcileImages []BatchItem
+	pruneArchitectures := mt.Annotations[mirrorv1alpha1.CleanupPolicyAnnotation] == mirrorv1alpha1.CleanupPolicyDelete
+	wantArchByDest, retainArchByRepo := m.archSelectionsLocked(archByIS)
+	m.pruneArchitectures, m.retainArchByRepo = pruneArchitectures, retainArchByRepo
+	m.archPlanImageSets = make(map[string]planImageSet, len(mt.Spec.ImageSets))
+	for _, is := range imageSets.Items {
+		if containsString(mt.Spec.ImageSets, is.Name) {
+			m.archPlanImageSets[is.Name] = planImageSet{UID: is.UID, Generation: is.Generation}
+		}
+	}
 	newOrphans := make(imagestate.ImageState)
 
 	for dest, entry := range m.imageState {
@@ -1438,6 +1528,10 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 
 		if entry.State == stateMirrored {
 			m.mirrored[dest] = true
+			if item, ok := m.archReconcileItemLocked(dest, entry, wantArchByDest[dest],
+				anyOwnerEnabled(m.owners[dest], skipMissingArchByIS), pruneArchitectures, retainArchByRepo, now); ok {
+				reconcileImages = append(reconcileImages, item)
+			}
 			continue
 		}
 		if m.mirrored[dest] {
@@ -1480,7 +1574,12 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 		if m.inProgress[dest] != "" {
 			continue
 		}
-		item := BatchItem{Source: entry.Source, Dest: dest}
+		item := BatchItem{
+			Source:                   entry.Source,
+			Dest:                     dest,
+			Architectures:            wantArchByDest[dest],
+			SkipMissingArchitectures: anyOwnerEnabled(m.owners[dest], skipMissingArchByIS),
+		}
 		if entry.IsBundleImage {
 			pendingBundleImages = append(pendingBundleImages, item)
 		} else {
@@ -1498,6 +1597,8 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 	if len(pendingBundleImages) > 0 {
 		pendingImages = append(pendingBundleImages, pendingImages...)
 	}
+	// Architecture reconciles last: those images are already usable.
+	pendingImages = append(pendingImages, reconcileImages...)
 
 	// Phase E: Dispatch worker batches up to concurrency limit.
 	activePods := map[string]struct{}{}

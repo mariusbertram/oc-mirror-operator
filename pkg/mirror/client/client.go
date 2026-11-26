@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 
@@ -17,6 +18,8 @@ import (
 	"github.com/regclient/regclient/types/descriptor"
 	"github.com/regclient/regclient/types/errs"
 	"github.com/regclient/regclient/types/manifest"
+	"github.com/regclient/regclient/types/mediatype"
+	"github.com/regclient/regclient/types/platform"
 	"github.com/regclient/regclient/types/ref"
 )
 
@@ -236,6 +239,397 @@ func (c *MirrorClient) CopyImageBuffered(ctx context.Context, src, dest string) 
 	return c.bufferedClient().copyImage(ctx, src, dest, regclient.ImageWithBlobReaderHook(bufferLargeBlobs))
 }
 
+// CopyFilter selects which child manifests of a manifest list
+// CopyImageFiltered copies. The zero value copies everything, like CopyImage.
+type CopyFilter struct {
+	// Architectures limits the copy to children with one of these CPU
+	// architectures (e.g. "amd64", "arm64"). Empty means all.
+	Architectures []string
+	// SkipMissing leaves out children that do not exist at the source
+	// registry instead of failing the copy on them.
+	SkipMissing bool
+	// ForceRecursive copies the selected children even when the manifest
+	// list already exists at the destination. Without it regclient skips an
+	// image whose list digest is already there, so children added to the
+	// selection later (a widened Architectures) would never be copied.
+	ForceRecursive bool
+}
+
+// IsZero reports whether f is a plain copy of everything.
+func (f CopyFilter) IsZero() bool {
+	return len(f.Architectures) == 0 && !f.SkipMissing && !f.ForceRecursive
+}
+
+// CopyImageFiltered is CopyImage (or, with buffered, CopyImageBuffered) that
+// copies only the child manifests of a manifest list selected by f — those
+// with an architecture in f.Architectures and, with f.SkipMissing, only
+// those that exist at the source (a vendor index can list e.g. an s390x
+// image that was never pushed, which fails a full copy with 404).
+//
+// The source manifest list itself is pushed byte-for-byte unchanged, so the
+// mirrored image keeps the source digest that bundles and IDMS/ITMS refer
+// to. When children are left out the destination therefore holds a sparse
+// manifest list, which registries that validate list children reject (Quay
+// needs FEATURE_SPARSE_INDEX, distribution needs
+// validation.manifests.indexes.platforms relaxed).
+//
+// missing lists the children skipped because they do not exist at the
+// source ("<platform> <digest>"). Single-architecture images, and lists the
+// filter does not narrow, are copied as by CopyImage.
+func (c *MirrorClient) CopyImageFiltered(ctx context.Context, src, dest string, f CopyFilter, buffered bool) (effectiveDest string, missing []string, err error) {
+	var platforms []string
+	if len(f.Architectures) > 0 || f.SkipMissing {
+		platforms, missing, err = c.selectPlatforms(ctx, src, f)
+		if err != nil {
+			return "", nil, err
+		}
+	}
+	var opts []regclient.ImageOpts
+	if platforms != nil {
+		opts = append(opts, regclient.ImageWithPlatforms(platforms))
+	}
+	if f.ForceRecursive {
+		opts = append(opts, regclient.ImageWithForceRecursive())
+	}
+	if buffered {
+		opts = append(opts, regclient.ImageWithBlobReaderHook(bufferLargeBlobs))
+		effectiveDest, err = c.bufferedClient().copyImage(ctx, src, dest, opts...)
+	} else {
+		effectiveDest, err = c.copyImage(ctx, src, dest, opts...)
+	}
+	if err != nil && platforms != nil {
+		err = fmt.Errorf("%w (copied only platforms %s; the destination registry must accept sparse manifest lists)",
+			err, strings.Join(platforms, ", "))
+	}
+	return effectiveDest, missing, err
+}
+
+// selectPlatforms applies f to the manifest list src. It returns the
+// platforms to pass to regclient.ImageWithPlatforms — nil when src is not a
+// list or f leaves out no child — and the children skipped as missing.
+//
+// It refuses to filter when a child to leave out cannot be told apart by
+// platform from one to keep (regclient filters by platform, not digest),
+// when no child is left, or when a child's existence cannot be determined
+// (auth, network) — dropping content on a guess is worse than failing.
+func (c *MirrorClient) selectPlatforms(ctx context.Context, src string, f CopyFilter) (platforms, missing []string, err error) {
+	srcRef, err := ref.New(src)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to parse source reference %s: %w", src, err)
+	}
+	m, err := c.ManifestGet(ctx, srcRef)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to get source manifest %s: %w", src, err)
+	}
+	idx, ok := m.(manifest.Indexer)
+	if !ok || !m.IsList() {
+		return nil, nil, nil
+	}
+	children, err := idx.GetManifestList()
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to read manifest list %s: %w", src, err)
+	}
+
+	var keep, drop []descriptor.Descriptor
+	for _, d := range children {
+		if len(f.Architectures) > 0 && !archSelected(d.Platform, f.Architectures) {
+			drop = append(drop, d)
+			continue
+		}
+		if f.SkipMissing {
+			_, err := c.ManifestHead(ctx, srcRef.SetDigest(d.Digest.String()))
+			switch {
+			case errors.Is(err, errs.ErrNotFound):
+				drop = append(drop, d)
+				missing = append(missing, describeChild(d))
+				continue
+			case err != nil:
+				return nil, nil, fmt.Errorf("failed to check child manifest %s of %s: %w", d.Digest, src, err)
+			}
+		}
+		keep = append(keep, d)
+	}
+	if len(drop) == 0 {
+		return nil, nil, nil
+	}
+	if len(keep) == 0 {
+		return nil, nil, fmt.Errorf("no child manifest of %s is left to copy (architectures %v, missing at source: %v)",
+			src, f.Architectures, missing)
+	}
+	for _, d := range drop {
+		for _, k := range keep {
+			if samePlatform(d.Platform, k.Platform) {
+				return nil, nil, fmt.Errorf("child manifest %s of %s to leave out has the same platform %q as child %s to copy; cannot filter it by platform",
+					d.Digest, src, platformString(d.Platform), k.Digest)
+			}
+		}
+	}
+	seen := map[string]bool{}
+	for _, k := range keep {
+		if p := platformString(k.Platform); !seen[p] {
+			seen[p] = true
+			platforms = append(platforms, p)
+		}
+	}
+	return platforms, missing, nil
+}
+
+// PruneArchitectures deletes from dest's repository the child manifests of
+// the manifest list at dest whose CPU architecture is not in retain. The
+// list itself is left unchanged (its digest stays valid), so the destination
+// keeps a sparse manifest list. It returns the deleted children
+// ("<platform> <digest>"); a single-architecture image is left alone.
+//
+// want is the image's own architecture selection. Nothing is deleted unless
+// at least one child of a wanted architecture exists at dest, so a prune can
+// never leave the image without a pullable platform.
+//
+// The child list is read from the destination, so pruning works even when
+// the source is gone. Never deleted are children without an architecture
+// (e.g. build attestations), children any tag of the repository points at
+// directly — a per-architecture image mirrored on its own (a digest
+// reference under its synthesized sha256-<hex> tag, or a tag such as
+// app:stable-arm64) — and children of any other manifest list a tag of the
+// repository points at, whoever owns it: another MirrorTarget or an
+// independent publisher may share the child. retain must cover every
+// architecture that any image of this MirrorTarget in dest's repository still
+// needs. The first failure aborts and is returned.
+func (c *MirrorClient) PruneArchitectures(ctx context.Context, dest string, want, retain []string) (deleted []string, err error) {
+	if len(want) == 0 || len(retain) == 0 {
+		return nil, fmt.Errorf("refusing to prune %s without an architecture selection to keep", dest)
+	}
+	destRef, err := ref.New(dest)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse destination reference %s: %w", dest, err)
+	}
+	m, err := c.ManifestGet(ctx, destRef)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get destination manifest %s: %w", dest, err)
+	}
+	idx, ok := m.(manifest.Indexer)
+	if !ok || !m.IsList() {
+		return nil, nil
+	}
+	children, err := idx.GetManifestList()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read manifest list %s: %w", dest, err)
+	}
+	ownDigest := m.GetDescriptor().Digest.String()
+	if ownDigest == "" {
+		return nil, fmt.Errorf("refusing to prune %s: its manifest list digest is unknown", dest)
+	}
+
+	var candidates []descriptor.Descriptor
+	wantedPresent := false
+	for _, d := range children {
+		if !hasArch(d.Platform) {
+			continue
+		}
+		if archSelected(d.Platform, want) {
+			if !wantedPresent {
+				exists, err := c.CheckExist(ctx, destRef.SetDigest(d.Digest.String()).CommonName())
+				if err != nil {
+					return nil, fmt.Errorf("failed to check child manifest %s of %s: %w", d.Digest, dest, err)
+				}
+				wantedPresent = exists
+			}
+			continue
+		}
+		if !archSelected(d.Platform, retain) {
+			candidates = append(candidates, d)
+		}
+	}
+	if !wantedPresent {
+		return nil, fmt.Errorf("refusing to prune %s: none of the selected architectures %v exists at the destination", dest, want)
+	}
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	// The tags this prune is about: dest's own tag, and the synthesized
+	// sha256-<hex> tag a digest-referenced dest is pushed under.
+	ownTags := []string{strings.Replace(ownDigest, ":", "-", 1)}
+	if destRef.Tag != "" {
+		ownTags = append(ownTags, destRef.Tag)
+	}
+	protected, err := c.protectedDigests(ctx, destRef, ownDigest, ownTags)
+	if err != nil {
+		return nil, err
+	}
+	for _, d := range candidates {
+		if why, ok := protected[d.Digest.String()]; ok {
+			oclog.Printf("Keeping child %s of %s: %s\n", d.Digest, dest, why)
+			continue
+		}
+		child := destRef.SetDigest(d.Digest.String()).CommonName()
+		exists, err := c.CheckExist(ctx, child)
+		if err != nil {
+			return deleted, fmt.Errorf("failed to check child manifest %s: %w", child, err)
+		}
+		if !exists {
+			continue
+		}
+		if err := c.DeleteManifest(ctx, child); err != nil {
+			return deleted, fmt.Errorf("failed to delete child manifest %s: %w", child, err)
+		}
+		deleted = append(deleted, describeChild(d))
+	}
+	return deleted, nil
+}
+
+// protectedDigests returns the manifests of r's repository that a prune of
+// the manifest list ownDigest must not delete, each with the reason: every
+// manifest a tag points at directly, and everything reachable from a tagged
+// manifest list — nested indexes included — except the direct children of
+// the list being pruned. That list is only exempt under its own tags
+// (ownTags): another tag pointing at the same digest is an alias with
+// unknown requirements (e.g. a promoted release tag), so its children stay.
+// Each tag is fetched (GET computes the digest from the content even when a
+// registry omits Docker-Content-Digest); a tag that cannot be resolved to a
+// digest, a nested index that cannot be read, or any other failure aborts —
+// pruning must not guess.
+func (c *MirrorClient) protectedDigests(ctx context.Context, r ref.Ref, ownDigest string, ownTags []string) (map[string]string, error) {
+	tags, err := c.TagList(ctx, r.SetTag(""))
+	if err != nil {
+		return nil, fmt.Errorf("failed to list tags of %s: %w", r.CommonName(), err)
+	}
+	out := map[string]string{}
+	visited := map[string]bool{}
+	for _, tag := range tags {
+		m, err := c.ManifestGet(ctx, r.SetTag(tag))
+		if err != nil {
+			if errors.Is(err, errs.ErrNotFound) {
+				continue
+			}
+			return nil, fmt.Errorf("failed to resolve tag %s of %s: %w", tag, r.CommonName(), err)
+		}
+		dig := m.GetDescriptor().Digest.String()
+		if dig == "" {
+			return nil, fmt.Errorf("failed to resolve tag %s of %s to a digest", tag, r.CommonName())
+		}
+		if _, seen := out[dig]; !seen {
+			out[dig] = "tag " + tag + " points at it"
+		}
+		// The list being pruned, under one of its own tags: only its nested
+		// indexes are walked, its direct children are the prune candidates.
+		exemptChildren := dig == ownDigest && slices.Contains(ownTags, tag)
+		if err := c.protectReachable(ctx, r, m, tag, exemptChildren, visited, out); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+// protectReachable marks everything reachable from the manifest list m
+// (tagged tag) as protected in out, descending into each nested index once
+// (visited). With exemptChildren, m's direct platform children are left
+// unmarked — they are the prune candidates — but nested indexes below m
+// are still walked and protected with all their descendants. A single image
+// manifest has nothing to walk.
+func (c *MirrorClient) protectReachable(ctx context.Context, r ref.Ref, m manifest.Manifest, tag string, exemptChildren bool, visited map[string]bool, out map[string]string) error {
+	idx, ok := m.(manifest.Indexer)
+	if !ok || !m.IsList() {
+		return nil
+	}
+	dig := m.GetDescriptor().Digest.String()
+	key := dig
+	if exemptChildren {
+		key += "#exempt"
+	}
+	if visited[key] {
+		return nil
+	}
+	visited[key] = true
+	children, err := idx.GetManifestList()
+	if err != nil {
+		return fmt.Errorf("failed to read manifest list %s (tag %s): %w", dig, tag, err)
+	}
+	for _, d := range children {
+		child := d.Digest.String()
+		nested := d.MediaType == mediatype.OCI1ManifestList || d.MediaType == mediatype.Docker2ManifestList
+		if !exemptChildren || nested {
+			if _, seen := out[child]; !seen {
+				out[child] = "the manifest list tagged " + tag + " also references it"
+			}
+		}
+		if !nested {
+			continue
+		}
+		inner, err := c.ManifestGet(ctx, r.SetDigest(child))
+		if err != nil {
+			return fmt.Errorf("failed to read nested index %s of the manifest list tagged %s: %w", child, tag, err)
+		}
+		if err := c.protectReachable(ctx, r, inner, tag, false, visited, out); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// hasArch reports whether p names a real CPU architecture (build
+// attestations use "unknown/unknown").
+func hasArch(p *platform.Platform) bool {
+	return p != nil && p.Architecture != "" && p.Architecture != "unknown"
+}
+
+// archSelected reports whether p's CPU architecture is in archs. Children
+// without a platform (e.g. build attestations) are never selected by an
+// architecture list.
+func archSelected(p *platform.Platform, archs []string) bool {
+	if p == nil || p.Architecture == "" {
+		return false
+	}
+	for _, a := range archs {
+		if strings.EqualFold(normalizeArch(a), normalizeArch(p.Architecture)) {
+			return true
+		}
+	}
+	return false
+}
+
+// normalizeArch maps common aliases to Go/OCI architecture names.
+func normalizeArch(a string) string {
+	switch strings.ToLower(a) {
+	case "x86_64", "x86-64":
+		return "amd64"
+	case "aarch64":
+		return "arm64"
+	}
+	return a
+}
+
+// describeChild renders a list entry as "<platform> <digest>".
+func describeChild(d descriptor.Descriptor) string {
+	p := platformString(d.Platform)
+	if p == "" {
+		p = "unknown-platform"
+	}
+	return p + " " + d.Digest.String()
+}
+
+// platformString renders p for regclient.ImageWithPlatforms; "" selects
+// children without a platform. The OS version is kept (",osver=..."):
+// Platform.String drops it, and a Windows child whose version is missing
+// from the filter is not matched by it.
+func platformString(p *platform.Platform) string {
+	if p == nil || p.OS == "" {
+		return ""
+	}
+	if p.OSVersion != "" {
+		return p.String() + ",osver=" + p.OSVersion
+	}
+	return p.String()
+}
+
+// samePlatform reports whether regclient's platform filter would select a
+// and b together, i.e. whether one cannot be left out without the other.
+func samePlatform(a, b *platform.Platform) bool {
+	aUnset, bUnset := a == nil || a.OS == "", b == nil || b.OS == ""
+	if aUnset || bUnset {
+		return aUnset && bUnset
+	}
+	return platform.Match(*a, *b) || platform.Match(*b, *a)
+}
+
 // bufferedClient returns the monolithic-PUT sibling client, building it on
 // first use. Clients not built by NewMirrorClient fall back to themselves.
 func (c *MirrorClient) bufferedClient() *MirrorClient {
@@ -291,28 +685,49 @@ func (c *MirrorClient) copyImageWith(ctx context.Context, rc *regclient.RegClien
 
 	c.copyReferrersBestEffort(ctx, rc, srcRef, destRef)
 
-	// Cosign stores signatures as tag-based manifests: sha256-{digest}.sig
-	// These are NOT returned by the OCI referrers API so ImageWithReferrers
-	// does not copy them. Copy the .sig tag explicitly when the source has a digest.
-	if srcRef.Digest != "" {
-		digest := strings.TrimPrefix(srcRef.Digest, "sha256:")
-		sigTag := "sha256-" + digest + ".sig"
-
-		srcSigRef := srcRef
-		srcSigRef.Tag = sigTag
-		srcSigRef.Digest = ""
-
-		destSigRef := destRef
-		destSigRef.Tag = sigTag
-		destSigRef.Digest = ""
-
-		// Best-effort: skip silently if the .sig tag does not exist at the source.
-		if err := rc.ImageCopy(ctx, srcSigRef, destSigRef); err == nil {
-			oclog.Printf("Copied cosign signature %s\n", sigTag)
-		}
-	}
+	c.copyCosignTagsBestEffort(ctx, rc, srcRef, destRef)
 
 	return effectiveDest, nil
+}
+
+// cosignTagSuffixes are the tag suffixes cosign uses for objects stored as
+// tags next to an image (sha256-<hex><suffix>): signatures, attestations
+// (cosign attest) and attached SBOMs (cosign attach sbom).
+var cosignTagSuffixes = []string{".sig", ".att", ".sbom"}
+
+// copyCosignTagsBestEffort copies cosign's tag-based signatures, attestations
+// and SBOMs of the just-copied image. They are not returned by the OCI
+// referrers API, so copyReferrersBestEffort does not see them. The tags are
+// named after the source manifest digest, which is resolved when src was
+// given by tag. Missing tags — the common case — are skipped silently; other
+// failures are logged, never returned, because the image itself has already
+// been copied.
+func (c *MirrorClient) copyCosignTagsBestEffort(ctx context.Context, rc *regclient.RegClient, srcRef, destRef ref.Ref) {
+	srcDigest := srcRef.Digest
+	if srcDigest == "" {
+		m, err := rc.ManifestHead(ctx, srcRef, regclient.WithManifestRequireDigest())
+		if err != nil {
+			oclog.Printf("Could not resolve digest of %s, skipping cosign tag copy: %v\n", srcRef.CommonName(), err)
+			return
+		}
+		srcDigest = m.GetDescriptor().Digest.String()
+	}
+	base := strings.Replace(srcDigest, ":", "-", 1)
+	for _, suffix := range cosignTagSuffixes {
+		tag := base + suffix
+		srcTagRef := srcRef.SetTag(tag)
+		if _, err := rc.ManifestHead(ctx, srcTagRef); err != nil {
+			if !errors.Is(err, errs.ErrNotFound) {
+				oclog.Printf("Could not check cosign tag %s of %s: %v\n", tag, srcRef.CommonName(), err)
+			}
+			continue
+		}
+		if err := rc.ImageCopy(ctx, srcTagRef, destRef.SetTag(tag)); err != nil {
+			oclog.Printf("Could not copy cosign tag %s of %s: %v\n", tag, srcRef.CommonName(), err)
+			continue
+		}
+		oclog.Printf("Copied cosign %s\n", tag)
+	}
 }
 
 // copyReferrersBestEffort copies the referrers (e.g. cosign signatures) of the
