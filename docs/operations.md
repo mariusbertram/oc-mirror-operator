@@ -111,6 +111,8 @@ kubectl get imageset ocp-4-16-operators -n oc-mirror-operator -o json | jq '.sta
 | Error | Usual cause | Fix |
 |---|---|---|
 | `MANIFEST_UNKNOWN`, `NAME_UNKNOWN` | Image no longer exists upstream (removed bundle, retired image) | Nothing to fix on your side; block the image or narrow the package. Report to the vendor using `origin`. |
+| `MANIFEST_UNKNOWN`, `NAME_UNKNOWN` for a digest while `skopeo inspect`/`podman pull` of the image works | The image's manifest list references a per-architecture image that was never pushed (e.g. an s390x entry); a pull of one platform does not notice | Set [`skipMissingArchitectures: true`](configuration/imagesets.md#limiting-architectures) (or select `architectures`), and report the broken list to the vendor. |
+| `MANIFEST_BLOB_UNKNOWN` / `manifest invalid` with "the destination registry must accept sparse manifest lists" | `architectures`/`skipMissingArchitectures` left out children and the target registry validates manifest lists | Quay: `FEATURE_SPARSE_INDEX: true`; distribution: `validation.manifests.indexes.platforms`. |
 | `unauthorized`, `UNAUTHORIZED` on pull | Missing credentials for that source registry | Add the registry to the [auth secret](configuration/credentials.md), then recollect. |
 | `unauthorized` on push, `failed to send blob post` | Push permission missing; Quay repository auto-creation not allowed | Grant write/create on the target organization. |
 | `context deadline exceeded`, `i/o timeout` | Slow or throttled transfer; 20 min per-image timeout hit | Check bandwidth/proxy; reduce `batchSize`; consider `workerStorage`. |

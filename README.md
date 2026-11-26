@@ -52,13 +52,18 @@ spec:
   image that works with OLM v0 (`CatalogSource`) and OLM v1 (`ClusterCatalog`).
 - **Runs unattended** — periodic upstream polling, drift detection against the target
   registry, automatic retries, optional cleanup of images that are no longer needed.
+- **Multi-arch control** — mirror only the CPU architectures you run, skip manifest-list
+  entries a vendor never pushed, and reconcile mirrored images when the selection
+  changes — the manifest list digest never changes, so IDMS/ITMS stay valid.
 - **Built for large registries** — worker pod pool, blob-reuse-aware mirror ordering,
   disk-buffered uploads for multi-GB layers, no persistent volume required (state lives
   in gzip-compressed ConfigMaps).
 - **Ready to consume** — IDMS/ITMS/CatalogSource/ClusterCatalog and release signature
   ConfigMaps via a REST API, an OpenShift Console plugin, Prometheus metrics and alerts.
 - **Air-gap friendly** — `MirrorExport` renders the resolved image list and cluster
-  resources as downloadable artifacts for transfers by other means.
+  resources as downloadable artifacts for transfers by other means, and a MirrorTarget can
+  publish the RHACS scanner vulnerability database as an OCI artifact for disconnected
+  Central.
 
 ## Quick start
 
@@ -111,6 +116,8 @@ network and metrics references.
 | Filtered catalog image for OLM v0 and v1 | ✅ | ✅ |
 | Additional images, Helm chart images, blocked images | ✅ | ✅ |
 | Release signature verification, cosign signature/referrer copy | ✅ | ✅ |
+| Per-architecture selection for every image, skipping missing manifest-list entries | releases only | ✅ |
+| RHACS scanner vulnerability database as an OCI artifact | ✗ | ✅ |
 | IDMS/ITMS, CatalogSource/ClusterCatalog generation | ✅ | ✅ |
 | Continuous mirroring, upstream polling, drift detection, retries | ✗ | ✅ |
 | Cleanup of images no longer needed | ✗ | ✅ |

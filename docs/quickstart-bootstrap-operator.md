@@ -30,7 +30,7 @@ version you are installing.
 
 ```bash
 TARGET=registry.example.local/oc-mirror-operator
-VERSION=v0.1.0
+VERSION=v0.1.13
 
 for img in controller manager worker; do
   skopeo copy --all \
