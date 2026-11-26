@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+
+	mirrorclient "github.com/mariusbertram/oc-mirror-operator/pkg/mirror/client"
 )
 
 // fakeManager is an httptest stand-in for the manager's status API.
@@ -379,5 +381,93 @@ func TestImageBudget(t *testing.T) {
 	// Two 20 min copy attempts, 15 s between them, 2 min verification.
 	if want := 42*60 + 15; int(ImageBudget.Seconds()) != want {
 		t.Fatalf("ImageBudget = %s", ImageBudget)
+	}
+}
+
+// skipMissingFakeClient records which copy path the worker chose per dest.
+type skipMissingFakeClient struct {
+	bufferedFakeClient
+	skipCalls map[string][]bool // dest → buffered flag of each filtered call
+	filters   map[string]mirrorclient.CopyFilter
+	skipped   []string
+}
+
+func (c *skipMissingFakeClient) CopyImageFiltered(ctx context.Context, src, dest string, f mirrorclient.CopyFilter, buffered bool) (string, []string, error) {
+	c.skipCalls[dest] = append(c.skipCalls[dest], buffered)
+	if c.filters != nil {
+		c.filters[dest] = f
+	}
+	eff, err := c.fakeClient.CopyImage(ctx, src, dest)
+	return eff, c.skipped, err
+}
+
+func TestRunBatch_SkipMissingArchitecturesPerItem(t *testing.T) {
+	fm := newFakeManager(t)
+	var copied []string
+	c := &skipMissingFakeClient{
+		bufferedFakeClient: bufferedFakeClient{fakeClient: fakeClient{
+			copyErrs: map[string][]error{}, digestErr: map[string]error{}, copied: &copied,
+		}},
+		skipCalls: map[string][]bool{},
+		filters:   map[string]mirrorclient.CopyFilter{},
+		skipped:   []string{"linux/s390x sha256:abc"},
+	}
+	w := &Worker{
+		NewClient: func(string) Client { return c },
+		Status:    fm.status(),
+		// Reverse the order to check the flag follows its dest, not its index.
+		Plan: func(_ context.Context, _ Client, s, d []string) ([]string, []string) {
+			return []string{s[1], s[0]}, []string{d[1], d[0]}
+		},
+	}
+	w.RunBatch(context.Background(), []BatchItem{
+		{Source: "src/0", Dest: "reg/0", SkipMissingArchitectures: true, Architectures: []string{"amd64"}},
+		{Source: "src/1", Dest: "reg/1"},
+	})
+	if f := c.filters["reg/0"]; !f.SkipMissing || len(f.Architectures) != 1 || f.Architectures[0] != "amd64" {
+		t.Errorf("reg/0 filter = %+v", f)
+	}
+	if got := c.skipCalls["reg/0"]; len(got) != 1 || got[0] {
+		t.Errorf("reg/0 skip-missing calls = %v, want one streamed call", got)
+	}
+	if _, ok := c.skipCalls["reg/1"]; ok {
+		t.Error("reg/1 must use the plain copy")
+	}
+	if len(copied) != 2 {
+		t.Errorf("copied = %v, want both", copied)
+	}
+	reports := fm.reportsByDest()
+	if reports["reg/0"].Error != "" || reports["reg/1"].Error != "" {
+		t.Errorf("reports = %v, want both successful", reports)
+	}
+}
+
+func TestMirrorOne_SkipMissingUsesBufferedOnLastAttempt(t *testing.T) {
+	fm := newFakeManager(t)
+	var copied []string
+	c := &skipMissingFakeClient{
+		bufferedFakeClient: bufferedFakeClient{fakeClient: fakeClient{
+			copyErrs:  map[string][]error{"reg/0": {errors.New("BLOB_UPLOAD_UNKNOWN")}},
+			digestErr: map[string]error{},
+			copied:    &copied,
+		}},
+		skipCalls: map[string][]bool{},
+	}
+	w := &Worker{Status: fm.status()}
+	if !w.mirrorOne(context.Background(), c, "src/0", "reg/0", mirrorclient.CopyFilter{SkipMissing: true}) {
+		t.Fatal("mirrorOne failed")
+	}
+	if got := c.skipCalls["reg/0"]; len(got) != 2 || got[0] || !got[1] {
+		t.Errorf("skip-missing calls = %v, want [streamed, buffered]", got)
+	}
+}
+
+func TestBatchItem_FilterJSON(t *testing.T) {
+	items, err := ParseBatch(`[{"source":"s","dest":"d","skipMissingArchitectures":true,"architectures":["amd64","arm64"]},{"source":"s2","dest":"d2"}]`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !items[0].SkipMissingArchitectures || len(items[0].Architectures) != 2 || items[1].SkipMissingArchitectures || !items[1].filter().IsZero() {
+		t.Errorf("items = %+v", items)
 	}
 }

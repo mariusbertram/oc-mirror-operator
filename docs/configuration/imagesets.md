@@ -35,6 +35,8 @@ spec:
     additionalImages: [ ... ]  # anything else
     blockedImages: [ ... ]     # exclusions applied to all of the above
     requireSignedImages: false
+    architectures: [ ... ]     # copy only these architectures of multi-arch images
+    skipMissingArchitectures: false
 ```
 
 All sections are optional. An `ImageSet` only starts mirroring once a
@@ -385,6 +387,58 @@ error and go through the normal retry cycle. This is a **presence check**, not t
 verification — use `operators[].signatureVerification` to pin a specific key, and note
 that release component images are trusted through the GPG-verified payload rather than
 individual signatures.
+
+## Limiting architectures
+
+```yaml
+spec:
+  mirror:
+    architectures: [amd64, arm64]   # copy only these of every manifest list
+    skipMissingArchitectures: true  # leave out entries missing at the source
+```
+
+Multi-architecture images are manifest lists that point at one image per architecture.
+By default every architecture is copied.
+
+- `architectures` copies only the listed architectures of each manifest list
+  (`amd64`, `arm64`, `ppc64le`, `s390x`, `arm`, `386`, `riscv64`), for every operating
+  system (`amd64` also keeps a `windows/amd64` entry). Entries without a platform, such as
+  build attestations, are dropped. This saves registry space when the clusters only run
+  on some architectures.
+- `skipMissingArchitectures` handles broken upstream lists: some vendor images list an
+  architecture whose image was never pushed (for example an `s390x` entry that answers
+  `404 name unknown`). A full copy fails on such an image. With this switch the missing
+  entries are left out and the ones that exist are copied; the worker log names every
+  skipped entry. Images whose entries all exist are copied as usual.
+
+Both can be combined, and both keep the **manifest list itself unchanged**: it is pushed
+byte for byte, so the mirrored image keeps the digest that bundles and the generated
+IDMS/ITMS refer to, and clusters pulling by digest resolve it. The destination then holds
+a *sparse* manifest list, one that references images it does not contain. The target
+registry has to accept that:
+
+| Registry | Setting |
+|---|---|
+| Quay / mirror-registry | `FEATURE_SPARSE_INDEX: true` (optionally `SPARSE_INDEX_REQUIRED_ARCHS`) |
+| distribution (`registry:3`) | `validation.manifests.indexes.platforms: none` or a platform list |
+
+A registry that rejects it fails the copy with an error that says which platforms were
+copied. Single-architecture images are always copied in full. Release payloads are chosen
+by `platform.architectures`; these fields only narrow what is copied of each image. For
+an image several `ImageSet`s share, the union of their `architectures` is copied (all if
+one of them sets none), and missing entries are skipped if any of them sets
+`skipMissingArchitectures`. `MirrorExport` ignores both fields.
+
+Signatures and attachments are mirrored as for any other image: the cosign
+`sha256-<digest>.sig`, `.att` and `.sbom` tags and the OCI referrers (signatures, attestations, SBOMs) are
+attached to the manifest list digest, which stays the same.
+
+Widening `architectures` later does **not** add the new architectures to images that are
+already mirrored: their manifest list digest is unchanged, so they count as complete and
+the drift check (which looks at the manifest list only) does not notice the missing
+entries. Delete those images at the destination; the next drift check finds them missing
+and mirrors them again with the new list. To retry images that failed before the switch
+was set, run a [recollect](../operations.md#recollect).
 
 ## How many ImageSets?
 

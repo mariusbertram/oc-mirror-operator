@@ -52,6 +52,37 @@ type Mirror struct {
 	// specific trusted public key must be enforced.
 	// +optional
 	RequireSignedImages bool `json:"requireSignedImages,omitempty"`
+	// Architectures limits multi-architecture images to these CPU
+	// architectures: of each manifest list only the per-architecture images
+	// listed here are copied. The manifest list itself is pushed unchanged,
+	// so its digest — the one bundles and IDMS/ITMS refer to — is preserved,
+	// and the destination holds a sparse manifest list; the destination
+	// registry must accept those (Quay: FEATURE_SPARSE_INDEX). Empty (the
+	// default) copies all architectures. Single-architecture images are
+	// always copied. Applies to every image of this ImageSet; for an image
+	// shared by several ImageSets the union of their lists is copied (all
+	// architectures if any of them sets none). Release payloads are selected
+	// by platform.architectures; this only narrows what is copied of each
+	// image. Widening the list later does not add the new architectures to
+	// images already mirrored (their manifest list is unchanged); delete
+	// such an image at the destination to have it re-mirrored by the next
+	// drift check. Honored by MirrorTarget mirroring, not by MirrorExport.
+	// +optional
+	// +listType=set
+	// +kubebuilder:validation:items:Enum=amd64;arm64;ppc64le;s390x;arm;386;riscv64
+	Architectures []string `json:"architectures,omitempty"`
+	// SkipMissingArchitectures mirrors multi-architecture images whose
+	// manifest list references per-architecture images that do not exist at
+	// the source registry (a broken upstream index, e.g. an s390x entry that
+	// was never pushed and makes the copy fail with 404). The architectures
+	// that exist are copied; as with Architectures the manifest list is pushed
+	// unchanged (digest preserved) and the destination registry must accept
+	// sparse manifest lists. Images whose children all exist are mirrored as
+	// usual. Combines with Architectures. Applies to every image of this
+	// ImageSet; for an image shared by several ImageSets it applies if any of
+	// them sets it. Honored by MirrorTarget mirroring, not by MirrorExport.
+	// +optional
+	SkipMissingArchitectures bool `json:"skipMissingArchitectures,omitempty"`
 }
 
 // Platform defines the configuration for OpenShift and OKD platform types.

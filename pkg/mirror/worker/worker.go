@@ -49,6 +49,18 @@ var log = logf.Log.WithName("worker")
 type BatchItem struct {
 	Source string `json:"source"`
 	Dest   string `json:"dest"`
+	// Architectures limits a manifest list copy to these CPU architectures
+	// (see ImageSet spec.mirror.architectures). Empty means all.
+	Architectures []string `json:"architectures,omitempty"`
+	// SkipMissingArchitectures copies a manifest list without the child
+	// manifests missing at the source (see ImageSet
+	// spec.mirror.skipMissingArchitectures).
+	SkipMissingArchitectures bool `json:"skipMissingArchitectures,omitempty"`
+}
+
+// filter returns the copy filter the item asks for.
+func (i BatchItem) filter() mirrorclient.CopyFilter {
+	return mirrorclient.CopyFilter{Architectures: i.Architectures, SkipMissing: i.SkipMissingArchitectures}
 }
 
 // ParseBatch decodes a MIRROR_BATCH value.
@@ -73,6 +85,13 @@ type Client interface {
 // last copy attempt, after streaming failed.
 type BufferedCopier interface {
 	CopyImageBuffered(ctx context.Context, src, dest string) (string, error)
+}
+
+// FilteredCopier is implemented by clients that can copy only some child
+// manifests of a manifest list (see
+// mirrorclient.MirrorClient.CopyImageFiltered).
+type FilteredCopier interface {
+	CopyImageFiltered(ctx context.Context, src, dest string, f mirrorclient.CopyFilter, buffered bool) (string, []string, error)
 }
 
 // NewMirrorClient builds a registry client for the registry host of
@@ -138,9 +157,14 @@ func (w *Worker) RunBatch(ctx context.Context, items []BatchItem) (anyFailed boo
 	// those blobs via anonymous mount (zero-copy).
 	sources := make([]string, len(items))
 	dests := make([]string, len(items))
+	// Plan reorders sources/dests, so per-item filters are looked up by dest.
+	filters := make(map[string]mirrorclient.CopyFilter)
 	for i, item := range items {
 		sources[i] = item.Source
 		dests[i] = item.Dest
+		if f := item.filter(); !f.IsZero() {
+			filters[item.Dest] = f
+		}
 	}
 	if w.Plan != nil {
 		planCtx, planCancel := context.WithTimeout(ctx, PlanTimeout)
@@ -165,7 +189,7 @@ func (w *Worker) RunBatch(ctx context.Context, items []BatchItem) (anyFailed boo
 			}
 			continue
 		}
-		if !w.MirrorOne(ctx, c, sources[i], dests[i]) {
+		if !w.mirrorOne(ctx, c, sources[i], dests[i], filters[dests[i]]) {
 			anyFailed = true
 		}
 	}
@@ -233,18 +257,35 @@ func (w *Worker) MirrorChartOne(ctx context.Context, c Client, src, dest string)
 // returns true on success. Blobs are streamed; when c is a BufferedCopier,
 // the last attempt buffers large blobs to disk instead.
 func (w *Worker) MirrorOne(ctx context.Context, c Client, src, dest string) bool {
+	return w.mirrorOne(ctx, c, src, dest, mirrorclient.CopyFilter{})
+}
+
+// mirrorOne is MirrorOne copying only the child manifests of a manifest list
+// that f selects, when c supports it (see FilteredCopier).
+func (w *Worker) mirrorOne(ctx context.Context, c Client, src, dest string, f mirrorclient.CopyFilter) bool {
 	oclog.Printf("Starting mirror: %s -> %s\n", src, dest)
 
 	var effectiveDest string
 	var lastErr error
 	for attempt := 1; attempt <= CopyAttempts; attempt++ {
 		copyFn := c.CopyImage
+		buffered := false
 		if attempt > 1 {
 			oclog.Printf("Retry attempt %d/%d after %s...\n", attempt, CopyAttempts, w.RetryDelay)
 			time.Sleep(w.RetryDelay)
 			if bc, ok := c.(BufferedCopier); ok && attempt == CopyAttempts {
 				oclog.Println("Streaming copy failed, retrying with large blobs buffered to disk")
 				copyFn = bc.CopyImageBuffered
+				buffered = true
+			}
+		}
+		if fc, ok := c.(FilteredCopier); ok && !f.IsZero() {
+			copyFn = func(ctx context.Context, src, dest string) (string, error) {
+				eff, missing, err := fc.CopyImageFiltered(ctx, src, dest, f, buffered)
+				if len(missing) > 0 {
+					oclog.Printf("Skipping child manifests missing at the source of %s: %s\n", src, strings.Join(missing, ", "))
+				}
+				return eff, err
 			}
 		}
 		copyCtx, cancel := context.WithTimeout(ctx, CopyTimeout)

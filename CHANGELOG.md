@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `ImageSet.spec.mirror.architectures` copies only the listed CPU
+  architectures of every multi-arch image, and
+  `ImageSet.spec.mirror.skipMissingArchitectures` leaves out manifest-list
+  entries that do not exist at the source (e.g. Confluent's
+  `cp-kafka-rest` index listing an s390x image that answers 404), which
+  previously failed the whole copy. In both cases the manifest list is pushed
+  unchanged, so its digest and the IDMS/ITMS mappings stay valid; the target
+  registry must accept sparse manifest lists (Quay: `FEATURE_SPARSE_INDEX`).
+- Cosign attestations (`sha256-<digest>.att`) and attached SBOMs
+  (`sha256-<digest>.sbom`) are now mirrored best-effort alongside the
+  `.sig` signature tag.
+
+### Fixed
+- Cosign tags (`.sig`, `.att`, `.sbom`) are now also mirrored for images
+  referenced by tag (e.g. additional images); previously they were only
+  copied when the source was given by digest.
+
 ## [v0.1.9] - 2026-10-30
 
 ### Fixed

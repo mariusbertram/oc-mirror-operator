@@ -1175,8 +1175,43 @@ func (m *MirrorManager) applySourceDigestLocked(entry *imagestate.ImageEntry, di
 // Mirror.RequireSignedImages set, per requireSignedByIS (built once per
 // reconcile from the current ImageSet list).
 func anyOwnerRequiresSignedImages(owners []string, requireSignedByIS map[string]bool) bool {
+	return anyOwnerEnabled(owners, requireSignedByIS)
+}
+
+// ownerArchitectures returns the architectures to copy of an image owned by
+// owners: the sorted union of their Mirror.Architectures, or nil (all) when
+// any owner sets none — an ImageSet that wants every architecture must get
+// it even if another owner narrows the same image.
+func ownerArchitectures(owners []string, archByIS map[string][]string) []string {
+	seen := map[string]bool{}
 	for _, name := range owners {
-		if requireSignedByIS[name] {
+		archs, known := archByIS[name]
+		if !known {
+			continue
+		}
+		if len(archs) == 0 {
+			return nil
+		}
+		for _, a := range archs {
+			seen[a] = true
+		}
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(seen))
+	for a := range seen {
+		out = append(out, a)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// anyOwnerEnabled reports whether any ImageSet in owners is true in byIS, a
+// per-ImageSet boolean setting built once per reconcile.
+func anyOwnerEnabled(owners []string, byIS map[string]bool) bool {
+	for _, name := range owners {
+		if byIS[name] {
 			return true
 		}
 	}
@@ -1382,9 +1417,16 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 	// sweep) so a shared destination is checked if ANY owning ImageSet
 	// requires it.
 	requireSignedByIS := make(map[string]bool, len(imageSets.Items))
+	// skipMissingArchByIS and archByIS likewise record
+	// Mirror.SkipMissingArchitectures and Mirror.Architectures for the
+	// per-image copy filter (see ownerArchitectures).
+	skipMissingArchByIS := make(map[string]bool, len(imageSets.Items))
+	archByIS := make(map[string][]string, len(imageSets.Items))
 	for _, is := range imageSets.Items {
 		if containsString(mt.Spec.ImageSets, is.Name) {
 			requireSignedByIS[is.Name] = is.Spec.Mirror.RequireSignedImages
+			skipMissingArchByIS[is.Name] = is.Spec.Mirror.SkipMissingArchitectures
+			archByIS[is.Name] = is.Spec.Mirror.Architectures
 		}
 	}
 
@@ -1480,7 +1522,12 @@ func (m *MirrorManager) reconcile(ctx context.Context) error { //nolint:gocyclo
 		if m.inProgress[dest] != "" {
 			continue
 		}
-		item := BatchItem{Source: entry.Source, Dest: dest}
+		item := BatchItem{
+			Source:                   entry.Source,
+			Dest:                     dest,
+			Architectures:            ownerArchitectures(m.owners[dest], archByIS),
+			SkipMissingArchitectures: anyOwnerEnabled(m.owners[dest], skipMissingArchByIS),
+		}
 		if entry.IsBundleImage {
 			pendingBundleImages = append(pendingBundleImages, item)
 		} else {
