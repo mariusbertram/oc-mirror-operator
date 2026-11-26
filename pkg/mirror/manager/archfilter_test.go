@@ -496,3 +496,18 @@ func TestReconcile_PublishesPrunePlanState(t *testing.T) {
 		t.Errorf("prune=%v retain=%v", m.pruneArchitectures, m.retainArchByRepo)
 	}
 }
+
+// A backoff left by a failed reconcile is dropped once the selection no
+// longer needs a reconcile (found on k3s: selection [s390x] failed, then
+// reverted to the recorded [amd64]).
+func TestArchReconcile_ClearsStaleBackoff(t *testing.T) {
+	m := NewWithClients(nil, nil, "t", "default", "img", "", runtime.NewScheme())
+	next := metav1.NewTime(time.Now().Add(time.Hour))
+	e := &imagestate.ImageEntry{Source: "quay.io/a:v1", State: stateMirrored, Architectures: []string{"amd64"}, ArchRetryCount: 1, ArchNextRetryAt: &next}
+	if _, ok := m.archReconcileItemLocked("reg.io/a:v1", e, []string{"amd64"}, false, true, map[string][]string{"reg.io/a": {"amd64"}}, time.Now()); ok {
+		t.Fatal("nothing to reconcile")
+	}
+	if e.ArchRetryCount != 0 || e.ArchNextRetryAt != nil || !m.stateDirty {
+		t.Errorf("stale backoff not cleared: %+v", e)
+	}
+}

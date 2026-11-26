@@ -145,12 +145,18 @@ func (m *MirrorManager) archReconcileItemLocked(dest string, entry *imagestate.I
 	if m.inProgress[dest] != "" || mirror.IsChartSource(entry.Source) {
 		return BatchItem{}, false
 	}
-	if entry.ArchNextRetryAt != nil && now.Before(entry.ArchNextRetryAt.Time) {
-		return BatchItem{}, false
-	}
 	retain := retainByRepo[repoOf(dest)]
 	backfill, prune := archReconcileNeeded(entry.Architectures, want, pruneEnabled, retain)
 	if !backfill && !prune {
+		// Nothing to reconcile (anymore): drop a backoff left by a failed
+		// attempt for a selection that has since changed.
+		if entry.ArchRetryCount != 0 || entry.ArchNextRetryAt != nil {
+			entry.ArchRetryCount, entry.ArchNextRetryAt = 0, nil
+			m.stateDirty = true
+		}
+		return BatchItem{}, false
+	}
+	if entry.ArchNextRetryAt != nil && now.Before(entry.ArchNextRetryAt.Time) {
 		return BatchItem{}, false
 	}
 	item := BatchItem{
